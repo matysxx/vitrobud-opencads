@@ -10,6 +10,7 @@ pub mod hit_test;
 pub mod image_model;
 pub mod mesh_model;
 pub mod object;
+pub mod paper_canvas;
 pub mod pipeline;
 pub mod properties;
 mod render;
@@ -2214,6 +2215,30 @@ impl Scene {
     /// Paper-space entity wires only (title blocks, frames, borders).
     /// Does NOT include viewport content projection — that is handled by
     /// individual ViewportPane::Paper widgets layered on top.
+    /// All wires needed to render the paper-space canvas (2D widget path).
+    /// Includes paper entities, paper boundary, inactive viewport projections
+    /// (excluding the active MSPACE viewport), plus interim/preview wires.
+    pub fn paper_canvas_wires(&self) -> Vec<WireModel> {
+        let layout_block = self.current_layout_block_handle();
+        let mut wires = self.paper_sheet_wires();
+        wires.extend(self.viewport_content_wires(layout_block, None, self.active_viewport));
+        if let Some(iw) = &self.interim_wire {
+            wires.push(iw.clone());
+        }
+        wires.extend(self.preview_wires.iter().cloned());
+        wires
+    }
+
+    /// Hatch fills for the paper-space canvas.
+    pub fn paper_canvas_hatches(&self) -> Vec<HatchModel> {
+        self.synced_hatch_models()
+    }
+
+    /// Wipeout (opaque background fill) models for the paper-space canvas.
+    pub fn paper_canvas_wipeouts(&self) -> Vec<HatchModel> {
+        self.wipeout_models()
+    }
+
     pub(super) fn paper_sheet_wires(&self) -> Vec<WireModel> {
         let layout_block = self.current_layout_block_handle();
         let mut wires = self.wires_for_block(layout_block);

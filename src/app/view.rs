@@ -4,9 +4,10 @@ use super::history::history_dropdown_labels;
 use super::helpers::grid_plane_from_camera;
 use crate::scene::{VIEWCUBE_DRAW_PX, VIEWCUBE_PAD};
 use crate::scene::grip::grips_to_screen;
+use crate::scene::paper_canvas::PaperCanvas;
 use crate::scene::viewport_pane::{PaperViewportPane, ViewportPane};
 use crate::ui::overlay;
-use iced::widget::{button, column, container, mouse_area, row, shader, stack, text, Row, Space};
+use iced::widget::{button, canvas, column, container, mouse_area, row, shader, stack, text, Row, Space};
 use iced::window;
 use iced::{keyboard, Background, Border, Color, Element, Fill, Subscription, Task, Theme};
 
@@ -470,7 +471,10 @@ impl H7CAD {
 fn paper_canvas_view<'a>(tab: &'a super::document::DocumentTab) -> Element<'a, Message> {
     let scene = &tab.scene;
 
-    let paper_sheet = shader(ViewportPane::paper_sheet(scene))
+    // 2-D canvas for the paper sheet — paper entities, viewport borders, and
+    // inactive viewport projections are rendered as vector paths.  This lets
+    // users select/edit paper-space entities directly without entering MSPACE.
+    let paper_sheet = canvas(PaperCanvas::new(scene))
         .width(Fill)
         .height(Fill);
 
