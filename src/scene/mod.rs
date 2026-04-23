@@ -702,22 +702,19 @@ impl Scene {
             // ── Per-viewport frozen layer set ─────────────────────────────
             let frozen: HSet<Handle> = vp.frozen_layers.iter().cloned().collect();
 
-            // ── View direction coordinate frame ───────────────────────────
-            let vd = glam::Vec3::new(
-                vp.view_direction.x as f32,
-                vp.view_direction.y as f32,
-                vp.view_direction.z as f32,
-            ).normalize_or(glam::Vec3::Z);
-
-            // Compute view_right and view_up from the direction vector.
-            let world_z = glam::Vec3::Z;
-            let view_right = if (vd.dot(world_z)).abs() > 0.99 {
-                // Looking straight up/down: use X as right.
-                glam::Vec3::X
-            } else {
-                world_z.cross(vd).normalize()
+            // ── View coordinate frame ─────────────────────────────────────
+            // Use camera_for_viewport so the axes match the GPU renderer exactly.
+            // GPU uses look_at_rh(eye, target, rotation*Y), which gives:
+            //   screen_right = normalize((target-eye) × up) = rotation * X
+            //   screen_up    = rotation * Y
+            // The old Z×vd cross-product gives the opposite sign for views
+            // that have a Y component in view_direction (front/back), causing mirroring.
+            let cam_frame = match self.camera_for_viewport(vp.common.handle) {
+                Some(c) => c,
+                None => continue,
             };
-            let view_up = vd.cross(view_right).normalize();
+            let view_right = cam_frame.rotation * glam::Vec3::X;
+            let view_up    = cam_frame.rotation * glam::Vec3::Y;
 
             // ── Scale & viewport parameters ───────────────────────────────
             let scale = if vp.custom_scale.abs() > 1e-9 {
@@ -795,9 +792,8 @@ impl Scene {
                     let u = mp.dot(view_right);
                     let v = mp.dot(view_up);
                     if use_perspective {
-                        // vd points from target toward camera, so depth along vd is the
-                        // distance from the target plane toward the camera.
-                        let d_vd = mp.dot(vd);
+                        // Eye direction (target → camera) = rotation * Z.
+                        let d_vd = mp.dot(cam_frame.rotation * glam::Vec3::Z);
                         // Forward distance from camera (positive = in front of camera).
                         let fwd = camera_dist - d_vd;
                         if fwd <= 0.001 {
