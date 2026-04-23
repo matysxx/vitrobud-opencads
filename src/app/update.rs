@@ -2268,6 +2268,18 @@ impl H7CAD {
                 self.push_undo_snapshot(i, "LAYOUT");
                 match self.tabs[i].scene.document.add_layout(&new_name) {
                     Ok(_) => {
+                        // Override the acadrust default limits (12×9 imperial) with A4 landscape.
+                        for obj in self.tabs[i].scene.document.objects.values_mut() {
+                            if let acadrust::objects::ObjectType::Layout(l) = obj {
+                                if l.name == new_name {
+                                    l.min_limits = (0.0, 0.0);
+                                    l.max_limits = (297.0, 210.0);
+                                    l.min_extents = (0.0, 0.0, 0.0);
+                                    l.max_extents = (297.0, 210.0, 0.0);
+                                    break;
+                                }
+                            }
+                        }
                         self.tabs[i].scene.current_layout = new_name.clone();
                         self.tabs[i].scene.deselect_all();
                         self.tabs[i].scene.fit_all();

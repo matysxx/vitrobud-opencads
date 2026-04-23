@@ -348,10 +348,6 @@ impl Scene {
         let layout_block = self.current_layout_block_handle();
         let mut wires: Vec<WireModel> = self.wires_for_block(layout_block);
         if self.current_layout != "Model" {
-            // Draw the paper boundary rectangle first (rendered beneath everything else).
-            if let Some(((x0, y0), (x1, y1))) = self.paper_limits() {
-                wires.insert(0, paper_boundary_wire(x0 as f32, y0 as f32, x1 as f32, y1 as f32));
-            }
             wires.extend(self.viewport_content_wires(layout_block, None, None));
         }
         wires
@@ -2247,11 +2243,40 @@ impl Scene {
 
     pub(super) fn paper_sheet_wires(&self) -> Vec<WireModel> {
         let layout_block = self.current_layout_block_handle();
-        let mut wires = self.wires_for_block(layout_block);
-        if let Some(((x0, y0), (x1, y1))) = self.paper_limits() {
-            wires.insert(0, paper_boundary_wire(x0 as f32, y0 as f32, x1 as f32, y1 as f32));
+        self.wires_for_block(layout_block)
+    }
+
+    /// Bounding box (min_x, min_y), (max_x, max_y) of all DXF entities in the
+    /// current paper layout, in paper-space coordinates.  Used by the 2-D canvas
+    /// to position the white paper fill so it aligns with the drawn entity borders.
+    /// Falls back to `paper_limits()` when the layout has no entities.
+    pub fn paper_entity_extents(&self) -> Option<((f32, f32), (f32, f32))> {
+        let layout_block = self.current_layout_block_handle();
+        let wires = self.wires_for_block(layout_block);
+
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+
+        for wire in &wires {
+            for &[x, y, _] in &wire.points {
+                if x.is_finite() && y.is_finite() {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
         }
-        wires
+
+        if min_x == f32::MAX {
+            // No entities — fall back to layout limits.
+            self.paper_limits()
+                .map(|((x0, y0), (x1, y1))| ((x0 as f32, y0 as f32), (x1 as f32, y1 as f32)))
+        } else {
+            Some(((min_x, min_y), (max_x, max_y)))
+        }
     }
 
     /// Build a Camera oriented and scaled to match a paper-space Viewport entity.
@@ -2463,28 +2488,3 @@ fn clip_polyline_to_rect(
     result
 }
 
-/// A thin white rectangle wire that represents the printable-area boundary
-/// of the active paper layout.  Rendered beneath all other paper-space
-/// geometry so it acts as a visual "page" backdrop.
-fn paper_boundary_wire(x0: f32, y0: f32, x1: f32, y1: f32) -> WireModel {
-    WireModel {
-        name: "__paper_boundary__".to_string(),
-        points: vec![
-            [x0, y0, 0.0],
-            [x1, y0, 0.0],
-            [x1, y1, 0.0],
-            [x0, y1, 0.0],
-            [x0, y0, 0.0],
-        ],
-        // Near-white so it stands out against the dark paper-space background.
-        color: [0.95, 0.95, 0.95, 1.0],
-        selected: false,
-        pattern_length: 0.0,
-        pattern: [0.0; 8],
-        line_weight_px: 1.5,
-        snap_pts: vec![],
-        tangent_geoms: vec![],
-        aci: 0,
-            key_vertices: vec![],
-    }
-}
