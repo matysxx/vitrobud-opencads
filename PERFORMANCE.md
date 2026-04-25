@@ -109,13 +109,16 @@ bounding boxes for all entity types.
 
 ---
 
-## Option E — SortEntitiesTable Scan Cache
+## Option E — SortEntitiesTable Scan Cache ✅ Implemented
 
-**Status:** Planned
+**Status:** Done
 
-Cache the result of the `SortEntitiesTable` lookup that currently performs a linear scan over all
-objects on every `wires_for_block()` call.
+Added `sort_cache: RefCell<Option<(u64, HashMap<Handle, HashMap<u64, u64>>)>>` to `Scene`.
 
-**Impact:** Minor. Removes one O(objects) scan per frame. Low priority compared to A–D.
+On the first call to `wires_for_block()` after a geometry change, the cache scans all
+`document.objects` once and builds an index: `block_handle → (entity_handle.value() →
+sort_handle.value())`. Subsequent calls within the same epoch do an O(1) HashMap lookup
+instead of the previous O(objects) `find_map` scan.
 
-**Difficulty:** Easy.
+The cache is keyed by `geometry_epoch` and invalidated automatically alongside the wire
+and GPU caches whenever geometry changes.

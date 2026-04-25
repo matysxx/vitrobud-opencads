@@ -76,6 +76,10 @@ pub struct Scene {
     /// Keyed by `geometry_epoch`; invalidated automatically when the epoch changes.
     /// Uses `Arc` so `build_primitive()` avoids a full Vec clone during navigation.
     wire_cache: RefCell<Option<(u64, Arc<Vec<WireModel>>)>>,
+    /// Index built from every SortEntitiesTable in the document.
+    /// Maps block_handle → (entity_handle.value() → sort_handle.value()).
+    /// Replaces the O(objects) linear scan inside `wires_for_block()` with an O(1) lookup.
+    sort_cache: RefCell<Option<(u64, HashMap<Handle, HashMap<u64, u64>>)>>,
     /// Active layout name — "Model" or a paper space layout name.
     pub current_layout: String,
     /// GPU render data for hatch fills, keyed by the DXF entity Handle.
@@ -107,6 +111,7 @@ impl Scene {
             camera_generation: 0,
             geometry_epoch: GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed),
             wire_cache: RefCell::new(None),
+            sort_cache: RefCell::new(None),
             current_layout: "Model".to_string(),
             hatches: HashMap::new(),
             meshes: HashMap::new(),
@@ -420,14 +425,30 @@ impl Scene {
     fn wires_for_block(&self, block_handle: Handle) -> Vec<WireModel> {
         use acadrust::objects::ObjectType;
 
-        // Find the SortEntitiesTable for this block (if any).
-        let sort_table = self.document.objects.values().find_map(|obj| {
-            if let ObjectType::SortEntitiesTable(t) = obj {
-                if t.block_owner_handle == block_handle { Some(t) } else { None }
-            } else {
-                None
+        // ── Ensure sort-order index is current ────────────────────────────
+        // Replaces the old O(objects) find_map with one rebuild per epoch,
+        // after which every wires_for_block call is an O(1) HashMap lookup.
+        {
+            let needs_rebuild = self.sort_cache.borrow()
+                .as_ref()
+                .map(|(e, _)| *e != self.geometry_epoch)
+                .unwrap_or(true);
+
+            if needs_rebuild {
+                let mut idx: HashMap<Handle, HashMap<u64, u64>> = HashMap::new();
+                for obj in self.document.objects.values() {
+                    if let ObjectType::SortEntitiesTable(t) = obj {
+                        if !t.is_empty() {
+                            let map = t.entries()
+                                .map(|e| (e.entity_handle.value(), e.sort_handle.value()))
+                                .collect();
+                            idx.insert(t.block_owner_handle, map);
+                        }
+                    }
+                }
+                *self.sort_cache.borrow_mut() = Some((self.geometry_epoch, idx));
             }
-        });
+        }
 
         let mut wires: Vec<WireModel> = self.document
             .entities()
@@ -450,16 +471,18 @@ impl Scene {
             .flat_map(|e| self.tessellate_one(e))
             .collect();
 
-        // Apply draw order if a SortEntitiesTable exists and has entries.
-        if let Some(table) = sort_table {
-            if !table.is_empty() {
-                wires.sort_by_key(|w| {
-                    let handle = Self::handle_from_wire_name(&w.name)
-                        .unwrap_or(Handle::NULL);
-                    table.get_sort_handle(handle)
-                        .map(|sh| sh.value())
-                        .unwrap_or(u64::MAX / 2) // unsorted entities draw in the middle
-                });
+        // Apply draw order via the cached index (O(1) block lookup).
+        {
+            let cache = self.sort_cache.borrow();
+            if let Some((_, ref idx)) = *cache {
+                if let Some(sort_map) = idx.get(&block_handle) {
+                    wires.sort_by_key(|w| {
+                        let key = Self::handle_from_wire_name(&w.name)
+                            .map(|h| h.value())
+                            .unwrap_or(u64::MAX);
+                        sort_map.get(&key).copied().unwrap_or(u64::MAX / 2)
+                    });
+                }
             }
         }
         wires
