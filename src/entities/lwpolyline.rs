@@ -14,10 +14,8 @@ const TAU: f64 = std::f64::consts::TAU;
 fn to_truck(pline: &LwPolyline) -> TruckEntity {
     let verts = &pline.vertices;
     if verts.is_empty() {
-        let v = builder::vertex(Point3::new(0.0, 0.0, 0.0));
-        let edge = builder::line(&v, &v);
         return TruckEntity {
-            object: TruckObject::Contour(std::iter::once(edge).collect()),
+            object: TruckObject::Point(builder::vertex(Point3::new(0.0, 0.0, 0.0))),
             snap_pts: vec![],
             tangent_geoms: vec![],
             key_vertices: vec![],
