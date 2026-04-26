@@ -112,8 +112,66 @@ extruded polylines). Navigation stays free regardless of model complexity.
 
 ---
 
+## Option I — Per-viewport wire cache for paper space
+
+**Status:** Done
+
+Added `viewport_wire_cache: RefCell<HashMap<Handle, (u64, Arc<Vec<WireModel>>)>>` to `Scene`.
+`model_wires_for_viewport_arc(vp_handle)` checks the cache first; on a hit it returns an
+Arc clone (O(1)). On a miss it tessellates, stores the result, and returns it.
+
+`build_viewport_primitive()` in `render.rs` now calls `model_wires_for_viewport_arc()` instead
+of `model_wires_for_viewport()`, so paper-space viewport rendering no longer re-tessellates
+model-space content every frame.
+
+**Impact:** Eliminates per-frame tessellation when viewing paper space layouts. Before this fix,
+every navigation frame in paper space re-tessellated the entire model-space entity set for each
+visible viewport — the same bug Options A/B fixed for model space.
+
+---
+
+## Option J — Arc-return `hit_test_wires()` and `paper_canvas_*`
+
+**Status:** Done
+
+`hit_test_wires()` now returns `Arc<Vec<WireModel>>` instead of `Vec<WireModel>`.
+In the model-space case it returns `entity_wires_arc()` directly — O(1), no Vec clone.
+In the paper-space case it still builds a Vec (no suitable cache for those paths), but the
+interface is consistent.
+
+`paper_canvas_hatches()` and `paper_canvas_wipeouts()` now return `Arc<Vec<HatchModel>>`
+via the epoch caches added in Option F, eliminating per-frame hatch rebuilds in the paper
+canvas widget.
+
+**Impact:** Every `ViewportMove` message during a command (grip drag, line drawing, etc.)
+called `hit_test_wires()` up to twice. In model space this was a full Vec clone of all
+tessellated wires — potentially MB-scale. Now it is a pointer copy.
+
+---
+
+## Option K — Snap world-space wire pre-rejection
+
+**Status:** Done
+
+Added `world_snap_r` (snap radius in world units, derived from `view_proj`) and a
+`wire_in_range()` closure to `Snapper::snap()`. Before iterating a wire's vertices for
+Endpoint, Midpoint, Nearest, Perpendicular, Intersection, and ApparentIntersection,
+the closure checks whether the wire's first↔last chord sphere overlaps the snap search
+circle. Wires that fail the check are skipped with `continue` — no vertex projection,
+no matrix multiplies.
+
+Closed wires (first ≈ last, e.g. tessellated circles) are always passed through since
+their chord radius is ~0.
+
+**Impact:** When zoomed in on a small region of a large drawing, the vast majority of
+wires are outside the snap circle and are rejected in O(1) scalar comparisons each. The
+per-mouse-move snap cost drops from O(entities × vertices) to O(entities) for the
+pre-check plus O(nearby_vertices) for the actual snap work.
+
+---
+
 ## Implementation order
 
-F → G → H. Each is independent; all three can be done in a single pass since the pattern
-is identical. F has the most complex rebuild logic (Insert explosion); G has the highest
-raw byte impact; H is the simplest but matters for 3D-heavy files.
+F → G → H → I → J → K (all implemented).
+Each option is independent; the pattern (epoch-keyed Arc cache or a cheap pre-rejection
+guard) is the same throughout.

@@ -1177,9 +1177,9 @@ impl H7CAD {
                     self.tabs[i].snap_result = if needs_entity || is_gathering {
                         None
                     } else if needs_tan {
-                        self.snapper.snap_tangent_only(cursor_world, p, &all_wires, view_proj, bounds)
+                        self.snapper.snap_tangent_only(cursor_world, p, &all_wires[..], view_proj, bounds)
                     } else {
-                        self.snapper.snap(cursor_world, p, &all_wires, view_proj, bounds)
+                        self.snapper.snap(cursor_world, p, &all_wires[..], view_proj, bounds)
                     };
 
                     // Object Snap Tracking: update dwell and override snap if tracking.
@@ -1224,7 +1224,7 @@ impl H7CAD {
 
                     let mut previews = if needs_entity {
                         let hover_handle =
-                            scene::hit_test::click_hit(p, &all_wires, view_proj, bounds)
+                            scene::hit_test::click_hit(p, &all_wires[..], view_proj, bounds)
                                 .and_then(|s| Scene::handle_from_wire_name(s))
                                 .unwrap_or(acadrust::Handle::NULL);
                         self.tabs[i].active_cmd.as_mut()
@@ -1395,9 +1395,9 @@ impl H7CAD {
                         let snap_hit = if needs_entity_click {
                             None
                         } else if needs_tan {
-                            self.snapper.snap_tangent_only(raw, p, &all_wires, vp_mat, bounds)
+                            self.snapper.snap_tangent_only(raw, p, &all_wires[..], vp_mat, bounds)
                         } else {
-                            self.snapper.snap(raw, p, &all_wires, vp_mat, bounds)
+                            self.snapper.snap(raw, p, &all_wires[..], vp_mat, bounds)
                         };
                         // snap.world is in paper-space (projected wire coords in MSPACE);
                         // convert to model-space so commands receive consistent coordinates.
@@ -1424,7 +1424,7 @@ impl H7CAD {
                     {
                         let vp_mat2 = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                         let all_wires2 = self.tabs[i].scene.hit_test_wires();
-                        let hit = scene::hit_test::click_hit(p, &all_wires2, vp_mat2, bounds)
+                        let hit = scene::hit_test::click_hit(p, &all_wires2[..], vp_mat2, bounds)
                             .and_then(|s| Scene::handle_from_wire_name(s));
                         if let Some(handle) = hit {
                             let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_entity_pick(handle, world_pt));
@@ -1514,7 +1514,7 @@ impl H7CAD {
                                 let all_wires = self.tabs[i].scene.hit_test_wires();
                                 let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                                 let mut handles: Vec<Handle> = scene::hit_test::box_hit(
-                                    a, p, crossing, &all_wires, vp_mat, bounds,
+                                    a, p, crossing, &all_wires[..], vp_mat, bounds,
                                 ).into_iter().filter_map(|s| Scene::handle_from_wire_name(s)).collect();
                                 handles.extend(scene::hit_test::box_hit_hatch(
                                     a, p, crossing, &self.tabs[i].scene.hatches, vp_mat, bounds,
@@ -1534,7 +1534,7 @@ impl H7CAD {
                             let all_wires = self.tabs[i].scene.hit_test_wires();
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                             let mut handles: Vec<Handle> = scene::hit_test::poly_hit(
-                                &poly_pts, crossing, &all_wires, vp_mat, bounds,
+                                &poly_pts, crossing, &all_wires[..], vp_mat, bounds,
                             ).into_iter().filter_map(|s| Scene::handle_from_wire_name(s)).collect();
                             handles.extend(scene::hit_test::poly_hit_hatch(
                                 &poly_pts, crossing, &self.tabs[i].scene.hatches, vp_mat, bounds,
@@ -1555,7 +1555,7 @@ impl H7CAD {
                         if box_anchor.is_none() {
                             let all_wires = self.tabs[i].scene.hit_test_wires();
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
-                            let hit = scene::hit_test::click_hit(p, &all_wires, vp_mat, bounds)
+                            let hit = scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
                                 .and_then(|s| Scene::handle_from_wire_name(s))
                                 .or_else(|| scene::hit_test::click_hit_hatch(
                                     p, &self.tabs[i].scene.hatches, vp_mat, bounds,
@@ -1579,7 +1579,7 @@ impl H7CAD {
                             let all_wires = self.tabs[i].scene.hit_test_wires();
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                             let mut handles: Vec<Handle> = scene::hit_test::box_hit(
-                                a, p, crossing, &all_wires, vp_mat, bounds,
+                                a, p, crossing, &all_wires[..], vp_mat, bounds,
                             ).into_iter().filter_map(|s| Scene::handle_from_wire_name(s)).collect();
                             handles.extend(scene::hit_test::box_hit_hatch(
                                 a, p, crossing, &self.tabs[i].scene.hatches, vp_mat, bounds,
@@ -1639,7 +1639,7 @@ impl H7CAD {
                         let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
                         let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                         let all_wires = self.tabs[i].scene.hit_test_wires();
-                        let hit = scene::hit_test::click_hit(p, &all_wires, vp_mat, bounds)
+                        let hit = scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
                             .and_then(|s| Scene::handle_from_wire_name(s));
                         if let Some(handle) = hit {
                             if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
@@ -1686,7 +1686,7 @@ impl H7CAD {
                         let hit_vp: Option<acadrust::Handle> = {
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                             let all_wires = self.tabs[i].scene.hit_test_wires();
-                            scene::hit_test::click_hit(p, &all_wires, vp_mat, bounds)
+                            scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
                                 .and_then(|s| Scene::handle_from_wire_name(s))
                                 .and_then(|h| {
                                     if let Some(AcadEntityType::Viewport(vp)) =

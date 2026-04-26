@@ -291,11 +291,11 @@ impl Scene {
             None => return self.build_primitive(hover_region, bounds, false),
         };
 
-        let base_wires = self.model_wires_for_viewport(vp_handle);
+        let base_arc = self.model_wires_for_viewport_arc(vp_handle);
         let all_wires = if self.interim_wire.is_none() && self.preview_wires.is_empty() {
-            Arc::new(base_wires)
+            base_arc
         } else {
-            let mut v = base_wires;
+            let mut v = (*base_arc).clone();
             if let Some(iw) = &self.interim_wire {
                 v.push(iw.clone());
             }

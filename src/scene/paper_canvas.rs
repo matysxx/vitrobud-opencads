@@ -83,12 +83,12 @@ impl<'a> canvas::Program<Message> for PaperCanvas<'a> {
         }
 
         // ── Wipeout fills (rendered before wires, cover background) ──────────
-        for hatch in &self.scene.paper_canvas_wipeouts() {
+        for hatch in self.scene.paper_canvas_wipeouts().iter() {
             draw_hatch(&mut frame, hatch, &to_px);
         }
 
         // ── Hatch fills ───────────────────────────────────────────────────────
-        for hatch in &self.scene.paper_canvas_hatches() {
+        for hatch in self.scene.paper_canvas_hatches().iter() {
             draw_hatch(&mut frame, hatch, &to_px);
         }
 

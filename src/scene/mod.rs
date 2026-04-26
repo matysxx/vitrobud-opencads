@@ -88,6 +88,9 @@ pub struct Scene {
     image_cache: RefCell<Option<(u64, Arc<Vec<ImageModel>>)>>,
     /// Cached mesh models, keyed by geometry_epoch.
     mesh_cache: RefCell<Option<(u64, Arc<Vec<MeshModel>>)>>,
+    /// Per-viewport wire cache for paper-space rendering.
+    /// Maps vp_handle → (geometry_epoch, Arc<Vec<WireModel>>).
+    viewport_wire_cache: RefCell<HashMap<Handle, (u64, Arc<Vec<WireModel>>)>>,
     /// Active layout name — "Model" or a paper space layout name.
     pub current_layout: String,
     /// GPU render data for hatch fills, keyed by the DXF entity Handle.
@@ -124,6 +127,7 @@ impl Scene {
             wipeout_cache: RefCell::new(None),
             image_cache: RefCell::new(None),
             mesh_cache: RefCell::new(None),
+            viewport_wire_cache: RefCell::new(HashMap::new()),
             current_layout: "Model".to_string(),
             hatches: HashMap::new(),
             meshes: HashMap::new(),
@@ -472,19 +476,15 @@ impl Scene {
     ///   viewport content is NOT interactive.
     /// - MSPACE (active viewport set): model-space content of the active viewport
     ///   only — paper-space entities are NOT interactive.
-    pub fn hit_test_wires(&self) -> Vec<WireModel> {
+    pub fn hit_test_wires(&self) -> Arc<Vec<WireModel>> {
         if self.current_layout == "Model" {
-            return self.entity_wires();
+            return self.entity_wires_arc();
         }
         let layout_block = self.current_layout_block_handle();
         match self.active_viewport {
-            None => {
-                // PSPACE: only paper-space entities (viewport borders, title blocks…)
-                self.wires_for_block(layout_block)
-            }
+            None => Arc::new(self.wires_for_block(layout_block)),
             Some(vp_handle) => {
-                // MSPACE: only model content visible through the active viewport
-                self.viewport_content_wires(layout_block, Some(vp_handle), None)
+                Arc::new(self.viewport_content_wires(layout_block, Some(vp_handle), None))
             }
         }
     }
@@ -2277,13 +2277,13 @@ impl Scene {
     }
 
     /// Hatch fills for the paper-space canvas.
-    pub fn paper_canvas_hatches(&self) -> Vec<HatchModel> {
-        self.synced_hatch_models()
+    pub fn paper_canvas_hatches(&self) -> Arc<Vec<HatchModel>> {
+        self.hatch_models_arc()
     }
 
     /// Wipeout (opaque background fill) models for the paper-space canvas.
-    pub fn paper_canvas_wipeouts(&self) -> Vec<HatchModel> {
-        self.wipeout_models()
+    pub fn paper_canvas_wipeouts(&self) -> Arc<Vec<HatchModel>> {
+        self.wipeout_models_arc()
     }
 
     pub(super) fn paper_sheet_wires(&self) -> Vec<WireModel> {
@@ -2379,6 +2379,22 @@ impl Scene {
             })
             .flat_map(|e| self.tessellate_one(e))
             .collect()
+    }
+
+    pub(super) fn model_wires_for_viewport_arc(&self, vp_handle: Handle) -> Arc<Vec<WireModel>> {
+        {
+            let cache = self.viewport_wire_cache.borrow();
+            if let Some((cached_epoch, ref arc)) = cache.get(&vp_handle) {
+                if *cached_epoch == self.geometry_epoch {
+                    return Arc::clone(arc);
+                }
+            }
+        }
+        let arc = Arc::new(self.model_wires_for_viewport(vp_handle));
+        self.viewport_wire_cache
+            .borrow_mut()
+            .insert(vp_handle, (self.geometry_epoch, Arc::clone(&arc)));
+        arc
     }
 }
 
