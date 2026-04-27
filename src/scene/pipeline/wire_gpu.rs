@@ -115,6 +115,18 @@ pub struct WireGpu {
 
 impl WireGpu {
     pub fn new(device: &wgpu::Device, wire: &WireModel) -> Self {
+        Self::build(device, wire, wire.color)
+    }
+
+    /// Creates a ghost copy with `alpha` applied on top of the wire's own alpha.
+    /// Used for the X-ray pass: selected wires rendered at reduced opacity through
+    /// occluding geometry.
+    pub fn new_ghost(device: &wgpu::Device, wire: &WireModel, alpha: f32) -> Self {
+        let [r, g, b, a] = wire.color;
+        Self::build(device, wire, [r, g, b, a * alpha])
+    }
+
+    fn build(device: &wgpu::Device, wire: &WireModel, color: [f32; 4]) -> Self {
         let pat0 = [
             wire.pattern[0],
             wire.pattern[1],
@@ -178,7 +190,7 @@ impl WireGpu {
                     pos_b: b,
                     which_end,
                     side,
-                    color: wire.color,
+                    color,
                     distance: dist,
                     half_width,
                     pattern_length: wire.pattern_length,
