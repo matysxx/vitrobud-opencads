@@ -69,14 +69,21 @@ impl Face3DGpu {
             let p = &wire.key_vertices;
             let v = |i: usize| Face3DVertex { position: p[i], color };
 
+            let dx = p[3][0] - p[2][0];
+            let dy = p[3][1] - p[2][1];
+            let dz = p[3][2] - p[2][2];
+            let is_triangle = dx * dx + dy * dy + dz * dz < 1e-10;
+
             // Triangle 1: p0, p1, p2
             vertices.push(v(0));
             vertices.push(v(1));
             vertices.push(v(2));
-            // Triangle 2: p0, p2, p3
-            vertices.push(v(0));
-            vertices.push(v(2));
-            vertices.push(v(3));
+            // Triangle 2 only for quads (triangles have p3 == p2).
+            if !is_triangle {
+                vertices.push(v(0));
+                vertices.push(v(2));
+                vertices.push(v(3));
+            }
         }
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
