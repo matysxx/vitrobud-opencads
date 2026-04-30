@@ -914,7 +914,8 @@ impl Scene {
                     continue;
                 }
 
-                let [r, g, b, a] = wire.color;
+                let adapted = render::adapt_to_bg(wire.color, self.paper_bg_color);
+                let [r, g, b, a] = adapted;
                 let mut out = wire.clone();
                 out.points = clipped;
                 out.color = [r * 0.80, g * 0.80, b * 0.80, a * 0.85];
@@ -2559,7 +2560,14 @@ impl Scene {
                 }
                 true
             })
-            .flat_map(|e| self.tessellate_one(e))
+            .flat_map(|e| tessellate_entity(
+                &self.document,
+                &self.selected,
+                self.active_viewport,
+                self.world_offset,
+                self.bg_color,
+                e,
+            ))
             .collect()
     }
 
