@@ -2400,7 +2400,7 @@ impl Scene {
         .normalize_or(glam::Vec3::Z);
 
         let pitch = vd.z.clamp(-0.999, 0.999).asin();
-        let yaw = vd.x.atan2(vd.y);
+        let yaw = vd.x.atan2(-vd.y);
         let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
         let view_right = rotation * glam::Vec3::X;
         let view_up    = rotation * glam::Vec3::Y;
@@ -2463,7 +2463,7 @@ impl Scene {
         .normalize_or(glam::Vec3::Z);
 
         let pitch = vd.z.clamp(-0.999, 0.999).asin();
-        let yaw = vd.x.atan2(vd.y);
+        let yaw = vd.x.atan2(-vd.y);
         let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
         let view_right = rotation * glam::Vec3::X;
         let view_up    = rotation * glam::Vec3::Y;
@@ -2721,7 +2721,7 @@ impl Scene {
         .normalize_or(glam::Vec3::Z);
 
         let pitch = vd.z.clamp(-0.999, 0.999).asin();
-        let yaw = vd.x.atan2(vd.y);
+        let yaw = vd.x.atan2(-vd.y);
 
         let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
         let view_right = rotation * glam::Vec3::X;
