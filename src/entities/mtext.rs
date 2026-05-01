@@ -99,7 +99,10 @@ fn to_truck(t: &MText, document: &acadrust::CadDocument) -> TruckEntity {
     } else {
         1.0
     };
-    let line_h = t.height as f32 * ls_factor * font.line_spacing;
+    // AutoCAD DXF code 44 is a multiplier on the *default* baseline-to-baseline
+    // distance, which is 5/3 × text_height (≈ 1.667).  factor = 1.0 → single
+    // spacing, factor = 2.0 → double spacing, etc.
+    let line_h = t.height as f32 * ls_factor * (5.0 / 3.0) * font.line_spacing;
     let total_h = line_h * n_lines;
     let v_offset = match t.attachment_point {
         AttachmentPoint::TopLeft | AttachmentPoint::TopCenter | AttachmentPoint::TopRight => 0.0,

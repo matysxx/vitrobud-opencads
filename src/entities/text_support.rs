@@ -206,10 +206,14 @@ pub fn strip_mtext_codes(s: &str) -> String {
 }
 
 pub fn split_mtext_lines(s: &str) -> Vec<String> {
-    s.split('\n')
+    let lines: Vec<String> = s.split('\n')
         .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect()
+        .collect();
+    // Drop leading and trailing blank lines, but preserve blank lines in the
+    // middle — they are intentional paragraph separators (\\P\\P in MTEXT).
+    let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(0);
+    let end = lines.iter().rposition(|l| !l.is_empty()).map(|i| i + 1).unwrap_or(0);
+    lines[start..end].to_vec()
 }
 
 /// Measure the advance width of an MText line (after strip_mtext_codes), correctly
