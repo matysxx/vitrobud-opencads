@@ -1,6 +1,7 @@
 # H7CAD
 
-<img width="1920" height="940" alt="H7CAD screenshot" src="https://github.com/user-attachments/assets/e80191a4-d14c-4b3e-ae72-3b1a7c0be418" />
+<img width="1920" height="940" alt="resim" src="https://github.com/user-attachments/assets/5399d295-4e49-4363-ad3a-1c28ef147dd0" />
+
 
 A CAD application for 2D drafting and 3D modeling, built with Rust. Reads and writes DWG and DXF files natively.
 
