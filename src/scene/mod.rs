@@ -134,6 +134,12 @@ pub struct Scene {
     /// Multiplier applied to Text/MText/Dimension sizes during tessellation.
     /// 1.0 = no scaling. 50.0 = "1:50" drawing scale.
     pub annotation_scale: f32,
+    /// Cached model-space bounding box, keyed by geometry_epoch.
+    /// Avoids re-tessellating all entities on every ZOOM E / auto-fit call.
+    model_extents_cache: RefCell<Option<(u64, Option<(glam::Vec3, glam::Vec3)>)>>,
+    /// Reverse map: entity_handle → block_record_handle, built from entity_handles lists.
+    /// Keyed by geometry_epoch. Eliminates the O(B) fallback scan in belongs_to_visible_block.
+    entity_block_map_cache: RefCell<Option<(u64, HashMap<Handle, Handle>)>>,
 }
 
 impl Scene {
@@ -167,6 +173,8 @@ impl Scene {
             world_offset: [0.0; 3],
             local_extent_max: 1e9,
             annotation_scale: 1.0,
+            model_extents_cache: RefCell::new(None),
+            entity_block_map_cache: RefCell::new(None),
         }
     }
 
@@ -577,12 +585,16 @@ impl Scene {
             }
         }
         let layout_block = self.current_layout_block_handle();
-        // Reuse the paper_sheet_cache to avoid a duplicate tessellation pass
-        // when both entity_wires_arc() and paper_canvas_wires() are called in the same frame.
-        let mut wires = (*self.paper_sheet_wires_arc()).clone();
-        if self.current_layout != "Model" {
-            wires.extend(self.viewport_content_wires(layout_block, None, None));
+        // Model space: paper_sheet_wires_arc IS the full entity wire set — share the Arc,
+        // no Vec clone needed.
+        if self.current_layout == "Model" {
+            let arc = self.paper_sheet_wires_arc();
+            *self.wire_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&arc)));
+            return arc;
         }
+        // Paper space: extend sheet wires with projected viewport content.
+        let mut wires = (*self.paper_sheet_wires_arc()).clone();
+        wires.extend(self.viewport_content_wires(layout_block, None, None));
         let arc = Arc::new(wires);
         *self.wire_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&arc)));
         arc
@@ -778,13 +790,38 @@ impl Scene {
             }
         }
 
-        // entity_handles not populated: fall back to "not listed in any other block".
-        !self
-            .document
-            .block_records
-            .iter()
-            .filter(|br| br.handle != block_handle)
-            .any(|br| br.entity_handles.contains(&entity_handle))
+        // P: epoch-cached reverse map replaces O(B) block_records scan.
+        let map = self.entity_block_map();
+        map.get(&entity_handle)
+            .map_or(true, |&owner| owner == block_handle)
+    }
+
+    /// Build (and epoch-cache) a reverse map: entity_handle → block_record_handle,
+    /// covering every entity explicitly listed in a block_record's entity_handles.
+    fn entity_block_map(&self) -> std::cell::Ref<'_, HashMap<Handle, Handle>> {
+        {
+            let cache = self.entity_block_map_cache.borrow();
+            if let Some((epoch, _)) = *cache {
+                if epoch == self.geometry_epoch {
+                    drop(cache);
+                    return std::cell::Ref::map(
+                        self.entity_block_map_cache.borrow(),
+                        |c| &c.as_ref().unwrap().1,
+                    );
+                }
+            }
+        }
+        let mut map: HashMap<Handle, Handle> = HashMap::new();
+        for br in self.document.block_records.iter() {
+            for &eh in &br.entity_handles {
+                map.insert(eh, br.handle);
+            }
+        }
+        *self.entity_block_map_cache.borrow_mut() = Some((self.geometry_epoch, map));
+        std::cell::Ref::map(
+            self.entity_block_map_cache.borrow(),
+            |c| &c.as_ref().unwrap().1,
+        )
     }
 
     /// Full tessellation pipeline for one entity.
@@ -817,17 +854,51 @@ impl Scene {
             .unwrap_or(Handle::NULL)
     }
 
-    /// Compute the axis-aligned bounding box of all model-space entities by
-    /// collecting their `key_vertices`.  Returns `None` when there are no
-    /// vertices (empty drawing).
+    /// Compute the axis-aligned bounding box of all model-space entities.
+    /// Result is epoch-cached so repeated ZOOM E / auto-fit calls are O(1).
     pub fn model_space_extents(&self) -> Option<(glam::Vec3, glam::Vec3)> {
+        {
+            let cache = self.model_extents_cache.borrow();
+            if let Some((epoch, ext)) = *cache {
+                if epoch == self.geometry_epoch {
+                    return ext;
+                }
+            }
+        }
+        let result = self.compute_model_space_extents();
+        *self.model_extents_cache.borrow_mut() = Some((self.geometry_epoch, result));
+        result
+    }
+
+    fn compute_model_space_extents(&self) -> Option<(glam::Vec3, glam::Vec3)> {
         let model_block = self.model_space_block_handle();
         if model_block.is_null() {
             return None;
         }
+        let [ox, oy, _] = self.world_offset;
         let mut min = glam::Vec3::splat(f32::INFINITY);
         let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
         let mut any = false;
+
+        // Prefer the already-computed wire AABB cache when available — avoids re-tessellating.
+        if self.current_layout == "Model" {
+            let cache = self.wire_cache.borrow();
+            if let Some((epoch, ref arc)) = *cache {
+                if epoch == self.geometry_epoch {
+                    for wire in arc.iter() {
+                        let [ax, ay, bx, by] = wire.aabb;
+                        if ax.is_finite() && bx.is_finite() {
+                            min = min.min(glam::Vec3::new(ax + ox as f32, ay + oy as f32, 0.0));
+                            max = max.max(glam::Vec3::new(bx + ox as f32, by + oy as f32, 0.0));
+                            any = true;
+                        }
+                    }
+                    return if any { Some((min, max)) } else { None };
+                }
+            }
+        }
+
+        // Fallback: tessellate (first call or paper-space context).
         for entity in self.document.entities() {
             let c = entity.common();
             if c.owner_handle != model_block || c.invisible {
@@ -1649,7 +1720,7 @@ impl Scene {
             let color = if selected { [0.15, 0.55, 1.00, 1.0] } else { base_color };
             for boundary in fills {
                 models.push(HatchModel {
-                    boundary,
+                    boundary: Arc::new(boundary),
                     pattern: hatch_model::HatchPattern::Solid,
                     name: "SOLID".into(),
                     color,
@@ -1693,7 +1764,7 @@ impl Scene {
                     fill_color = [0.15, 0.55, 1.00, 0.35];
                 }
                 models.push(HatchModel {
-                    boundary,
+                    boundary: Arc::new(boundary),
                     pattern: hatch_model::HatchPattern::Solid,
                     name: "WIPEOUT_FILL".into(),
                     color: fill_color,
@@ -1936,7 +2007,7 @@ impl Scene {
             dxf.pattern.name.clone()
         };
         Some(HatchModel {
-            boundary,
+            boundary: std::sync::Arc::new(boundary),
             pattern,
             name,
             color,
@@ -2062,7 +2133,7 @@ impl Scene {
             [(solid.third_corner.x - ox) as f32,  (solid.third_corner.y - oy) as f32],
         ];
         HatchModel {
-            boundary,
+            boundary: std::sync::Arc::new(boundary),
             pattern: hatch_model::HatchPattern::Solid,
             name: "SOLID".into(),
             color,

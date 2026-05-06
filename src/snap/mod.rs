@@ -410,24 +410,26 @@ impl Snapper {
 
         // ── Intersection — segment-segment intersections ──────────
         if self.is_on(SnapType::Intersection) {
-            let r_world = self.snap_radius_px * 0.5; // rough world-space cull
             for i in 0..wires.len() {
                 if !wire_in_range(&wires[i]) { continue; }
                 for j in (i + 1)..wires.len() {
                     if !wire_in_range(&wires[j]) { continue; }
                     for seg_a in wires[i].points.windows(2) {
+                        // S: pre-convert outside inner loop
+                        let a0 = Vec3::from(seg_a[0]);
+                        let a1 = Vec3::from(seg_a[1]);
+                        let a_min_x = a0.x.min(a1.x);
+                        let a_max_x = a0.x.max(a1.x);
+                        let a_min_y = a0.y.min(a1.y);
+                        let a_max_y = a0.y.max(a1.y);
                         for seg_b in wires[j].points.windows(2) {
-                            let a0 = Vec3::from(seg_a[0]);
-                            let a1 = Vec3::from(seg_a[1]);
                             let b0 = Vec3::from(seg_b[0]);
                             let b1 = Vec3::from(seg_b[1]);
-                            // Quick AABB cull before expensive calculation.
-                            let seg_mid_a = (a0 + a1) * 0.5;
-                            let seg_mid_b = (b0 + b1) * 0.5;
-                            if (seg_mid_a - cursor_world).length_squared()
-                                > (r_world * 60.0).powi(2)
-                                && (seg_mid_b - cursor_world).length_squared()
-                                    > (r_world * 60.0).powi(2)
+                            // O: tight per-segment AABB overlap cull
+                            if a_max_x < b0.x.min(b1.x)
+                                || a_min_x > b0.x.max(b1.x)
+                                || a_max_y < b0.y.min(b1.y)
+                                || a_min_y > b0.y.max(b1.y)
                             {
                                 continue;
                             }
@@ -481,23 +483,37 @@ impl Snapper {
         }
 
         // ── Apparent Intersection — screen-space intersections ─────────────
+        // L: pre-project each in-range wire's points to screen once, not once per segment pair.
         if self.is_on(SnapType::ApparentIntersection) {
+            let screen_pts: Vec<Option<Vec<Point>>> = wires
+                .iter()
+                .map(|w| {
+                    if !wire_in_range(w) {
+                        return None;
+                    }
+                    Some(
+                        w.points
+                            .iter()
+                            .map(|&p| world_to_screen(Vec3::from(p), view_proj, bounds))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+
             for i in 0..wires.len() {
-                if !wire_in_range(&wires[i]) { continue; }
+                let Some(ref si) = screen_pts[i] else { continue };
                 for j in (i + 1)..wires.len() {
-                    if !wire_in_range(&wires[j]) { continue; }
-                    for seg_a in wires[i].points.windows(2) {
-                        for seg_b in wires[j].points.windows(2) {
-                            let sa0 = world_to_screen(Vec3::from(seg_a[0]), view_proj, bounds);
-                            let sa1 = world_to_screen(Vec3::from(seg_a[1]), view_proj, bounds);
-                            let sb0 = world_to_screen(Vec3::from(seg_b[0]), view_proj, bounds);
-                            let sb1 = world_to_screen(Vec3::from(seg_b[1]), view_proj, bounds);
+                    let Some(ref sj) = screen_pts[j] else { continue };
+                    for (ai, seg_a) in wires[i].points.windows(2).enumerate() {
+                        let sa0 = si[ai];
+                        let sa1 = si[ai + 1];
+                        for (bi, _) in wires[j].points.windows(2).enumerate() {
+                            let sb0 = sj[bi];
+                            let sb1 = sj[bi + 1];
                             if let Some((ta, _)) = seg_intersect_2d(sa0, sa1, sb0, sb1) {
-                                // World position: interpolate along segment A.
                                 let wa0 = Vec3::from(seg_a[0]);
                                 let wa1 = Vec3::from(seg_a[1]);
-                                let world = wa0 + ta * (wa1 - wa0);
-                                try_pt(world, SnapType::ApparentIntersection);
+                                try_pt(wa0 + ta * (wa1 - wa0), SnapType::ApparentIntersection);
                             }
                         }
                     }

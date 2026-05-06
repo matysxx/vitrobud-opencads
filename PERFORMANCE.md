@@ -1,177 +1,108 @@
-# Performance Optimization Plan
+# Performance Improvement Opportunities
 
-## Implemented
+## Checklist
 
-| Option | Description |
-|--------|-------------|
-| A | Wire tessellation cache — `Arc<Vec<WireModel>>` keyed by `geometry_epoch`; O(1) on navigation |
-| B | GPU buffer cache — skip `upload_wires/hatches/images/meshes` when epoch unchanged |
-| C | Rayon parallel tessellation — `tessellate_entity` free function + `par_iter()` in `wires_for_block()` |
-| E | SortEntitiesTable scan cache — O(objects) linear scan replaced with O(1) HashMap lookup |
-
----
-
-## Remaining per-frame CPU work (navigation path)
-
-With Options A/B implemented, `build_primitive()` still runs every frame during navigation
-(pan/zoom), even though the geometry epoch has not changed. The following work happens on every
-frame and should be eliminated:
-
-### 1. `ImageModel.pixels` cloned every frame — highest impact
-
-`build_primitive()` calls `self.images.values().cloned().collect()`.
-`ImageModel` contains `pixels: Vec<u8>` — raw RGBA pixel data for each image.
-A single 2000×1500 image is ~12 MB. With three images, every mouse-move event copies ~36 MB.
-
-### 2. `synced_hatch_models()` — full document scan + Insert explosion every frame
-
-The inner loop `for entity in self.document.entities()` iterates every entity in the document,
-and for each `Insert` calls `explode_from_document()` to find embedded hatches.
-In drawings with many block references this is O(inserts × avg_block_size) per frame.
-
-### 3. `meshes.values().cloned().collect()` — 3D geometry cloned every frame
-
-`MeshModel` contains `verts: Vec<[f32;3]>` and `indices: Vec<u32>`.
-A tessellated 3D solid can hold tens of thousands of triangles (several MB).
-All mesh data is copied on every frame even during pure navigation.
-
-### 4. `wipeout_models()` — full entity scan every frame
-
-Iterates `self.document.entities()` to find `Wipeout` entities and rebuild their boundary
-polygons. No caching; O(entities) on every frame.
+- [x] **M** — `model_space_extents()` epoch cache + wire AABB shortcut (`src/scene/mod.rs`)
+- [x] **N** — `entity_wires_arc()` returns `paper_sheet_wires_arc()` directly in model space, no Vec clone (`src/scene/mod.rs`)
+- [x] **L** — ApparentIntersection snap: pre-project screen coords per wire before pair loops (`src/snap/mod.rs:483`)
+- [x] **O** — Intersection snap: replace loose `r_world * 60.0` midpoint cull with tight per-segment AABB overlap check (`src/snap/mod.rs:412`)
+- [x] **S** — Intersection snap: move `a0/a1` Vec3 conversion outside inner `seg_b` loop (`src/snap/mod.rs:420`)
+- [x] **P** — `belongs_to_visible_block()`: precompute entity→block reverse map; replace O(B) scan with O(1) HashMap lookup (`src/scene/mod.rs:782`)
+- [x] **Q** — Hit test `click_hit/box_hit/poly_hit`: eliminate per-wire `Vec<Point>` allocation; iterate lazily with NaN reset (`src/scene/hit_test.rs:35`)
+- [x] **R** — `HatchModel.boundary`: change `Vec<[f32;2]>` → `Arc<Vec<[f32;2]>>` so `HatchModel::clone()` is a pointer bump (`src/scene/hatch_model.rs`)
 
 ---
 
-## Option F — Cache hatch and wipeout models
+## Details
 
-**Status:** Done
+### L — ApparentIntersection snap: redundant world_to_screen per pair
+**File:** `src/snap/mod.rs:483–506`
 
-Add epoch-keyed `Arc` caches for hatches and wipeouts, identical in structure to the wire cache:
+For every segment pair tested, 4 `world_to_screen()` calls (matrix multiply + perspective divide)
+are made just to get 2D coordinates for an intersection test. If no intersection is found, all 4
+projections are wasted. Dense drawings → O(N²M²) matrix multiplies per snap event.
 
-```rust
-hatch_cache:   RefCell<Option<(u64, Arc<Vec<HatchModel>>)>>,
-wipeout_cache: RefCell<Option<(u64, Arc<Vec<HatchModel>>)>>,
-```
-
-Introduce `hatch_models_arc()` and `wipeout_models_arc()` helpers that return the cached `Arc`
-on an epoch hit (O(1) refcount bump) and rebuild on a miss.
-
-`build_primitive()` stores the `Arc` directly in `Primitive`, removing the per-frame
-`synced_hatch_models()` / `wipeout_models()` calls on navigation frames.
-
-`Primitive.hatches` and `Primitive.wipeout_hatches` change from `Vec<HatchModel>` to
-`Arc<Vec<HatchModel>>`.
-
-**Impact:** Eliminates O(inserts × block_size) work per frame in drawings with block references
-containing hatch entities. Navigation becomes free for hatch-heavy files.
-
-**Difficulty:** Easy. Same pattern as the wire cache.
+**Fix:** Pre-project all segment endpoints for each in-range wire into a `Vec<Point>` before
+entering the pair loops. Each endpoint is then projected once regardless of how many pairs it
+participates in.
 
 ---
 
-## Option G — Arc-wrap image pixels
+### M — model_space_extents() re-tessellates everything
+**File:** `src/scene/mod.rs:823`
 
-**Status:** Done
+`model_space_extents()` called tessellate_one() for every entity on every ZOOM E / auto-fit.
+No cached result was used — geometry rebuilt from scratch each call.
 
-Change `ImageModel.pixels` from `Vec<u8>` to `Arc<Vec<u8>>`.
-
-`ImageModel::clone()` then copies only the pointer (8 bytes) instead of megabytes of pixel data.
-No other code needs to change — the GPU upload path reads `pixels` by reference.
-
-Add an epoch-keyed `Arc<Vec<ImageModel>>` cache (same pattern as wire cache) so
-`build_primitive()` performs only an O(1) Arc bump per frame during navigation:
-
-```rust
-image_cache: RefCell<Option<(u64, Arc<Vec<ImageModel>>)>>,
-```
-
-**Impact:** Eliminates MB-scale copies per frame in files that contain raster images.
-With a 4K image (~32 MB raw), this alone can cut per-frame CPU time by tens of milliseconds.
-
-**Difficulty:** Easy. Change one field type + add cache field + wire up in `build_primitive()`.
+**Fix:** Epoch-keyed cache (`model_extents_cache`). On cache hit: O(1). On miss with wire cache
+available: union wire AABBs (no tessellation). Fallback to tessellate_one() only on first call
+or when wire cache is not for model space.
 
 ---
 
-## Option H — Arc-wrap mesh models
+### N — paper_canvas_wires() defeats Arc cache with full Vec clone
+**File:** `src/scene/mod.rs:582`
 
-**Status:** Done
+In model space, `entity_wires_arc()` cloned the entire `paper_sheet_wires_arc()` Vec just to
+wrap it in a new Arc. The Arc caching was bypassed on every cache miss.
 
-Apply the same `Arc<Vec<MeshModel>>` epoch cache to mesh models:
-
-```rust
-mesh_cache: RefCell<Option<(u64, Arc<Vec<MeshModel>>)>>,
-```
-
-`MeshModel` contains `verts: Vec<[f32;3]>` (vertex positions) and `indices: Vec<u32>`
-(triangle list). A complex 3D solid can have hundreds of thousands of triangles.
-
-**Impact:** Eliminates per-frame mesh data copies in files that contain 3D solids (ACIS bodies,
-extruded polylines). Navigation stays free regardless of model complexity.
-
-**Difficulty:** Easy. Same pattern as Options F and G.
+**Fix:** For model space, return `paper_sheet_wires_arc()` directly — the two caches share the
+same Arc. Clone only needed in paper space where viewport-content wires must be appended.
 
 ---
 
-## Option I — Per-viewport wire cache for paper space
+### O — Intersection snap O(N²·M²) segment pair testing
+**File:** `src/snap/mod.rs:412–441`
 
-**Status:** Done
+The segment-level cull inside the intersection pair loop uses `r_world * 60.0` midpoint
+distance, which is extremely loose and passes most segments. Every pair then runs
+`seg_intersect_xy()` (cross-product math).
 
-Added `viewport_wire_cache: RefCell<HashMap<Handle, (u64, Arc<Vec<WireModel>>)>>` to `Scene`.
-`model_wires_for_viewport_arc(vp_handle)` checks the cache first; on a hit it returns an
-Arc clone (O(1)). On a miss it tessellates, stores the result, and returns it.
-
-`build_viewport_primitive()` in `render.rs` now calls `model_wires_for_viewport_arc()` instead
-of `model_wires_for_viewport()`, so paper-space viewport rendering no longer re-tessellates
-model-space content every frame.
-
-**Impact:** Eliminates per-frame tessellation when viewing paper space layouts. Before this fix,
-every navigation frame in paper space re-tessellated the entire model-space entity set for each
-visible viewport — the same bug Options A/B fixed for model space.
+**Fix:** Replace midpoint cull with tight AABB overlap check per segment pair: compute
+`[min_x, max_x, min_y, max_y]` for each segment and skip if the two AABBs don't overlap.
+Combined with the fix in S (pre-converted Vec3), this eliminates most cross-product calls.
 
 ---
 
-## Option J — Arc-return `hit_test_wires()` and `paper_canvas_*`
+### P — belongs_to_visible_block() O(B) scan repeated per entity
+**File:** `src/scene/mod.rs:782–787`
 
-**Status:** Done
+The fallback path (null owner_handle, entity_handles not populated) iterates all `block_records`
+to confirm an entity is not in any other block. Called once per entity per epoch rebuild.
+O(E × B) total where E = entity count, B = block count.
 
-`hit_test_wires()` now returns `Arc<Vec<WireModel>>` instead of `Vec<WireModel>`.
-In the model-space case it returns `entity_wires_arc()` directly — O(1), no Vec clone.
-In the paper-space case it still builds a Vec (no suitable cache for those paths), but the
-interface is consistent.
-
-`paper_canvas_hatches()` and `paper_canvas_wipeouts()` now return `Arc<Vec<HatchModel>>`
-via the epoch caches added in Option F, eliminating per-frame hatch rebuilds in the paper
-canvas widget.
-
-**Impact:** Every `ViewportMove` message during a command (grip drag, line drawing, etc.)
-called `hit_test_wires()` up to twice. In model space this was a full Vec clone of all
-tessellated wires — potentially MB-scale. Now it is a pointer copy.
+**Fix:** Epoch-keyed `entity_block_map_cache: HashMap<Handle, Handle>` built from
+`block_records[*].entity_handles`. Fallback becomes a single `HashMap::contains_key` lookup.
 
 ---
 
-## Option K — Snap world-space wire pre-rejection
+### Q — Hit testing: linear scan, no spatial index
+**File:** `src/scene/hit_test.rs:35`
 
-**Status:** Done
+`click_hit()`, `box_hit()`, `poly_hit()` allocate a `Vec<Point>` for every wire by eagerly
+projecting all points to screen space, even for wires far from the cursor/box. O(E × S) with
+MB-scale allocation churn on large drawings.
 
-Added `world_snap_r` (snap radius in world units, derived from `view_proj`) and a
-`wire_in_range()` closure to `Snapper::snap()`. Before iterating a wire's vertices for
-Endpoint, Midpoint, Nearest, Perpendicular, Intersection, and ApparentIntersection,
-the closure checks whether the wire's first↔last chord sphere overlaps the snap search
-circle. Wires that fail the check are skipped with `continue` — no vertex projection,
-no matrix multiplies.
-
-Closed wires (first ≈ last, e.g. tessellated circles) are always passed through since
-their chord radius is ~0.
-
-**Impact:** When zoomed in on a small region of a large drawing, the vast majority of
-wires are outside the snap circle and are rejected in O(1) scalar comparisons each. The
-per-mouse-move snap cost drops from O(entities × vertices) to O(entities) for the
-pre-check plus O(nearby_vertices) for the actual snap work.
+**Fix:** Iterate lazily — project one point at a time, maintain a `prev: Option<Point>`,
+test segment, advance. NaN points reset `prev`. Eliminates the per-wire Vec allocation entirely.
 
 ---
 
-## Implementation order
+### R — synced_hatch_models(): unconditional HatchModel clone per epoch
+**File:** `src/scene/hatch_model.rs`, `src/scene/mod.rs:1572`
 
-F → G → H → I → J → K (all implemented).
-Each option is independent; the pattern (epoch-keyed Arc cache or a cheap pre-rejection
-guard) is the same throughout.
+Every visible hatch is cloned in full (boundary `Vec<[f32;2]>` + pattern enum + name String)
+on every geometry epoch rebuild, even when only `angle_offset`, `scale`, or `color` changes.
+
+**Fix:** Change `HatchModel.boundary` to `Arc<Vec<[f32;2]>>`. `HatchModel::clone()` then
+copies only the Arc pointer (8 bytes) for the boundary instead of heap-allocating a new Vec.
+
+---
+
+### S — Intersection snap: repeated Vec3 endpoint copies in inner loop
+**File:** `src/snap/mod.rs:420–423`
+
+`a0 = Vec3::from(seg_a[0])` and `a1 = Vec3::from(seg_a[1])` are recomputed for every
+iteration of the inner `seg_b` loop.
+
+**Fix:** Move `a0` and `a1` conversions outside the inner loop.
