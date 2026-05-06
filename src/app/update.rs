@@ -35,7 +35,7 @@ impl H7CAD {
 
             Message::OpenFile => Task::perform(crate::io::pick_and_open(), Message::FileOpened),
 
-            Message::FileOpened(Ok((name, path, doc))) => {
+            Message::FileOpened(Ok((name, path, doc, caches))) => {
                 let entity_count = doc.entities().count();
                 self.command_line
                     .push_output(&format!("Opened \"{name}\" — {entity_count} entities"));
@@ -87,10 +87,12 @@ impl H7CAD {
                     }
                 }
 
-                self.tabs[i].scene.compute_and_set_world_offset();
-                self.tabs[i].scene.populate_hatches_from_document();
-                self.tabs[i].scene.populate_images_from_document();
-                self.tabs[i].scene.populate_meshes_from_document();
+                // Caches were built on the background thread inside open_path().
+                self.tabs[i].scene.world_offset = caches.world_offset;
+                self.tabs[i].scene.local_extent_max = caches.local_extent_max;
+                self.tabs[i].scene.hatches = caches.hatches;
+                self.tabs[i].scene.images = caches.images;
+                self.tabs[i].scene.meshes = caches.meshes;
                 self.tabs[i].scene.selected = std::collections::HashSet::new();
                 self.tabs[i].scene.preview_wires = vec![];
                 self.tabs[i].scene.current_layout = "Model".to_string();

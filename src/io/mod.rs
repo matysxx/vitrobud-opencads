@@ -14,13 +14,14 @@ pub mod xref;
 use acadrust::entities::{Dimension, EntityType};
 use acadrust::io::dwg::DwgReader;
 use acadrust::{CadDocument, DwgWriter, DxfReader, DxfWriter};
+use crate::scene::DerivedCaches;
 use std::path::{Path, PathBuf};
 
 // ── Open ──────────────────────────────────────────────────────────────────
 
 /// Show a file-open dialog and load the selected DWG or DXF file.
-/// Returns `(filename, path, document)` or an error string.
-pub async fn pick_and_open() -> Result<(String, PathBuf, CadDocument), String> {
+/// Returns `(filename, path, document, caches)` or an error string.
+pub async fn pick_and_open() -> Result<(String, PathBuf, CadDocument, DerivedCaches), String> {
     let handle = rfd::AsyncFileDialog::new()
         .set_title("Open CAD file")
         .add_filter("CAD Files", &["dwg", "dxf", "DWG", "DXF"])
@@ -40,13 +41,22 @@ pub async fn pick_and_open() -> Result<(String, PathBuf, CadDocument), String> {
 }
 
 /// Load a CAD file from a known path (used by recent files).
-pub async fn open_path(path: PathBuf) -> Result<(String, PathBuf, CadDocument), String> {
+/// Parsing and cache building run on a dedicated OS thread so the async
+/// executor stays free for rendering during the load.
+pub async fn open_path(path: PathBuf) -> Result<(String, PathBuf, CadDocument, DerivedCaches), String> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".into());
-    let doc = load_file(&path)?;
-    Ok((name, path, doc))
+    let path2 = path.clone();
+    let (doc, caches) = std::thread::spawn(move || -> Result<_, String> {
+        let doc = load_file(&path2)?;
+        let caches = crate::scene::build_derived_caches(&doc);
+        Ok((doc, caches))
+    })
+    .join()
+    .map_err(|_| "parser thread panicked".to_string())??;
+    Ok((name, path, doc, caches))
 }
 
 /// Load a DWG or DXF file directly from a path (auto-detect by extension).

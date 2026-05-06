@@ -60,6 +60,109 @@ use std::sync::Arc;
 /// GPU Pipeline to skip re-uploading geometry when switching tabs.
 static GEOMETRY_EPOCH: AtomicU64 = AtomicU64::new(1);
 
+/// Pre-built entity caches returned by [`build_derived_caches`].
+/// Produced in the file-load background task so the UI thread only assigns.
+#[derive(Debug, Clone)]
+pub struct DerivedCaches {
+    pub world_offset: [f64; 3],
+    pub local_extent_max: f32,
+    pub hatches: HashMap<Handle, HatchModel>,
+    pub images: HashMap<Handle, ImageModel>,
+    pub meshes: HashMap<Handle, MeshModel>,
+}
+
+/// Build hatch / image / mesh caches from a document without needing `&mut Scene`.
+/// Intended to run on a background thread during file load.
+pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
+    // world_offset
+    let h = &doc.header;
+    let (min, max) = (h.model_space_extents_min, h.model_space_extents_max);
+    let valid = min.x < max.x && min.y < max.y;
+    let (world_offset, local_extent_max) = if valid {
+        let offset = [(min.x + max.x) * 0.5, (min.y + max.y) * 0.5, (min.z + max.z) * 0.5];
+        let hw = ((max.x - min.x) * 0.5) as f32;
+        let hh = ((max.y - min.y) * 0.5) as f32;
+        let hz = ((max.z - min.z) * 0.5).max(1.0) as f32;
+        (offset, hw.max(hh).max(hz) * 10.0)
+    } else {
+        ([0.0; 3], 1e9_f32)
+    };
+
+    // model-space block handle (same logic as Scene::model_space_block_handle)
+    let model_block = doc.objects.values().find_map(|obj| {
+        if let acadrust::objects::ObjectType::Layout(l) = obj {
+            if l.name == "Model" && !l.block_record.is_null() { Some(l.block_record) } else { None }
+        } else { None }
+    }).unwrap_or_else(|| {
+        doc.block_records.get("*Model_Space").map(|br| br.handle).unwrap_or(Handle::NULL)
+    });
+
+    use rayon::prelude::*;
+
+    // hatches
+    let hatch_entries: Vec<(Handle, EntityType)> = doc.entities()
+        .filter_map(|e| match e {
+            EntityType::Hatch(h2) => Some((h2.common.handle, e.clone())),
+            EntityType::Solid(s)  => Some((s.common.handle, e.clone())),
+            _ => None,
+        })
+        .collect();
+    let hatches: HashMap<Handle, HatchModel> = hatch_entries
+        .into_par_iter()
+        .filter_map(|(handle, kind)| {
+            let owner = kind.common().owner_handle;
+            let offset = if owner == model_block { world_offset } else { [0.0; 3] };
+            let model = match &kind {
+                EntityType::Hatch(dxf) => {
+                    let color = tessellate::aci_to_rgba(&dxf.common.color);
+                    Scene::hatch_model_from_dxf(dxf, color, offset)
+                }
+                EntityType::Solid(solid) => {
+                    let color = tessellate::aci_to_rgba(&solid.common.color);
+                    Some(Scene::solid_hatch_model(solid, color, offset))
+                }
+                _ => None,
+            };
+            model.map(|m| (handle, m))
+        })
+        .collect();
+
+    // images
+    let images: HashMap<Handle, ImageModel> = doc.entities()
+        .filter_map(|e| {
+            if let EntityType::RasterImage(img) = e {
+                ImageModel::from_raster_image(img).map(|m| (img.common.handle, m))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // meshes (parallel tessellation)
+    let mesh_entries: Vec<(Handle, EntityType)> = doc.entities()
+        .filter_map(|e| match e {
+            EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) =>
+                Some((e.common().handle, e.clone())),
+            _ => None,
+        })
+        .collect();
+    let meshes: HashMap<Handle, MeshModel> = mesh_entries
+        .into_par_iter()
+        .filter_map(|(handle, entity)| {
+            let color = tessellate::aci_to_rgba(&entity.common().color);
+            let model = match &entity {
+                EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color),
+                EntityType::Region(r)  => solid3d_tess::tessellate_region(r, color),
+                EntityType::Body(b)    => solid3d_tess::tessellate_body(b, color),
+                _ => None,
+            };
+            model.map(|m| (handle, m))
+        })
+        .collect();
+
+    DerivedCaches { world_offset, local_extent_max, hatches, images, meshes }
+}
+
 pub struct Scene {
     pub camera: Rc<RefCell<Camera>>,
     pub selection: Rc<RefCell<SelectionState>>,
@@ -2043,6 +2146,7 @@ impl Scene {
         self.hatches.clear();
 
         let model_block = self.model_space_block_handle();
+        let world_offset = self.world_offset;
 
         let entries: Vec<(Handle, EntityType)> = self
             .document
@@ -2054,26 +2158,29 @@ impl Scene {
             })
             .collect();
 
-        for (handle, kind) in entries {
-            // Paper-space entities live in sheet coordinates — world_offset must not
-            // be applied to them.  Only model-space entities need the shift.
-            let owner = kind.common().owner_handle;
-            let offset = if owner == model_block { self.world_offset } else { [0.0; 3] };
-            let model = match &kind {
-                EntityType::Hatch(dxf) => {
-                    let color = tessellate::aci_to_rgba(&dxf.common.color);
-                    Self::hatch_model_from_dxf(dxf, color, offset)
-                }
-                EntityType::Solid(solid) => {
-                    let color = tessellate::aci_to_rgba(&solid.common.color);
-                    Some(Self::solid_hatch_model(solid, color, offset))
-                }
-                _ => None,
-            };
-            if let Some(m) = model {
-                self.hatches.insert(handle, m);
-            }
-        }
+        use rayon::prelude::*;
+        self.hatches = entries
+            .into_par_iter()
+            .filter_map(|(handle, kind)| {
+                // Paper-space entities live in sheet coordinates — world_offset must not
+                // be applied to them.  Only model-space entities need the shift.
+                let owner = kind.common().owner_handle;
+                let offset = if owner == model_block { world_offset } else { [0.0; 3] };
+                let model = match &kind {
+                    EntityType::Hatch(dxf) => {
+                        let color = tessellate::aci_to_rgba(&dxf.common.color);
+                        Self::hatch_model_from_dxf(dxf, color, offset)
+                    }
+                    EntityType::Solid(solid) => {
+                        let color = tessellate::aci_to_rgba(&solid.common.color);
+                        Some(Self::solid_hatch_model(solid, color, offset))
+                    }
+                    _ => None,
+                };
+                model.map(|m| (handle, m))
+            })
+            .collect();
+
         self.bump_geometry();
     }
 
@@ -2084,32 +2191,34 @@ impl Scene {
     /// `Solid3D` entity is represented in the mesh cache.
     pub fn populate_meshes_from_document(&mut self) {
         self.meshes.clear();
-        // Collect all ACIS-bearing entities: Solid3D, Region, Body.
-        let entries: Vec<(Handle, EntityType)> = self
+        // Collect all ACIS-bearing entities with their color resolved now,
+        // so the parallel phase only sees owned data.
+        let entries: Vec<(Handle, EntityType, [f32; 4])> = self
             .document
             .entities()
             .filter_map(|e| match e {
-                EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) =>
-                    Some((e.common().handle, e.clone())),
+                EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) => {
+                    let color = tessellate::aci_to_rgba(&e.common().color);
+                    Some((e.common().handle, e.clone(), color))
+                }
                 _ => None,
             })
             .collect();
-        for (handle, entity) in entries {
-            let color = if let Some(e) = self.document.get_entity(handle) {
-                tessellate::aci_to_rgba(&e.common().color)
-            } else {
-                [0.7, 0.7, 0.7, 1.0]
-            };
-            let model = match &entity {
-                EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color),
-                EntityType::Region(r)  => solid3d_tess::tessellate_region(r, color),
-                EntityType::Body(b)    => solid3d_tess::tessellate_body(b, color),
-                _ => None,
-            };
-            if let Some(m) = model {
-                self.meshes.insert(handle, m);
-            }
-        }
+
+        use rayon::prelude::*;
+        self.meshes = entries
+            .into_par_iter()
+            .filter_map(|(handle, entity, color)| {
+                let model = match &entity {
+                    EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color),
+                    EntityType::Region(r)  => solid3d_tess::tessellate_region(r, color),
+                    EntityType::Body(b)    => solid3d_tess::tessellate_body(b, color),
+                    _ => None,
+                };
+                model.map(|m| (handle, m))
+            })
+            .collect();
+
         self.bump_geometry();
     }
 

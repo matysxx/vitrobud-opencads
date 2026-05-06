@@ -212,7 +212,7 @@ pub enum DsField {
 pub enum Message {
     Tick(Instant),
     OpenFile,
-    FileOpened(Result<(String, PathBuf, CadDocument), String>),
+    FileOpened(Result<(String, PathBuf, CadDocument, crate::scene::DerivedCaches), String>),
     SaveFile,
     SaveAs,
     // ── Custom Save-As dialog ─────────────────────────────────────────────
