@@ -29,23 +29,23 @@ pub use image_model::ImageModel;
 pub use mesh_model::MeshModel;
 pub use object::{GripApply, GripDef};
 pub use pipeline::uniforms::Uniforms;
-pub use pipeline::viewcube::{
-    hit_test, CubeRegion, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX,
-};
+pub use pipeline::viewcube::{hit_test, CubeRegion, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX};
 pub use selection::SelectionState;
 pub use wire_model::WireModel;
 
 use crate::command::EntityTransform;
-use acadrust::entities::{BoundaryEdge, BoundaryPath, Hatch as DxfHatch, PolylineEdge, Solid as DxfSolid};
-use truck_modeling::{
-    base::{BoundedCurve, ParametricCurve},
-    BSplineCurve as TruckBSpline, KnotVec, Point3,
-};
 use acadrust::entities::{Block, BlockEnd, Insert as DxfInsert};
+use acadrust::entities::{
+    BoundaryEdge, BoundaryPath, Hatch as DxfHatch, PolylineEdge, Solid as DxfSolid,
+};
 use acadrust::objects::ObjectType;
 use acadrust::types::Vector2;
 use acadrust::{CadDocument, EntityType, Handle, TableEntry};
 use glam;
+use truck_modeling::{
+    base::{BoundedCurve, ParametricCurve},
+    BSplineCurve as TruckBSpline, KnotVec, Point3,
+};
 
 use iced::time::Duration;
 use std::cell::RefCell;
@@ -79,7 +79,11 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
     let (min, max) = (h.model_space_extents_min, h.model_space_extents_max);
     let valid = min.x < max.x && min.y < max.y;
     let (world_offset, local_extent_max) = if valid {
-        let offset = [(min.x + max.x) * 0.5, (min.y + max.y) * 0.5, (min.z + max.z) * 0.5];
+        let offset = [
+            (min.x + max.x) * 0.5,
+            (min.y + max.y) * 0.5,
+            (min.z + max.z) * 0.5,
+        ];
         let hw = ((max.x - min.x) * 0.5) as f32;
         let hh = ((max.y - min.y) * 0.5) as f32;
         let hz = ((max.z - min.z) * 0.5).max(1.0) as f32;
@@ -89,21 +93,35 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
     };
 
     // model-space block handle (same logic as Scene::model_space_block_handle)
-    let model_block = doc.objects.values().find_map(|obj| {
-        if let acadrust::objects::ObjectType::Layout(l) = obj {
-            if l.name == "Model" && !l.block_record.is_null() { Some(l.block_record) } else { None }
-        } else { None }
-    }).unwrap_or_else(|| {
-        doc.block_records.get("*Model_Space").map(|br| br.handle).unwrap_or(Handle::NULL)
-    });
+    let model_block = doc
+        .objects
+        .values()
+        .find_map(|obj| {
+            if let acadrust::objects::ObjectType::Layout(l) = obj {
+                if l.name == "Model" && !l.block_record.is_null() {
+                    Some(l.block_record)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            doc.block_records
+                .get("*Model_Space")
+                .map(|br| br.handle)
+                .unwrap_or(Handle::NULL)
+        });
 
     use rayon::prelude::*;
 
     // hatches
-    let hatch_entries: Vec<(Handle, EntityType)> = doc.entities()
+    let hatch_entries: Vec<(Handle, EntityType)> = doc
+        .entities()
         .filter_map(|e| match e {
             EntityType::Hatch(h2) => Some((h2.common.handle, e.clone())),
-            EntityType::Solid(s)  => Some((s.common.handle, e.clone())),
+            EntityType::Solid(s) => Some((s.common.handle, e.clone())),
             _ => None,
         })
         .collect();
@@ -111,7 +129,11 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
         .into_par_iter()
         .filter_map(|(handle, kind)| {
             let owner = kind.common().owner_handle;
-            let offset = if owner == model_block { world_offset } else { [0.0; 3] };
+            let offset = if owner == model_block {
+                world_offset
+            } else {
+                [0.0; 3]
+            };
             let model = match &kind {
                 EntityType::Hatch(dxf) => {
                     let color = tessellate::aci_to_rgba(&dxf.common.color);
@@ -128,7 +150,8 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
         .collect();
 
     // images
-    let images: HashMap<Handle, ImageModel> = doc.entities()
+    let images: HashMap<Handle, ImageModel> = doc
+        .entities()
         .filter_map(|e| {
             if let EntityType::RasterImage(img) = e {
                 ImageModel::from_raster_image(img).map(|m| (img.common.handle, m))
@@ -139,10 +162,12 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
         .collect();
 
     // meshes (parallel tessellation)
-    let mesh_entries: Vec<(Handle, EntityType)> = doc.entities()
+    let mesh_entries: Vec<(Handle, EntityType)> = doc
+        .entities()
         .filter_map(|e| match e {
-            EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) =>
-                Some((e.common().handle, e.clone())),
+            EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) => {
+                Some((e.common().handle, e.clone()))
+            }
             _ => None,
         })
         .collect();
@@ -152,15 +177,21 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
             let color = tessellate::aci_to_rgba(&entity.common().color);
             let model = match &entity {
                 EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color),
-                EntityType::Region(r)  => solid3d_tess::tessellate_region(r, color),
-                EntityType::Body(b)    => solid3d_tess::tessellate_body(b, color),
+                EntityType::Region(r) => solid3d_tess::tessellate_region(r, color),
+                EntityType::Body(b) => solid3d_tess::tessellate_body(b, color),
                 _ => None,
             };
             model.map(|m| (handle, m))
         })
         .collect();
 
-    DerivedCaches { world_offset, local_extent_max, hatches, images, meshes }
+    DerivedCaches {
+        world_offset,
+        local_extent_max,
+        hatches,
+        images,
+        meshes,
+    }
 }
 
 pub struct Scene {
@@ -321,8 +352,12 @@ impl Scene {
     ///   use geometry: the sheet viewport is centred at the paper origin (0,0)
     ///   with scale≈1.0 (view_height ≈ paper-space height).
     pub fn is_content_viewport(vp: &acadrust::entities::Viewport) -> bool {
-        if vp.id == 1 { return false; }
-        if vp.id > 1  { return true;  }
+        if vp.id == 1 {
+            return false;
+        }
+        if vp.id > 1 {
+            return true;
+        }
         // id ≤ 0: DWG files never write group-code 69 (viewport id), so all
         // viewports arrive with id=0.
         //
@@ -334,7 +369,6 @@ impl Scene {
         // in real-world files, which the old 0.02 tolerance missed entirely).
         vp.center.x.abs() >= 0.5 || vp.center.y.abs() >= 0.5
     }
-
 
     /// Public accessor for the block-record handle of the current layout.
     /// Used by external callers (e.g. `commit_entity`) that need the handle
@@ -359,7 +393,11 @@ impl Scene {
         // Locate the Layout object for the active layout name.
         let layout = self.document.objects.values().find_map(|obj| {
             if let ObjectType::Layout(l) = obj {
-                if l.name == self.current_layout { Some(l) } else { None }
+                if l.name == self.current_layout {
+                    Some(l)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -405,8 +443,11 @@ impl Scene {
                     .values()
                     .filter_map(|obj| {
                         if let ObjectType::Layout(l) = obj {
-                            if l.name != "Model" { Some((l.tab_order, l.name.as_str())) }
-                            else { None }
+                            if l.name != "Model" {
+                                Some((l.tab_order, l.name.as_str()))
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -414,7 +455,10 @@ impl Scene {
                     .collect();
                 paper_layouts.sort_by_key(|(o, n)| (*o, *n));
 
-                if let Some(pos) = paper_layouts.iter().position(|(_, n)| *n == self.current_layout) {
+                if let Some(pos) = paper_layouts
+                    .iter()
+                    .position(|(_, n)| *n == self.current_layout)
+                {
                     if let Some(br) = ps_brs.get(pos) {
                         return br.handle;
                     }
@@ -434,39 +478,42 @@ impl Scene {
             return None;
         }
 
-        self.document.objects.values().find_map(|obj| {
-            if let ObjectType::Layout(l) = obj {
-                if l.name != self.current_layout {
-                    return None;
-                }
+        self.document
+            .objects
+            .values()
+            .find_map(|obj| {
+                if let ObjectType::Layout(l) = obj {
+                    if l.name != self.current_layout {
+                        return None;
+                    }
 
-                // Use the physical paper dimensions from PlotSettings if available
-                // (populated from DWG embedded plot settings or DXF codes 44/45/73).
-                // Rotation 1=90° or 3=270° → swap width and height.
-                if l.paper_width > 1e-6 && l.paper_height > 1e-6 {
-                    let (pw, ph) = if l.plot_rotation == 1 || l.plot_rotation == 3 {
-                        (l.paper_height, l.paper_width)
-                    } else {
-                        (l.paper_width, l.paper_height)
-                    };
-                    let ox = l.min_limits.0.min(0.0);
-                    let oy = l.min_limits.1.min(0.0);
-                    return Some(((ox, oy), (ox + pw, oy + ph)));
-                }
+                    // Use the physical paper dimensions from PlotSettings if available
+                    // (populated from DWG embedded plot settings or DXF codes 44/45/73).
+                    // Rotation 1=90° or 3=270° → swap width and height.
+                    if l.paper_width > 1e-6 && l.paper_height > 1e-6 {
+                        let (pw, ph) = if l.plot_rotation == 1 || l.plot_rotation == 3 {
+                            (l.paper_height, l.paper_width)
+                        } else {
+                            (l.paper_width, l.paper_height)
+                        };
+                        let ox = l.min_limits.0.min(0.0);
+                        let oy = l.min_limits.1.min(0.0);
+                        return Some(((ox, oy), (ox + pw, oy + ph)));
+                    }
 
-                // Fall back to the Layout's drawing limits.
-                let (min, max) = (l.min_limits, l.max_limits);
-                let w = (max.0 - min.0).abs();
-                let h = (max.1 - min.1).abs();
-                if w < 1e-6 || h < 1e-6 {
-                    return Some(((0.0, 0.0), (297.0, 210.0)));
+                    // Fall back to the Layout's drawing limits.
+                    let (min, max) = (l.min_limits, l.max_limits);
+                    let w = (max.0 - min.0).abs();
+                    let h = (max.1 - min.1).abs();
+                    if w < 1e-6 || h < 1e-6 {
+                        return Some(((0.0, 0.0), (297.0, 210.0)));
+                    }
+                    Some((min, max))
+                } else {
+                    None
                 }
-                Some((min, max))
-            } else {
-                None
-            }
-        })
-        .or(Some(((0.0, 0.0), (297.0, 210.0))))
+            })
+            .or(Some(((0.0, 0.0), (297.0, 210.0))))
     }
 
     /// Scale of the first user viewport (id > 1) in the current paper layout,
@@ -545,21 +592,24 @@ impl Scene {
         if layout_block.is_null() {
             return 0;
         }
-        self.document.entities().filter(|e| {
-            if let EntityType::Viewport(vp) = e {
-                Self::is_content_viewport(vp) && vp.common.owner_handle == layout_block
-            } else {
-                false
-            }
-        }).count()
+        self.document
+            .entities()
+            .filter(|e| {
+                if let EntityType::Viewport(vp) = e {
+                    Self::is_content_viewport(vp) && vp.common.owner_handle == layout_block
+                } else {
+                    false
+                }
+            })
+            .count()
     }
 
     /// True if any currently selected entity is a Viewport.
     /// Used to enable the scale picker when a viewport is selected in paper space.
     pub fn has_selected_viewport(&self) -> bool {
-        self.selected.iter().any(|&h| {
-            matches!(self.document.get_entity(h), Some(EntityType::Viewport(_)))
-        })
+        self.selected
+            .iter()
+            .any(|&h| matches!(self.document.get_entity(h), Some(EntityType::Viewport(_))))
     }
 
     /// First content viewport handle in the current layout, used as fallback target
@@ -585,13 +635,14 @@ impl Scene {
     /// Set the scale of the active/selected viewport.
     /// Priority: active_viewport → first selected viewport → first viewport in layout.
     pub fn set_viewport_scale(&mut self, scale: f64) {
-        let target = self.active_viewport
-            .or_else(|| {
-                self.selected.iter().copied().find(|&h| {
-                    matches!(self.document.get_entity(h), Some(EntityType::Viewport(_)))
+        let target =
+            self.active_viewport
+                .or_else(|| {
+                    self.selected.iter().copied().find(|&h| {
+                        matches!(self.document.get_entity(h), Some(EntityType::Viewport(_)))
+                    })
                 })
-            })
-            .or_else(|| self.first_viewport_handle());
+                .or_else(|| self.first_viewport_handle());
 
         if let Some(handle) = target {
             if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(handle) {
@@ -611,8 +662,7 @@ impl Scene {
         // Deduplicate by name: prefer the entry with a non-null block_record (the
         // real layout from the file) over the default placeholder created by
         // CadDocument::new().
-        let mut by_name: std::collections::HashMap<String, (i16, Handle)> =
-            Default::default();
+        let mut by_name: std::collections::HashMap<String, (i16, Handle)> = Default::default();
         for obj in self.document.objects.values() {
             if let ObjectType::Layout(l) = obj {
                 if l.name == "Model" || l.name.is_empty() {
@@ -791,7 +841,9 @@ impl Scene {
         // Replaces the old O(objects) find_map with one rebuild per epoch,
         // after which every wires_for_block call is an O(1) HashMap lookup.
         {
-            let needs_rebuild = self.sort_cache.borrow()
+            let needs_rebuild = self
+                .sort_cache
+                .borrow()
                 .as_ref()
                 .map(|(e, _)| *e != self.geometry_epoch)
                 .unwrap_or(true);
@@ -801,7 +853,8 @@ impl Scene {
                 for obj in self.document.objects.values() {
                     if let ObjectType::SortEntitiesTable(t) = obj {
                         if !t.is_empty() {
-                            let map = t.entries()
+                            let map = t
+                                .entries()
                                 .map(|e| (e.entity_handle.value(), e.sort_handle.value()))
                                 .collect();
                             idx.insert(t.block_owner_handle, map);
@@ -813,7 +866,8 @@ impl Scene {
         }
 
         // Collect visible entities sequentially (filter needs &self).
-        let visible: Vec<&EntityType> = self.document
+        let visible: Vec<&EntityType> = self
+            .document
             .entities()
             .filter(|e| {
                 let c = e.common();
@@ -840,9 +894,21 @@ impl Scene {
         let avp = self.active_viewport;
         // Paper-space entities live in sheet coordinates (mm), not model-world
         // coordinates, so world_offset must not be subtracted from them.
-        let woff = if self.current_layout == "Model" { self.world_offset } else { [0.0; 3] };
-        let bg = if self.current_layout == "Model" { self.bg_color } else { self.paper_bg_color };
-        let anno = if self.current_layout == "Model" { self.annotation_scale } else { 1.0 };
+        let woff = if self.current_layout == "Model" {
+            self.world_offset
+        } else {
+            [0.0; 3]
+        };
+        let bg = if self.current_layout == "Model" {
+            self.bg_color
+        } else {
+            self.paper_bg_color
+        };
+        let anno = if self.current_layout == "Model" {
+            self.annotation_scale
+        } else {
+            1.0
+        };
         let mut wires: Vec<WireModel> = visible
             .into_par_iter()
             .flat_map(|e| tessellate_entity(doc, sel, avp, woff, bg, anno, e))
@@ -886,7 +952,12 @@ impl Scene {
         // Use the current layout's entity_handles as the authoritative list when
         // available — this prevents block-definition geometry from leaking into
         // the viewport even when owner handles are missing.
-        if let Some(br) = self.document.block_records.iter().find(|br| br.handle == block_handle) {
+        if let Some(br) = self
+            .document
+            .block_records
+            .iter()
+            .find(|br| br.handle == block_handle)
+        {
             if !br.entity_handles.is_empty() {
                 return br.entity_handles.contains(&entity_handle);
             }
@@ -906,10 +977,9 @@ impl Scene {
             if let Some((epoch, _)) = *cache {
                 if epoch == self.geometry_epoch {
                     drop(cache);
-                    return std::cell::Ref::map(
-                        self.entity_block_map_cache.borrow(),
-                        |c| &c.as_ref().unwrap().1,
-                    );
+                    return std::cell::Ref::map(self.entity_block_map_cache.borrow(), |c| {
+                        &c.as_ref().unwrap().1
+                    });
                 }
             }
         }
@@ -920,17 +990,32 @@ impl Scene {
             }
         }
         *self.entity_block_map_cache.borrow_mut() = Some((self.geometry_epoch, map));
-        std::cell::Ref::map(
-            self.entity_block_map_cache.borrow(),
-            |c| &c.as_ref().unwrap().1,
-        )
+        std::cell::Ref::map(self.entity_block_map_cache.borrow(), |c| {
+            &c.as_ref().unwrap().1
+        })
     }
 
     /// Full tessellation pipeline for one entity.
     fn tessellate_one(&self, e: &EntityType) -> Vec<WireModel> {
-        let bg = if self.current_layout == "Model" { self.bg_color } else { self.paper_bg_color };
-        let anno = if self.current_layout == "Model" { self.annotation_scale } else { 1.0 };
-        tessellate_entity(&self.document, &self.selected, self.active_viewport, self.world_offset, bg, anno, e)
+        let bg = if self.current_layout == "Model" {
+            self.bg_color
+        } else {
+            self.paper_bg_color
+        };
+        let anno = if self.current_layout == "Model" {
+            self.annotation_scale
+        } else {
+            1.0
+        };
+        tessellate_entity(
+            &self.document,
+            &self.selected,
+            self.active_viewport,
+            self.world_offset,
+            bg,
+            anno,
+            e,
+        )
     }
 
     fn model_space_block_handle(&self) -> Handle {
@@ -1016,7 +1101,11 @@ impl Scene {
                 }
             }
         }
-        if any { Some((min, max)) } else { None }
+        if any {
+            Some((min, max))
+        } else {
+            None
+        }
     }
 
     /// Set a newly created viewport's `view_target` and `view_height` so that
@@ -1064,7 +1153,11 @@ impl Scene {
             .document
             .entities()
             .filter_map(|e| {
-                if let EntityType::Viewport(vp) = e { Some(vp) } else { None }
+                if let EntityType::Viewport(vp) = e {
+                    Some(vp)
+                } else {
+                    None
+                }
             })
             .filter(|vp| {
                 Self::is_content_viewport(vp)
@@ -1103,7 +1196,7 @@ impl Scene {
                 None => continue,
             };
             let view_right = cam_frame.rotation * glam::Vec3::X;
-            let view_up    = cam_frame.rotation * glam::Vec3::Y;
+            let view_up = cam_frame.rotation * glam::Vec3::Y;
 
             // ── Scale & viewport parameters ───────────────────────────────
             // view_height is always correct; custom_scale is unreliable in DWG files
@@ -1152,51 +1245,61 @@ impl Scene {
 
             for wire in model_wires.iter() {
                 // Project 3-D model points onto view plane → paper space.
-                let projected_pts: Vec<[f32; 3]> = wire.points.iter().map(|&[mx, my, mz]| {
-                    if mx.is_nan() || my.is_nan() || mz.is_nan() {
-                        return [f32::NAN; 3];
-                    }
-                    let mp = glam::Vec3::new(mx, my, mz) - target;
-                    // view_center is the 2-D DCS offset of the display centre from
-                    // view_target; subtract it so model origin maps to viewport centre.
-                    let u = mp.dot(view_right) - vp.view_center.x as f32;
-                    let v = mp.dot(view_up)    - vp.view_center.y as f32;
-                    if use_perspective {
-                        let d_vd = mp.dot(cam_frame.rotation * glam::Vec3::Z);
-                        let fwd = camera_dist - d_vd;
-                        if fwd <= 0.001 {
+                let projected_pts: Vec<[f32; 3]> = wire
+                    .points
+                    .iter()
+                    .map(|&[mx, my, mz]| {
+                        if mx.is_nan() || my.is_nan() || mz.is_nan() {
                             return [f32::NAN; 3];
                         }
-                        let factor = camera_dist / fwd;
-                        [pcx + u * factor * scale, pcy + v * factor * scale, pcz]
-                    } else {
-                        [pcx + u * scale, pcy + v * scale, pcz]
-                    }
-                }).collect();
+                        let mp = glam::Vec3::new(mx, my, mz) - target;
+                        // view_center is the 2-D DCS offset of the display centre from
+                        // view_target; subtract it so model origin maps to viewport centre.
+                        let u = mp.dot(view_right) - vp.view_center.x as f32;
+                        let v = mp.dot(view_up) - vp.view_center.y as f32;
+                        if use_perspective {
+                            let d_vd = mp.dot(cam_frame.rotation * glam::Vec3::Z);
+                            let fwd = camera_dist - d_vd;
+                            if fwd <= 0.001 {
+                                return [f32::NAN; 3];
+                            }
+                            let factor = camera_dist / fwd;
+                            [pcx + u * factor * scale, pcy + v * factor * scale, pcz]
+                        } else {
+                            [pcx + u * scale, pcy + v * scale, pcz]
+                        }
+                    })
+                    .collect();
 
                 // Fast AABB pre-reject.
                 let any_near = projected_pts.iter().any(|&[x, y, _]| {
-                    x.is_finite() && y.is_finite()
-                        && x >= vp_x0 - 1.0 && x <= vp_x1 + 1.0
-                        && y >= vp_y0 - 1.0 && y <= vp_y1 + 1.0
+                    x.is_finite()
+                        && y.is_finite()
+                        && x >= vp_x0 - 1.0
+                        && x <= vp_x1 + 1.0
+                        && y >= vp_y0 - 1.0
+                        && y <= vp_y1 + 1.0
                 });
-                let (min_x, max_x, min_y, max_y) = projected_pts.iter()
-                    .filter(|p| p[0].is_finite())
-                    .fold(
-                        (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY),
+                let (min_x, max_x, min_y, max_y) =
+                    projected_pts.iter().filter(|p| p[0].is_finite()).fold(
+                        (
+                            f32::INFINITY,
+                            f32::NEG_INFINITY,
+                            f32::INFINITY,
+                            f32::NEG_INFINITY,
+                        ),
                         |(mnx, mxx, mny, mxy), &[x, y, _]| {
                             (mnx.min(x), mxx.max(x), mny.min(y), mxy.max(y))
                         },
                     );
-                let aabb_hits = max_x >= vp_x0 && min_x <= vp_x1
-                             && max_y >= vp_y0 && min_y <= vp_y1;
+                let aabb_hits =
+                    max_x >= vp_x0 && min_x <= vp_x1 && max_y >= vp_y0 && min_y <= vp_y1;
                 if !any_near && !aabb_hits {
                     continue;
                 }
 
-                let clipped = clip_polyline_to_rect(
-                    &projected_pts, vp_x0, vp_y0, vp_x1, vp_y1, pcz,
-                );
+                let clipped =
+                    clip_polyline_to_rect(&projected_pts, vp_x0, vp_y0, vp_x1, vp_y1, pcz);
                 if clipped.is_empty() {
                     continue;
                 }
@@ -1212,7 +1315,8 @@ impl Scene {
             }
 
             // Store in cache, then extend result.
-            self.paper_projected_cache.borrow_mut()
+            self.paper_projected_cache
+                .borrow_mut()
                 .insert(vp_handle, (self.geometry_epoch, projected.clone()));
             result.extend(projected);
         }
@@ -1297,9 +1401,7 @@ impl Scene {
         let cam_up = vp_cam.rotation * glam::Vec3::Y;
         let model_delta = -(cam_right * screen_dx * speed) + (cam_up * screen_dy * speed);
 
-        if let Some(acadrust::EntityType::Viewport(vp)) =
-            self.document.get_entity_mut(vp_handle)
-        {
+        if let Some(acadrust::EntityType::Viewport(vp)) = self.document.get_entity_mut(vp_handle) {
             vp.view_target.x += model_delta.x as f64;
             vp.view_target.y += model_delta.y as f64;
             vp.view_target.z += model_delta.z as f64;
@@ -1316,10 +1418,10 @@ impl Scene {
             Some(h) => h,
             None => return,
         };
-        if let Some(acadrust::EntityType::Viewport(vp)) =
-            self.document.get_entity_mut(vp_handle)
-        {
-            if vp.status.locked { return; }
+        if let Some(acadrust::EntityType::Viewport(vp)) = self.document.get_entity_mut(vp_handle) {
+            if vp.status.locked {
+                return;
+            }
             // Zoom in = shrink view_height → higher scale → objects appear larger.
             let factor = (1.0_f64 - 0.15 * steps as f64).clamp(0.1, 10.0);
 
@@ -1377,9 +1479,7 @@ impl Scene {
         //   (cos(p)*sin(y), +cos(p)*cos(y), sin(p))  ← Y has opposite sign.
         // Negate Y when writing back so camera_for_viewport round-trips correctly.
         let eye = cam.rotation * glam::Vec3::Z;
-        if let Some(acadrust::EntityType::Viewport(vp)) =
-            self.document.get_entity_mut(vp_handle)
-        {
+        if let Some(acadrust::EntityType::Viewport(vp)) = self.document.get_entity_mut(vp_handle) {
             if vp.status.locked {
                 return;
             }
@@ -1398,9 +1498,7 @@ impl Scene {
         };
         let cos_p = pitch.cos();
         let eye = glam::Vec3::new(cos_p * yaw.sin(), cos_p * yaw.cos(), pitch.sin());
-        if let Some(acadrust::EntityType::Viewport(vp)) =
-            self.document.get_entity_mut(vp_handle)
-        {
+        if let Some(acadrust::EntityType::Viewport(vp)) = self.document.get_entity_mut(vp_handle) {
             if vp.status.locked {
                 return;
             }
@@ -1433,23 +1531,26 @@ impl Scene {
     /// the given paper-space point, or `None` if no viewport matches.
     pub fn viewport_at_paper_point(&self, px: f32, py: f32) -> Option<Handle> {
         let layout_block = self.current_layout_block_handle();
-        self.document
-            .entities()
-            .find_map(|e| {
-                let EntityType::Viewport(vp) = e else { return None; };
-                if !Self::is_content_viewport(vp) || vp.common.owner_handle != layout_block || !vp.status.is_on {
-                    return None;
-                }
-                let hw = (vp.width / 2.0) as f32;
-                let hh = (vp.height / 2.0) as f32;
-                let cx = vp.center.x as f32;
-                let cy = vp.center.y as f32;
-                if px >= cx - hw && px <= cx + hw && py >= cy - hh && py <= cy + hh {
-                    Some(vp.common.handle)
-                } else {
-                    None
-                }
-            })
+        self.document.entities().find_map(|e| {
+            let EntityType::Viewport(vp) = e else {
+                return None;
+            };
+            if !Self::is_content_viewport(vp)
+                || vp.common.owner_handle != layout_block
+                || !vp.status.is_on
+            {
+                return None;
+            }
+            let hw = (vp.width / 2.0) as f32;
+            let hh = (vp.height / 2.0) as f32;
+            let cx = vp.center.x as f32;
+            let cy = vp.center.y as f32;
+            if px >= cx - hw && px <= cx + hw && py >= cy - hh && py <= cy + hh {
+                Some(vp.common.handle)
+            } else {
+                None
+            }
+        })
     }
 
     /// Return the handle of the first active user viewport in the current layout,
@@ -1457,8 +1558,13 @@ impl Scene {
     pub fn first_user_viewport(&self) -> Option<Handle> {
         let layout_block = self.current_layout_block_handle();
         self.document.entities().find_map(|e| {
-            let EntityType::Viewport(vp) = e else { return None; };
-            if Self::is_content_viewport(vp) && vp.common.owner_handle == layout_block && vp.status.is_on {
+            let EntityType::Viewport(vp) = e else {
+                return None;
+            };
+            if Self::is_content_viewport(vp)
+                && vp.common.owner_handle == layout_block
+                && vp.status.is_on
+            {
                 Some(vp.common.handle)
             } else {
                 None
@@ -1532,15 +1638,22 @@ impl Scene {
         let mut order_b: Option<i16> = None;
         for obj in self.document.objects.values() {
             if let ObjectType::Layout(l) = obj {
-                if l.name == name_a { order_a = Some(l.tab_order); }
-                if l.name == name_b { order_b = Some(l.tab_order); }
+                if l.name == name_a {
+                    order_a = Some(l.tab_order);
+                }
+                if l.name == name_b {
+                    order_b = Some(l.tab_order);
+                }
             }
         }
         if let (Some(oa), Some(ob)) = (order_a, order_b) {
             for obj in self.document.objects.values_mut() {
                 if let ObjectType::Layout(l) = obj {
-                    if l.name == name_a { l.tab_order = ob; }
-                    else if l.name == name_b { l.tab_order = oa; }
+                    if l.name == name_a {
+                        l.tab_order = ob;
+                    } else if l.name == name_b {
+                        l.tab_order = oa;
+                    }
                 }
             }
         }
@@ -1549,7 +1662,11 @@ impl Scene {
     // ── Entity management ─────────────────────────────────────────────────
 
     pub fn add_entity(&mut self, mut entity: EntityType) -> Handle {
-        let hatch_offset = if self.current_layout == "Model" { self.world_offset } else { [0.0; 3] };
+        let hatch_offset = if self.current_layout == "Model" {
+            self.world_offset
+        } else {
+            [0.0; 3]
+        };
         let hatch_seed = if let EntityType::Hatch(dxf) = &entity {
             let color = self.render_style(&entity).0;
             Self::hatch_model_from_dxf(dxf, color, hatch_offset)
@@ -1630,7 +1747,9 @@ impl Scene {
     /// Returns the RGBA color for the given layer name.
     pub fn layer_color(&self, layer: &str) -> [f32; 4] {
         let layer_entry = self.document.layers.get(layer);
-        let color = layer_entry.map(|l| &l.color).unwrap_or(&acadrust::types::Color::WHITE);
+        let color = layer_entry
+            .map(|l| &l.color)
+            .unwrap_or(&acadrust::types::Color::WHITE);
         let [r, g, b, _] = crate::scene::tessellate::aci_to_rgba(color);
         [r, g, b, 1.0]
     }
@@ -1678,12 +1797,12 @@ impl Scene {
         block_record.handle = br_handle;
         block_record.block_entity_handle = block_handle;
         block_record.block_end_handle = end_handle;
-        self.document.block_records.add(block_record).map_err(|e| e.to_string())?;
+        self.document
+            .block_records
+            .add(block_record)
+            .map_err(|e| e.to_string())?;
 
-        let mut block = Block::new(
-            name,
-            acadrust::types::Vector3::ZERO,
-        );
+        let mut block = Block::new(name, acadrust::types::Vector3::ZERO);
         block.common.handle = block_handle;
         block.common.owner_handle = br_handle;
         self.document
@@ -1718,7 +1837,11 @@ impl Scene {
 
     fn synced_hatch_models(&self) -> Vec<HatchModel> {
         let layout_block = self.current_layout_block_handle();
-        let hatch_offset = if self.current_layout == "Model" { self.world_offset } else { [0.0; 3] };
+        let hatch_offset = if self.current_layout == "Model" {
+            self.world_offset
+        } else {
+            [0.0; 3]
+        };
 
         let layer_hidden = |layer: &str| {
             self.document
@@ -1746,7 +1869,11 @@ impl Scene {
                     match &mut m.pattern {
                         hatch_model::HatchPattern::Pattern(_) => {
                             m.angle_offset = dxf.pattern_angle as f32;
-                            let anno = if self.current_layout == "Model" { self.annotation_scale } else { 1.0 };
+                            let anno = if self.current_layout == "Model" {
+                                self.annotation_scale
+                            } else {
+                                1.0
+                            };
                             m.scale = dxf.pattern_scale as f32 * anno;
                         }
                         hatch_model::HatchPattern::Gradient { angle_deg, .. } => {
@@ -1804,22 +1931,26 @@ impl Scene {
         // Wide LWPolyline and Polyline2D fills
         for entity in self.document.entities() {
             let (common, fills) = match entity {
-                EntityType::LwPolyline(pl) => {
-                    (&pl.common, wide_lwpolyline_fills(pl))
-                }
-                EntityType::Polyline2D(pl) => {
-                    (&pl.common, wide_polyline2d_fills(pl))
-                }
+                EntityType::LwPolyline(pl) => (&pl.common, wide_lwpolyline_fills(pl)),
+                EntityType::Polyline2D(pl) => (&pl.common, wide_polyline2d_fills(pl)),
                 _ => continue,
             };
-            if fills.is_empty() { continue; }
-            if common.invisible || layer_hidden(&common.layer) { continue; }
+            if fills.is_empty() {
+                continue;
+            }
+            if common.invisible || layer_hidden(&common.layer) {
+                continue;
+            }
             if !self.belongs_to_visible_block(common.handle, common.owner_handle, layout_block) {
                 continue;
             }
             let base_color = self.render_style(entity).0;
             let selected = self.selected.contains(&common.handle);
-            let color = if selected { [0.15, 0.55, 1.00, 1.0] } else { base_color };
+            let color = if selected {
+                [0.15, 0.55, 1.00, 1.0]
+            } else {
+                base_color
+            };
             for boundary in fills {
                 models.push(HatchModel {
                     boundary: Arc::new(boundary),
@@ -1845,14 +1976,22 @@ impl Scene {
             self.bg_color
         };
         // Paper-space entities are already in small coordinates — don't shift them.
-        let world_offset = if is_paper { [0.0; 3] } else { self.world_offset };
+        let world_offset = if is_paper {
+            [0.0; 3]
+        } else {
+            self.world_offset
+        };
         let mut models = Vec::new();
         for entity in self.document.entities() {
-            let EntityType::Wipeout(wo) = entity else { continue };
+            let EntityType::Wipeout(wo) = entity else {
+                continue;
+            };
             if entity.common().invisible {
                 continue;
             }
-            if self.document.layers
+            if self
+                .document
+                .layers
                 .get(&entity.common().layer)
                 .map(|l| l.flags.off || l.flags.frozen)
                 .unwrap_or(false)
@@ -1879,7 +2018,10 @@ impl Scene {
     }
 
     /// Compute the 2D (XY) boundary polygon for a Wipeout entity.
-    fn wipeout_boundary_2d(wo: &acadrust::entities::Wipeout, world_offset: [f64; 3]) -> Vec<[f32; 2]> {
+    fn wipeout_boundary_2d(
+        wo: &acadrust::entities::Wipeout,
+        world_offset: [f64; 3],
+    ) -> Vec<[f32; 2]> {
         use acadrust::entities::WipeoutClipType;
 
         let [wox, woy, _woz] = world_offset;
@@ -1890,11 +2032,16 @@ impl Scene {
         if is_polygon {
             let ox = (wo.insertion_point.x - wox) as f32;
             let oy = (wo.insertion_point.y - woy) as f32;
-            wo.clip_boundary_vertices.iter().map(|v| {
-                let wx = (wo.u_vector.x * v.x * wo.size.x + wo.v_vector.x * v.y * wo.size.y) as f32;
-                let wy = (wo.u_vector.y * v.x * wo.size.x + wo.v_vector.y * v.y * wo.size.y) as f32;
-                [ox + wx, oy + wy]
-            }).collect()
+            wo.clip_boundary_vertices
+                .iter()
+                .map(|v| {
+                    let wx =
+                        (wo.u_vector.x * v.x * wo.size.x + wo.v_vector.x * v.y * wo.size.y) as f32;
+                    let wy =
+                        (wo.u_vector.y * v.x * wo.size.x + wo.v_vector.y * v.y * wo.size.y) as f32;
+                    [ox + wx, oy + wy]
+                })
+                .collect()
         } else {
             // Rectangular boundary from 4 corners.
             let ox = (wo.insertion_point.x - wox) as f32;
@@ -1914,14 +2061,16 @@ impl Scene {
         }
     }
 
-    fn hatch_model_from_dxf(dxf: &DxfHatch, color: [f32; 4], world_offset: [f64; 3]) -> Option<HatchModel> {
+    fn hatch_model_from_dxf(
+        dxf: &DxfHatch,
+        color: [f32; 4],
+        world_offset: [f64; 3],
+    ) -> Option<HatchModel> {
         let [ox, oy, _oz] = world_offset;
         let normal = (dxf.normal.x, dxf.normal.y, dxf.normal.z);
         let to_xy = |x: f64, y: f64| -> [f32; 2] {
-            let (wx, wy, _) = crate::scene::transform::ocs_point_to_wcs(
-                (x, y, dxf.elevation),
-                normal,
-            );
+            let (wx, wy, _) =
+                crate::scene::transform::ocs_point_to_wcs((x, y, dxf.elevation), normal);
             [(wx - ox) as f32, (wy - oy) as f32]
         };
         if dxf.paths.is_empty() {
@@ -1939,168 +2088,162 @@ impl Scene {
 
             for edge in &path.edges {
                 match edge {
-                BoundaryEdge::Polyline(poly) => {
-                    let verts = &poly.vertices;
-                    let count = verts.len();
-                    if count == 0 {
-                        continue;
-                    }
-                    let seg_count = if poly.is_closed {
-                        count
-                    } else {
-                        count.saturating_sub(1)
-                    };
-                    for i in 0..seg_count {
-                        let v0 = &verts[i];
-                        let v1 = &verts[(i + 1) % count];
-                        let bulge = v0.z;
-                        if bulge.abs() < 1e-9 {
-                            boundary.push(to_xy(v0.x, v0.y));
+                    BoundaryEdge::Polyline(poly) => {
+                        let verts = &poly.vertices;
+                        let count = verts.len();
+                        if count == 0 {
+                            continue;
+                        }
+                        let seg_count = if poly.is_closed {
+                            count
                         } else {
-                            let p0 = [v0.x as f32, v0.y as f32];
-                            let p1 = [v1.x as f32, v1.y as f32];
-                            let theta = 4.0 * (bulge as f32).atan();
-                            let dx = p1[0] - p0[0];
-                            let dy = p1[1] - p0[1];
-                            let d = (dx * dx + dy * dy).sqrt();
-                            if d < 1e-9 {
+                            count.saturating_sub(1)
+                        };
+                        for i in 0..seg_count {
+                            let v0 = &verts[i];
+                            let v1 = &verts[(i + 1) % count];
+                            let bulge = v0.z;
+                            if bulge.abs() < 1e-9 {
                                 boundary.push(to_xy(v0.x, v0.y));
-                                continue;
-                            }
-                            let r = (d * 0.5) / (theta * 0.5).sin().abs();
-                            let mx = (p0[0] + p1[0]) * 0.5;
-                            let my = (p0[1] + p1[1]) * 0.5;
-                            let px = -dy / d;
-                            let py = dx / d;
-                            let sign = if bulge > 0.0 { 1.0_f32 } else { -1.0_f32 };
-                            let center_offset = r * (theta * 0.5).cos();
-                            let cx = mx + sign * px * center_offset;
-                            let cy = my + sign * py * center_offset;
-                            let a0 = (p0[1] - cy).atan2(p0[0] - cx);
-                            let a1 = (p1[1] - cy).atan2(p1[0] - cx);
-                            let mut sweep = a1 - a0;
-                            if bulge > 0.0 {
-                                if sweep <= 0.0 {
-                                    sweep += std::f32::consts::TAU;
+                            } else {
+                                let p0 = [v0.x as f32, v0.y as f32];
+                                let p1 = [v1.x as f32, v1.y as f32];
+                                let theta = 4.0 * (bulge as f32).atan();
+                                let dx = p1[0] - p0[0];
+                                let dy = p1[1] - p0[1];
+                                let d = (dx * dx + dy * dy).sqrt();
+                                if d < 1e-9 {
+                                    boundary.push(to_xy(v0.x, v0.y));
+                                    continue;
                                 }
-                            } else if sweep >= 0.0 {
-                                sweep -= std::f32::consts::TAU;
+                                let r = (d * 0.5) / (theta * 0.5).sin().abs();
+                                let mx = (p0[0] + p1[0]) * 0.5;
+                                let my = (p0[1] + p1[1]) * 0.5;
+                                let px = -dy / d;
+                                let py = dx / d;
+                                let sign = if bulge > 0.0 { 1.0_f32 } else { -1.0_f32 };
+                                let center_offset = r * (theta * 0.5).cos();
+                                let cx = mx + sign * px * center_offset;
+                                let cy = my + sign * py * center_offset;
+                                let a0 = (p0[1] - cy).atan2(p0[0] - cx);
+                                let a1 = (p1[1] - cy).atan2(p1[0] - cx);
+                                let mut sweep = a1 - a0;
+                                if bulge > 0.0 {
+                                    if sweep <= 0.0 {
+                                        sweep += std::f32::consts::TAU;
+                                    }
+                                } else if sweep >= 0.0 {
+                                    sweep -= std::f32::consts::TAU;
+                                }
+                                if sweep.abs() < 1e-7 {
+                                    sweep = if bulge > 0.0 {
+                                        std::f32::consts::TAU
+                                    } else {
+                                        -std::f32::consts::TAU
+                                    };
+                                }
+                                let segs = ((sweep.abs() / std::f32::consts::TAU) * 16.0)
+                                    .ceil()
+                                    .max(4.0) as u32;
+                                for j in 0..segs {
+                                    let a = a0 + sweep * (j as f32 / segs as f32);
+                                    boundary.push(to_xy(
+                                        (cx + r * a.cos()) as f64,
+                                        (cy + r * a.sin()) as f64,
+                                    ));
+                                }
                             }
-                            if sweep.abs() < 1e-7 {
-                                sweep = if bulge > 0.0 {
-                                    std::f32::consts::TAU
-                                } else {
-                                    -std::f32::consts::TAU
-                                };
-                            }
-                            let segs = ((sweep.abs() / std::f32::consts::TAU) * 16.0)
-                                .ceil()
-                                .max(4.0) as u32;
-                            for j in 0..segs {
-                                let a = a0 + sweep * (j as f32 / segs as f32);
-                                boundary.push(to_xy(
-                                    (cx + r * a.cos()) as f64,
-                                    (cy + r * a.sin()) as f64,
-                                ));
+                        }
+                        if poly.is_closed {
+                            if let Some(&first) = boundary.get(path_start) {
+                                boundary.push(first);
                             }
                         }
                     }
-                    if poly.is_closed {
-                        if let Some(&first) = boundary.get(path_start) {
-                            boundary.push(first);
-                        }
+                    BoundaryEdge::Line(line) => {
+                        boundary.push(to_xy(line.start.x, line.start.y));
+                        boundary.push(to_xy(line.end.x, line.end.y));
                     }
-                }
-                BoundaryEdge::Line(line) => {
-                    boundary.push(to_xy(line.start.x, line.start.y));
-                    boundary.push(to_xy(line.end.x, line.end.y));
-                }
-                BoundaryEdge::CircularArc(arc) => {
-                    const TAU: f64 = std::f64::consts::TAU;
-                    let cx = arc.center.x;
-                    let cy = arc.center.y;
-                    let r = arc.radius;
-                    let sa = arc.start_angle;
-                    let ea = arc.end_angle;
-                    let ccw = arc.counter_clockwise;
-                    let (sa, ea) = if ccw {
-                        (sa, ea)
-                    } else {
-                        (TAU - sa, TAU - ea)
-                    };
-                    let span = ea - sa;
-                    let segs = ((span / TAU) * 32.0).ceil().max(4.0) as u32;
-                    for i in 0..=segs {
-                        let t = sa + span * (i as f64 / segs as f64);
-                        boundary.push(to_xy(
-                            cx + r * t.cos(),
-                            cy + r * t.sin(),
-                        ));
-                    }
-                }
-                BoundaryEdge::EllipticArc(ell) => {
-                    let cx = ell.center.x;
-                    let cy = ell.center.y;
-                    let maj_x = ell.major_axis_endpoint.x as f32;
-                    let maj_y = ell.major_axis_endpoint.y as f32;
-                    let r_maj = (maj_x * maj_x + maj_y * maj_y).sqrt();
-                    let r_min = r_maj * ell.minor_axis_ratio as f32;
-                    let rot = maj_y.atan2(maj_x);
-                    let (sa, ea) = if ell.counter_clockwise {
-                        (ell.start_angle as f32, ell.end_angle as f32)
-                    } else {
-                        (ell.end_angle as f32, ell.start_angle as f32)
-                    };
-                    let mut end = ea;
-                    if end < sa {
-                        end += std::f32::consts::TAU;
-                    }
-                    let span = end - sa;
-                    let segs = ((span / std::f32::consts::TAU) * 32.0).ceil().max(4.0) as u32;
-                    for i in 0..=segs {
-                        let t = sa + span * (i as f32 / segs as f32);
-                        let lx = r_maj * t.cos();
-                        let ly = r_min * t.sin();
-                        boundary.push(to_xy(
-                            cx + (lx * rot.cos() - ly * rot.sin()) as f64,
-                            cy + (lx * rot.sin() + ly * rot.cos()) as f64,
-                        ));
-                    }
-                }
-                BoundaryEdge::Spline(spline) => {
-                    // Evaluate the B-spline curve into smooth boundary points.
-                    // Fall back to control-point polyline for degenerate inputs.
-                    let degree = spline.degree as usize;
-                    let cps: Vec<Point3> = spline.control_points
-                        .iter()
-                        .map(|p| Point3::new(p.x, p.y, 0.0))
-                        .collect();
-                    let knot_vec = if !spline.knots.is_empty() {
-                        KnotVec::from(spline.knots.clone())
-                    } else if cps.len() >= 2 {
-                        KnotVec::uniform_knot(degree, cps.len() - 1)
-                    } else {
-                        KnotVec::from(vec![])
-                    };
-                    let ok = cps.len() >= 2
-                        && degree >= 1
-                        && knot_vec.len() == cps.len() + degree + 1;
-                    if ok {
-                        let bspl = TruckBSpline::new(knot_vec, cps);
-                        let (t0, t1) = bspl.range_tuple();
-                        let segs = 16u32;
+                    BoundaryEdge::CircularArc(arc) => {
+                        const TAU: f64 = std::f64::consts::TAU;
+                        let cx = arc.center.x;
+                        let cy = arc.center.y;
+                        let r = arc.radius;
+                        let sa = arc.start_angle;
+                        let ea = arc.end_angle;
+                        let ccw = arc.counter_clockwise;
+                        let (sa, ea) = if ccw { (sa, ea) } else { (TAU - sa, TAU - ea) };
+                        let span = ea - sa;
+                        let segs = ((span / TAU) * 32.0).ceil().max(4.0) as u32;
                         for i in 0..=segs {
-                            let t = t0 + (t1 - t0) * (i as f64 / segs as f64);
-                            let p = bspl.subs(t);
-                            boundary.push(to_xy(p.x, p.y));
+                            let t = sa + span * (i as f64 / segs as f64);
+                            boundary.push(to_xy(cx + r * t.cos(), cy + r * t.sin()));
                         }
-                    } else {
-                        for cp in &spline.control_points {
-                            boundary.push(to_xy(cp.x, cp.y));
+                    }
+                    BoundaryEdge::EllipticArc(ell) => {
+                        let cx = ell.center.x;
+                        let cy = ell.center.y;
+                        let maj_x = ell.major_axis_endpoint.x as f32;
+                        let maj_y = ell.major_axis_endpoint.y as f32;
+                        let r_maj = (maj_x * maj_x + maj_y * maj_y).sqrt();
+                        let r_min = r_maj * ell.minor_axis_ratio as f32;
+                        let rot = maj_y.atan2(maj_x);
+                        let (sa, ea) = if ell.counter_clockwise {
+                            (ell.start_angle as f32, ell.end_angle as f32)
+                        } else {
+                            (ell.end_angle as f32, ell.start_angle as f32)
+                        };
+                        let mut end = ea;
+                        if end < sa {
+                            end += std::f32::consts::TAU;
+                        }
+                        let span = end - sa;
+                        let segs = ((span / std::f32::consts::TAU) * 32.0).ceil().max(4.0) as u32;
+                        for i in 0..=segs {
+                            let t = sa + span * (i as f32 / segs as f32);
+                            let lx = r_maj * t.cos();
+                            let ly = r_min * t.sin();
+                            boundary.push(to_xy(
+                                cx + (lx * rot.cos() - ly * rot.sin()) as f64,
+                                cy + (lx * rot.sin() + ly * rot.cos()) as f64,
+                            ));
+                        }
+                    }
+                    BoundaryEdge::Spline(spline) => {
+                        // Evaluate the B-spline curve into smooth boundary points.
+                        // Fall back to control-point polyline for degenerate inputs.
+                        let degree = spline.degree as usize;
+                        let cps: Vec<Point3> = spline
+                            .control_points
+                            .iter()
+                            .map(|p| Point3::new(p.x, p.y, 0.0))
+                            .collect();
+                        let knot_vec = if !spline.knots.is_empty() {
+                            KnotVec::from(spline.knots.clone())
+                        } else if cps.len() >= 2 {
+                            KnotVec::uniform_knot(degree, cps.len() - 1)
+                        } else {
+                            KnotVec::from(vec![])
+                        };
+                        let ok = cps.len() >= 2
+                            && degree >= 1
+                            && knot_vec.len() == cps.len() + degree + 1;
+                        if ok {
+                            let bspl = TruckBSpline::new(knot_vec, cps);
+                            let (t0, t1) = bspl.range_tuple();
+                            let segs = 16u32;
+                            for i in 0..=segs {
+                                let t = t0 + (t1 - t0) * (i as f64 / segs as f64);
+                                let p = bspl.subs(t);
+                                boundary.push(to_xy(p.x, p.y));
+                            }
+                        } else {
+                            for cp in &spline.control_points {
+                                boundary.push(to_xy(cp.x, cp.y));
+                            }
                         }
                     }
                 }
-            }
             }
 
             if boundary.len() == path_start {
@@ -2212,7 +2355,11 @@ impl Scene {
                 // Paper-space entities live in sheet coordinates — world_offset must not
                 // be applied to them.  Only model-space entities need the shift.
                 let owner = kind.common().owner_handle;
-                let offset = if owner == model_block { world_offset } else { [0.0; 3] };
+                let offset = if owner == model_block {
+                    world_offset
+                } else {
+                    [0.0; 3]
+                };
                 let model = match &kind {
                     EntityType::Hatch(dxf) => {
                         let color = tessellate::aci_to_rgba(&dxf.common.color);
@@ -2258,8 +2405,8 @@ impl Scene {
             .filter_map(|(handle, entity, color)| {
                 let model = match &entity {
                     EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color),
-                    EntityType::Region(r)  => solid3d_tess::tessellate_region(r, color),
-                    EntityType::Body(b)    => solid3d_tess::tessellate_body(b, color),
+                    EntityType::Region(r) => solid3d_tess::tessellate_region(r, color),
+                    EntityType::Body(b) => solid3d_tess::tessellate_body(b, color),
                     _ => None,
                 };
                 model.map(|m| (handle, m))
@@ -2283,10 +2430,22 @@ impl Scene {
     fn solid_hatch_model(solid: &DxfSolid, color: [f32; 4], world_offset: [f64; 3]) -> HatchModel {
         let [ox, oy, _oz] = world_offset;
         let boundary = vec![
-            [(solid.first_corner.x - ox) as f32,  (solid.first_corner.y - oy) as f32],
-            [(solid.second_corner.x - ox) as f32, (solid.second_corner.y - oy) as f32],
-            [(solid.fourth_corner.x - ox) as f32, (solid.fourth_corner.y - oy) as f32],
-            [(solid.third_corner.x - ox) as f32,  (solid.third_corner.y - oy) as f32],
+            [
+                (solid.first_corner.x - ox) as f32,
+                (solid.first_corner.y - oy) as f32,
+            ],
+            [
+                (solid.second_corner.x - ox) as f32,
+                (solid.second_corner.y - oy) as f32,
+            ],
+            [
+                (solid.fourth_corner.x - ox) as f32,
+                (solid.fourth_corner.y - oy) as f32,
+            ],
+            [
+                (solid.third_corner.x - ox) as f32,
+                (solid.third_corner.y - oy) as f32,
+            ],
         ];
         HatchModel {
             boundary: std::sync::Arc::new(boundary),
@@ -2422,7 +2581,11 @@ impl Scene {
             .filter_map(|obj| match obj {
                 ObjectType::Group(g) => {
                     g.entities.retain(|h| !handles.contains(h));
-                    if g.entities.is_empty() { Some(g.handle) } else { None }
+                    if g.entities.is_empty() {
+                        Some(g.handle)
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             })
@@ -2481,9 +2644,7 @@ impl Scene {
             .objects
             .values()
             .filter_map(|obj| match obj {
-                ObjectType::Group(g) if handles.iter().any(|h| g.contains(*h)) => {
-                    Some(g.handle)
-                }
+                ObjectType::Group(g) if handles.iter().any(|h| g.contains(*h)) => Some(g.handle),
                 _ => None,
             })
             .collect();
@@ -2506,9 +2667,7 @@ impl Scene {
             .objects
             .values()
             .filter_map(|obj| match obj {
-                ObjectType::Group(g)
-                    if g.selectable && handles.iter().any(|h| g.contains(*h)) =>
-                {
+                ObjectType::Group(g) if g.selectable && handles.iter().any(|h| g.contains(*h)) => {
                     Some(g.entities.clone())
                 }
                 _ => None,
@@ -2539,7 +2698,11 @@ impl Scene {
     // ── Modify (transform / copy) ─────────────────────────────────────────
 
     pub fn transform_entities(&mut self, handles: &[Handle], t: &EntityTransform) {
-        let hatch_offset = if self.current_layout == "Model" { self.world_offset } else { [0.0; 3] };
+        let hatch_offset = if self.current_layout == "Model" {
+            self.world_offset
+        } else {
+            [0.0; 3]
+        };
         for &h in handles {
             if let Some(entity) = self.document.get_entity_mut(h) {
                 dispatch::apply_transform(entity, t);
@@ -2560,7 +2723,11 @@ impl Scene {
     }
 
     pub fn copy_entities(&mut self, handles: &[Handle], t: &EntityTransform) -> Vec<Handle> {
-        let hatch_offset = if self.current_layout == "Model" { self.world_offset } else { [0.0; 3] };
+        let hatch_offset = if self.current_layout == "Model" {
+            self.world_offset
+        } else {
+            [0.0; 3]
+        };
         let clones: Vec<EntityType> = handles
             .iter()
             .filter_map(|&h| self.document.get_entity(h).cloned())
@@ -2594,9 +2761,21 @@ impl Scene {
         // can translate the pre-tessellated MeshModel by the same delta after
         // the grip is applied (the ACIS data itself is not modified).
         let old_por: Option<[f64; 3]> = match self.document.get_entity(handle) {
-            Some(EntityType::Solid3D(s)) => Some([s.point_of_reference.x, s.point_of_reference.y, s.point_of_reference.z]),
-            Some(EntityType::Region(r)) => Some([r.point_of_reference.x, r.point_of_reference.y, r.point_of_reference.z]),
-            Some(EntityType::Body(b)) => Some([b.point_of_reference.x, b.point_of_reference.y, b.point_of_reference.z]),
+            Some(EntityType::Solid3D(s)) => Some([
+                s.point_of_reference.x,
+                s.point_of_reference.y,
+                s.point_of_reference.z,
+            ]),
+            Some(EntityType::Region(r)) => Some([
+                r.point_of_reference.x,
+                r.point_of_reference.y,
+                r.point_of_reference.z,
+            ]),
+            Some(EntityType::Body(b)) => Some([
+                b.point_of_reference.x,
+                b.point_of_reference.y,
+                b.point_of_reference.z,
+            ]),
             _ => None,
         };
 
@@ -2607,9 +2786,21 @@ impl Scene {
         // Translate MeshModel vertices by the same delta the grip applied.
         if let Some(old) = old_por {
             let new_por: Option<[f64; 3]> = match self.document.get_entity(handle) {
-                Some(EntityType::Solid3D(s)) => Some([s.point_of_reference.x, s.point_of_reference.y, s.point_of_reference.z]),
-                Some(EntityType::Region(r)) => Some([r.point_of_reference.x, r.point_of_reference.y, r.point_of_reference.z]),
-                Some(EntityType::Body(b)) => Some([b.point_of_reference.x, b.point_of_reference.y, b.point_of_reference.z]),
+                Some(EntityType::Solid3D(s)) => Some([
+                    s.point_of_reference.x,
+                    s.point_of_reference.y,
+                    s.point_of_reference.z,
+                ]),
+                Some(EntityType::Region(r)) => Some([
+                    r.point_of_reference.x,
+                    r.point_of_reference.y,
+                    r.point_of_reference.z,
+                ]),
+                Some(EntityType::Body(b)) => Some([
+                    b.point_of_reference.x,
+                    b.point_of_reference.y,
+                    b.point_of_reference.z,
+                ]),
                 _ => None,
             };
             if let Some(new) = new_por {
@@ -2627,7 +2818,11 @@ impl Scene {
         }
 
         // Rebuild GPU hatch/solid model when a boundary vertex or corner moves.
-        let hatch_offset = if self.current_layout == "Model" { self.world_offset } else { [0.0; 3] };
+        let hatch_offset = if self.current_layout == "Model" {
+            self.world_offset
+        } else {
+            [0.0; 3]
+        };
         match self.document.get_entity(handle) {
             Some(EntityType::Hatch(dxf)) => {
                 let color = tessellate::aci_to_rgba(&dxf.common.color);
@@ -2639,7 +2834,8 @@ impl Scene {
             }
             Some(EntityType::Solid(solid)) => {
                 let color = tessellate::aci_to_rgba(&solid.common.color);
-                self.hatches.insert(handle, Self::solid_hatch_model(solid, color, hatch_offset));
+                self.hatches
+                    .insert(handle, Self::solid_hatch_model(solid, color, hatch_offset));
             }
             _ => {}
         }
@@ -2657,7 +2853,11 @@ impl Scene {
         use glam::Vec3;
         let cam = &mut *self.camera.borrow_mut();
         // view.target is the look-at point; view.direction is eye→target direction.
-        cam.target = Vec3::new(view.target.x as f32, view.target.y as f32, view.target.z as f32);
+        cam.target = Vec3::new(
+            view.target.x as f32,
+            view.target.y as f32,
+            view.target.z as f32,
+        );
         // direction in acadrust = from-target-to-eye (same as AutoCAD convention).
         let eye_dir = Vec3::new(
             view.direction.x as f32,
@@ -2743,7 +2943,11 @@ impl Scene {
 
     /// Apply camera state from an acadrust View table entry.
     /// `model_space`: if true, subtracts world_offset from target (wire-space).
-    fn apply_camera_from_view_entry(&mut self, view: &acadrust::tables::View, model_space: bool) -> bool {
+    fn apply_camera_from_view_entry(
+        &mut self,
+        view: &acadrust::tables::View,
+        model_space: bool,
+    ) -> bool {
         if view.height.abs() < 1e-9 {
             return false;
         }
@@ -2751,16 +2955,17 @@ impl Scene {
             view.direction.x as f32,
             view.direction.y as f32,
             view.direction.z as f32,
-        ).normalize_or(glam::Vec3::Z);
+        )
+        .normalize_or(glam::Vec3::Z);
         let pitch = vd.z.clamp(-1.0, 1.0).asin();
         let yaw = if vd.x.abs() < 1e-6 && vd.y.abs() < 1e-6 {
             0.0_f32
         } else {
             vd.x.atan2(-vd.y)
         };
-        let rotation  = camera::yaw_pitch_to_quat(yaw, pitch);
+        let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
         let view_right = rotation * glam::Vec3::X;
-        let view_up    = rotation * glam::Vec3::Y;
+        let view_up = rotation * glam::Vec3::Y;
         let base = if model_space {
             glam::Vec3::new(
                 (view.target.x - self.world_offset[0]) as f32,
@@ -2774,18 +2979,16 @@ impl Scene {
                 view.target.z as f32,
             )
         };
-        let target = base
-            + view_right * view.center.x as f32
-            + view_up    * view.center.y as f32;
-        let fov_y    = 45.0_f32.to_radians();
+        let target = base + view_right * view.center.x as f32 + view_up * view.center.y as f32;
+        let fov_y = 45.0_f32.to_radians();
         let distance = ((view.height as f32 / 2.0) / (fov_y * 0.5).tan()).max(0.001);
         let mut cam = self.camera.borrow_mut();
-        cam.target     = target;
-        cam.rotation   = rotation;
-        cam.distance   = distance;
-        cam.yaw        = yaw;
-        cam.pitch      = pitch;
-        cam.fov_y      = fov_y;
+        cam.target = target;
+        cam.rotation = rotation;
+        cam.distance = distance;
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.fov_y = fov_y;
         cam.projection = camera::Projection::Orthographic;
         drop(cam);
         self.camera_generation += 1;
@@ -2796,7 +2999,12 @@ impl Scene {
     /// Returns true if the entry was found and the camera was set.
     fn apply_active_vport_camera(&mut self) -> bool {
         // Prefer our named View entry — survives DWG save without being overridden.
-        let saved_view = self.document.views.iter().find(|v| v.name == "H7CAD_Camera_Model").cloned();
+        let saved_view = self
+            .document
+            .views
+            .iter()
+            .find(|v| v.name == "H7CAD_Camera_Model")
+            .cloned();
         if let Some(view) = saved_view {
             return self.apply_camera_from_view_entry(&view, true);
         }
@@ -2827,7 +3035,7 @@ impl Scene {
         };
         let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
         let view_right = rotation * glam::Vec3::X;
-        let view_up    = rotation * glam::Vec3::Y;
+        let view_up = rotation * glam::Vec3::Y;
 
         // view_target is WCS; wire-space subtracts world_offset.
         let base = glam::Vec3::new(
@@ -2835,20 +3043,19 @@ impl Scene {
             (vp.view_target.y - self.world_offset[1]) as f32,
             (vp.view_target.z - self.world_offset[2]) as f32,
         );
-        let target = base
-            + view_right * vp.view_center.x as f32
-            + view_up    * vp.view_center.y as f32;
+        let target =
+            base + view_right * vp.view_center.x as f32 + view_up * vp.view_center.y as f32;
 
         let fov_y = 45.0_f32.to_radians();
         let distance = ((vp.view_height as f32 / 2.0) / (fov_y * 0.5).tan()).max(0.001);
 
         let mut cam = self.camera.borrow_mut();
-        cam.target     = target;
-        cam.rotation   = rotation;
-        cam.distance   = distance;
-        cam.yaw        = yaw;
-        cam.pitch      = pitch;
-        cam.fov_y      = fov_y;
+        cam.target = target;
+        cam.rotation = rotation;
+        cam.distance = distance;
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.fov_y = fov_y;
         cam.projection = camera::Projection::Orthographic;
         drop(cam);
 
@@ -2861,7 +3068,12 @@ impl Scene {
     fn apply_sheet_viewport_camera(&mut self) -> bool {
         // Prefer our named View entry — survives DWG save without being overridden.
         let view_name = format!("H7CAD_Camera_{}", self.current_layout);
-        let saved_view = self.document.views.iter().find(|v| v.name == view_name).cloned();
+        let saved_view = self
+            .document
+            .views
+            .iter()
+            .find(|v| v.name == view_name)
+            .cloned();
         if let Some(view) = saved_view {
             return self.apply_camera_from_view_entry(&view, false);
         }
@@ -2871,11 +3083,17 @@ impl Scene {
             return false;
         }
 
-        let sheet_vp = self.document.entities()
-            .filter_map(|e| if let EntityType::Viewport(vp) = e { Some(vp) } else { None })
-            .find(|vp| {
-                vp.common.owner_handle == layout_block && !Self::is_content_viewport(vp)
-            });
+        let sheet_vp = self
+            .document
+            .entities()
+            .filter_map(|e| {
+                if let EntityType::Viewport(vp) = e {
+                    Some(vp)
+                } else {
+                    None
+                }
+            })
+            .find(|vp| vp.common.owner_handle == layout_block && !Self::is_content_viewport(vp));
 
         let vp = match sheet_vp {
             Some(v) => v,
@@ -2904,7 +3122,7 @@ impl Scene {
         };
         let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
         let view_right = rotation * glam::Vec3::X;
-        let view_up    = rotation * glam::Vec3::Y;
+        let view_up = rotation * glam::Vec3::Y;
 
         // Paper-space entities have no world_offset applied, so target is raw.
         let base = glam::Vec3::new(
@@ -2912,20 +3130,19 @@ impl Scene {
             vp.view_target.y as f32,
             vp.view_target.z as f32,
         );
-        let target = base
-            + view_right * vp.view_center.x as f32
-            + view_up    * vp.view_center.y as f32;
+        let target =
+            base + view_right * vp.view_center.x as f32 + view_up * vp.view_center.y as f32;
 
         let fov_y = 45.0_f32.to_radians();
         let distance = ((vp.view_height as f32 / 2.0) / (fov_y * 0.5).tan()).max(0.001);
 
         let mut cam = self.camera.borrow_mut();
-        cam.target     = target;
-        cam.rotation   = rotation;
-        cam.distance   = distance;
-        cam.yaw        = yaw;
-        cam.pitch      = pitch;
-        cam.fov_y      = fov_y;
+        cam.target = target;
+        cam.rotation = rotation;
+        cam.distance = distance;
+        cam.yaw = yaw;
+        cam.pitch = pitch;
+        cam.fov_y = fov_y;
         cam.projection = camera::Projection::Orthographic;
         drop(cam);
 
@@ -2953,11 +3170,16 @@ impl Scene {
             };
 
             // Write back to the *Active VPort entry (may be overridden by DWG writer).
-            if let Some(vp) = self.document.vports.iter_mut().find(|v| v.name == "*Active") {
-                vp.view_target    = target_wcs;
-                vp.view_center    = acadrust::types::Vector2::ZERO;
+            if let Some(vp) = self
+                .document
+                .vports
+                .iter_mut()
+                .find(|v| v.name == "*Active")
+            {
+                vp.view_target = target_wcs;
+                vp.view_center = acadrust::types::Vector2::ZERO;
                 vp.view_direction = vd3;
-                vp.view_height    = view_height as f64;
+                vp.view_height = view_height as f64;
             }
 
             // Also write to View table — survives DWG save without override.
@@ -2974,17 +3196,27 @@ impl Scene {
             // Write back to the sheet viewport entity.
             let layout_block = self.current_layout_block_handle();
             if !layout_block.is_null() {
-                let sheet_handle = self.document.entities()
-                    .filter_map(|e| if let EntityType::Viewport(vp) = e { Some(vp) } else { None })
-                    .find(|vp| vp.common.owner_handle == layout_block && !Self::is_content_viewport(vp))
+                let sheet_handle = self
+                    .document
+                    .entities()
+                    .filter_map(|e| {
+                        if let EntityType::Viewport(vp) = e {
+                            Some(vp)
+                        } else {
+                            None
+                        }
+                    })
+                    .find(|vp| {
+                        vp.common.owner_handle == layout_block && !Self::is_content_viewport(vp)
+                    })
                     .map(|vp| vp.common.handle);
 
                 if let Some(handle) = sheet_handle {
                     if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(handle) {
-                        vp.view_target    = target_wcs;
-                        vp.view_center    = acadrust::types::Vector3::ZERO;
+                        vp.view_target = target_wcs;
+                        vp.view_center = acadrust::types::Vector3::ZERO;
                         vp.view_direction = vd3;
-                        vp.view_height    = view_height as f64;
+                        vp.view_height = view_height as f64;
                     }
                 }
             }
@@ -3003,14 +3235,19 @@ impl Scene {
         direction: acadrust::types::Vector3,
         height: f32,
     ) {
-        let existing_handle = self.document.views.iter().find(|v| v.name == name).map(|v| v.handle);
+        let existing_handle = self
+            .document
+            .views
+            .iter()
+            .find(|v| v.name == name)
+            .map(|v| v.handle);
         let mut entry = acadrust::tables::View::new(name);
-        entry.handle    = existing_handle.unwrap_or_else(|| self.document.allocate_handle());
-        entry.target    = target;
+        entry.handle = existing_handle.unwrap_or_else(|| self.document.allocate_handle());
+        entry.target = target;
         entry.direction = direction;
-        entry.height    = height as f64;
-        entry.width     = height as f64;
-        entry.center    = acadrust::types::Vector3::ZERO;
+        entry.height = height as f64;
+        entry.width = height as f64;
+        entry.center = acadrust::types::Vector3::ZERO;
         self.document.views.add_or_replace(entry);
     }
 
@@ -3113,7 +3350,12 @@ impl Scene {
         let w = (x1 - x0).max(1.0);
         let h = (y1 - y0).max(1.0);
 
-        Some(iced::Rectangle { x: x0, y: y0, width: w, height: h })
+        Some(iced::Rectangle {
+            x: x0,
+            y: y0,
+            width: w,
+            height: h,
+        })
     }
 
     // ── ViewportPane helpers ──────────────────────────────────────────────
@@ -3159,7 +3401,6 @@ impl Scene {
         (*self.paper_sheet_wires_arc()).clone()
     }
 
-
     /// Build a Camera oriented and scaled to match a paper-space Viewport entity.
     /// Used by `ViewportPane::Paper` to render model-space content through the
     /// viewport's own view direction and scale.
@@ -3188,7 +3429,7 @@ impl Scene {
 
         let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
         let view_right = rotation * glam::Vec3::X;
-        let view_up    = rotation * glam::Vec3::Y;
+        let view_up = rotation * glam::Vec3::Y;
 
         // view_target is in raw model/WCS coords; the GPU renderer works in
         // wire-space (model - world_offset), so subtract world_offset here.
@@ -3198,9 +3439,8 @@ impl Scene {
             (vp.view_target.y - self.world_offset[1]) as f32,
             (vp.view_target.z - self.world_offset[2]) as f32,
         );
-        let target = base_target
-            + view_right * vp.view_center.x as f32
-            + view_up    * vp.view_center.y as f32;
+        let target =
+            base_target + view_right * vp.view_center.x as f32 + view_up * vp.view_center.y as f32;
 
         let fov_y = 45.0_f32.to_radians();
         let view_height = if vp.view_height.abs() > 1e-9 {
@@ -3237,7 +3477,11 @@ impl Scene {
                 } else {
                     1.0
                 };
-                let anno = if vp_scale > 1e-9 { (1.0 / vp_scale) as f32 } else { 1.0_f32 };
+                let anno = if vp_scale > 1e-9 {
+                    (1.0 / vp_scale) as f32
+                } else {
+                    1.0_f32
+                };
                 (f, anno)
             }
             _ => (HSet::new(), 1.0_f32),
@@ -3273,15 +3517,17 @@ impl Scene {
                 }
                 true
             })
-            .flat_map(|e| tessellate_entity(
-                &self.document,
-                &self.selected,
-                self.active_viewport,
-                self.world_offset,
-                self.bg_color,
-                vp_anno_scale,
-                e,
-            ))
+            .flat_map(|e| {
+                tessellate_entity(
+                    &self.document,
+                    &self.selected,
+                    self.active_viewport,
+                    self.world_offset,
+                    self.bg_color,
+                    vp_anno_scale,
+                    e,
+                )
+            })
             .collect()
     }
 
@@ -3316,9 +3562,14 @@ impl Default for Scene {
 /// [xmin,xmax]×[ymin,ymax].  Returns the clipped endpoints or `None` if the
 /// segment is entirely outside.
 fn cs_clip(
-    mut x0: f32, mut y0: f32,
-    mut x1: f32, mut y1: f32,
-    xmin: f32, ymin: f32, xmax: f32, ymax: f32,
+    mut x0: f32,
+    mut y0: f32,
+    mut x1: f32,
+    mut y1: f32,
+    xmin: f32,
+    ymin: f32,
+    xmax: f32,
+    ymax: f32,
 ) -> Option<(f32, f32, f32, f32)> {
     const LEFT: u8 = 1;
     const RIGHT: u8 = 2;
@@ -3327,10 +3578,16 @@ fn cs_clip(
 
     let code = |x: f32, y: f32| -> u8 {
         let mut c = 0u8;
-        if x < xmin { c |= LEFT; }
-        else if x > xmax { c |= RIGHT; }
-        if y < ymin { c |= BOTTOM; }
-        else if y > ymax { c |= TOP; }
+        if x < xmin {
+            c |= LEFT;
+        } else if x > xmax {
+            c |= RIGHT;
+        }
+        if y < ymin {
+            c |= BOTTOM;
+        } else if y > ymax {
+            c |= TOP;
+        }
         c
     };
 
@@ -3338,8 +3595,12 @@ fn cs_clip(
     let mut c1 = code(x1, y1);
 
     loop {
-        if c0 | c1 == 0 { return Some((x0, y0, x1, y1)); }
-        if c0 & c1 != 0 { return None; }
+        if c0 | c1 == 0 {
+            return Some((x0, y0, x1, y1));
+        }
+        if c0 & c1 != 0 {
+            return None;
+        }
         let cout = if c0 != 0 { c0 } else { c1 };
         let (x, y);
         if cout & TOP != 0 {
@@ -3355,8 +3616,15 @@ fn cs_clip(
             y = y0 + (y1 - y0) * (xmin - x0) / (x1 - x0);
             x = xmin;
         }
-        if cout == c0 { x0 = x; y0 = y; c0 = code(x0, y0); }
-        else           { x1 = x; y1 = y; c1 = code(x1, y1); }
+        if cout == c0 {
+            x0 = x;
+            y0 = y;
+            c0 = code(x0, y0);
+        } else {
+            x1 = x;
+            y1 = y;
+            c1 = code(x1, y1);
+        }
     }
 }
 
@@ -3364,7 +3632,10 @@ fn cs_clip(
 /// Returns a new points vec with proper NaN separators at clip boundaries.
 fn clip_polyline_to_rect(
     pts: &[[f32; 3]],
-    xmin: f32, ymin: f32, xmax: f32, ymax: f32,
+    xmin: f32,
+    ymin: f32,
+    xmax: f32,
+    ymax: f32,
     z: f32,
 ) -> Vec<[f32; 3]> {
     const NAN3: [f32; 3] = [f32::NAN, f32::NAN, f32::NAN];
@@ -3393,10 +3664,14 @@ fn clip_polyline_to_rect(
             let [x0, y0, _] = seg[j];
             let [x1, y1, _] = seg[j + 1];
             match cs_clip(x0, y0, x1, y1, xmin, ymin, xmax, ymax) {
-                None => { pen_down = false; }
+                None => {
+                    pen_down = false;
+                }
                 Some((cx0, cy0, cx1, cy1)) => {
                     if !pen_down {
-                        if !result.is_empty() { result.push(NAN3); }
+                        if !result.is_empty() {
+                            result.push(NAN3);
+                        }
                         result.push([cx0, cy0, z]);
                         pen_down = true;
                     } else if let Some(&[lx, ly, _]) = result.last() {
@@ -3415,7 +3690,11 @@ fn clip_polyline_to_rect(
         }
     }
     // Remove trailing NaN.
-    while result.last().map(|p: &[f32; 3]| p[0].is_nan()).unwrap_or(false) {
+    while result
+        .last()
+        .map(|p: &[f32; 3]| p[0].is_nan())
+        .unwrap_or(false)
+    {
         result.pop();
     }
     result
@@ -3463,7 +3742,16 @@ fn tessellate_entity(
             (0.0_f32, [0.0f32; 8])
         };
         let mut wire = tessellate::tessellate(
-            document, h, e, sel, color, pattern_length, pattern, 1.5, world_offset, 1.0,
+            document,
+            h,
+            e,
+            sel,
+            color,
+            pattern_length,
+            pattern,
+            1.5,
+            world_offset,
+            1.0,
         );
         wire.aabb = entity_aabb(e, world_offset);
         return vec![wire];
@@ -3475,14 +3763,25 @@ fn tessellate_entity(
     let lt_scale = document.header.linetype_scale as f32 * e.common().linetype_scale as f32;
     let lt_name = render::linetype_name_for(document, e);
     // PSLTSCALE: scale linetype dashes by viewport anno_scale so they appear uniform in paper space.
-    let pslt_factor = if document.header.paper_space_linetype_scaling { anno_scale } else { 1.0 };
+    let pslt_factor = if document.header.paper_space_linetype_scaling {
+        anno_scale
+    } else {
+        1.0
+    };
     let pattern_length = pattern_length * pslt_factor;
     let pattern = pattern.map(|v| v * pslt_factor);
 
     if let EntityType::Dimension(dim) = e {
         let aabb = entity_aabb(e, world_offset);
         let mut wires = tessellate::tessellate_dimension(
-            document, h, dim, sel, entity_color, line_weight_px, world_offset, anno_scale,
+            document,
+            h,
+            dim,
+            sel,
+            entity_color,
+            line_weight_px,
+            world_offset,
+            anno_scale,
         );
         for w in &mut wires {
             w.aci = aci;
@@ -3494,8 +3793,7 @@ fn tessellate_entity(
     if let EntityType::Insert(ins) = e {
         let is_mirrored = ins.x_scale() * ins.y_scale() < 0.0;
         // Resolve the INSERT's own style so ByBlock sub-entities can inherit it.
-        let (ins_color, ins_pat_len, ins_pat, ins_lw_px, _) =
-            render::render_style_for(document, e);
+        let (ins_color, ins_pat_len, ins_pat, ins_lw_px, _) = render::render_style_for(document, e);
         let ins_color = render::adapt_to_bg(ins_color, bg_color);
         let mut wires: Vec<WireModel> = ins
             .explode_from_document(document)
@@ -3506,8 +3804,12 @@ fn tessellate_entity(
             .flat_map(|sub| {
                 let (sub_color, sub_pattern_length, sub_pattern, sub_line_weight_px, sub_aci) =
                     render::render_style_for_block_sub(
-                        document, &sub,
-                        ins_color, ins_pat_len, ins_pat, ins_lw_px,
+                        document,
+                        &sub,
+                        ins_color,
+                        ins_pat_len,
+                        ins_pat,
+                        ins_lw_px,
                     );
                 let sub_color = render::adapt_to_bg(sub_color, bg_color);
                 let sub_aabb = entity_aabb(&sub, world_offset);
@@ -3560,7 +3862,16 @@ fn tessellate_entity(
 
     let aabb = entity_aabb(e, world_offset);
     let mut base = tessellate::tessellate(
-        document, h, e, sel, entity_color, pattern_length, pattern, line_weight_px, world_offset, anno_scale,
+        document,
+        h,
+        e,
+        sel,
+        entity_color,
+        pattern_length,
+        pattern,
+        line_weight_px,
+        world_offset,
+        anno_scale,
     );
     base.aci = aci;
     base.aabb = aabb;
@@ -3576,7 +3887,9 @@ fn tessellate_entity(
             base.line_weight_px,
         );
         if !wires.is_empty() {
-            for w in &mut wires { w.aabb = aabb; }
+            for w in &mut wires {
+                w.aabb = aabb;
+            }
             return wires;
         }
     }
@@ -3602,9 +3915,7 @@ fn entity_aabb(e: &acadrust::EntityType, world_offset: [f64; 3]) -> [f32; 4] {
 /// Generate solid-fill boundary polygons for each wide segment of an LWPolyline.
 /// Returns one polygon per segment that has non-zero width; empty if the polyline
 /// has zero `constant_width` and all vertex widths are zero.
-fn wide_lwpolyline_fills(
-    pl: &acadrust::entities::LwPolyline,
-) -> Vec<Vec<[f32; 2]>> {
+fn wide_lwpolyline_fills(pl: &acadrust::entities::LwPolyline) -> Vec<Vec<[f32; 2]>> {
     let hw_const = (pl.constant_width / 2.0) as f32;
     let verts = &pl.vertices;
     let n = verts.len();
@@ -3616,8 +3927,16 @@ fn wide_lwpolyline_fills(
     for i in 0..seg_count {
         let v0 = &verts[i];
         let v1 = &verts[(i + 1) % n];
-        let hw0 = if v0.start_width > 1e-9 { v0.start_width as f32 / 2.0 } else { hw_const };
-        let hw1 = if v0.end_width > 1e-9 { v0.end_width as f32 / 2.0 } else { hw_const };
+        let hw0 = if v0.start_width > 1e-9 {
+            v0.start_width as f32 / 2.0
+        } else {
+            hw_const
+        };
+        let hw1 = if v0.end_width > 1e-9 {
+            v0.end_width as f32 / 2.0
+        } else {
+            hw_const
+        };
         if hw0 < 1e-6 && hw1 < 1e-6 {
             continue;
         }
@@ -3631,9 +3950,7 @@ fn wide_lwpolyline_fills(
 }
 
 /// Generate solid-fill boundary polygons for each wide segment of a Polyline2D.
-fn wide_polyline2d_fills(
-    pl: &acadrust::entities::Polyline2D,
-) -> Vec<Vec<[f32; 2]>> {
+fn wide_polyline2d_fills(pl: &acadrust::entities::Polyline2D) -> Vec<Vec<[f32; 2]>> {
     let hw_default = (pl.start_width.max(pl.end_width) / 2.0) as f32;
     let verts = &pl.vertices;
     let n = verts.len();
@@ -3645,8 +3962,16 @@ fn wide_polyline2d_fills(
     for i in 0..seg_count {
         let v0 = &verts[i];
         let v1 = &verts[(i + 1) % n];
-        let hw0 = if v0.start_width > 1e-9 { v0.start_width as f32 / 2.0 } else { hw_default };
-        let hw1 = if v0.end_width > 1e-9 { v0.end_width as f32 / 2.0 } else { hw_default };
+        let hw0 = if v0.start_width > 1e-9 {
+            v0.start_width as f32 / 2.0
+        } else {
+            hw_default
+        };
+        let hw1 = if v0.end_width > 1e-9 {
+            v0.end_width as f32 / 2.0
+        } else {
+            hw_default
+        };
         if hw0 < 1e-6 && hw1 < 1e-6 {
             continue;
         }

@@ -98,10 +98,7 @@ pub fn ocs_axes(normal: (f64, f64, f64)) -> ((f64, f64, f64), (f64, f64, f64)) {
 
 /// Transform a single OCS point to WCS using the given normal vector.
 #[inline]
-pub fn ocs_point_to_wcs(
-    ocs: (f64, f64, f64),
-    normal: (f64, f64, f64),
-) -> (f64, f64, f64) {
+pub fn ocs_point_to_wcs(ocs: (f64, f64, f64), normal: (f64, f64, f64)) -> (f64, f64, f64) {
     let (ax, ay) = ocs_axes(normal);
     let (ox, oy, oz) = ocs;
     let (nx, ny, nz) = normal;

@@ -39,25 +39,36 @@ pub struct LeaderCommand {
 
 impl LeaderCommand {
     pub fn new() -> Self {
-        Self { step: Step::CollectPoints { verts: Vec::new() } }
+        Self {
+            step: Step::CollectPoints { verts: Vec::new() },
+        }
     }
 }
 
 impl CadCommand for LeaderCommand {
-    fn name(&self) -> &'static str { "LEADER" }
+    fn name(&self) -> &'static str {
+        "LEADER"
+    }
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::CollectPoints { verts } if verts.is_empty() =>
-                "LEADER  Specify arrowhead point:".into(),
-            Step::CollectPoints { verts } =>
-                format!("LEADER  Specify next point [{} pts — Enter to finish]:", verts.len()),
-            Step::AskCreationType { .. } =>
-                "LEADER  Annotation type [None/Text/Block/Tolerance] <Text>:".into(),
-            Step::AskText { verts } =>
-                format!("LEADER  Annotation text [{} pts — blank = skip]:", verts.len()),
-            Step::AskBlock { verts } =>
-                format!("LEADER  Block name [{} pts — blank = skip]:", verts.len()),
+            Step::CollectPoints { verts } if verts.is_empty() => {
+                "LEADER  Specify arrowhead point:".into()
+            }
+            Step::CollectPoints { verts } => format!(
+                "LEADER  Specify next point [{} pts — Enter to finish]:",
+                verts.len()
+            ),
+            Step::AskCreationType { .. } => {
+                "LEADER  Annotation type [None/Text/Block/Tolerance] <Text>:".into()
+            }
+            Step::AskText { verts } => format!(
+                "LEADER  Annotation text [{} pts — blank = skip]:",
+                verts.len()
+            ),
+            Step::AskBlock { verts } => {
+                format!("LEADER  Block name [{} pts — blank = skip]:", verts.len())
+            }
         }
     }
 
@@ -74,7 +85,9 @@ impl CadCommand for LeaderCommand {
 
     fn on_enter(&mut self) -> CmdResult {
         if let Step::CollectPoints { verts } = &self.step {
-            if verts.len() < 2 { return CmdResult::Cancel; }
+            if verts.len() < 2 {
+                return CmdResult::Cancel;
+            }
             let verts = verts.clone();
             self.step = Step::AskCreationType { verts };
             CmdResult::NeedPoint
@@ -91,7 +104,9 @@ impl CadCommand for LeaderCommand {
                 match parse_ct(text) {
                     LeaderCreationType::NoAnnotation | LeaderCreationType::WithTolerance => {
                         let ct = parse_ct(text);
-                        Some(CmdResult::CommitAndExit(EntityType::Leader(build_leader(&verts, ct))))
+                        Some(CmdResult::CommitAndExit(EntityType::Leader(build_leader(
+                            &verts, ct,
+                        ))))
                     }
                     LeaderCreationType::WithBlock => {
                         self.step = Step::AskBlock { verts };
@@ -109,7 +124,11 @@ impl CadCommand for LeaderCommand {
                 if text.is_empty() {
                     return Some(CmdResult::CommitAndExit(EntityType::Leader(leader)));
                 }
-                let mtext = build_mtext(text, landing_pt(&verts, leader.text_height), leader.text_height);
+                let mtext = build_mtext(
+                    text,
+                    landing_pt(&verts, leader.text_height),
+                    leader.text_height,
+                );
                 Some(CmdResult::ReplaceMany(
                     vec![],
                     vec![EntityType::Leader(leader), EntityType::MText(mtext)],
@@ -131,11 +150,15 @@ impl CadCommand for LeaderCommand {
         }
     }
 
-    fn on_escape(&mut self) -> CmdResult { CmdResult::Cancel }
+    fn on_escape(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
 
     fn on_mouse_move(&mut self, pt: Vec3) -> Option<WireModel> {
         if let Step::CollectPoints { verts } = &self.step {
-            if verts.is_empty() { return None; }
+            if verts.is_empty() {
+                return None;
+            }
             let mut pts = verts.clone();
             pts.push(pt);
             Some(preview_wire(&pts))
@@ -149,14 +172,16 @@ impl CadCommand for LeaderCommand {
 
 fn parse_ct(s: &str) -> LeaderCreationType {
     match s.to_ascii_uppercase().as_str() {
-        "N" | "NONE"      => LeaderCreationType::NoAnnotation,
-        "B" | "BLOCK"     => LeaderCreationType::WithBlock,
-        "TL"| "TOLERANCE" => LeaderCreationType::WithTolerance,
-        _                 => LeaderCreationType::WithText,
+        "N" | "NONE" => LeaderCreationType::NoAnnotation,
+        "B" | "BLOCK" => LeaderCreationType::WithBlock,
+        "TL" | "TOLERANCE" => LeaderCreationType::WithTolerance,
+        _ => LeaderCreationType::WithText,
     }
 }
 
-fn v3(p: Vec3) -> Vector3 { Vector3::new(p.x as f64, p.y as f64, p.z as f64) }
+fn v3(p: Vec3) -> Vector3 {
+    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+}
 
 fn build_leader(verts: &[Vec3], ct: LeaderCreationType) -> Leader {
     let mut l = Leader::from_vertices(verts.iter().map(|p| v3(*p)).collect());
@@ -200,11 +225,11 @@ fn preview_wire(pts: &[Vec3]) -> WireModel {
         snap_pts: vec![],
         tangent_geoms: vec![],
         aci: 0,
-            key_vertices: vec![],
-            aabb: WireModel::UNBOUNDED_AABB,
-            plinegen: true,
-            vp_scissor: None,
-            fill_tris: vec![],
+        key_vertices: vec![],
+        aabb: WireModel::UNBOUNDED_AABB,
+        plinegen: true,
+        vp_scissor: None,
+        fill_tris: vec![],
     }
 }
 
@@ -215,7 +240,15 @@ pub fn arrowhead_wings(tip: Vec3, next: Vec3, size: f32) -> [Vec3; 2] {
     let angle = std::f32::consts::PI / 6.0;
     let (s, c) = angle.sin_cos();
     [
-        Vec3::new(tip.x + (dx*c - dy*s)*size, tip.y + (dx*s + dy*c)*size, tip.z),
-        Vec3::new(tip.x + (dx*c + dy*s)*size, tip.y + (-dx*s + dy*c)*size, tip.z),
+        Vec3::new(
+            tip.x + (dx * c - dy * s) * size,
+            tip.y + (dx * s + dy * c) * size,
+            tip.z,
+        ),
+        Vec3::new(
+            tip.x + (dx * c + dy * s) * size,
+            tip.y + (-dx * s + dy * c) * size,
+            tip.z,
+        ),
     ]
 }

@@ -16,9 +16,18 @@ use crate::scene::wire_model::WireModel;
 
 enum Step {
     Tag,
-    Prompt { tag: String },
-    Default { tag: String, prompt: String },
-    Insertion { tag: String, prompt: String, default: String },
+    Prompt {
+        tag: String,
+    },
+    Default {
+        tag: String,
+        prompt: String,
+    },
+    Insertion {
+        tag: String,
+        prompt: String,
+        default: String,
+    },
 }
 
 pub struct AttdefCommand {
@@ -29,18 +38,25 @@ pub struct AttdefCommand {
 
 impl AttdefCommand {
     pub fn new() -> Self {
-        Self { step: Step::Tag, height: 0.2 }
+        Self {
+            step: Step::Tag,
+            height: 0.2,
+        }
     }
 }
 
 impl CadCommand for AttdefCommand {
-    fn name(&self) -> &'static str { "ATTDEF" }
+    fn name(&self) -> &'static str {
+        "ATTDEF"
+    }
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::Tag         => "ATTDEF  Enter attribute tag (no spaces):".into(),
+            Step::Tag => "ATTDEF  Enter attribute tag (no spaces):".into(),
             Step::Prompt { tag } => format!("ATTDEF  Enter prompt for '{tag}' (Enter=use tag):"),
-            Step::Default { tag, .. } => format!("ATTDEF  Enter default value for '{tag}' (Enter=blank):"),
+            Step::Default { tag, .. } => {
+                format!("ATTDEF  Enter default value for '{tag}' (Enter=blank):")
+            }
             Step::Insertion { tag, .. } => format!("ATTDEF  Specify insertion point for '{tag}':"),
         }
     }
@@ -61,7 +77,11 @@ impl CadCommand for AttdefCommand {
             }
             Step::Prompt { tag } => {
                 let tag = tag.clone();
-                let prompt = if text.trim().is_empty() { tag.clone() } else { text.trim().to_string() };
+                let prompt = if text.trim().is_empty() {
+                    tag.clone()
+                } else {
+                    text.trim().to_string()
+                };
                 self.step = Step::Default { tag, prompt };
                 Some(CmdResult::NeedPoint)
             }
@@ -69,7 +89,11 @@ impl CadCommand for AttdefCommand {
                 let tag = tag.clone();
                 let prompt = prompt.clone();
                 let default = text.trim().to_string();
-                self.step = Step::Insertion { tag, prompt, default };
+                self.step = Step::Insertion {
+                    tag,
+                    prompt,
+                    default,
+                };
                 Some(CmdResult::NeedPoint)
             }
             Step::Insertion { .. } => None,
@@ -77,7 +101,12 @@ impl CadCommand for AttdefCommand {
     }
 
     fn on_point(&mut self, pt: Vec3) -> CmdResult {
-        if let Step::Insertion { tag, prompt, default } = &self.step {
+        if let Step::Insertion {
+            tag,
+            prompt,
+            default,
+        } = &self.step
+        {
             let mut attdef = AttributeDefinition {
                 tag: tag.clone(),
                 prompt: prompt.clone(),
@@ -99,12 +128,19 @@ impl CadCommand for AttdefCommand {
             // Treat Enter as empty text input for prompt/default steps.
             Step::Prompt { tag } => {
                 let tag = tag.clone();
-                self.step = Step::Default { tag: tag.clone(), prompt: tag };
+                self.step = Step::Default {
+                    tag: tag.clone(),
+                    prompt: tag,
+                };
                 CmdResult::NeedPoint
             }
             Step::Default { tag, prompt } => {
                 let (tag, prompt) = (tag.clone(), prompt.clone());
-                self.step = Step::Insertion { tag, prompt, default: String::new() };
+                self.step = Step::Insertion {
+                    tag,
+                    prompt,
+                    default: String::new(),
+                };
                 CmdResult::NeedPoint
             }
             Step::Insertion { .. } => CmdResult::Cancel,
@@ -120,9 +156,11 @@ impl CadCommand for AttdefCommand {
         Some(WireModel {
             name: "attdef_preview".into(),
             points: vec![
-                [pt.x - d, pt.y, pt.z], [pt.x + d, pt.y, pt.z],
+                [pt.x - d, pt.y, pt.z],
+                [pt.x + d, pt.y, pt.z],
                 [f32::NAN, 0.0, 0.0],
-                [pt.x, pt.y, pt.z - d], [pt.x, pt.y, pt.z + d],
+                [pt.x, pt.y, pt.z - d],
+                [pt.x, pt.y, pt.z + d],
             ],
             color: WireModel::CYAN,
             selected: false,

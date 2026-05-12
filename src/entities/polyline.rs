@@ -17,7 +17,13 @@ fn tessellate_polyline(pl: &Polyline) -> TruckEntity {
     let pts: Vec<[f32; 3]> = pl
         .vertices
         .iter()
-        .map(|v| [v.location.x as f32, v.location.y as f32, v.location.z as f32])
+        .map(|v| {
+            [
+                v.location.x as f32,
+                v.location.y as f32,
+                v.location.z as f32,
+            ]
+        })
         .collect();
 
     let mut points = pts.clone();
@@ -49,7 +55,11 @@ impl Grippable for Polyline {
             .map(|(i, v)| {
                 square_grip(
                     i,
-                    Vec3::new(v.location.x as f32, v.location.y as f32, v.location.z as f32),
+                    Vec3::new(
+                        v.location.x as f32,
+                        v.location.y as f32,
+                        v.location.z as f32,
+                    ),
                 )
             })
             .collect()
@@ -152,7 +162,11 @@ fn tessellate_polyline2d(pl: &Polyline2D) -> TruckEntity {
         let (nx, ny, nz) = normal;
         let t = pl.thickness;
         let off = |p: [f32; 3]| -> [f32; 3] {
-            [(p[0] as f64 + t * nx) as f32, (p[1] as f64 + t * ny) as f32, (p[2] as f64 + t * nz) as f32]
+            [
+                (p[0] as f64 + t * nx) as f32,
+                (p[1] as f64 + t * ny) as f32,
+                (p[2] as f64 + t * nz) as f32,
+            ]
         };
         let mut path: Vec<[f32; 3]> = Vec::new();
         let mut kv: Vec<[f32; 3]> = Vec::new();
@@ -169,13 +183,18 @@ fn tessellate_polyline2d(pl: &Polyline2D) -> TruckEntity {
             if bulge.abs() < 1e-9 {
                 let (wx, wy, wz) = to_wcs(ox1, oy1);
                 path.push([wx as f32, wy as f32, wz as f32]);
-                tgs.push(TangentGeom::Line { p1: path[path.len()-2], p2: *path.last().unwrap() });
+                tgs.push(TangentGeom::Line {
+                    p1: path[path.len() - 2],
+                    p2: *path.last().unwrap(),
+                });
             } else {
                 let angle = 4.0 * bulge.atan();
-                let dx = ox1 - ox0; let dy = oy1 - oy0;
+                let dx = ox1 - ox0;
+                let dy = oy1 - oy0;
                 let d = (dx * dx + dy * dy).sqrt().max(1e-12);
                 let r = (d / 2.0) / (angle / 2.0).sin().abs();
-                let mx = (ox0 + ox1) * 0.5; let my = (oy0 + oy1) * 0.5;
+                let mx = (ox0 + ox1) * 0.5;
+                let my = (oy0 + oy1) * 0.5;
                 let px = -dy / d;
                 let ss = if bulge > 0.0 { 1.0_f64 } else { -1.0_f64 };
                 let h = r - (r * r - d * d / 4.0).max(0.0).sqrt();
@@ -183,9 +202,20 @@ fn tessellate_polyline2d(pl: &Polyline2D) -> TruckEntity {
                 let ocy = my + ss * (dx / d) * (r - h);
                 let a0 = (oy0 - ocy).atan2(ox0 - ocx);
                 let mut a1 = (oy1 - ocy).atan2(ox1 - ocx);
-                if bulge > 0.0 { if a1 < a0 { a1 += TAU; } } else { if a1 > a0 { a1 -= TAU; } }
+                if bulge > 0.0 {
+                    if a1 < a0 {
+                        a1 += TAU;
+                    }
+                } else {
+                    if a1 > a0 {
+                        a1 -= TAU;
+                    }
+                }
                 let (wcx, wcy, wcz) = to_wcs(ocx, ocy);
-                tgs.push(TangentGeom::Circle { center: [wcx as f32, wcy as f32, wcz as f32], radius: r as f32 });
+                tgs.push(TangentGeom::Circle {
+                    center: [wcx as f32, wcy as f32, wcz as f32],
+                    radius: r as f32,
+                });
                 for j in 1..=16usize {
                     let a = a0 + (a1 - a0) * (j as f64 / 16.0);
                     let (wx, wy, wz) = to_wcs(ocx + r * a.cos(), ocy + r * a.sin());
@@ -198,15 +228,26 @@ fn tessellate_polyline2d(pl: &Polyline2D) -> TruckEntity {
         let mut pts: Vec<[f32; 3]> = Vec::with_capacity(path.len() * 2 + kv.len() * 3 + 4);
         pts.extend_from_slice(&path);
         pts.push([f32::NAN; 3]);
-        for &p in &path { pts.push(off(p)); }
+        for &p in &path {
+            pts.push(off(p));
+        }
         if !kv.is_empty() {
             pts.push([f32::NAN; 3]);
             for (i, &pb) in kv.iter().enumerate() {
-                pts.push(pb); pts.push(off(pb));
-                if i + 1 < kv.len() { pts.push([f32::NAN; 3]); }
+                pts.push(pb);
+                pts.push(off(pb));
+                if i + 1 < kv.len() {
+                    pts.push([f32::NAN; 3]);
+                }
             }
         }
-        return TruckEntity { object: TruckObject::Lines(pts), snap_pts: vec![], tangent_geoms: tgs, key_vertices: kv, fill_tris: vec![] };
+        return TruckEntity {
+            object: TruckObject::Lines(pts),
+            snap_pts: vec![],
+            tangent_geoms: tgs,
+            key_vertices: kv,
+            fill_tris: vec![],
+        };
     }
 
     for i in 0..seg_count {
@@ -289,12 +330,7 @@ impl Grippable for Polyline2D {
         self.vertices
             .iter()
             .enumerate()
-            .map(|(i, v)| {
-                square_grip(
-                    i,
-                    Vec3::new(v.location.x as f32, v.location.y as f32, elev),
-                )
-            })
+            .map(|(i, v)| square_grip(i, Vec3::new(v.location.x as f32, v.location.y as f32, elev)))
             .collect()
     }
 
@@ -341,7 +377,11 @@ impl PropertyEditable for Polyline2D {
                 } else {
                     value == "true"
                 };
-                if closed { self.close(); } else { self.flags.set_closed(false); }
+                if closed {
+                    self.close();
+                } else {
+                    self.flags.set_closed(false);
+                }
             }
             "pl2_elevation" => {
                 if let Ok(v) = value.trim().parse::<f64>() {
@@ -372,14 +412,18 @@ impl Transformable for Polyline2D {
 
 fn tessellate_polyline3d(pl: &Polyline3D) -> TruckEntity {
     let to_pt = |v: &acadrust::entities::Vertex3DPolyline| -> [f32; 3] {
-        [v.position.x as f32, v.position.y as f32, v.position.z as f32]
+        [
+            v.position.x as f32,
+            v.position.y as f32,
+            v.position.z as f32,
+        ]
     };
 
     // DXF vertex flags:  8 = spline-fit curve point,  16 = spline frame control point.
     // When spline-fit vertices are present use them for the wire and control points for snap;
     // otherwise treat all vertices uniformly.
     let spline_curve: Vec<_> = pl.vertices.iter().filter(|v| v.flags & 8 != 0).collect();
-    let ctrl_pts: Vec<_>     = pl.vertices.iter().filter(|v| v.flags & 16 != 0).collect();
+    let ctrl_pts: Vec<_> = pl.vertices.iter().filter(|v| v.flags & 16 != 0).collect();
 
     let (wire_pts, key_verts) = if !spline_curve.is_empty() {
         let wire: Vec<[f32; 3]> = spline_curve.iter().map(|v| to_pt(v)).collect();
@@ -418,7 +462,11 @@ impl Grippable for Polyline3D {
             .map(|(i, v)| {
                 square_grip(
                     i,
-                    Vec3::new(v.position.x as f32, v.position.y as f32, v.position.z as f32),
+                    Vec3::new(
+                        v.position.x as f32,
+                        v.position.y as f32,
+                        v.position.z as f32,
+                    ),
                 )
             })
             .collect()
@@ -462,8 +510,16 @@ impl PropertyEditable for Polyline3D {
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
         if field == "pl3_closed" {
-            let closed = if value == "toggle" { !self.is_closed() } else { value == "true" };
-            if closed { self.close(); } else { self.open(); }
+            let closed = if value == "toggle" {
+                !self.is_closed()
+            } else {
+                value == "true"
+            };
+            if closed {
+                self.close();
+            } else {
+                self.open();
+            }
         }
     }
 }

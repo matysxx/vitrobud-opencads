@@ -8,10 +8,12 @@
 // is needed — we shift the coordinates by (offset_x, offset_y) to place the
 // drawing origin at the paper origin.
 
-use crate::scene::WireModel;
 use crate::io::plot_style::PlotStyleTable;
-use printpdf::{Color, Line, LineCapStyle, LineJoinStyle, LinePoint, Mm, Op, PdfDocument,
-               PdfPage, PdfSaveOptions, Point, Pt, Rgb};
+use crate::scene::WireModel;
+use printpdf::{
+    Color, Line, LineCapStyle, LineJoinStyle, LinePoint, Mm, Op, PdfDocument, PdfPage,
+    PdfSaveOptions, Point, Pt, Rgb,
+};
 use std::io::Write;
 use std::path::Path;
 
@@ -33,7 +35,15 @@ pub fn export_pdf(
     path: &Path,
     plot_style: Option<&PlotStyleTable>,
 ) -> Result<(), String> {
-    let bytes = build_pdf(wires, paper_w as f32, paper_h as f32, offset_x, offset_y, rotation_deg, plot_style);
+    let bytes = build_pdf(
+        wires,
+        paper_w as f32,
+        paper_h as f32,
+        offset_x,
+        offset_y,
+        rotation_deg,
+        plot_style,
+    );
     let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     file.write_all(&bytes).map_err(|e| e.to_string())
 }
@@ -52,21 +62,38 @@ pub async fn pick_pdf_path_owned(stem: String) -> Option<std::path::PathBuf> {
 
 // ── PDF builder ───────────────────────────────────────────────────────────
 
-fn build_pdf(wires: &[WireModel], paper_w: f32, paper_h: f32, ox: f32, oy: f32, rotation_deg: i32, plot_style: Option<&PlotStyleTable>) -> Vec<u8> {
+fn build_pdf(
+    wires: &[WireModel],
+    paper_w: f32,
+    paper_h: f32,
+    ox: f32,
+    oy: f32,
+    rotation_deg: i32,
+    plot_style: Option<&PlotStyleTable>,
+) -> Vec<u8> {
     let mut doc = PdfDocument::new("H7CAD Export");
     let mut ops: Vec<Op> = Vec::new();
 
     // White page background.
     ops.push(Op::SetFillColor {
-        col: Color::Rgb(Rgb { r: 1.0, g: 1.0, b: 1.0, icc_profile: None }),
+        col: Color::Rgb(Rgb {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            icc_profile: None,
+        }),
     });
     ops.push(Op::DrawRectangle {
         rectangle: printpdf::Rect::from_wh(Mm(paper_w).into(), Mm(paper_h).into()),
     });
 
     // Round line caps/joins for CAD aesthetics.
-    ops.push(Op::SetLineCapStyle { cap: LineCapStyle::Round });
-    ops.push(Op::SetLineJoinStyle { join: LineJoinStyle::Round });
+    ops.push(Op::SetLineCapStyle {
+        cap: LineCapStyle::Round,
+    });
+    ops.push(Op::SetLineJoinStyle {
+        join: LineJoinStyle::Round,
+    });
 
     // Apply rotation transform if needed.
     // PDF uses mm-based coordinate system with origin at bottom-left.
@@ -74,10 +101,10 @@ fn build_pdf(wires: &[WireModel], paper_w: f32, paper_h: f32, ox: f32, oy: f32, 
     let needs_rotation = rotation_deg != 0;
     if needs_rotation {
         let (cos_a, sin_a, tx, ty) = match rotation_deg {
-            90  => ( 0.0_f64,  1.0_f64, 0.0,              paper_h as f64),
-            180 => (-1.0_f64,  0.0_f64, paper_w as f64,   paper_h as f64),
-            270 => ( 0.0_f64, -1.0_f64, paper_w as f64,   0.0),
-            _   => ( 1.0_f64,  0.0_f64, 0.0,              0.0),
+            90 => (0.0_f64, 1.0_f64, 0.0, paper_h as f64),
+            180 => (-1.0_f64, 0.0_f64, paper_w as f64, paper_h as f64),
+            270 => (0.0_f64, -1.0_f64, paper_w as f64, 0.0),
+            _ => (1.0_f64, 0.0_f64, 0.0, 0.0),
         };
         // PDF CTM: [a b c d e f] = [cos sin -sin cos tx ty]
         ops.push(Op::SaveGraphicsState);
@@ -86,9 +113,12 @@ fn build_pdf(wires: &[WireModel], paper_w: f32, paper_h: f32, ox: f32, oy: f32, 
         let ty_pt = (ty * 2.834645) as f32;
         ops.push(Op::SetTransformationMatrix {
             matrix: printpdf::CurTransMat::Raw([
-                cos_a as f32, sin_a as f32,
-                -(sin_a as f32), cos_a as f32,
-                tx_pt, ty_pt,
+                cos_a as f32,
+                sin_a as f32,
+                -(sin_a as f32),
+                cos_a as f32,
+                tx_pt,
+                ty_pt,
             ]),
         });
     }
@@ -114,9 +144,12 @@ fn build_pdf(wires: &[WireModel], paper_w: f32, paper_h: f32, ox: f32, oy: f32, 
         if let Some(ctb) = plot_style {
             if wire.aci > 0 {
                 if let Some([cr, cg, cb]) = ctb.resolve_color(wire.aci) {
-                    r = cr; g = cg; b = cb;
+                    r = cr;
+                    g = cg;
+                    b = cb;
                 }
-                lw_override = ctb.resolve_lineweight(wire.aci)
+                lw_override = ctb
+                    .resolve_lineweight(wire.aci)
                     .map(|mm| (mm * MM_TO_PT).max(0.1));
             }
         }
@@ -125,27 +158,36 @@ fn build_pdf(wires: &[WireModel], paper_w: f32, paper_h: f32, ox: f32, oy: f32, 
         if lw_override.is_none() {
             let is_light = r > 0.80 && g > 0.80 && b > 0.80;
             let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
-            let is_cyan   = r < 0.30 && g > 0.70 && b > 0.70;
+            let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
             if is_light || is_yellow {
-                r = 0.0; g = 0.0; b = 0.0;
+                r = 0.0;
+                g = 0.0;
+                b = 0.0;
             } else if is_cyan {
                 // Viewport border: print as dark blue.
-                r = 0.0; g = 0.15; b = 0.50;
+                r = 0.0;
+                g = 0.15;
+                b = 0.50;
             }
         }
 
-        if last_color.map(|c| {
-            (c[0]-r).abs() > 0.01 || (c[1]-g).abs() > 0.01 || (c[2]-b).abs() > 0.01
-        }).unwrap_or(true) {
+        if last_color
+            .map(|c| (c[0] - r).abs() > 0.01 || (c[1] - g).abs() > 0.01 || (c[2] - b).abs() > 0.01)
+            .unwrap_or(true)
+        {
             ops.push(Op::SetOutlineColor {
-                col: Color::Rgb(Rgb { r, g, b, icc_profile: None }),
+                col: Color::Rgb(Rgb {
+                    r,
+                    g,
+                    b,
+                    icc_profile: None,
+                }),
             });
             last_color = Some([r, g, b]);
         }
 
         // Line weight: CTB override (in pt) or screen px → points.
-        let lw_pt = lw_override
-            .unwrap_or_else(|| (wire.line_weight_px * PX_TO_PT).max(0.1));
+        let lw_pt = lw_override.unwrap_or_else(|| (wire.line_weight_px * PX_TO_PT).max(0.1));
         if last_lw.map(|l| (l - lw_pt).abs() > 0.01).unwrap_or(true) {
             ops.push(Op::SetOutlineThickness { pt: Pt(lw_pt) });
             last_lw = Some(lw_pt);

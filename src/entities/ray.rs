@@ -104,14 +104,22 @@ impl PropertyEditable for Ray {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
-        let Ok(v) = value.trim().parse::<f64>() else { return };
+        let Ok(v) = value.trim().parse::<f64>() else {
+            return;
+        };
         match field {
             "ray_bx" => self.base_point.x = v,
             "ray_by" => self.base_point.y = v,
             "ray_bz" => self.base_point.z = v,
-            "ray_dx" => { self.direction.x = v; }
-            "ray_dy" => { self.direction.y = v; }
-            "ray_dz" => { self.direction.z = v; }
+            "ray_dx" => {
+                self.direction.x = v;
+            }
+            "ray_dy" => {
+                self.direction.y = v;
+            }
+            "ray_dz" => {
+                self.direction.z = v;
+            }
             _ => {}
         }
     }
@@ -233,14 +241,22 @@ impl PropertyEditable for XLine {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
-        let Ok(v) = value.trim().parse::<f64>() else { return };
+        let Ok(v) = value.trim().parse::<f64>() else {
+            return;
+        };
         match field {
             "xl_bx" => self.base_point.x = v,
             "xl_by" => self.base_point.y = v,
             "xl_bz" => self.base_point.z = v,
-            "xl_dx" => { self.direction.x = v; }
-            "xl_dy" => { self.direction.y = v; }
-            "xl_dz" => { self.direction.z = v; }
+            "xl_dx" => {
+                self.direction.x = v;
+            }
+            "xl_dy" => {
+                self.direction.y = v;
+            }
+            "xl_dz" => {
+                self.direction.z = v;
+            }
             _ => {}
         }
     }

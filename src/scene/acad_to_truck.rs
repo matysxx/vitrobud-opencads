@@ -12,7 +12,7 @@ use crate::scene::wire_model::{SnapHint, TangentGeom};
 /// world offset can be subtracted with f64 precision in tessellate.rs.
 pub struct TextStroke {
     pub strokes: Vec<Vec<[f32; 2]>>,
-    pub origin:  [f64; 2],
+    pub origin: [f64; 2],
 }
 
 #[allow(dead_code)]

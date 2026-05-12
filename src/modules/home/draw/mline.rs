@@ -23,16 +23,28 @@ pub struct MlineCommand {
 impl MlineCommand {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self { points: vec![], scale: 1.0, waiting_scale: false, style_name: "Standard".into() }
+        Self {
+            points: vec![],
+            scale: 1.0,
+            waiting_scale: false,
+            style_name: "Standard".into(),
+        }
     }
 
     pub fn with_style(style_name: impl Into<String>) -> Self {
-        Self { points: vec![], scale: 1.0, waiting_scale: false, style_name: style_name.into() }
+        Self {
+            points: vec![],
+            scale: 1.0,
+            waiting_scale: false,
+            style_name: style_name.into(),
+        }
     }
 }
 
 impl CadCommand for MlineCommand {
-    fn name(&self) -> &'static str { "MLINE" }
+    fn name(&self) -> &'static str {
+        "MLINE"
+    }
 
     fn prompt(&self) -> String {
         if self.waiting_scale {
@@ -40,7 +52,10 @@ impl CadCommand for MlineCommand {
         } else if self.points.is_empty() {
             format!("MLINE  Specify start point (scale={:.2}):", self.scale)
         } else {
-            format!("MLINE  Specify next point ({} pts, Enter to finish, C to close, S to set scale):", self.points.len())
+            format!(
+                "MLINE  Specify next point ({} pts, Enter to finish, C to close, S to set scale):",
+                self.points.len()
+            )
         }
     }
 
@@ -51,7 +66,12 @@ impl CadCommand for MlineCommand {
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         // Waiting for scale value
         if self.waiting_scale {
-            let v: f64 = text.trim().replace(',', ".").parse().ok().filter(|&v: &f64| v > 0.0)?;
+            let v: f64 = text
+                .trim()
+                .replace(',', ".")
+                .parse()
+                .ok()
+                .filter(|&v: &f64| v > 0.0)?;
             self.scale = v;
             self.waiting_scale = false;
             return Some(CmdResult::NeedPoint);
@@ -74,7 +94,9 @@ impl CadCommand for MlineCommand {
         // Scale: "S <value>" inline
         if let Some(rest) = up.strip_prefix("S ") {
             if let Ok(v) = rest.trim().replace(',', ".").parse::<f64>() {
-                if v > 0.0 { self.scale = v; }
+                if v > 0.0 {
+                    self.scale = v;
+                }
                 return Some(CmdResult::NeedPoint);
             }
         }
@@ -96,9 +118,10 @@ impl CadCommand for MlineCommand {
     }
 
     fn on_mouse_move(&mut self, pt: Vec3) -> Option<WireModel> {
-        if self.points.is_empty() { return None; }
-        let mut pts: Vec<[f32; 3]> =
-            self.points.iter().map(|p| [p.x, p.y, p.z]).collect();
+        if self.points.is_empty() {
+            return None;
+        }
+        let mut pts: Vec<[f32; 3]> = self.points.iter().map(|p| [p.x, p.y, p.z]).collect();
         pts.push([pt.x, pt.y, pt.z]);
         Some(WireModel {
             name: "mline_preview".into(),
@@ -121,7 +144,8 @@ impl CadCommand for MlineCommand {
 }
 
 fn build_mline(pts: &[Vec3], scale: f64, closed: bool, style_name: &str) -> EntityType {
-    let verts: Vec<Vector3> = pts.iter()
+    let verts: Vec<Vector3> = pts
+        .iter()
         .map(|p| Vector3::new(p.x as f64, p.z as f64, p.y as f64))
         .collect();
     let mut mline = if closed {

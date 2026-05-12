@@ -1,9 +1,11 @@
-use super::{H7CAD, Message, POLY_START_DELAY_MS};
-use super::helpers::{parse_coord, angle_close, ortho_constrain, polar_constrain, ucs_to_wcs, ucs_z_axis};
-use crate::scene::{self, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX};
+use super::helpers::{
+    angle_close, ortho_constrain, parse_coord, polar_constrain, ucs_to_wcs, ucs_z_axis,
+};
+use super::{Message, H7CAD, POLY_START_DELAY_MS};
+use crate::modules::ModuleEvent;
 use crate::scene::grip::{find_hit_grip, find_hit_grip_paper, GripEdit};
 use crate::scene::object::GripApply;
-use crate::modules::ModuleEvent;
+use crate::scene::{self, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX};
 use crate::ui::PropertiesPanel;
 use acadrust::types::Color as AcadColor;
 use acadrust::{EntityType as AcadEntityType, Handle};
@@ -61,21 +63,18 @@ impl H7CAD {
                 self.tabs[i].current_path = Some(path.clone());
                 self.tabs[i].scene.document = doc;
                 let stored = self.tabs[i].scene.document.header.user_real1;
-                self.tabs[i].scene.annotation_scale = if stored > 1e-9 { stored as f32 } else { 1.0 };
+                self.tabs[i].scene.annotation_scale =
+                    if stored > 1e-9 { stored as f32 } else { 1.0 };
 
                 // Auto-resolve XREFs relative to the opened file's directory.
                 if let Some(base_dir) = path.parent() {
-                    let xrefs = crate::io::xref::resolve_xrefs(
-                        &mut self.tabs[i].scene.document,
-                        base_dir,
-                    );
+                    let xrefs =
+                        crate::io::xref::resolve_xrefs(&mut self.tabs[i].scene.document, base_dir);
                     for info in &xrefs {
                         match info.status {
                             crate::io::xref::XrefStatus::Loaded => {
-                                self.command_line.push_output(&format!(
-                                    "XREF  Loaded \"{}\"",
-                                    info.name
-                                ));
+                                self.command_line
+                                    .push_output(&format!("XREF  Loaded \"{}\"", info.name));
                             }
                             crate::io::xref::XrefStatus::NotFound => {
                                 self.command_line.push_error(&format!(
@@ -102,7 +101,9 @@ impl H7CAD {
                 self.tabs[i].properties = PropertiesPanel::empty();
                 let doc_layers = self.tabs[i].scene.document.layers.clone();
                 let vp_info = self.tabs[i].scene.viewport_list();
-                self.tabs[i].layers.sync_with_viewports(&doc_layers, vp_info);
+                self.tabs[i]
+                    .layers
+                    .sync_with_viewports(&doc_layers, vp_info);
                 self.sync_ribbon_layers();
                 self.tabs[i].scene.restore_saved_camera();
                 self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
@@ -191,7 +192,9 @@ impl H7CAD {
                             .set_title("Save Block As")
                             .set_file_name("block.dwg")
                             .add_filter("DWG Files", &["dwg"])
-                            .save_file().await.map(|h| h.path().to_path_buf());
+                            .save_file()
+                            .await
+                            .map(|h| h.path().to_path_buf());
                         (name, path)
                     },
                     |(name, path)| Message::WblockSaveResult(name, path),
@@ -219,10 +222,13 @@ impl H7CAD {
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
-                            self.command_line
-                                .push_output(&format!("WBLOCK  Saved \"{block_name}\" → \"{fname}\""));
+                            self.command_line.push_output(&format!(
+                                "WBLOCK  Saved \"{block_name}\" → \"{fname}\""
+                            ));
                         }
-                        Err(e) => self.command_line.push_error(&format!("WBLOCK save failed: {e}")),
+                        Err(e) => self
+                            .command_line
+                            .push_error(&format!("WBLOCK save failed: {e}")),
                     },
                     Err(e) => self.command_line.push_error(&format!("WBLOCK: {e}")),
                 }
@@ -257,9 +263,8 @@ impl H7CAD {
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_else(|| path.to_string_lossy().into_owned());
-                        self.command_line.push_output(&format!(
-                            "DATAEXTRACTION  {rows} rows → \"{fname}\""
-                        ));
+                        self.command_line
+                            .push_output(&format!("DATAEXTRACTION  {rows} rows → \"{fname}\""));
                     }
                     Err(e) => self
                         .command_line
@@ -273,7 +278,8 @@ impl H7CAD {
             Message::StlExport => {
                 let i = self.active_tab;
                 if self.tabs[i].scene.meshes.is_empty() {
-                    self.command_line.push_error("STLOUT: no 3D mesh data in this drawing.");
+                    self.command_line
+                        .push_error("STLOUT: no 3D mesh data in this drawing.");
                     return Task::none();
                 }
                 Task::perform(
@@ -299,13 +305,16 @@ impl H7CAD {
                 let mesh_refs: Vec<&crate::scene::mesh_model::MeshModel> = meshes.iter().collect();
                 match crate::io::stl::build_stl(&mesh_refs) {
                     Some(bytes) => match std::fs::write(&path, bytes) {
-                        Ok(()) => self.command_line.push_output(&format!(
-                            "STLOUT: exported to \"{}\"",
-                            path.display()
-                        )),
-                        Err(e) => self.command_line.push_error(&format!("STLOUT: write error: {e}")),
+                        Ok(()) => self
+                            .command_line
+                            .push_output(&format!("STLOUT: exported to \"{}\"", path.display())),
+                        Err(e) => self
+                            .command_line
+                            .push_error(&format!("STLOUT: write error: {e}")),
                     },
-                    None => self.command_line.push_error("STLOUT: no mesh data to export."),
+                    None => self
+                        .command_line
+                        .push_error("STLOUT: no mesh data to export."),
                 }
                 Task::none()
             }
@@ -316,7 +325,8 @@ impl H7CAD {
             Message::StepExport => {
                 let i = self.active_tab;
                 if self.tabs[i].scene.meshes.is_empty() {
-                    self.command_line.push_error("STEPOUT: no 3D mesh data in this drawing.");
+                    self.command_line
+                        .push_error("STEPOUT: no 3D mesh data in this drawing.");
                     return Task::none();
                 }
                 Task::perform(
@@ -341,13 +351,16 @@ impl H7CAD {
                 let mesh_refs: Vec<&crate::scene::mesh_model::MeshModel> = meshes.iter().collect();
                 match crate::io::step::build_step(&mesh_refs) {
                     Some(text) => match std::fs::write(&path, text.as_bytes()) {
-                        Ok(()) => self.command_line.push_output(&format!(
-                            "STEPOUT: exported to \"{}\"",
-                            path.display()
-                        )),
-                        Err(e) => self.command_line.push_error(&format!("STEPOUT: write error: {e}")),
+                        Ok(()) => self
+                            .command_line
+                            .push_output(&format!("STEPOUT: exported to \"{}\"", path.display())),
+                        Err(e) => self
+                            .command_line
+                            .push_error(&format!("STEPOUT: write error: {e}")),
                     },
-                    None => self.command_line.push_error("STEPOUT: no mesh data to export."),
+                    None => self
+                        .command_line
+                        .push_error("STEPOUT: no mesh data to export."),
                 }
                 Task::none()
             }
@@ -355,33 +368,33 @@ impl H7CAD {
             Message::StepExportPath(None) => Task::none(),
 
             // ── OBJ import ────────────────────────────────────────────────
-            Message::ObjImport => {
-                Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .set_title("Import OBJ Mesh")
-                            .add_filter("Wavefront OBJ", &["obj", "OBJ"])
-                            .add_filter("All Files", &["*"])
-                            .pick_file()
-                            .await
-                            .map(|h| h.path().to_path_buf())
-                    },
-                    Message::ObjImportPath,
-                )
-            }
+            Message::ObjImport => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Import OBJ Mesh")
+                        .add_filter("Wavefront OBJ", &["obj", "OBJ"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file()
+                        .await
+                        .map(|h| h.path().to_path_buf())
+                },
+                Message::ObjImportPath,
+            ),
 
             Message::ObjImportPath(Some(path)) => {
                 let src = match std::fs::read_to_string(&path) {
                     Ok(s) => s,
                     Err(e) => {
-                        self.command_line.push_error(&format!("IMPORTOBJ: read error: {e}"));
+                        self.command_line
+                            .push_error(&format!("IMPORTOBJ: read error: {e}"));
                         return Task::none();
                     }
                 };
                 let color = [0.7f32, 0.7, 0.85, 1.0];
                 match crate::io::obj::parse_obj(&src, color) {
                     None => {
-                        self.command_line.push_error("IMPORTOBJ: no usable geometry in file.");
+                        self.command_line
+                            .push_error("IMPORTOBJ: no usable geometry in file.");
                     }
                     Some(mut mesh) => {
                         let i = self.active_tab;
@@ -413,7 +426,8 @@ impl H7CAD {
                 let i = self.active_tab;
                 if let Some(path) = &self.tabs[i].current_path {
                     let path = path.clone();
-                    self.tabs[i].scene.document.header.user_real1 = self.tabs[i].scene.annotation_scale as f64;
+                    self.tabs[i].scene.document.header.user_real1 =
+                        self.tabs[i].scene.annotation_scale as f64;
                     match crate::io::save(&self.tabs[i].scene.document, &path) {
                         Ok(()) => {
                             self.command_line
@@ -475,10 +489,12 @@ impl H7CAD {
                 let (_, version) = crate::io::parse_save_format(&self.save_dialog_format);
                 let close = self.close_save_dialog_window();
                 let i = self.active_tab;
-                self.tabs[i].scene.document.header.user_real1 = self.tabs[i].scene.annotation_scale as f64;
+                self.tabs[i].scene.document.header.user_real1 =
+                    self.tabs[i].scene.annotation_scale as f64;
                 match crate::io::save_as_version(&self.tabs[i].scene.document, &path, version) {
                     Ok(()) => {
-                        self.command_line.push_output(&format!("Saved: {}", path.display()));
+                        self.command_line
+                            .push_output(&format!("Saved: {}", path.display()));
                         self.tabs[i].current_path = Some(path.clone());
                         self.tabs[i].dirty = false;
                         if self.save_dialog_for_unsaved {
@@ -493,8 +509,6 @@ impl H7CAD {
 
             Message::SaveDialogCancel => self.close_save_dialog_window(),
 
-
-
             Message::ClearScene => {
                 let i = self.active_tab;
                 self.push_undo_snapshot(i, "CLEAR");
@@ -503,7 +517,9 @@ impl H7CAD {
                 self.tabs[i].properties = PropertiesPanel::empty();
                 let doc_layers = self.tabs[i].scene.document.layers.clone();
                 let vp_info = self.tabs[i].scene.viewport_list();
-                self.tabs[i].layers.sync_with_viewports(&doc_layers, vp_info);
+                self.tabs[i]
+                    .layers
+                    .sync_with_viewports(&doc_layers, vp_info);
                 self.command_line
                     .push_output("Scene cleared. Standard linetypes loaded.");
                 self.tabs[i].current_path = None;
@@ -516,19 +532,35 @@ impl H7CAD {
                 let i = self.active_tab;
                 self.tabs[i].wireframe = w;
                 self.ribbon.set_wireframe(w);
-                self.tabs[i].visual_style = if w { "Wireframe".into() } else { "Shaded".into() };
-                self.command_line.push_output(if w { "Visual style: Wireframe" } else { "Visual style: Shaded" });
+                self.tabs[i].visual_style = if w {
+                    "Wireframe".into()
+                } else {
+                    "Shaded".into()
+                };
+                self.command_line.push_output(if w {
+                    "Visual style: Wireframe"
+                } else {
+                    "Visual style: Shaded"
+                });
                 Task::none()
             }
 
             Message::SetProjection(ortho) => {
                 use crate::scene::Projection;
-                let proj = if ortho { Projection::Orthographic } else { Projection::Perspective };
+                let proj = if ortho {
+                    Projection::Orthographic
+                } else {
+                    Projection::Perspective
+                };
                 let i = self.active_tab;
                 self.tabs[i].scene.camera.borrow_mut().projection = proj;
                 self.tabs[i].scene.camera_generation += 1;
                 self.ribbon.set_ortho(ortho);
-                self.command_line.push_output(if ortho { "Projection: Orthographic" } else { "Projection: Perspective" });
+                self.command_line.push_output(if ortho {
+                    "Projection: Orthographic"
+                } else {
+                    "Projection: Perspective"
+                });
                 Task::none()
             }
 
@@ -542,7 +574,8 @@ impl H7CAD {
                 match event {
                     ModuleEvent::Command(cmd) => return self.dispatch_command(&cmd),
                     ModuleEvent::OpenFileDialog => {
-                        self.command_line.push_info("Open DWG/DXF: not yet implemented.");
+                        self.command_line
+                            .push_info("Open DWG/DXF: not yet implemented.");
                     }
                     ModuleEvent::ClearModels => {
                         let i = self.active_tab;
@@ -554,8 +587,16 @@ impl H7CAD {
                         let i = self.active_tab;
                         self.tabs[i].wireframe = w;
                         self.ribbon.set_wireframe(w);
-                        self.tabs[i].visual_style = if w { "Wireframe".into() } else { "Shaded".into() };
-                        self.command_line.push_output(if w { "Visual style: Wireframe" } else { "Visual style: Shaded" });
+                        self.tabs[i].visual_style = if w {
+                            "Wireframe".into()
+                        } else {
+                            "Shaded".into()
+                        };
+                        self.command_line.push_output(if w {
+                            "Visual style: Wireframe"
+                        } else {
+                            "Visual style: Shaded"
+                        });
                     }
                     ModuleEvent::ToggleLayers => {
                         return Task::done(Message::ToggleLayers);
@@ -565,13 +606,22 @@ impl H7CAD {
             }
 
             // ── Application menu ──────────────────────────────────────────
-            Message::ToggleAppMenu => { self.app_menu.toggle(); Task::none() }
-            Message::CloseAppMenu => { self.app_menu.close(); Task::none() }
+            Message::ToggleAppMenu => {
+                self.app_menu.toggle();
+                Task::none()
+            }
+            Message::CloseAppMenu => {
+                self.app_menu.close();
+                Task::none()
+            }
             Message::CloseAppMenuAndRun(cmd) => {
                 self.app_menu.close();
                 self.dispatch_command(&cmd.clone())
             }
-            Message::AppMenuSearch(s) => { self.app_menu.search = s; Task::none() }
+            Message::AppMenuSearch(s) => {
+                self.app_menu.search = s;
+                Task::none()
+            }
 
             // ── Document tabs ─────────────────────────────────────────────
             Message::TabNew => {
@@ -724,7 +774,9 @@ impl H7CAD {
                         return Task::none();
                     }
                 }
-                if self.layout_rename_state.take().is_some() || self.layout_context_menu.take().is_some() {
+                if self.layout_rename_state.take().is_some()
+                    || self.layout_context_menu.take().is_some()
+                {
                     return Task::none();
                 }
                 let i = self.active_tab;
@@ -795,16 +847,36 @@ impl H7CAD {
                     self.save_dialog_window = None;
                     return Task::none();
                 }
-                if self.layer_window         == Some(id) { self.layer_window         = None; }
-                if self.page_setup_window    == Some(id) { self.page_setup_window    = None; }
-                if self.textstyle_window     == Some(id) { self.textstyle_window     = None; }
-                if self.tablestyle_window    == Some(id) { self.tablestyle_window    = None; }
-                if self.mlstyle_window       == Some(id) { self.mlstyle_window       = None; }
-                if self.layout_manager_window == Some(id) { self.layout_manager_window = None; }
-                if self.plotstyle_window     == Some(id) { self.plotstyle_window     = None; }
-                if self.dimstyle_window      == Some(id) { self.dimstyle_window      = None; }
-                if self.shortcuts_window     == Some(id) { self.shortcuts_window     = None; }
-                if self.about_window         == Some(id) { self.about_window         = None; }
+                if self.layer_window == Some(id) {
+                    self.layer_window = None;
+                }
+                if self.page_setup_window == Some(id) {
+                    self.page_setup_window = None;
+                }
+                if self.textstyle_window == Some(id) {
+                    self.textstyle_window = None;
+                }
+                if self.tablestyle_window == Some(id) {
+                    self.tablestyle_window = None;
+                }
+                if self.mlstyle_window == Some(id) {
+                    self.mlstyle_window = None;
+                }
+                if self.layout_manager_window == Some(id) {
+                    self.layout_manager_window = None;
+                }
+                if self.plotstyle_window == Some(id) {
+                    self.plotstyle_window = None;
+                }
+                if self.dimstyle_window == Some(id) {
+                    self.dimstyle_window = None;
+                }
+                if self.shortcuts_window == Some(id) {
+                    self.shortcuts_window = None;
+                }
+                if self.about_window == Some(id) {
+                    self.about_window = None;
+                }
                 Task::none()
             }
 
@@ -819,7 +891,9 @@ impl H7CAD {
                     let on = l.visible;
                     self.tabs[i].scene.toggle_layer_visibility(&name);
                     self.command_line.push_output(&format!(
-                        "Layer \"{}\" {}", name, if on { "on" } else { "off" }
+                        "Layer \"{}\" {}",
+                        name,
+                        if on { "on" } else { "off" }
                     ));
                 }
                 Task::none()
@@ -835,7 +909,9 @@ impl H7CAD {
                     let locked = l.locked;
                     self.tabs[i].scene.toggle_layer_lock(&name);
                     self.command_line.push_output(&format!(
-                        "Layer \"{}\" {}", name, if locked { "locked" } else { "unlocked" }
+                        "Layer \"{}\" {}",
+                        name,
+                        if locked { "locked" } else { "unlocked" }
                     ));
                 }
                 Task::none()
@@ -850,7 +926,11 @@ impl H7CAD {
                     let name = l.name.clone();
                     let frozen = l.frozen;
                     if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(&name) {
-                        if frozen { dl.freeze(); } else { dl.thaw(); }
+                        if frozen {
+                            dl.freeze();
+                        } else {
+                            dl.thaw();
+                        }
                     }
                     self.tabs[i].scene.bump_geometry();
                     self.tabs[i].dirty = true;
@@ -860,9 +940,15 @@ impl H7CAD {
 
             Message::LayerToggleVpFreeze(layer_idx, vp_col_idx) => {
                 let i = self.active_tab;
-                let vp_handle = self.tabs[i].layers.vp_cols.get(vp_col_idx)
+                let vp_handle = self.tabs[i]
+                    .layers
+                    .vp_cols
+                    .get(vp_col_idx)
                     .map(|c| c.handle);
-                let layer_name = self.tabs[i].layers.layers.get(layer_idx)
+                let layer_name = self.tabs[i]
+                    .layers
+                    .layers
+                    .get(layer_idx)
                     .map(|l| l.name.clone());
 
                 if let (Some(vp_handle), Some(layer_name)) = (vp_handle, layer_name) {
@@ -888,7 +974,9 @@ impl H7CAD {
                         // Re-sync layer panel with updated VP info
                         let vp_info = self.tabs[i].scene.viewport_list();
                         let doc_layers = self.tabs[i].scene.document.layers.clone();
-                        self.tabs[i].layers.sync_with_viewports(&doc_layers, vp_info);
+                        self.tabs[i]
+                            .layers
+                            .sync_with_viewports(&doc_layers, vp_info);
                         self.tabs[i].scene.bump_geometry();
                         self.tabs[i].dirty = true;
                     }
@@ -908,12 +996,21 @@ impl H7CAD {
                 };
                 self.push_undo_snapshot(i, "LAYER NEW");
                 use acadrust::tables::layer::Layer as DocLayer;
-                let _ = self.tabs[i].scene.document.layers.add(DocLayer::new(&new_name));
+                let _ = self.tabs[i]
+                    .scene
+                    .document
+                    .layers
+                    .add(DocLayer::new(&new_name));
                 self.tabs[i].dirty = true;
                 let doc_layers = self.tabs[i].scene.document.layers.clone();
                 let vp_info = self.tabs[i].scene.viewport_list();
-                self.tabs[i].layers.sync_with_viewports(&doc_layers, vp_info);
-                let new_idx = self.tabs[i].layers.layers.iter()
+                self.tabs[i]
+                    .layers
+                    .sync_with_viewports(&doc_layers, vp_info);
+                let new_idx = self.tabs[i]
+                    .layers
+                    .layers
+                    .iter()
                     .position(|l| l.name == new_name);
                 if let Some(idx) = new_idx {
                     self.tabs[i].layers.selected = Some(idx);
@@ -927,16 +1024,23 @@ impl H7CAD {
             Message::LayerDelete => {
                 let i = self.active_tab;
                 if let Some(idx) = self.tabs[i].layers.selected {
-                    let name = self.tabs[i].layers.layers.get(idx)
+                    let name = self.tabs[i]
+                        .layers
+                        .layers
+                        .get(idx)
                         .map(|l| l.name.clone())
                         .unwrap_or_default();
-                    if name == "0" { return Task::none(); }
+                    if name == "0" {
+                        return Task::none();
+                    }
                     self.push_undo_snapshot(i, "LAYER DELETE");
                     self.tabs[i].scene.document.layers.remove(&name);
                     self.tabs[i].dirty = true;
                     let doc_layers = self.tabs[i].scene.document.layers.clone();
                     let vp_info = self.tabs[i].scene.viewport_list();
-                    self.tabs[i].layers.sync_with_viewports(&doc_layers, vp_info);
+                    self.tabs[i]
+                        .layers
+                        .sync_with_viewports(&doc_layers, vp_info);
                     self.tabs[i].layers.selected = None;
                     self.sync_ribbon_layers();
                 }
@@ -986,10 +1090,14 @@ impl H7CAD {
                 let editing_idx = self.tabs[i].layers.editing.take();
                 if let Some(idx) = editing_idx {
                     let new_name = self.tabs[i].layers.edit_buf.trim().to_string();
-                    let old_name = self.tabs[i].layers.layers.get(idx)
+                    let old_name = self.tabs[i]
+                        .layers
+                        .layers
+                        .get(idx)
                         .map(|l| l.name.clone())
                         .unwrap_or_default();
-                    if !new_name.is_empty() && new_name != old_name
+                    if !new_name.is_empty()
+                        && new_name != old_name
                         && !self.tabs[i].scene.document.layers.contains(&new_name)
                     {
                         self.push_undo_snapshot(i, "LAYER RENAME");
@@ -1010,7 +1118,9 @@ impl H7CAD {
                     }
                     let doc_layers = self.tabs[i].scene.document.layers.clone();
                     let vp_info = self.tabs[i].scene.viewport_list();
-                    self.tabs[i].layers.sync_with_viewports(&doc_layers, vp_info);
+                    self.tabs[i]
+                        .layers
+                        .sync_with_viewports(&doc_layers, vp_info);
                     self.tabs[i].layers.edit_buf.clear();
                     self.sync_ribbon_layers();
                 }
@@ -1188,7 +1298,12 @@ impl H7CAD {
                 if mid_down {
                     if let Some(last) = mid_last {
                         let (dx, dy) = (p.x - last.x, p.y - last.y);
-                        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vp_size.0, height: vp_size.1 };
+                        let bounds = iced::Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            width: vp_size.0,
+                            height: vp_size.1,
+                        };
                         // Drop `sel` before calling mutable scene methods.
                         drop(sel);
                         if self.tabs[i].scene.active_viewport.is_some() {
@@ -1209,7 +1324,12 @@ impl H7CAD {
                 // ── Grip drag ─────────────────────────────────────────────
                 if let Some(grip) = self.tabs[i].active_grip.clone() {
                     let (vw, vh) = vp_size;
-                    let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+                    let bounds = iced::Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: vw,
+                        height: vh,
+                    };
                     let cam = self.tabs[i].scene.camera.borrow();
                     let raw_paper = cam.pick_on_target_plane(p, bounds);
                     let vp_mat = cam.view_proj(bounds);
@@ -1249,7 +1369,9 @@ impl H7CAD {
                     } else {
                         GripApply::Absolute(snapped + wo_vec)
                     };
-                    self.tabs[i].scene.apply_grip(grip.handle, grip.grip_id, apply);
+                    self.tabs[i]
+                        .scene
+                        .apply_grip(grip.handle, grip.grip_id, apply);
                     self.tabs[i].dirty = true;
                     self.tabs[i].active_grip.as_mut().unwrap().last_world = snapped;
                     self.refresh_selected_grips();
@@ -1259,16 +1381,29 @@ impl H7CAD {
 
                 if self.tabs[i].active_cmd.is_some() {
                     let (vw, vh) = vp_size;
-                    let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+                    let bounds = iced::Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: vw,
+                        height: vh,
+                    };
                     let cursor_paper = if let Some(ref ucs) = self.tabs[i].active_ucs {
                         let origin = glam::Vec3::new(
-                            ucs.origin.x as f32, ucs.origin.y as f32, ucs.origin.z as f32,
+                            ucs.origin.x as f32,
+                            ucs.origin.y as f32,
+                            ucs.origin.z as f32,
                         );
                         let normal = ucs_z_axis(ucs);
-                        self.tabs[i].scene.camera.borrow()
+                        self.tabs[i]
+                            .scene
+                            .camera
+                            .borrow()
                             .pick_on_plane(p, bounds, normal, origin)
                     } else {
-                        self.tabs[i].scene.camera.borrow()
+                        self.tabs[i]
+                            .scene
+                            .camera
+                            .borrow()
                             .pick_on_target_plane(p, bounds)
                     };
                     let view_proj = self.tabs[i].scene.camera.borrow().view_proj(bounds);
@@ -1281,25 +1416,43 @@ impl H7CAD {
 
                     let all_wires = self.tabs[i].scene.hit_test_wires();
                     let needs_entity = self.tabs[i]
-                        .active_cmd.as_ref().map(|c| c.needs_entity_pick()).unwrap_or(false);
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.needs_entity_pick())
+                        .unwrap_or(false);
                     let is_gathering = self.tabs[i]
-                        .active_cmd.as_ref().map(|c| c.is_selection_gathering()).unwrap_or(false);
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.is_selection_gathering())
+                        .unwrap_or(false);
                     let needs_tan = self.tabs[i]
-                        .active_cmd.as_ref().map(|c| c.needs_tangent_pick()).unwrap_or(false);
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.needs_tangent_pick())
+                        .unwrap_or(false);
                     self.tabs[i].snap_result = if needs_entity || is_gathering {
                         None
                     } else if needs_tan {
-                        self.snapper.snap_tangent_only(cursor_world, p, &all_wires[..], view_proj, bounds)
+                        self.snapper.snap_tangent_only(
+                            cursor_world,
+                            p,
+                            &all_wires[..],
+                            view_proj,
+                            bounds,
+                        )
                     } else {
-                        self.snapper.snap(cursor_world, p, &all_wires[..], view_proj, bounds)
+                        self.snapper
+                            .snap(cursor_world, p, &all_wires[..], view_proj, bounds)
                     };
 
                     // Object Snap Tracking: update dwell and override snap if tracking.
                     let otrack_snap_world = {
                         let snap_world = self.tabs[i].snap_result.map(|s| s.world);
-                        self.snapper.update_otrack_dwell(snap_world, view_proj, bounds);
+                        self.snapper
+                            .update_otrack_dwell(snap_world, view_proj, bounds);
                         if self.tabs[i].snap_result.is_none() {
-                            self.snapper.otrack_snap(cursor_world, view_proj, bounds)
+                            self.snapper
+                                .otrack_snap(cursor_world, view_proj, bounds)
                                 .map(|(w, _)| w)
                         } else {
                             None
@@ -1314,7 +1467,8 @@ impl H7CAD {
                     let effective = {
                         // snap.world is paper-space for viewport-projected wires; convert
                         // to model-space so previews use consistent coordinates.
-                        let mut pt = self.tabs[i].snap_result
+                        let mut pt = self.tabs[i]
+                            .snap_result
                             .map(|s| self.tabs[i].scene.paper_to_model(s.world))
                             .unwrap_or(cursor_world);
                         // Clamp to world XY only when no UCS is active; with a UCS the
@@ -1339,11 +1493,15 @@ impl H7CAD {
                             scene::hit_test::click_hit(p, &all_wires[..], view_proj, bounds)
                                 .and_then(|s| Scene::handle_from_wire_name(s))
                                 .unwrap_or(acadrust::Handle::NULL);
-                        self.tabs[i].active_cmd.as_mut()
+                        self.tabs[i]
+                            .active_cmd
+                            .as_mut()
                             .map(|c| c.on_hover_entity(hover_handle, effective))
                             .unwrap_or_default()
                     } else {
-                        self.tabs[i].active_cmd.as_mut()
+                        self.tabs[i]
+                            .active_cmd
+                            .as_mut()
                             .map(|c| c.on_preview_wires(effective))
                             .unwrap_or_default()
                     };
@@ -1375,8 +1533,8 @@ impl H7CAD {
                                     key_vertices: vec![],
                                     aabb: crate::scene::WireModel::UNBOUNDED_AABB,
                                     plinegen: true,
-            vp_scissor: None,
-            fill_tris: vec![],
+                                    vp_scissor: None,
+                                    fill_tris: vec![],
                                 };
                                 previews.push(guide);
                             }
@@ -1424,11 +1582,18 @@ impl H7CAD {
                     (p, sel.vp_size)
                 };
                 let (vw, vh) = vp_size;
-                let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+                let bounds = iced::Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: vw,
+                    height: vh,
+                };
 
                 if vw > 1.0 && vh > 1.0 {
                     let cam = self.tabs[i].scene.camera.borrow();
-                    if scene::hit_test(p.x, p.y, vw, vh, cam.view_rotation_mat(), VIEWCUBE_PX).is_some() {
+                    if scene::hit_test(p.x, p.y, vw, vh, cam.view_rotation_mat(), VIEWCUBE_PX)
+                        .is_some()
+                    {
                         return Task::none();
                     }
                 }
@@ -1444,7 +1609,15 @@ impl H7CAD {
                             let tx = cam.target.x;
                             let ty = cam.target.y;
                             drop(cam);
-                            find_hit_grip_paper(p, &self.tabs[i].selected_grips, tx, ty, half_w, half_h, bounds)
+                            find_hit_grip_paper(
+                                p,
+                                &self.tabs[i].selected_grips,
+                                tx,
+                                ty,
+                                half_w,
+                                half_h,
+                                bounds,
+                            )
                         } else {
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                             find_hit_grip(p, &self.tabs[i].selected_grips, vp_mat, bounds)
@@ -1489,11 +1662,19 @@ impl H7CAD {
                 }
 
                 let is_gathering = self.tabs[i]
-                    .active_cmd.as_ref().map(|c| c.is_selection_gathering()).unwrap_or(false);
+                    .active_cmd
+                    .as_ref()
+                    .map(|c| c.is_selection_gathering())
+                    .unwrap_or(false);
 
                 if is_down && is_click && self.tabs[i].active_cmd.is_some() && !is_gathering {
                     let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
-                    let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+                    let bounds = iced::Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: vw,
+                        height: vh,
+                    };
 
                     let snap_taken = self.tabs[i].snap_result.take();
                     let tangent_obj_at_click = snap_taken.and_then(|s| s.tangent_obj);
@@ -1503,27 +1684,42 @@ impl H7CAD {
                         // no UCS is active).
                         let raw_paper = if let Some(ref ucs) = self.tabs[i].active_ucs {
                             let origin = glam::Vec3::new(
-                                ucs.origin.x as f32, ucs.origin.y as f32, ucs.origin.z as f32,
+                                ucs.origin.x as f32,
+                                ucs.origin.y as f32,
+                                ucs.origin.z as f32,
                             );
                             let normal = ucs_z_axis(ucs);
-                            self.tabs[i].scene.camera.borrow()
+                            self.tabs[i]
+                                .scene
+                                .camera
+                                .borrow()
                                 .pick_on_plane(p, bounds, normal, origin)
                         } else {
-                            self.tabs[i].scene.camera.borrow()
+                            self.tabs[i]
+                                .scene
+                                .camera
+                                .borrow()
                                 .pick_on_target_plane(p, bounds)
                         };
                         // Convert paper-space → model-space when inside a viewport.
                         let raw = self.tabs[i].scene.paper_to_model(raw_paper);
                         let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                         let all_wires = self.tabs[i].scene.hit_test_wires();
-                        let needs_tan = self.tabs[i].active_cmd.as_ref()
-                            .map(|c| c.needs_tangent_pick()).unwrap_or(false);
-                        let needs_entity_click = self.tabs[i].active_cmd.as_ref()
-                            .map(|c| c.needs_entity_pick()).unwrap_or(false);
+                        let needs_tan = self.tabs[i]
+                            .active_cmd
+                            .as_ref()
+                            .map(|c| c.needs_tangent_pick())
+                            .unwrap_or(false);
+                        let needs_entity_click = self.tabs[i]
+                            .active_cmd
+                            .as_ref()
+                            .map(|c| c.needs_entity_pick())
+                            .unwrap_or(false);
                         let snap_hit = if needs_entity_click {
                             None
                         } else if needs_tan {
-                            self.snapper.snap_tangent_only(raw, p, &all_wires[..], vp_mat, bounds)
+                            self.snapper
+                                .snap_tangent_only(raw, p, &all_wires[..], vp_mat, bounds)
                         } else {
                             self.snapper.snap(raw, p, &all_wires[..], vp_mat, bounds)
                         };
@@ -1547,37 +1743,64 @@ impl H7CAD {
                         pt
                     };
 
-                    let result = if self.tabs[i].active_cmd.as_ref()
-                        .map(|c| c.needs_entity_pick()).unwrap_or(false)
+                    let result = if self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.needs_entity_pick())
+                        .unwrap_or(false)
                     {
                         let vp_mat2 = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                         let all_wires2 = self.tabs[i].scene.hit_test_wires();
                         let hit = scene::hit_test::click_hit(p, &all_wires2[..], vp_mat2, bounds)
                             .and_then(|s| Scene::handle_from_wire_name(s));
                         if let Some(handle) = hit {
-                            let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_entity_pick(handle, world_pt));
+                            let result = self.tabs[i]
+                                .active_cmd
+                                .as_mut()
+                                .map(|c| c.on_entity_pick(handle, world_pt));
                             // HATCHEDIT: after pick, inject hatch model data into the command.
-                            if self.tabs[i].active_cmd.as_ref().map(|c| c.name() == "HATCHEDIT").unwrap_or(false) {
-                                if let Some(model) = self.tabs[i].scene.hatches.get(&handle).cloned() {
+                            if self.tabs[i]
+                                .active_cmd
+                                .as_ref()
+                                .map(|c| c.name() == "HATCHEDIT")
+                                .unwrap_or(false)
+                            {
+                                if let Some(model) =
+                                    self.tabs[i].scene.hatches.get(&handle).cloned()
+                                {
                                     use crate::command::CadCommand;
                                     use crate::modules::home::draw::hatchedit::HatcheditCommand;
-                                    let cmd: Box<dyn CadCommand> = Box::new(HatcheditCommand::with_handle(
-                                        handle, model.name.clone(), model.scale, model.angle_offset,
-                                    ));
+                                    let cmd: Box<dyn CadCommand> =
+                                        Box::new(HatcheditCommand::with_handle(
+                                            handle,
+                                            model.name.clone(),
+                                            model.scale,
+                                            model.angle_offset,
+                                        ));
                                     self.command_line.push_info(&cmd.prompt());
                                     self.tabs[i].active_cmd = Some(cmd);
                                 } else {
-                                    self.command_line.push_error("HATCHEDIT: not a hatch entity.");
+                                    self.command_line
+                                        .push_error("HATCHEDIT: not a hatch entity.");
                                     self.tabs[i].active_cmd = None;
                                 }
                             }
                             // DIMTEDIT / MLEADERADD / MLEADERREMOVE: inject cloned entity via trait.
                             {
-                                let needs_inject = self.tabs[i].active_cmd.as_ref()
-                                    .map(|c| matches!(c.name(), "DIMTEDIT" | "MLEADERADD" | "MLEADERREMOVE"))
+                                let needs_inject = self.tabs[i]
+                                    .active_cmd
+                                    .as_ref()
+                                    .map(|c| {
+                                        matches!(
+                                            c.name(),
+                                            "DIMTEDIT" | "MLEADERADD" | "MLEADERREMOVE"
+                                        )
+                                    })
                                     .unwrap_or(false);
                                 if needs_inject {
-                                    if let Some(entity) = self.tabs[i].scene.document.get_entity(handle).cloned() {
+                                    if let Some(entity) =
+                                        self.tabs[i].scene.document.get_entity(handle).cloned()
+                                    {
                                         if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
                                             cmd.inject_picked_entity(entity);
                                             let prompt = cmd.prompt();
@@ -1591,18 +1814,27 @@ impl H7CAD {
                             self.command_line.push_info("Nothing found at that point.");
                             None
                         }
-                    } else if self.tabs[i].active_cmd.as_ref()
-                        .map(|c| c.needs_tangent_pick()).unwrap_or(false)
+                    } else if self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.needs_tangent_pick())
+                        .unwrap_or(false)
                     {
                         if let Some(obj) = tangent_obj_at_click {
-                            self.tabs[i].active_cmd.as_mut().map(|c| c.on_tangent_point(obj, world_pt))
+                            self.tabs[i]
+                                .active_cmd
+                                .as_mut()
+                                .map(|c| c.on_tangent_point(obj, world_pt))
                         } else {
                             self.command_line.push_info("Select a tangent object.");
                             None
                         }
                     } else {
                         self.last_point = Some(world_pt);
-                        self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(world_pt))
+                        self.tabs[i]
+                            .active_cmd
+                            .as_mut()
+                            .map(|c| c.on_point(world_pt))
                     };
 
                     if let Some(r) = result {
@@ -1624,16 +1856,29 @@ impl H7CAD {
 
                 let (is_down2, is_dragging, box_anchor, box_crossing, vp_size, elapsed_ms) = {
                     let sel = self.tabs[i].scene.selection.borrow();
-                    let elapsed = sel.left_press_time
+                    let elapsed = sel
+                        .left_press_time
                         .map(|t| Instant::now().duration_since(t).as_millis())
                         .unwrap_or(u128::MAX);
-                    (sel.left_down, sel.left_dragging, sel.box_anchor, sel.box_crossing, sel.vp_size, elapsed)
+                    (
+                        sel.left_down,
+                        sel.left_dragging,
+                        sel.box_anchor,
+                        sel.box_crossing,
+                        sel.vp_size,
+                        elapsed,
+                    )
                 };
 
                 let mut selection_just_completed = false;
 
                 if is_down2 {
-                    let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vp_size.0, height: vp_size.1 };
+                    let bounds = iced::Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: vp_size.0,
+                        height: vp_size.1,
+                    };
 
                     if is_dragging {
                         if elapsed_ms < POLY_START_DELAY_MS {
@@ -1642,13 +1887,28 @@ impl H7CAD {
                                 let all_wires = self.tabs[i].scene.hit_test_wires();
                                 let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                                 let mut handles: Vec<Handle> = scene::hit_test::box_hit(
-                                    a, p, crossing, &all_wires[..], vp_mat, bounds,
-                                ).into_iter().filter_map(|s| Scene::handle_from_wire_name(s)).collect();
+                                    a,
+                                    p,
+                                    crossing,
+                                    &all_wires[..],
+                                    vp_mat,
+                                    bounds,
+                                )
+                                .into_iter()
+                                .filter_map(|s| Scene::handle_from_wire_name(s))
+                                .collect();
                                 handles.extend(scene::hit_test::box_hit_hatch(
-                                    a, p, crossing, &self.tabs[i].scene.hatches, vp_mat, bounds,
+                                    a,
+                                    p,
+                                    crossing,
+                                    &self.tabs[i].scene.hatches,
+                                    vp_mat,
+                                    bounds,
                                 ));
                                 self.tabs[i].scene.deselect_all();
-                                for h in &handles { self.tabs[i].scene.select_entity(*h, false); }
+                                for h in &handles {
+                                    self.tabs[i].scene.select_entity(*h, false);
+                                }
                                 self.tabs[i].scene.expand_selection_for_groups(&handles);
                                 self.refresh_properties();
                                 selection_just_completed = true;
@@ -1662,13 +1922,26 @@ impl H7CAD {
                             let all_wires = self.tabs[i].scene.hit_test_wires();
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                             let mut handles: Vec<Handle> = scene::hit_test::poly_hit(
-                                &poly_pts, crossing, &all_wires[..], vp_mat, bounds,
-                            ).into_iter().filter_map(|s| Scene::handle_from_wire_name(s)).collect();
+                                &poly_pts,
+                                crossing,
+                                &all_wires[..],
+                                vp_mat,
+                                bounds,
+                            )
+                            .into_iter()
+                            .filter_map(|s| Scene::handle_from_wire_name(s))
+                            .collect();
                             handles.extend(scene::hit_test::poly_hit_hatch(
-                                &poly_pts, crossing, &self.tabs[i].scene.hatches, vp_mat, bounds,
+                                &poly_pts,
+                                crossing,
+                                &self.tabs[i].scene.hatches,
+                                vp_mat,
+                                bounds,
                             ));
                             self.tabs[i].scene.deselect_all();
-                            for h in &handles { self.tabs[i].scene.select_entity(*h, false); }
+                            for h in &handles {
+                                self.tabs[i].scene.select_entity(*h, false);
+                            }
                             self.tabs[i].scene.expand_selection_for_groups(&handles);
                             self.refresh_properties();
                             selection_just_completed = true;
@@ -1685,9 +1958,14 @@ impl H7CAD {
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                             let hit = scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
                                 .and_then(|s| Scene::handle_from_wire_name(s))
-                                .or_else(|| scene::hit_test::click_hit_hatch(
-                                    p, &self.tabs[i].scene.hatches, vp_mat, bounds,
-                                ));
+                                .or_else(|| {
+                                    scene::hit_test::click_hit_hatch(
+                                        p,
+                                        &self.tabs[i].scene.hatches,
+                                        vp_mat,
+                                        bounds,
+                                    )
+                                });
                             if let Some(handle) = hit {
                                 self.tabs[i].scene.select_entity(handle, true);
                                 self.tabs[i].scene.expand_selection_for_groups(&[handle]);
@@ -1707,13 +1985,28 @@ impl H7CAD {
                             let all_wires = self.tabs[i].scene.hit_test_wires();
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                             let mut handles: Vec<Handle> = scene::hit_test::box_hit(
-                                a, p, crossing, &all_wires[..], vp_mat, bounds,
-                            ).into_iter().filter_map(|s| Scene::handle_from_wire_name(s)).collect();
+                                a,
+                                p,
+                                crossing,
+                                &all_wires[..],
+                                vp_mat,
+                                bounds,
+                            )
+                            .into_iter()
+                            .filter_map(|s| Scene::handle_from_wire_name(s))
+                            .collect();
                             handles.extend(scene::hit_test::box_hit_hatch(
-                                a, p, crossing, &self.tabs[i].scene.hatches, vp_mat, bounds,
+                                a,
+                                p,
+                                crossing,
+                                &self.tabs[i].scene.hatches,
+                                vp_mat,
+                                bounds,
                             ));
                             self.tabs[i].scene.deselect_all();
-                            for h in &handles { self.tabs[i].scene.select_entity(*h, false); }
+                            for h in &handles {
+                                self.tabs[i].scene.select_entity(*h, false);
+                            }
                             self.tabs[i].scene.expand_selection_for_groups(&handles);
                             self.refresh_properties();
                             let mut sel = self.tabs[i].scene.selection.borrow_mut();
@@ -1735,7 +2028,11 @@ impl H7CAD {
 
                 if is_gathering && selection_just_completed {
                     let handles: Vec<Handle> = self.tabs[i]
-                        .scene.selected_entities().into_iter().map(|(h, _)| h).collect();
+                        .scene
+                        .selected_entities()
+                        .into_iter()
+                        .map(|(h, _)| h)
+                        .collect();
                     if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
                         let result = cmd.on_selection_complete(handles);
                         return self.apply_cmd_result(result);
@@ -1764,19 +2061,25 @@ impl H7CAD {
 
                     if is_double_model {
                         let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
-                        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+                        let bounds = iced::Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            width: vw,
+                            height: vh,
+                        };
                         let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                         let all_wires = self.tabs[i].scene.hit_test_wires();
                         let hit = scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
                             .and_then(|s| Scene::handle_from_wire_name(s));
                         if let Some(handle) = hit {
                             if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
-                                use crate::modules::annotate::ddedit::{DdeditCommand, entity_text};
+                                use crate::modules::annotate::ddedit::{
+                                    entity_text, DdeditCommand,
+                                };
                                 if let Some(cur) = entity_text(entity) {
                                     let cmd = DdeditCommand::with_handle(handle, cur.clone());
-                                    self.command_line.push_info(
-                                        &format!("DDEDIT  Enter new text <{cur}>:")
-                                    );
+                                    self.command_line
+                                        .push_info(&format!("DDEDIT  Enter new text <{cur}>:"));
                                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                                     return self.focus_cmd_input();
                                 }
@@ -1808,7 +2111,12 @@ impl H7CAD {
 
                     if is_double {
                         let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
-                        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+                        let bounds = iced::Rectangle {
+                            x: 0.0,
+                            y: 0.0,
+                            width: vw,
+                            height: vh,
+                        };
 
                         // 1) Try direct wire hit — works when the border is clicked.
                         let hit_vp: Option<acadrust::Handle> = {
@@ -1820,7 +2128,11 @@ impl H7CAD {
                                     if let Some(AcadEntityType::Viewport(vp)) =
                                         self.tabs[i].scene.document.get_entity(h)
                                     {
-                                        if Scene::is_content_viewport(vp) { Some(h) } else { None }
+                                        if Scene::is_content_viewport(vp) {
+                                            Some(h)
+                                        } else {
+                                            None
+                                        }
                                     } else {
                                         None
                                     }
@@ -1856,7 +2168,9 @@ impl H7CAD {
             Message::ViewportRightPress => {
                 let i = self.active_tab;
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                let Some(p) = sel.last_move_pos else { return Task::none(); };
+                let Some(p) = sel.last_move_pos else {
+                    return Task::none();
+                };
                 sel.context_menu = None;
                 sel.right_down = true;
                 sel.right_press_pos = Some(p);
@@ -1868,7 +2182,9 @@ impl H7CAD {
             Message::ViewportRightRelease => {
                 let i = self.active_tab;
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                let Some(_p) = sel.last_move_pos else { return Task::none(); };
+                let Some(_p) = sel.last_move_pos else {
+                    return Task::none();
+                };
                 if sel.right_down {
                     if !sel.right_dragging {
                         sel.context_menu = sel.last_move_pos;
@@ -1892,7 +2208,9 @@ impl H7CAD {
                 };
                 {
                     let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                    let Some(p) = sel.last_move_pos else { return Task::none(); };
+                    let Some(p) = sel.last_move_pos else {
+                        return Task::none();
+                    };
                     sel.middle_down = true;
                     sel.middle_last_pos = Some(p);
                     sel.middle_last_press_time = Some(now);
@@ -1920,12 +2238,20 @@ impl H7CAD {
                 let i = self.active_tab;
                 let cursor = self.tabs[i].scene.selection.borrow().last_move_pos;
                 let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
-                let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+                let bounds = iced::Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: vw,
+                    height: vh,
+                };
                 if self.tabs[i].scene.active_viewport.is_some() {
                     // In MSPACE: zoom the active viewport's model-space view,
                     // keeping the model point under the cursor stationary.
                     let cursor_paper = cursor.map(|cp| {
-                        let pt = self.tabs[i].scene.camera.borrow()
+                        let pt = self.tabs[i]
+                            .scene
+                            .camera
+                            .borrow()
                             .pick_on_target_plane(cp, bounds);
                         glam::Vec2::new(pt.x, pt.y)
                     });
@@ -1948,7 +2274,12 @@ impl H7CAD {
                 let rot = self.tabs[i].scene.active_view_rotation_mat();
                 let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
                 if let Some(region) = scene::hit_test(
-                    self.cursor_pos.x, self.cursor_pos.y, vw, vh, rot, VIEWCUBE_PX,
+                    self.cursor_pos.x,
+                    self.cursor_pos.y,
+                    vw,
+                    vh,
+                    rot,
+                    VIEWCUBE_PX,
                 ) {
                     return Task::done(Message::ViewCubeSnap(region));
                 }
@@ -1985,36 +2316,70 @@ impl H7CAD {
                 };
 
                 if self.tabs[i].scene.active_viewport.is_some() {
-                    self.tabs[i].scene.snap_active_viewport_to_angles(yaw, pitch);
+                    self.tabs[i]
+                        .scene
+                        .snap_active_viewport_to_angles(yaw, pitch);
                 } else {
                     let mut cam = self.tabs[i].scene.camera.borrow_mut();
                     cam.snap_to_angles(yaw, pitch);
                 }
                 self.tabs[i].scene.camera_generation += 1;
-                self.command_line.push_output(&format!("View: {}", region.label()));
+                self.command_line
+                    .push_output(&format!("View: {}", region.label()));
                 Task::none()
             }
 
             // ── Snap / mode toggles ───────────────────────────────────────
-            Message::ToggleSnapEnabled => { self.snapper.toggle_global(); Task::none() }
-            Message::ToggleGridSnap => { self.snapper.toggle(crate::snap::SnapType::Grid); Task::none() }
-            Message::ToggleGrid => { self.show_grid ^= true; Task::none() }
+            Message::ToggleSnapEnabled => {
+                self.snapper.toggle_global();
+                Task::none()
+            }
+            Message::ToggleGridSnap => {
+                self.snapper.toggle(crate::snap::SnapType::Grid);
+                Task::none()
+            }
+            Message::ToggleGrid => {
+                self.show_grid ^= true;
+                Task::none()
+            }
             Message::ToggleOrtho => {
                 self.ortho_mode ^= true;
-                if self.ortho_mode { self.polar_mode = false; }
+                if self.ortho_mode {
+                    self.polar_mode = false;
+                }
                 Task::none()
             }
             Message::TogglePolar => {
                 self.polar_mode ^= true;
-                if self.polar_mode { self.ortho_mode = false; }
+                if self.polar_mode {
+                    self.ortho_mode = false;
+                }
                 Task::none()
             }
-            Message::ToggleDynInput => { self.dyn_input ^= true; Task::none() }
-            Message::ToggleViewCube => { self.show_viewcube ^= true; Task::none() }
-            Message::ToggleNavbar => { self.show_navbar ^= true; Task::none() }
-            Message::ToggleProperties => { self.show_properties ^= true; Task::none() }
-            Message::ToggleFileTabs => { self.show_file_tabs ^= true; Task::none() }
-            Message::ToggleLayoutTabs => { self.show_layout_tabs ^= true; Task::none() }
+            Message::ToggleDynInput => {
+                self.dyn_input ^= true;
+                Task::none()
+            }
+            Message::ToggleViewCube => {
+                self.show_viewcube ^= true;
+                Task::none()
+            }
+            Message::ToggleNavbar => {
+                self.show_navbar ^= true;
+                Task::none()
+            }
+            Message::ToggleProperties => {
+                self.show_properties ^= true;
+                Task::none()
+            }
+            Message::ToggleFileTabs => {
+                self.show_file_tabs ^= true;
+                Task::none()
+            }
+            Message::ToggleLayoutTabs => {
+                self.show_layout_tabs ^= true;
+                Task::none()
+            }
             Message::ToggleOTrack => {
                 self.snapper.otrack_enabled ^= true;
                 if !self.snapper.otrack_enabled {
@@ -2043,17 +2408,44 @@ impl H7CAD {
                 }
                 Task::none()
             }
-            Message::ToggleScalePopup => { self.scale_popup_open ^= true; Task::none() }
-            Message::CloseScalePopup => { self.scale_popup_open = false; Task::none() }
-            Message::ToggleSnap(t) => { self.snapper.toggle(t); Task::none() }
-            Message::ToggleSnapPopup => { self.snap_popup_open ^= true; Task::none() }
-            Message::CloseSnapPopup => { self.snap_popup_open = false; Task::none() }
-            Message::SnapSelectAll => { self.snapper.enable_all(); Task::none() }
-            Message::SnapClearAll => { self.snapper.disable_all(); Task::none() }
+            Message::ToggleScalePopup => {
+                self.scale_popup_open ^= true;
+                Task::none()
+            }
+            Message::CloseScalePopup => {
+                self.scale_popup_open = false;
+                Task::none()
+            }
+            Message::ToggleSnap(t) => {
+                self.snapper.toggle(t);
+                Task::none()
+            }
+            Message::ToggleSnapPopup => {
+                self.snap_popup_open ^= true;
+                Task::none()
+            }
+            Message::CloseSnapPopup => {
+                self.snap_popup_open = false;
+                Task::none()
+            }
+            Message::SnapSelectAll => {
+                self.snapper.enable_all();
+                Task::none()
+            }
+            Message::SnapClearAll => {
+                self.snapper.disable_all();
+                Task::none()
+            }
 
             // ── Ribbon dropdowns ──────────────────────────────────────────
-            Message::ToggleRibbonDropdown(id) => { self.ribbon.toggle_dropdown(&id); Task::none() }
-            Message::CloseRibbonDropdown => { self.ribbon.close_dropdown(); Task::none() }
+            Message::ToggleRibbonDropdown(id) => {
+                self.ribbon.toggle_dropdown(&id);
+                Task::none()
+            }
+            Message::CloseRibbonDropdown => {
+                self.ribbon.close_dropdown();
+                Task::none()
+            }
             Message::DropdownSelectItem { dropdown_id, cmd } => {
                 self.ribbon.select_dropdown_item(dropdown_id, cmd);
                 self.ribbon.activate_tool(cmd);
@@ -2117,7 +2509,11 @@ impl H7CAD {
                     StyleKey::TextStyle => {
                         self.ribbon.active_text_style = name.clone();
                         let i = self.active_tab;
-                        let found = self.tabs[i].scene.document.text_styles.iter()
+                        let found = self.tabs[i]
+                            .scene
+                            .document
+                            .text_styles
+                            .iter()
                             .find(|s| s.name == name)
                             .map(|ts| ts.handle);
                         if let Some(h) = found {
@@ -2128,7 +2524,11 @@ impl H7CAD {
                     StyleKey::DimStyle => {
                         self.ribbon.active_dim_style = name.clone();
                         let i = self.active_tab;
-                        let found = self.tabs[i].scene.document.dim_styles.get(&name)
+                        let found = self.tabs[i]
+                            .scene
+                            .document
+                            .dim_styles
+                            .get(&name)
                             .map(|ds| ds.handle);
                         if let Some(h) = found {
                             self.tabs[i].scene.document.header.current_dimstyle_handle = h;
@@ -2251,7 +2651,9 @@ impl H7CAD {
                         if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
                             match field {
                                 "invisible" => crate::scene::dispatch::toggle_invisible(entity),
-                                _ => crate::scene::dispatch::apply_geom_prop(entity, field, "toggle"),
+                                _ => {
+                                    crate::scene::dispatch::apply_geom_prop(entity, field, "toggle")
+                                }
                             }
                         }
                     }
@@ -2268,7 +2670,10 @@ impl H7CAD {
                     self.push_undo_snapshot(i, "CHPROP");
                     if field == "vp_ucs_name" {
                         // Resolve UCS name → cloned data, then mutate viewports.
-                        let ucs_data = self.tabs[i].scene.document.ucss
+                        let ucs_data = self.tabs[i]
+                            .scene
+                            .document
+                            .ucss
                             .iter()
                             .find(|u| u.name == value)
                             .cloned();
@@ -2286,7 +2691,10 @@ impl H7CAD {
                         }
                     } else if field == "vp_named_view" {
                         // Assign a named view to viewport(s): copy camera parameters.
-                        let view_data = self.tabs[i].scene.document.views
+                        let view_data = self.tabs[i]
+                            .scene
+                            .document
+                            .views
                             .iter()
                             .find(|v| v.name == value)
                             .cloned();
@@ -2306,7 +2714,8 @@ impl H7CAD {
                         }
                     } else {
                         for handle in handles {
-                            if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                            if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle)
+                            {
                                 crate::scene::dispatch::apply_geom_prop(entity, field, &value);
                             }
                         }
@@ -2318,7 +2727,10 @@ impl H7CAD {
             }
 
             Message::PropGeomInput { field, value } => {
-                self.tabs[self.active_tab].properties.edit_buf.insert(field.to_string(), value);
+                self.tabs[self.active_tab]
+                    .properties
+                    .edit_buf
+                    .insert(field.to_string(), value);
                 Task::none()
             }
 
@@ -2335,7 +2747,11 @@ impl H7CAD {
                                 .map(|s| s.trim())
                                 .filter(|s| !s.is_empty())
                                 .filter_map(|name| {
-                                    self.tabs[i].scene.document.layers.iter()
+                                    self.tabs[i]
+                                        .scene
+                                        .document
+                                        .layers
+                                        .iter()
                                         .find(|l| l.name.eq_ignore_ascii_case(name))
                                         .map(|l| l.handle)
                                 })
@@ -2349,13 +2765,19 @@ impl H7CAD {
                             }
                         } else {
                             for handle in handles {
-                                if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                                if let Some(entity) =
+                                    self.tabs[i].scene.document.get_entity_mut(handle)
+                                {
                                     match field {
                                         "linetype_scale" | "transparency" => {
-                                            crate::scene::dispatch::apply_common_prop(entity, field, &val);
+                                            crate::scene::dispatch::apply_common_prop(
+                                                entity, field, &val,
+                                            );
                                         }
                                         _ => {
-                                            crate::scene::dispatch::apply_geom_prop(entity, field, &val);
+                                            crate::scene::dispatch::apply_geom_prop(
+                                                entity, field, &val,
+                                            );
                                         }
                                     }
                                 }
@@ -2370,7 +2792,8 @@ impl H7CAD {
 
             Message::PropColorPickerToggle => {
                 let i = self.active_tab;
-                self.tabs[i].properties.color_picker_open = !self.tabs[i].properties.color_picker_open;
+                self.tabs[i].properties.color_picker_open =
+                    !self.tabs[i].properties.color_picker_open;
                 if self.tabs[i].properties.color_picker_open {
                     self.tabs[i].properties.color_palette_open = false;
                 }
@@ -2404,7 +2827,9 @@ impl H7CAD {
                 // Refresh VP freeze columns for the new layout.
                 let doc_layers = self.tabs[i].scene.document.layers.clone();
                 let vp_info = self.tabs[i].scene.viewport_list();
-                self.tabs[i].layers.sync_with_viewports(&doc_layers, vp_info);
+                self.tabs[i]
+                    .layers
+                    .sync_with_viewports(&doc_layers, vp_info);
                 Task::none()
             }
 
@@ -2446,7 +2871,9 @@ impl H7CAD {
                         ));
                         self.tabs[i].dirty = true;
                     }
-                    Err(e) => self.command_line.push_error(&format!("Layout oluşturulamadı: {e}")),
+                    Err(e) => self
+                        .command_line
+                        .push_error(&format!("Layout oluşturulamadı: {e}")),
                 }
                 Task::none()
             }
@@ -2463,7 +2890,8 @@ impl H7CAD {
                     {
                         self.ribbon.select(0);
                     }
-                    self.command_line.push_output(&format!("Layout \"{name}\" silindi"));
+                    self.command_line
+                        .push_output(&format!("Layout \"{name}\" silindi"));
                     self.tabs[i].dirty = true;
                 }
                 Task::none()
@@ -2496,10 +2924,8 @@ impl H7CAD {
                             .iter()
                             .any(|n| *n == new_name);
                         if exists {
-                            self.command_line.push_error(&format!(
-                                "\"{}\" adı zaten kullanımda",
-                                new_name
-                            ));
+                            self.command_line
+                                .push_error(&format!("\"{}\" adı zaten kullanımda", new_name));
                         } else {
                             self.push_undo_snapshot(i, "LAYOUT RENAME");
                             self.tabs[i].scene.rename_layout(&orig, &new_name);
@@ -2561,7 +2987,11 @@ impl H7CAD {
                 }
             }
             Message::LayoutManagerSelect(name) => {
-                self.layout_manager_rename_buf = if name == "Model" { String::new() } else { name.clone() };
+                self.layout_manager_rename_buf = if name == "Model" {
+                    String::new()
+                } else {
+                    name.clone()
+                };
                 self.layout_manager_selected = name;
                 Task::none()
             }
@@ -2574,7 +3004,8 @@ impl H7CAD {
                 let old_name = self.layout_manager_selected.clone();
                 let new_name = self.layout_manager_rename_buf.trim().to_string();
                 if old_name == "Model" {
-                    self.command_line.push_error("Cannot rename the Model layout.");
+                    self.command_line
+                        .push_error("Cannot rename the Model layout.");
                 } else if new_name.is_empty() {
                     self.command_line.push_error("Layout name cannot be empty.");
                 } else if new_name == old_name {
@@ -2587,14 +3018,17 @@ impl H7CAD {
                     }
                     self.layout_manager_selected = new_name.clone();
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output(&format!("Layout renamed: '{old_name}' → '{new_name}'"));
+                    self.command_line
+                        .push_output(&format!("Layout renamed: '{old_name}' → '{new_name}'"));
                 }
                 Task::none()
             }
             Message::LayoutManagerNew => {
                 let i = self.active_tab;
                 let existing = self.tabs[i].scene.layout_names();
-                let n = (1usize..).find(|n| !existing.contains(&format!("Layout{n}"))).unwrap_or(1);
+                let n = (1usize..)
+                    .find(|n| !existing.contains(&format!("Layout{n}")))
+                    .unwrap_or(1);
                 let name = format!("Layout{n}");
                 self.push_undo_snapshot(i, "LAYOUT NEW");
                 match self.tabs[i].scene.document.add_layout(&name) {
@@ -2602,7 +3036,8 @@ impl H7CAD {
                         self.tabs[i].dirty = true;
                         self.layout_manager_selected = name.clone();
                         self.layout_manager_rename_buf = name.clone();
-                        self.command_line.push_output(&format!("Layout '{name}' created."));
+                        self.command_line
+                            .push_output(&format!("Layout '{name}' created."));
                     }
                     Err(e) => self.command_line.push_error(&format!("LAYOUT: {e}")),
                 }
@@ -2612,7 +3047,8 @@ impl H7CAD {
                 let i = self.active_tab;
                 let name = self.layout_manager_selected.clone();
                 if name == "Model" {
-                    self.command_line.push_error("Cannot delete the Model layout.");
+                    self.command_line
+                        .push_error("Cannot delete the Model layout.");
                 } else {
                     self.push_undo_snapshot(i, "LAYOUT DELETE");
                     self.tabs[i].scene.delete_layout(&name);
@@ -2624,7 +3060,8 @@ impl H7CAD {
                     }
                     self.layout_manager_selected = "Model".to_string();
                     self.layout_manager_rename_buf = String::new();
-                    self.command_line.push_output(&format!("Layout '{name}' deleted."));
+                    self.command_line
+                        .push_output(&format!("Layout '{name}' deleted."));
                 }
                 Task::none()
             }
@@ -2668,7 +3105,8 @@ impl H7CAD {
                 let name = self.layout_manager_selected.clone();
                 self.tabs[i].scene.current_layout = name.clone();
                 self.tabs[i].scene.bump_geometry();
-                self.command_line.push_output(&format!("Switched to layout '{name}'."));
+                self.command_line
+                    .push_output(&format!("Switched to layout '{name}'."));
                 Task::none()
             }
 
@@ -2751,7 +3189,8 @@ impl H7CAD {
             Message::MspaceCommand => {
                 let i = self.active_tab;
                 if self.tabs[i].scene.current_layout == "Model" {
-                    self.command_line.push_error("MS is only available in paper space layouts.");
+                    self.command_line
+                        .push_error("MS is only available in paper space layouts.");
                     return Task::none();
                 }
                 if self.tabs[i].scene.active_viewport.is_some() {
@@ -2761,18 +3200,23 @@ impl H7CAD {
                 match self.tabs[i].scene.first_user_viewport() {
                     Some(handle) => Task::done(Message::EnterViewport(handle)),
                     None => {
-                        self.command_line.push_error("No viewport found in this layout.");
+                        self.command_line
+                            .push_error("No viewport found in this layout.");
                         Task::none()
                     }
                 }
             }
 
-            Message::PspaceCommand => {
-                Task::done(Message::ExitViewport)
-            }
+            Message::PspaceCommand => Task::done(Message::ExitViewport),
 
-            Message::Undo => { self.undo_active_tab(); Task::none() }
-            Message::Redo => { self.redo_active_tab(); Task::none() }
+            Message::Undo => {
+                self.undo_active_tab();
+                Task::none()
+            }
+            Message::Redo => {
+                self.redo_active_tab();
+                Task::none()
+            }
 
             Message::UndoMany(steps) => {
                 self.ribbon.close_dropdown();
@@ -2800,7 +3244,8 @@ impl H7CAD {
                         let close_win = self.close_unsaved_dialog_window();
                         if self.tabs.len() == 1 {
                             self.tab_counter += 1;
-                            self.tabs[0] = super::document::DocumentTab::new_drawing(self.tab_counter);
+                            self.tabs[0] =
+                                super::document::DocumentTab::new_drawing(self.tab_counter);
                             self.active_tab = 0;
                         } else {
                             self.tabs.remove(idx);
@@ -2833,7 +3278,8 @@ impl H7CAD {
                         if let Some(path) = self.tabs[idx].current_path.clone() {
                             match crate::io::save(&self.tabs[idx].scene.document, &path) {
                                 Ok(()) => {
-                                    self.command_line.push_output(&format!("Saved: {}", path.display()));
+                                    self.command_line
+                                        .push_output(&format!("Saved: {}", path.display()));
                                     self.tabs[idx].dirty = false;
                                     let close_win = self.close_unsaved_dialog_window();
                                     let close_tab = self.update(Message::TabClose(idx));
@@ -2859,7 +3305,8 @@ impl H7CAD {
                             if let Some(path) = self.tabs[idx].current_path.clone() {
                                 match crate::io::save(&self.tabs[idx].scene.document, &path) {
                                     Ok(()) => {
-                                        self.command_line.push_output(&format!("Saved: {}", path.display()));
+                                        self.command_line
+                                            .push_output(&format!("Saved: {}", path.display()));
                                         self.tabs[idx].dirty = false;
                                     }
                                     Err(e) => {
@@ -2895,9 +3342,14 @@ impl H7CAD {
                 let (_, version) = crate::io::parse_save_format(&self.save_dialog_format);
                 match self.pending_close.take() {
                     Some(super::PendingClose::Tab(idx)) => {
-                        match crate::io::save_as_version(&self.tabs[idx].scene.document, &path, version) {
+                        match crate::io::save_as_version(
+                            &self.tabs[idx].scene.document,
+                            &path,
+                            version,
+                        ) {
                             Ok(()) => {
-                                self.command_line.push_output(&format!("Saved: {}", path.display()));
+                                self.command_line
+                                    .push_output(&format!("Saved: {}", path.display()));
                                 self.tabs[idx].current_path = Some(path);
                                 self.tabs[idx].dirty = false;
                                 return self.update(Message::TabClose(idx));
@@ -2911,9 +3363,14 @@ impl H7CAD {
                     }
                     Some(super::PendingClose::Quit) => {
                         let i = self.active_tab;
-                        match crate::io::save_as_version(&self.tabs[i].scene.document, &path, version) {
+                        match crate::io::save_as_version(
+                            &self.tabs[i].scene.document,
+                            &path,
+                            version,
+                        ) {
                             Ok(()) => {
-                                self.command_line.push_output(&format!("Saved: {}", path.display()));
+                                self.command_line
+                                    .push_output(&format!("Saved: {}", path.display()));
                                 self.tabs[i].current_path = Some(path);
                                 self.tabs[i].dirty = false;
                                 if self.tabs.iter().any(|t| t.dirty) {
@@ -2983,17 +3440,17 @@ impl H7CAD {
             Message::PageSetupPreset(name) => {
                 // Paper size presets defined in view.rs — mirror them here.
                 let sizes: &[(&str, f64, f64)] = &[
-                    ("A4 Portrait",      210.0, 297.0),
-                    ("A4 Landscape",     297.0, 210.0),
-                    ("A3 Portrait",      297.0, 420.0),
-                    ("A3 Landscape",     420.0, 297.0),
-                    ("A2 Portrait",      420.0, 594.0),
-                    ("A2 Landscape",     594.0, 420.0),
-                    ("A1 Portrait",      594.0, 841.0),
-                    ("A1 Landscape",     841.0, 594.0),
-                    ("A0 Portrait",      841.0, 1189.0),
-                    ("A0 Landscape",    1189.0,  841.0),
-                    ("Letter Portrait",  215.9, 279.4),
+                    ("A4 Portrait", 210.0, 297.0),
+                    ("A4 Landscape", 297.0, 210.0),
+                    ("A3 Portrait", 297.0, 420.0),
+                    ("A3 Landscape", 420.0, 297.0),
+                    ("A2 Portrait", 420.0, 594.0),
+                    ("A2 Landscape", 594.0, 420.0),
+                    ("A1 Portrait", 594.0, 841.0),
+                    ("A1 Landscape", 841.0, 594.0),
+                    ("A0 Portrait", 841.0, 1189.0),
+                    ("A0 Landscape", 1189.0, 841.0),
+                    ("Letter Portrait", 215.9, 279.4),
                     ("Letter Landscape", 279.4, 215.9),
                 ];
                 if let Some(&(_, w, h)) = sizes.iter().find(|(n, _, _)| *n == name) {
@@ -3033,9 +3490,9 @@ impl H7CAD {
                     let w: f64 = self.page_setup_w.parse::<f64>().unwrap_or(297.0).max(1.0);
                     let h: f64 = self.page_setup_h.parse::<f64>().unwrap_or(210.0).max(1.0);
                     let plot_area = self.page_setup_plot_area.clone();
-                    let center    = self.page_setup_center;
-                    let offset_x  = self.page_setup_offset_x.parse::<f64>().unwrap_or(0.0);
-                    let offset_y  = self.page_setup_offset_y.parse::<f64>().unwrap_or(0.0);
+                    let center = self.page_setup_center;
+                    let offset_x = self.page_setup_offset_x.parse::<f64>().unwrap_or(0.0);
+                    let offset_y = self.page_setup_offset_y.parse::<f64>().unwrap_or(0.0);
                     let rotation: i16 = self.page_setup_rotation.parse().unwrap_or(0);
                     let scale_str = self.page_setup_scale.clone();
 
@@ -3053,30 +3510,48 @@ impl H7CAD {
                     }
 
                     // Find or create the PlotSettings object for this layout.
-                    use acadrust::objects::{ObjectType, PlotSettings, PlotType, PlotRotation, PlotPaperUnits};
-                    let plot_handle = self.tabs[i].scene.document.objects.iter()
-                        .find_map(|(h, obj)| {
-                            if let ObjectType::PlotSettings(ps) = obj {
-                                if ps.page_name == layout_name { Some(*h) } else { None }
-                            } else { None }
-                        });
+                    use acadrust::objects::{
+                        ObjectType, PlotPaperUnits, PlotRotation, PlotSettings, PlotType,
+                    };
+                    let plot_handle =
+                        self.tabs[i]
+                            .scene
+                            .document
+                            .objects
+                            .iter()
+                            .find_map(|(h, obj)| {
+                                if let ObjectType::PlotSettings(ps) = obj {
+                                    if ps.page_name == layout_name {
+                                        Some(*h)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            });
 
                     let ps_entry = if let Some(h) = plot_handle {
                         self.tabs[i].scene.document.objects.get_mut(&h)
                     } else {
                         // Create a new PlotSettings object and insert it.
                         let mut ps = PlotSettings::new(layout_name.clone());
-                        ps.handle = acadrust::Handle::new(self.tabs[i].scene.document.next_handle());
+                        ps.handle =
+                            acadrust::Handle::new(self.tabs[i].scene.document.next_handle());
                         let h = ps.handle;
-                        self.tabs[i].scene.document.objects.insert(h, ObjectType::PlotSettings(ps));
+                        self.tabs[i]
+                            .scene
+                            .document
+                            .objects
+                            .insert(h, ObjectType::PlotSettings(ps));
                         self.tabs[i].scene.document.objects.get_mut(&h)
                     };
 
                     if let Some(ObjectType::PlotSettings(ps)) = ps_entry {
-                        ps.paper_width  = w;
+                        ps.paper_width = w;
                         ps.paper_height = h;
-                        ps.paper_units  = PlotPaperUnits::Millimeters;
-                        ps.plot_type    = if plot_area == "Extents" {
+                        ps.paper_units = PlotPaperUnits::Millimeters;
+                        ps.plot_type = if plot_area == "Extents" {
                             PlotType::Extents
                         } else {
                             PlotType::Layout
@@ -3085,10 +3560,10 @@ impl H7CAD {
                         ps.origin_x = offset_x;
                         ps.origin_y = offset_y;
                         ps.rotation = match rotation {
-                            90  => PlotRotation::Degrees90,
+                            90 => PlotRotation::Degrees90,
                             180 => PlotRotation::Degrees180,
                             270 => PlotRotation::Degrees270,
-                            _   => PlotRotation::None,
+                            _ => PlotRotation::None,
                         };
                         // Apply plot scale.
                         use acadrust::objects::ScaledType;
@@ -3139,8 +3614,14 @@ impl H7CAD {
                 use acadrust::objects::{ObjectType, PlotType};
                 let ps_snap = scene.document.objects.values().find_map(|obj| {
                     if let ObjectType::PlotSettings(ps) = obj {
-                        if ps.page_name == layout_name { Some(ps.clone()) } else { None }
-                    } else { None }
+                        if ps.page_name == layout_name {
+                            Some(ps.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 });
 
                 // Determine paper size and drawing offset.
@@ -3149,7 +3630,8 @@ impl H7CAD {
                         let (pw, ph) = (x1 - x0, y1 - y0);
 
                         // If PlotSettings says Extents, use model space extents instead.
-                        let use_extents = ps_snap.as_ref()
+                        let use_extents = ps_snap
+                            .as_ref()
                             .map(|ps| matches!(ps.plot_type, PlotType::Extents))
                             .unwrap_or(false);
 
@@ -3163,7 +3645,8 @@ impl H7CAD {
                             (-x0, -y0)
                         };
 
-                        let rot = ps_snap.as_ref()
+                        let rot = ps_snap
+                            .as_ref()
                             .map(|ps| ps.rotation.to_degrees() as i32)
                             .unwrap_or(0);
 
@@ -3186,11 +3669,13 @@ impl H7CAD {
                 if let Some(ref ps) = ps_snap {
                     if ps.flags.plot_centered {
                         // Centering: compute wire extents and re-centre.
-                        let all_x: Vec<f32> = wires.iter()
+                        let all_x: Vec<f32> = wires
+                            .iter()
                             .flat_map(|w| w.points.iter().map(|p| p[0]))
                             .filter(|v| !v.is_nan())
                             .collect();
-                        let all_y: Vec<f32> = wires.iter()
+                        let all_y: Vec<f32> = wires
+                            .iter()
                             .flat_map(|w| w.points.iter().map(|p| p[1]))
                             .filter(|v| !v.is_nan())
                             .collect();
@@ -3214,13 +3699,17 @@ impl H7CAD {
                 // For rotation: swap paper dimensions and note angle for export.
                 let (eff_w, eff_h) = match rotation_deg {
                     90 | 270 => (paper_h, paper_w),
-                    _        => (paper_w, paper_h),
+                    _ => (paper_w, paper_h),
                 };
 
                 match crate::io::pdf_export::export_pdf(
-                    &wires, eff_w, eff_h,
-                    draw_ox as f32, draw_oy as f32,
-                    rotation_deg, &path,
+                    &wires,
+                    eff_w,
+                    eff_h,
+                    draw_ox as f32,
+                    draw_oy as f32,
+                    rotation_deg,
+                    &path,
                     self.active_plot_style.as_ref(),
                 ) {
                     Ok(()) => self.command_line.push_info(&format!(
@@ -3241,21 +3730,33 @@ impl H7CAD {
                 use acadrust::objects::{ObjectType, PlotType};
                 let ps_snap = scene.document.objects.values().find_map(|obj| {
                     if let ObjectType::PlotSettings(ps) = obj {
-                        if ps.page_name == layout_name { Some(ps.clone()) } else { None }
-                    } else { None }
+                        if ps.page_name == layout_name {
+                            Some(ps.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 });
                 let (paper_w, paper_h, draw_ox, draw_oy, rotation_deg) =
                     if let Some(((x0, y0), (x1, y1))) = scene.paper_limits() {
                         let (pw, ph) = (x1 - x0, y1 - y0);
-                        let use_extents = ps_snap.as_ref()
+                        let use_extents = ps_snap
+                            .as_ref()
                             .map(|ps| matches!(ps.plot_type, PlotType::Extents))
                             .unwrap_or(false);
                         let (ox, oy) = if use_extents {
                             if let Some((mn, _mx)) = scene.model_space_extents() {
                                 (-mn.x as f64, -mn.y as f64)
-                            } else { (-x0, -y0) }
-                        } else { (-x0, -y0) };
-                        let rot = ps_snap.as_ref()
+                            } else {
+                                (-x0, -y0)
+                            }
+                        } else {
+                            (-x0, -y0)
+                        };
+                        let rot = ps_snap
+                            .as_ref()
                             .map(|ps| ps.rotation.to_degrees() as i32)
                             .unwrap_or(0);
                         (pw, ph, ox, oy, rot)
@@ -3267,20 +3768,26 @@ impl H7CAD {
                             let pad_x = (w - (mx.x - mn.x) as f64) * 0.5;
                             let pad_y = (h - (mx.y - mn.y) as f64) * 0.5;
                             (w, h, -(mn.x as f64) + pad_x, -(mn.y as f64) + pad_y, 0)
-                        } else { (297.0, 210.0, 0.0, 0.0, 0) }
+                        } else {
+                            (297.0, 210.0, 0.0, 0.0, 0)
+                        }
                     };
                 let (eff_w, eff_h) = match rotation_deg {
                     90 | 270 => (paper_h, paper_w),
-                    _        => (paper_w, paper_h),
+                    _ => (paper_w, paper_h),
                 };
                 let plot_style = self.active_plot_style.clone();
                 self.command_line.push_info("Sending to system printer…");
                 Task::perform(
                     async move {
                         crate::io::print_to_printer::print_wires(
-                            wires, eff_w, eff_h,
-                            draw_ox as f32, draw_oy as f32,
-                            rotation_deg, plot_style,
+                            wires,
+                            eff_w,
+                            eff_h,
+                            draw_ox as f32,
+                            draw_oy as f32,
+                            rotation_deg,
+                            plot_style,
                         )
                         .await
                     },
@@ -3288,7 +3795,8 @@ impl H7CAD {
                 )
             }
             Message::PrintResult(Ok(printer)) => {
-                self.command_line.push_info(&format!("Sent to printer: {printer}"));
+                self.command_line
+                    .push_info(&format!("Sent to printer: {printer}"));
                 Task::none()
             }
             Message::PrintResult(Err(e)) => {
@@ -3298,16 +3806,17 @@ impl H7CAD {
 
             // ── Plot Style Table ──────────────────────────────────────────────
             Message::PlotStyleLoad => {
-                Task::perform(
-                    crate::io::pick_plot_style(),
-                    Message::PlotStyleLoaded,
-                )
+                Task::perform(crate::io::pick_plot_style(), Message::PlotStyleLoaded)
             }
             Message::PlotStyleLoaded(Some(table)) => {
                 self.command_line.push_output(&format!(
                     "Plot style '{}' loaded ({} color entries).",
                     table.name,
-                    table.aci_entries.iter().filter(|e| e.color.is_some()).count()
+                    table
+                        .aci_entries
+                        .iter()
+                        .filter(|e| e.color.is_some())
+                        .count()
                 ));
                 self.active_plot_style = Some(table);
                 Task::none()
@@ -3323,11 +3832,22 @@ impl H7CAD {
             Message::PlotStylePanelOpen => {
                 // Initialise edit buffers for ACI 1.
                 self.plotstyle_panel_aci = 1;
-                let entry = self.active_plot_style.as_ref()
+                let entry = self
+                    .active_plot_style
+                    .as_ref()
                     .and_then(|t| t.aci_entries.get(1));
-                self.ps_color_buf = entry.and_then(|e| e.color.map(|[r,g,b]| format!("#{:02X}{:02X}{:02X}", r, g, b))).unwrap_or_default();
-                self.ps_lineweight_buf = entry.map(|e| e.lineweight.to_string()).unwrap_or("255".into());
-                self.ps_screening_buf = entry.map(|e| e.screening.to_string()).unwrap_or("100".into());
+                self.ps_color_buf = entry
+                    .and_then(|e| {
+                        e.color
+                            .map(|[r, g, b]| format!("#{:02X}{:02X}{:02X}", r, g, b))
+                    })
+                    .unwrap_or_default();
+                self.ps_lineweight_buf = entry
+                    .map(|e| e.lineweight.to_string())
+                    .unwrap_or("255".into());
+                self.ps_screening_buf = entry
+                    .map(|e| e.screening.to_string())
+                    .unwrap_or("100".into());
                 if let Some(id) = self.plotstyle_window {
                     return window::gain_focus(id);
                 }
@@ -3348,16 +3868,36 @@ impl H7CAD {
             }
             Message::PlotStylePanelSelectAci(aci) => {
                 self.plotstyle_panel_aci = aci;
-                let entry = self.active_plot_style.as_ref()
+                let entry = self
+                    .active_plot_style
+                    .as_ref()
                     .and_then(|t| t.aci_entries.get(aci as usize));
-                self.ps_color_buf = entry.and_then(|e| e.color.map(|[r,g,b]| format!("#{:02X}{:02X}{:02X}", r, g, b))).unwrap_or_default();
-                self.ps_lineweight_buf = entry.map(|e| e.lineweight.to_string()).unwrap_or("255".into());
-                self.ps_screening_buf = entry.map(|e| e.screening.to_string()).unwrap_or("100".into());
+                self.ps_color_buf = entry
+                    .and_then(|e| {
+                        e.color
+                            .map(|[r, g, b]| format!("#{:02X}{:02X}{:02X}", r, g, b))
+                    })
+                    .unwrap_or_default();
+                self.ps_lineweight_buf = entry
+                    .map(|e| e.lineweight.to_string())
+                    .unwrap_or("255".into());
+                self.ps_screening_buf = entry
+                    .map(|e| e.screening.to_string())
+                    .unwrap_or("100".into());
                 Task::none()
             }
-            Message::PlotStylePanelColorBuf(s) => { self.ps_color_buf = s; Task::none() }
-            Message::PlotStylePanelLwBuf(s)    => { self.ps_lineweight_buf = s; Task::none() }
-            Message::PlotStylePanelScreenBuf(s) => { self.ps_screening_buf = s; Task::none() }
+            Message::PlotStylePanelColorBuf(s) => {
+                self.ps_color_buf = s;
+                Task::none()
+            }
+            Message::PlotStylePanelLwBuf(s) => {
+                self.ps_lineweight_buf = s;
+                Task::none()
+            }
+            Message::PlotStylePanelScreenBuf(s) => {
+                self.ps_screening_buf = s;
+                Task::none()
+            }
 
             Message::PlotStylePanelApply => {
                 let aci = self.plotstyle_panel_aci as usize;
@@ -3379,7 +3919,8 @@ impl H7CAD {
                         if let Ok(sc) = self.ps_screening_buf.trim().parse::<u8>() {
                             entry.screening = sc.min(100);
                         }
-                        self.command_line.push_output(&format!("Plot style ACI {aci} updated."));
+                        self.command_line
+                            .push_output(&format!("Plot style ACI {aci} updated."));
                     }
                 } else {
                     // No table loaded: create an identity table and apply.
@@ -3392,22 +3933,31 @@ impl H7CAD {
                             let b = u8::from_str_radix(&color_str[5..7], 16).unwrap_or(0);
                             entry.color = Some([r, g, b]);
                         }
-                        if let Ok(lw) = self.ps_lineweight_buf.trim().parse::<u8>() { entry.lineweight = lw; }
-                        if let Ok(sc) = self.ps_screening_buf.trim().parse::<u8>() { entry.screening = sc.min(100); }
+                        if let Ok(lw) = self.ps_lineweight_buf.trim().parse::<u8>() {
+                            entry.lineweight = lw;
+                        }
+                        if let Ok(sc) = self.ps_screening_buf.trim().parse::<u8>() {
+                            entry.screening = sc.min(100);
+                        }
                     }
                     self.active_plot_style = Some(table);
-                    self.command_line.push_output(&format!("Created new CTB table, ACI {aci} updated."));
+                    self.command_line
+                        .push_output(&format!("Created new CTB table, ACI {aci} updated."));
                 }
                 Task::none()
             }
 
             Message::PlotStylePanelSave => {
                 if self.active_plot_style.is_none() {
-                    self.command_line.push_error("No plot style table loaded. Load or create one first.");
+                    self.command_line
+                        .push_error("No plot style table loaded. Load or create one first.");
                     return Task::none();
                 }
-                let default_name = self.active_plot_style.as_ref()
-                    .map(|t| t.name.clone()).unwrap_or("export.ctb".into());
+                let default_name = self
+                    .active_plot_style
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .unwrap_or("export.ctb".into());
                 Task::perform(
                     async move {
                         rfd::AsyncFileDialog::new()
@@ -3427,7 +3977,8 @@ impl H7CAD {
                 if let Some(table) = &self.active_plot_style {
                     match table.save(&path) {
                         Ok(()) => self.command_line.push_output(&format!(
-                            "Plot style table saved to \"{}\".", path.display()
+                            "Plot style table saved to \"{}\".",
+                            path.display()
                         )),
                         Err(e) => self.command_line.push_error(&format!("Save error: {e}")),
                     }
@@ -3439,13 +3990,23 @@ impl H7CAD {
             // ── TextStyle Font Browser ────────────────────────────────────────
             Message::TextStyleDialogOpen => {
                 let i = self.active_tab;
-                let cur = self.tabs[i].scene.document.header.current_text_style_name.clone();
+                let cur = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .current_text_style_name
+                    .clone();
                 let exists = self.tabs[i].scene.document.text_styles.get(&cur).is_some();
                 self.textstyle_selected = if exists {
                     cur
                 } else {
-                    self.tabs[i].scene.document.text_styles
-                        .iter().next().map(|s| s.name.clone())
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .text_styles
+                        .iter()
+                        .next()
+                        .map(|s| s.name.clone())
                         .unwrap_or_else(|| "Standard".to_string())
                 };
                 self.load_textstyle_bufs(i);
@@ -3480,7 +4041,8 @@ impl H7CAD {
                     self.push_undo_snapshot(i, "STYLE SET");
                     self.tabs[i].scene.document.header.current_text_style_name = name.clone();
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output(&format!("Current text style: {}", name));
+                    self.command_line
+                        .push_output(&format!("Current text style: {}", name));
                 }
                 Task::none()
             }
@@ -3490,7 +4052,9 @@ impl H7CAD {
                 let mut n = 1u32;
                 let new_name = loop {
                     let candidate = format!("Style{}", n);
-                    if !doc.text_styles.contains(&candidate) { break candidate; }
+                    if !doc.text_styles.contains(&candidate) {
+                        break candidate;
+                    }
                     n += 1;
                 };
                 self.push_undo_snapshot(i, "STYLE NEW");
@@ -3507,13 +4071,19 @@ impl H7CAD {
                 let i = self.active_tab;
                 let name = self.textstyle_selected.clone();
                 if name.eq_ignore_ascii_case("Standard") {
-                    self.command_line.push_error("Cannot delete the Standard text style.");
+                    self.command_line
+                        .push_error("Cannot delete the Standard text style.");
                     return Task::none();
                 }
                 self.push_undo_snapshot(i, "STYLE DEL");
                 self.tabs[i].scene.document.text_styles.remove(&name);
-                self.textstyle_selected = self.tabs[i].scene.document.text_styles
-                    .iter().next().map(|s| s.name.clone())
+                self.textstyle_selected = self.tabs[i]
+                    .scene
+                    .document
+                    .text_styles
+                    .iter()
+                    .next()
+                    .map(|s| s.name.clone())
                     .unwrap_or_else(|| "Standard".to_string());
                 self.load_textstyle_bufs(i);
                 self.tabs[i].dirty = true;
@@ -3567,8 +4137,18 @@ impl H7CAD {
             Message::TableStyleDialogOpen => {
                 use acadrust::objects::ObjectType;
                 let i = self.active_tab;
-                self.tablestyle_selected = self.tabs[i].scene.document.objects.values()
-                    .find_map(|o| if let ObjectType::TableStyle(s) = o { Some(s.name.clone()) } else { None })
+                self.tablestyle_selected = self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .values()
+                    .find_map(|o| {
+                        if let ObjectType::TableStyle(s) = o {
+                            Some(s.name.clone())
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or_else(|| "Standard".to_string());
                 if let Some(id) = self.tablestyle_window {
                     return window::gain_focus(id);
@@ -3603,7 +4183,9 @@ impl H7CAD {
                     let taken = doc.objects.values().any(|o| {
                         matches!(o, ObjectType::TableStyle(s) if s.name.eq_ignore_ascii_case(&candidate))
                     });
-                    if !taken { break candidate; }
+                    if !taken {
+                        break candidate;
+                    }
                     n += 1;
                 };
                 self.push_undo_snapshot(i, "TABLESTYLE NEW");
@@ -3611,7 +4193,11 @@ impl H7CAD {
                 style.name = new_name.clone();
                 let nh = acadrust::Handle::new(self.tabs[i].scene.document.next_handle());
                 style.handle = nh;
-                self.tabs[i].scene.document.objects.insert(nh, ObjectType::TableStyle(style));
+                self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .insert(nh, ObjectType::TableStyle(style));
                 self.tablestyle_selected = new_name;
                 self.tabs[i].dirty = true;
                 Task::none()
@@ -3621,20 +4207,41 @@ impl H7CAD {
                 let i = self.active_tab;
                 let name = self.tablestyle_selected.clone();
                 if name.eq_ignore_ascii_case("Standard") {
-                    self.command_line.push_error("Cannot delete the Standard style.");
+                    self.command_line
+                        .push_error("Cannot delete the Standard style.");
                     return Task::none();
                 }
-                let handle = self.tabs[i].scene.document.objects.iter()
+                let handle = self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .iter()
                     .find_map(|(&h, o)| {
                         if let ObjectType::TableStyle(s) = o {
-                            if s.name == name { Some(h) } else { None }
-                        } else { None }
+                            if s.name == name {
+                                Some(h)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     });
                 if let Some(h) = handle {
                     self.push_undo_snapshot(i, "TABLESTYLE DEL");
                     self.tabs[i].scene.document.objects.remove(&h);
-                    self.tablestyle_selected = self.tabs[i].scene.document.objects.values()
-                        .find_map(|o| if let ObjectType::TableStyle(s) = o { Some(s.name.clone()) } else { None })
+                    self.tablestyle_selected = self.tabs[i]
+                        .scene
+                        .document
+                        .objects
+                        .values()
+                        .find_map(|o| {
+                            if let ObjectType::TableStyle(s) = o {
+                                Some(s.name.clone())
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or_else(|| "Standard".to_string());
                     self.tabs[i].dirty = true;
                 }
@@ -3646,14 +4253,27 @@ impl H7CAD {
                 use acadrust::objects::ObjectType;
                 let i = self.active_tab;
                 let cur = self.tabs[i].scene.document.header.multiline_style.clone();
-                let exists = self.tabs[i].scene.document.objects.values().any(|o| {
-                    matches!(o, ObjectType::MLineStyle(s) if s.name == cur)
-                });
+                let exists = self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .values()
+                    .any(|o| matches!(o, ObjectType::MLineStyle(s) if s.name == cur));
                 self.mlstyle_selected = if exists {
                     cur
                 } else {
-                    self.tabs[i].scene.document.objects.values()
-                        .find_map(|o| if let ObjectType::MLineStyle(s) = o { Some(s.name.clone()) } else { None })
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .objects
+                        .values()
+                        .find_map(|o| {
+                            if let ObjectType::MLineStyle(s) = o {
+                                Some(s.name.clone())
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or_else(|| "Standard".to_string())
                 };
                 if let Some(id) = self.mlstyle_window {
@@ -3682,14 +4302,18 @@ impl H7CAD {
                 use acadrust::objects::ObjectType;
                 let i = self.active_tab;
                 let name = self.mlstyle_selected.clone();
-                let exists = self.tabs[i].scene.document.objects.values().any(|o| {
-                    matches!(o, ObjectType::MLineStyle(s) if s.name == name)
-                });
+                let exists = self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .values()
+                    .any(|o| matches!(o, ObjectType::MLineStyle(s) if s.name == name));
                 if exists {
                     self.push_undo_snapshot(i, "MLSTYLE SET");
                     self.tabs[i].scene.document.header.multiline_style = name.clone();
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output(&format!("Current multiline style: {}", name));
+                    self.command_line
+                        .push_output(&format!("Current multiline style: {}", name));
                 }
                 Task::none()
             }
@@ -3705,7 +4329,9 @@ impl H7CAD {
                     let taken = doc.objects.values().any(|o| {
                         matches!(o, ObjectType::MLineStyle(s) if s.name.eq_ignore_ascii_case(&candidate))
                     });
-                    if !taken { break candidate; }
+                    if !taken {
+                        break candidate;
+                    }
                     n += 1;
                 };
                 self.push_undo_snapshot(i, "MLSTYLE NEW");
@@ -3713,7 +4339,11 @@ impl H7CAD {
                 style.name = new_name.clone();
                 let nh = acadrust::Handle::new(self.tabs[i].scene.document.next_handle());
                 style.handle = nh;
-                self.tabs[i].scene.document.objects.insert(nh, ObjectType::MLineStyle(style));
+                self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .insert(nh, ObjectType::MLineStyle(style));
                 self.mlstyle_selected = new_name;
                 self.tabs[i].dirty = true;
                 Task::none()
@@ -3723,21 +4353,42 @@ impl H7CAD {
                 let i = self.active_tab;
                 let name = self.mlstyle_selected.clone();
                 if name.eq_ignore_ascii_case("Standard") {
-                    self.command_line.push_error("Cannot delete the Standard style.");
+                    self.command_line
+                        .push_error("Cannot delete the Standard style.");
                     return Task::none();
                 }
-                let handle = self.tabs[i].scene.document.objects.iter()
+                let handle = self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .iter()
                     .find_map(|(&h, o)| {
                         if let ObjectType::MLineStyle(s) = o {
-                            if s.name == name { Some(h) } else { None }
-                        } else { None }
+                            if s.name == name {
+                                Some(h)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
                     });
                 if let Some(h) = handle {
                     self.push_undo_snapshot(i, "MLSTYLE DEL");
                     self.tabs[i].scene.document.objects.remove(&h);
                     // Select first remaining style.
-                    self.mlstyle_selected = self.tabs[i].scene.document.objects.values()
-                        .find_map(|o| if let ObjectType::MLineStyle(s) = o { Some(s.name.clone()) } else { None })
+                    self.mlstyle_selected = self.tabs[i]
+                        .scene
+                        .document
+                        .objects
+                        .values()
+                        .find_map(|o| {
+                            if let ObjectType::MLineStyle(s) = o {
+                                Some(s.name.clone())
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or_else(|| "Standard".to_string());
                     self.tabs[i].dirty = true;
                 }
@@ -3748,12 +4399,22 @@ impl H7CAD {
             Message::DimStyleDialogOpen => {
                 let i = self.active_tab;
                 // Pick the document's current dim style or "Standard".
-                let cur = self.tabs[i].scene.document.header.current_dimstyle_name.clone();
+                let cur = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .current_dimstyle_name
+                    .clone();
                 let selected = if self.tabs[i].scene.document.dim_styles.get(&cur).is_some() {
                     cur
                 } else {
-                    self.tabs[i].scene.document.dim_styles
-                        .iter().next().map(|s| s.name.clone())
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .dim_styles
+                        .iter()
+                        .next()
+                        .map(|s| s.name.clone())
                         .unwrap_or_else(|| "Standard".to_string())
                 };
                 self.dimstyle_selected = selected.clone();
@@ -3806,7 +4467,8 @@ impl H7CAD {
                     self.dimstyle_selected.clone();
                 self.tabs[i].dirty = true;
                 self.command_line.push_output(&format!(
-                    "Current dim style set to '{}'.", self.dimstyle_selected
+                    "Current dim style set to '{}'.",
+                    self.dimstyle_selected
                 ));
                 Task::none()
             }
@@ -3814,15 +4476,28 @@ impl H7CAD {
                 let i = self.active_tab;
                 let name = self.dimstyle_selected.clone();
                 if name == "Standard" {
-                    self.command_line.push_error("Cannot delete the Standard dim style.");
-                } else if self.tabs[i].scene.document.dim_styles.remove(&name).is_some() {
+                    self.command_line
+                        .push_error("Cannot delete the Standard dim style.");
+                } else if self.tabs[i]
+                    .scene
+                    .document
+                    .dim_styles
+                    .remove(&name)
+                    .is_some()
+                {
                     self.tabs[i].dirty = true;
                     // Select first remaining style.
-                    self.dimstyle_selected = self.tabs[i].scene.document.dim_styles
-                        .iter().next().map(|s| s.name.clone())
+                    self.dimstyle_selected = self.tabs[i]
+                        .scene
+                        .document
+                        .dim_styles
+                        .iter()
+                        .next()
+                        .map(|s| s.name.clone())
                         .unwrap_or_else(|| "Standard".to_string());
                     self.load_dimstyle_bufs(i);
-                    self.command_line.push_output(&format!("DimStyle '{}' deleted.", name));
+                    self.command_line
+                        .push_output(&format!("DimStyle '{}' deleted.", name));
                 }
                 Task::none()
             }
@@ -3844,79 +4519,117 @@ impl H7CAD {
     /// Populate all edit buffers from the currently selected dim style.
     fn load_dimstyle_bufs(&mut self, tab: usize) {
         let doc = &self.tabs[tab].scene.document;
-        let Some(ds) = doc.dim_styles.get(&self.dimstyle_selected) else { return };
-        self.ds_dimdle  = format!("{}", ds.dimdle);
-        self.ds_dimdli  = format!("{}", ds.dimdli);
-        self.ds_dimgap  = format!("{}", ds.dimgap);
-        self.ds_dimexe  = format!("{}", ds.dimexe);
-        self.ds_dimexo  = format!("{}", ds.dimexo);
-        self.ds_dimsd1  = ds.dimsd1; self.ds_dimsd2 = ds.dimsd2;
-        self.ds_dimse1  = ds.dimse1; self.ds_dimse2 = ds.dimse2;
-        self.ds_dimasz  = format!("{}", ds.dimasz);
-        self.ds_dimcen  = format!("{}", ds.dimcen);
-        self.ds_dimtsz  = format!("{}", ds.dimtsz);
-        self.ds_dimtxt  = format!("{}", ds.dimtxt);
+        let Some(ds) = doc.dim_styles.get(&self.dimstyle_selected) else {
+            return;
+        };
+        self.ds_dimdle = format!("{}", ds.dimdle);
+        self.ds_dimdli = format!("{}", ds.dimdli);
+        self.ds_dimgap = format!("{}", ds.dimgap);
+        self.ds_dimexe = format!("{}", ds.dimexe);
+        self.ds_dimexo = format!("{}", ds.dimexo);
+        self.ds_dimsd1 = ds.dimsd1;
+        self.ds_dimsd2 = ds.dimsd2;
+        self.ds_dimse1 = ds.dimse1;
+        self.ds_dimse2 = ds.dimse2;
+        self.ds_dimasz = format!("{}", ds.dimasz);
+        self.ds_dimcen = format!("{}", ds.dimcen);
+        self.ds_dimtsz = format!("{}", ds.dimtsz);
+        self.ds_dimtxt = format!("{}", ds.dimtxt);
         self.ds_dimtxsty = ds.dimtxsty.clone();
-        self.ds_dimtad  = format!("{}", ds.dimtad);
-        self.ds_dimtih  = ds.dimtih; self.ds_dimtoh = ds.dimtoh;
+        self.ds_dimtad = format!("{}", ds.dimtad);
+        self.ds_dimtih = ds.dimtih;
+        self.ds_dimtoh = ds.dimtoh;
         self.ds_dimscale = format!("{}", ds.dimscale);
-        self.ds_dimlfac  = format!("{}", ds.dimlfac);
+        self.ds_dimlfac = format!("{}", ds.dimlfac);
         self.ds_dimlunit = format!("{}", ds.dimlunit);
-        self.ds_dimdec   = format!("{}", ds.dimdec);
-        self.ds_dimpost  = ds.dimpost.clone();
-        self.ds_dimtol   = ds.dimtol; self.ds_dimlim = ds.dimlim;
-        self.ds_dimtp    = format!("{}", ds.dimtp);
-        self.ds_dimtm    = format!("{}", ds.dimtm);
-        self.ds_dimtdec  = format!("{}", ds.dimtdec);
-        self.ds_dimtfac  = format!("{}", ds.dimtfac);
+        self.ds_dimdec = format!("{}", ds.dimdec);
+        self.ds_dimpost = ds.dimpost.clone();
+        self.ds_dimtol = ds.dimtol;
+        self.ds_dimlim = ds.dimlim;
+        self.ds_dimtp = format!("{}", ds.dimtp);
+        self.ds_dimtm = format!("{}", ds.dimtm);
+        self.ds_dimtdec = format!("{}", ds.dimtdec);
+        self.ds_dimtfac = format!("{}", ds.dimtfac);
     }
 
     /// Write edit buffers back into the selected dim style document entry.
     fn apply_dimstyle_bufs(&mut self, tab: usize) {
         self.push_undo_snapshot(tab, "DIMSTYLE EDIT");
         let doc = &mut self.tabs[tab].scene.document;
-        let Some(ds) = doc.dim_styles.get_mut(&self.dimstyle_selected) else { return };
-        macro_rules! set_f64 { ($field:ident, $buf:expr) => {
-            if let Ok(v) = $buf.trim().parse::<f64>() { ds.$field = v; }
-        }}
-        macro_rules! set_i16 { ($field:ident, $buf:expr) => {
-            if let Ok(v) = $buf.trim().parse::<i16>() { ds.$field = v; }
-        }}
-        set_f64!(dimdle, self.ds_dimdle);   set_f64!(dimdli, self.ds_dimdli);
-        set_f64!(dimgap, self.ds_dimgap);   set_f64!(dimexe, self.ds_dimexe);
-        set_f64!(dimexo, self.ds_dimexo);   set_f64!(dimasz, self.ds_dimasz);
-        set_f64!(dimcen, self.ds_dimcen);   set_f64!(dimtsz, self.ds_dimtsz);
-        set_f64!(dimtxt, self.ds_dimtxt);   set_f64!(dimscale, self.ds_dimscale);
-        set_f64!(dimlfac, self.ds_dimlfac); set_f64!(dimtp, self.ds_dimtp);
-        set_f64!(dimtm, self.ds_dimtm);     set_f64!(dimtfac, self.ds_dimtfac);
-        set_i16!(dimtad, self.ds_dimtad);   set_i16!(dimlunit, self.ds_dimlunit);
-        set_i16!(dimdec, self.ds_dimdec);   set_i16!(dimtdec, self.ds_dimtdec);
-        ds.dimsd1 = self.ds_dimsd1; ds.dimsd2 = self.ds_dimsd2;
-        ds.dimse1 = self.ds_dimse1; ds.dimse2 = self.ds_dimse2;
-        ds.dimtih = self.ds_dimtih; ds.dimtoh = self.ds_dimtoh;
-        ds.dimtol = self.ds_dimtol; ds.dimlim = self.ds_dimlim;
+        let Some(ds) = doc.dim_styles.get_mut(&self.dimstyle_selected) else {
+            return;
+        };
+        macro_rules! set_f64 {
+            ($field:ident, $buf:expr) => {
+                if let Ok(v) = $buf.trim().parse::<f64>() {
+                    ds.$field = v;
+                }
+            };
+        }
+        macro_rules! set_i16 {
+            ($field:ident, $buf:expr) => {
+                if let Ok(v) = $buf.trim().parse::<i16>() {
+                    ds.$field = v;
+                }
+            };
+        }
+        set_f64!(dimdle, self.ds_dimdle);
+        set_f64!(dimdli, self.ds_dimdli);
+        set_f64!(dimgap, self.ds_dimgap);
+        set_f64!(dimexe, self.ds_dimexe);
+        set_f64!(dimexo, self.ds_dimexo);
+        set_f64!(dimasz, self.ds_dimasz);
+        set_f64!(dimcen, self.ds_dimcen);
+        set_f64!(dimtsz, self.ds_dimtsz);
+        set_f64!(dimtxt, self.ds_dimtxt);
+        set_f64!(dimscale, self.ds_dimscale);
+        set_f64!(dimlfac, self.ds_dimlfac);
+        set_f64!(dimtp, self.ds_dimtp);
+        set_f64!(dimtm, self.ds_dimtm);
+        set_f64!(dimtfac, self.ds_dimtfac);
+        set_i16!(dimtad, self.ds_dimtad);
+        set_i16!(dimlunit, self.ds_dimlunit);
+        set_i16!(dimdec, self.ds_dimdec);
+        set_i16!(dimtdec, self.ds_dimtdec);
+        ds.dimsd1 = self.ds_dimsd1;
+        ds.dimsd2 = self.ds_dimsd2;
+        ds.dimse1 = self.ds_dimse1;
+        ds.dimse2 = self.ds_dimse2;
+        ds.dimtih = self.ds_dimtih;
+        ds.dimtoh = self.ds_dimtoh;
+        ds.dimtol = self.ds_dimtol;
+        ds.dimlim = self.ds_dimlim;
         ds.dimpost = self.ds_dimpost.clone();
         ds.dimtxsty = self.ds_dimtxsty.clone();
         self.tabs[tab].dirty = true;
-        self.command_line.push_output(&format!(
-            "DimStyle '{}' updated.", self.dimstyle_selected
-        ));
+        self.command_line
+            .push_output(&format!("DimStyle '{}' updated.", self.dimstyle_selected));
     }
 
     /// Update a single string buffer field.
     fn apply_ds_edit(&mut self, field: super::DsField, val: String) {
         use super::DsField::*;
         match field {
-            Dimdle => self.ds_dimdle = val,   Dimdli => self.ds_dimdli = val,
-            Dimgap => self.ds_dimgap = val,   Dimexe => self.ds_dimexe = val,
-            Dimexo => self.ds_dimexo = val,   Dimasz => self.ds_dimasz = val,
-            Dimcen => self.ds_dimcen = val,   Dimtsz => self.ds_dimtsz = val,
-            Dimtxt => self.ds_dimtxt = val,   Dimtxsty => self.ds_dimtxsty = val,
-            Dimtad => self.ds_dimtad = val,   Dimscale => self.ds_dimscale = val,
-            Dimlfac => self.ds_dimlfac = val, Dimlunit => self.ds_dimlunit = val,
-            Dimdec => self.ds_dimdec = val,   Dimpost => self.ds_dimpost = val,
-            Dimtp => self.ds_dimtp = val,     Dimtm => self.ds_dimtm = val,
-            Dimtdec => self.ds_dimtdec = val, Dimtfac => self.ds_dimtfac = val,
+            Dimdle => self.ds_dimdle = val,
+            Dimdli => self.ds_dimdli = val,
+            Dimgap => self.ds_dimgap = val,
+            Dimexe => self.ds_dimexe = val,
+            Dimexo => self.ds_dimexo = val,
+            Dimasz => self.ds_dimasz = val,
+            Dimcen => self.ds_dimcen = val,
+            Dimtsz => self.ds_dimtsz = val,
+            Dimtxt => self.ds_dimtxt = val,
+            Dimtxsty => self.ds_dimtxsty = val,
+            Dimtad => self.ds_dimtad = val,
+            Dimscale => self.ds_dimscale = val,
+            Dimlfac => self.ds_dimlfac = val,
+            Dimlunit => self.ds_dimlunit = val,
+            Dimdec => self.ds_dimdec = val,
+            Dimpost => self.ds_dimpost = val,
+            Dimtp => self.ds_dimtp = val,
+            Dimtm => self.ds_dimtm = val,
+            Dimtdec => self.ds_dimtdec = val,
+            Dimtfac => self.ds_dimtfac = val,
             // Bool fields — no-op for string edit
             _ => {}
         }
@@ -3953,11 +4666,9 @@ impl H7CAD {
             }
         } else {
             let (ext, _) = crate::io::parse_save_format(&self.save_dialog_format);
-            self.save_dialog_filename =
-                format!("{}.{ext}", self.tabs[tab_idx].tab_display_name());
+            self.save_dialog_filename = format!("{}.{ext}", self.tabs[tab_idx].tab_display_name());
         }
-        self.save_dialog_entries =
-            crate::io::read_dir_entries(&self.save_dialog_folder.clone());
+        self.save_dialog_entries = crate::io::read_dir_entries(&self.save_dialog_folder.clone());
         let (id, task) = window::open(window::Settings {
             size: iced::Size::new(560.0, 480.0),
             resizable: true,
@@ -4009,11 +4720,15 @@ impl H7CAD {
 /// Parse a scale string like "1:50" or "2:1" into (numerator, denominator).
 /// Returns (1.0, 1.0) for "Fit" or unknown formats.
 fn parse_plot_scale(s: &str) -> (f64, f64) {
-    if s == "Fit" { return (1.0, 1.0); }
+    if s == "Fit" {
+        return (1.0, 1.0);
+    }
     if let Some((a, b)) = s.split_once(':') {
         let num: f64 = a.trim().parse().unwrap_or(1.0);
         let den: f64 = b.trim().parse().unwrap_or(1.0);
-        if den > 0.0 { return (num, den); }
+        if den > 0.0 {
+            return (num, den);
+        }
     }
     (1.0, 1.0)
 }

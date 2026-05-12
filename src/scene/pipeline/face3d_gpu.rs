@@ -20,7 +20,7 @@ use iced::wgpu::util::DeviceExt;
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Face3DVertex {
     pub position: [f32; 3],
-    pub color:    [f32; 4],
+    pub color: [f32; 4],
 }
 
 impl Face3DVertex {
@@ -58,7 +58,11 @@ impl Face3DGpu {
     ///   emits 2 triangles per face.
     /// - `all_wires`: all entity wires — `fill_tris` holds pre-triangulated
     ///   fill data for PolyfaceMesh / PolygonMesh.
-    pub fn from_wires(device: &wgpu::Device, face3d_wires: &[WireModel], all_wires: &[WireModel]) -> Self {
+    pub fn from_wires(
+        device: &wgpu::Device,
+        face3d_wires: &[WireModel],
+        all_wires: &[WireModel],
+    ) -> Self {
         let mut vertices: Vec<Face3DVertex> = Vec::with_capacity(face3d_wires.len() * 6);
 
         // Face3D quads (4 key_vertices → 2 triangles).
@@ -69,7 +73,10 @@ impl Face3DGpu {
             let [r, g, b, a] = wire.color;
             let fill_color = [r * 0.45, g * 0.45, b * 0.45, a];
             let p = &wire.key_vertices;
-            let v = |i: usize| Face3DVertex { position: p[i], color: fill_color };
+            let v = |i: usize| Face3DVertex {
+                position: p[i],
+                color: fill_color,
+            };
             vertices.push(v(0));
             vertices.push(v(1));
             vertices.push(v(2));
@@ -86,7 +93,10 @@ impl Face3DGpu {
             let [r, g, b, a] = wire.color;
             let fill_color = [r * 0.45, g * 0.45, b * 0.45, a];
             for &position in &wire.fill_tris {
-                vertices.push(Face3DVertex { position, color: fill_color });
+                vertices.push(Face3DVertex {
+                    position,
+                    color: fill_color,
+                });
             }
         }
 

@@ -31,21 +31,23 @@ fn to_truck(circle: &Circle) -> TruckEntity {
     };
     // right: centre + r*Ax, left: centre - r*Ax, top: centre + r*Ay, bot: centre - r*Ay
     let p_right = pt(ax, (0.0, 0.0, 0.0), r);
-    let p_left  = pt((ax.0 * -1.0, ax.1 * -1.0, ax.2 * -1.0), (0.0, 0.0, 0.0), r);
-    let p_top   = pt(ay, (0.0, 0.0, 0.0), r);
-    let p_bot   = pt((ay.0 * -1.0, ay.1 * -1.0, ay.2 * -1.0), (0.0, 0.0, 0.0), r);
+    let p_left = pt((ax.0 * -1.0, ax.1 * -1.0, ax.2 * -1.0), (0.0, 0.0, 0.0), r);
+    let p_top = pt(ay, (0.0, 0.0, 0.0), r);
+    let p_bot = pt((ay.0 * -1.0, ay.1 * -1.0, ay.2 * -1.0), (0.0, 0.0, 0.0), r);
 
     let cv = Vec3::new(cwx as f32, cwy as f32, cwz as f32);
     let rf = r as f32;
-    let q = |d: (f64, f64, f64)| Vec3::new(
-        (cwx + r * d.0) as f32,
-        (cwy + r * d.1) as f32,
-        (cwz + r * d.2) as f32,
-    );
+    let q = |d: (f64, f64, f64)| {
+        Vec3::new(
+            (cwx + r * d.0) as f32,
+            (cwy + r * d.1) as f32,
+            (cwz + r * d.2) as f32,
+        )
+    };
     let snap_pts = vec![
         (cv, SnapHint::Center),
-        (q(ax),  SnapHint::Quadrant),
-        (q(ay),  SnapHint::Quadrant),
+        (q(ax), SnapHint::Quadrant),
+        (q(ay), SnapHint::Quadrant),
         (q((-ax.0, -ax.1, -ax.2)), SnapHint::Quadrant),
         (q((-ay.0, -ay.1, -ay.2)), SnapHint::Quadrant),
     ];
@@ -75,13 +77,21 @@ fn to_truck(circle: &Circle) -> TruckEntity {
         pts.push([f32::NAN; 3]);
         for i in 0..=n {
             let (x, y, z) = circ_pt(i as f64 * tau / n as f64);
-            pts.push([(x + t * nx) as f32, (y + t * ny) as f32, (z + t * nz) as f32]);
+            pts.push([
+                (x + t * nx) as f32,
+                (y + t * ny) as f32,
+                (z + t * nz) as f32,
+            ]);
         }
         pts.push([f32::NAN; 3]);
         for i in 0..4usize {
             let (x, y, z) = circ_pt(i as f64 * std::f64::consts::FRAC_PI_2);
             pts.push([x as f32, y as f32, z as f32]);
-            pts.push([(x + t * nx) as f32, (y + t * ny) as f32, (z + t * nz) as f32]);
+            pts.push([
+                (x + t * nx) as f32,
+                (y + t * ny) as f32,
+                (z + t * nz) as f32,
+            ]);
             if i < 3 {
                 pts.push([f32::NAN; 3]);
             }
@@ -96,7 +106,7 @@ fn to_truck(circle: &Circle) -> TruckEntity {
     }
 
     let right = builder::vertex(p_right);
-    let left  = builder::vertex(p_left);
+    let left = builder::vertex(p_left);
     let upper = builder::circle_arc(&right, &left, p_top);
     let lower = builder::circle_arc(&left, &right, p_bot);
     let wire: Wire = [upper, lower].into_iter().collect();

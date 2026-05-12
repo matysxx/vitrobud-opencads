@@ -6,7 +6,7 @@
 
 use acadrust::entities::LwPolyline;
 use acadrust::types::Vector2;
-use acadrust::{EntityType, entities::LwVertex};
+use acadrust::{entities::LwVertex, EntityType};
 use glam::Vec3;
 
 use crate::command::{CadCommand, CmdResult};
@@ -41,13 +41,21 @@ impl RevCloudCommand {
 }
 
 impl CadCommand for RevCloudCommand {
-    fn name(&self) -> &'static str { "REVCLOUD" }
+    fn name(&self) -> &'static str {
+        "REVCLOUD"
+    }
 
     fn prompt(&self) -> String {
         if self.points.is_empty() {
-            format!("REVCLOUD  Specify start point (arc length = {:.2}):", self.arc_length)
+            format!(
+                "REVCLOUD  Specify start point (arc length = {:.2}):",
+                self.arc_length
+            )
         } else {
-            format!("REVCLOUD  Specify next point ({} pts, Enter to close):", self.points.len())
+            format!(
+                "REVCLOUD  Specify next point ({} pts, Enter to close):",
+                self.points.len()
+            )
         }
     }
 
@@ -65,9 +73,10 @@ impl CadCommand for RevCloudCommand {
     }
 
     fn on_mouse_move(&mut self, pt: Vec3) -> Option<WireModel> {
-        if self.points.is_empty() { return None; }
-        let mut preview_pts: Vec<[f32; 3]> =
-            self.points.iter().map(|p| [p.x, p.y, p.z]).collect();
+        if self.points.is_empty() {
+            return None;
+        }
+        let mut preview_pts: Vec<[f32; 3]> = self.points.iter().map(|p| [p.x, p.y, p.z]).collect();
         preview_pts.push([pt.x, pt.y, pt.z]);
         preview_pts.push([self.points[0].x, self.points[0].y, self.points[0].z]);
         Some(WireModel {
@@ -101,7 +110,9 @@ fn make_revcloud(pts: &[Vec3], arc_len: f64) -> EntityType {
         let p0 = pts[i];
         let p1 = pts[(i + 1) % n];
         let seg_len = ((p1.x - p0.x).powi(2) + (p1.z - p0.z).powi(2)).sqrt() as f64;
-        if seg_len < 1e-6 { continue; }
+        if seg_len < 1e-6 {
+            continue;
+        }
 
         // How many full arcs fit?
         let num_arcs = ((seg_len / arc_len).round() as usize).max(1);

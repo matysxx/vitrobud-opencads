@@ -40,13 +40,20 @@ fn substitute_gdt_codes(s: &str) -> String {
             let mut depth = 1usize;
             for c in chars.by_ref() {
                 match c {
-                    '{' => { depth += 1; inner.push(c); }
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 { break; }
+                    '{' => {
+                        depth += 1;
                         inner.push(c);
                     }
-                    _ => { inner.push(c); }
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        inner.push(c);
+                    }
+                    _ => {
+                        inner.push(c);
+                    }
                 }
             }
             // Is it a GDT font switch?
@@ -67,27 +74,27 @@ fn substitute_gdt_codes(s: &str) -> String {
 /// Map a GDT font character to a short ASCII approximation.
 fn gdt_char_to_ascii(c: char) -> &'static str {
     match c {
-        'a' => "SRT",   // Straightness
-        'b' => "FLT",   // Flatness
-        'c' => "FLT",   // Flatness
-        'd' => "PSF",   // Profile of Surface
-        'e' => "CYL",   // Cylindricity
-        'f' => "PRL",   // Profile of Line
-        'g' => "CIR",   // Circularity
-        'h' => "PAR",   // Parallelism
-        'i' => "SYM",   // Symmetry
-        'j' => "PRP",   // Perpendicularity
-        'k' => "PLN",   // Profile of Line
-        'l' => "(L)",   // LMC
-        'm' => "(M)",   // MMC / Diameter
-        'n' => "ANG",   // Angularity
-        'o' => "(o)",   // at maximum material boundary
-        'p' => "POS",   // Position
+        'a' => "SRT", // Straightness
+        'b' => "FLT", // Flatness
+        'c' => "FLT", // Flatness
+        'd' => "PSF", // Profile of Surface
+        'e' => "CYL", // Cylindricity
+        'f' => "PRL", // Profile of Line
+        'g' => "CIR", // Circularity
+        'h' => "PAR", // Parallelism
+        'i' => "SYM", // Symmetry
+        'j' => "PRP", // Perpendicularity
+        'k' => "PLN", // Profile of Line
+        'l' => "(L)", // LMC
+        'm' => "(M)", // MMC / Diameter
+        'n' => "ANG", // Angularity
+        'o' => "(o)", // at maximum material boundary
+        'p' => "POS", // Position
         'q' => "(q)",
-        'r' => "RUN",   // Circular Runout
-        's' => "(S)",   // RFS / Regardless of Feature Size
-        't' => "TRN",   // Total Runout
-        'u' => "CON",   // Concentricity
+        'r' => "RUN", // Circular Runout
+        's' => "(S)", // RFS / Regardless of Feature Size
+        't' => "TRN", // Total Runout
+        'u' => "CON", // Concentricity
         'v' => "(v)",
         'w' => "(w)",
         _ => "?",
@@ -118,7 +125,11 @@ fn tessellate_tolerance(tol: &Tolerance) -> Vec<Vec<[f32; 2]>> {
     }
 
     // ── Metrics ──────────────────────────────────────────────────────────
-    let h = if tol.text_height > 1e-6 { tol.text_height as f32 } else { 2.5_f32 };
+    let h = if tol.text_height > 1e-6 {
+        tol.text_height as f32
+    } else {
+        2.5_f32
+    };
     let gap = (h * 0.35).max(0.1);
     let cell_h = h + 2.0 * gap;
     let char_w = h * 0.65;
@@ -143,9 +154,7 @@ fn tessellate_tolerance(tol: &Tolerance) -> Vec<Vec<[f32; 2]>> {
     let (sa, ca) = angle.sin_cos();
 
     // Rotate only; origin is kept as f64 and applied later with full precision.
-    let rot = |x: f32, y: f32| -> [f32; 2] {
-        [x * ca - y * sa, x * sa + y * ca]
-    };
+    let rot = |x: f32, y: f32| -> [f32; 2] { [x * ca - y * sa, x * sa + y * ca] };
 
     let mut out: Vec<Vec<[f32; 2]>> = Vec::new();
 
@@ -182,20 +191,17 @@ fn tessellate_tolerance(tol: &Tolerance) -> Vec<Vec<[f32; 2]>> {
         let row_y = cell_h * ri as f32 + gap;
         let mut cell_x = 0.0_f32;
         for (ci, cell) in row.iter().enumerate() {
-            let cw = if ci < col_widths.len() { col_widths[ci] } else { 0.0 };
+            let cw = if ci < col_widths.len() {
+                col_widths[ci]
+            } else {
+                0.0
+            };
             if !cell.is_empty() {
                 let text_w = cell.len() as f32 * char_w;
                 let tx = cell_x + (cw - text_w) * 0.5;
                 // Tessellate text in local frame then transform
-                let local_strokes = cxf::tessellate_text_ex(
-                    [0.0, 0.0],
-                    h,
-                    0.0,
-                    1.0,
-                    0.0,
-                    "txt",
-                    cell,
-                );
+                let local_strokes =
+                    cxf::tessellate_text_ex([0.0, 0.0], h, 0.0, 1.0, 0.0, "txt", cell);
                 for polyline in local_strokes {
                     let transformed: Vec<[f32; 2]> = polyline
                         .into_iter()
@@ -289,7 +295,9 @@ impl PropertyEditable for Tolerance {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
-        let Ok(v) = value.trim().parse::<f64>() else { return };
+        let Ok(v) = value.trim().parse::<f64>() else {
+            return;
+        };
         match field {
             "tol_ix" => self.insertion_point.x = v,
             "tol_iy" => self.insertion_point.y = v,

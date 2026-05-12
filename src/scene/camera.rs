@@ -120,7 +120,7 @@ impl Camera {
         let (ray_origin, ray_dir) = match self.projection {
             Projection::Perspective => {
                 let near_pt = inv.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
-                let far_pt  = inv.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
+                let far_pt = inv.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
                 let dir = (far_pt - near_pt).normalize();
                 (near_pt, dir)
             }

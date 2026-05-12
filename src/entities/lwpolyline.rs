@@ -3,7 +3,9 @@ use glam::Vec3;
 use truck_modeling::{builder, Edge, Point3, Wire};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
+use crate::entities::common::{
+    diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
@@ -32,7 +34,9 @@ fn arc_midpoint(p0: [f64; 2], p1: [f64; 2], bulge: f64) -> [f64; 2] {
     let a0 = (p0[1] - cy).atan2(p0[0] - cx);
     let a1 = (p1[1] - cy).atan2(p1[0] - cx);
     let (sa, mut ea) = if bulge > 0.0 { (a0, a1) } else { (a1, a0) };
-    if ea < sa { ea += TAU; }
+    if ea < sa {
+        ea += TAU;
+    }
     let mid_a = sa + (ea - sa) * 0.5;
     [cx + r * mid_a.cos(), cy + r * mid_a.sin()]
 }
@@ -58,7 +62,9 @@ fn bulge_from_midpoint(p0: [f64; 2], p1: [f64; 2], mid: [f64; 2]) -> Option<f64>
     // Determine arc direction: cross product (p1-p0) × (mid-p0)
     let cross = (p1[0] - p0[0]) * (mid[1] - p0[1]) - (p1[1] - p0[1]) * (mid[0] - p0[0]);
     let (sa, mut ea) = if cross > 0.0 { (a0, a1) } else { (a1, a0) };
-    if ea < sa { ea += TAU; }
+    if ea < sa {
+        ea += TAU;
+    }
     let span = ea - sa; // central angle in (0, TAU]
     let bulge = (span / 4.0).tan();
     Some(if cross >= 0.0 { bulge } else { -bulge })
@@ -77,7 +83,11 @@ fn thick_segments(
     let (nx, ny, nz) = normal;
     let t = thickness;
     let off = |p: [f32; 3]| -> [f32; 3] {
-        [(p[0] as f64 + t * nx) as f32, (p[1] as f64 + t * ny) as f32, (p[2] as f64 + t * nz) as f32]
+        [
+            (p[0] as f64 + t * nx) as f32,
+            (p[1] as f64 + t * ny) as f32,
+            (p[2] as f64 + t * nz) as f32,
+        ]
     };
     let mut pts: Vec<[f32; 3]> = Vec::with_capacity(path_pts.len() * 2 + seg_data.len() * 3 + 4);
     // Bottom path
@@ -106,7 +116,13 @@ fn thick_segments(
             pts.push(off(last));
         }
     }
-    TruckEntity { object: TruckObject::Lines(pts), snap_pts: vec![], tangent_geoms: tangents, key_vertices: key_verts, fill_tris: vec![] }
+    TruckEntity {
+        object: TruckObject::Lines(pts),
+        snap_pts: vec![],
+        tangent_geoms: tangents,
+        key_vertices: key_verts,
+        fill_tris: vec![],
+    }
 }
 
 fn to_truck(pline: &LwPolyline) -> TruckEntity {
@@ -156,22 +172,40 @@ fn to_truck(pline: &LwPolyline) -> TruckEntity {
             if bulge.abs() < 1e-9 {
                 let (wx, wy, wz) = to_wcs(ox1, oy1);
                 path.push([wx as f32, wy as f32, wz as f32]);
-                tgs.push(TangentGeom::Line { p1: path[path.len()-2], p2: *path.last().unwrap() });
+                tgs.push(TangentGeom::Line {
+                    p1: path[path.len() - 2],
+                    p2: *path.last().unwrap(),
+                });
             } else {
                 let angle = 4.0 * bulge.atan();
-                let dx = ox1 - ox0; let dy = oy1 - oy0;
+                let dx = ox1 - ox0;
+                let dy = oy1 - oy0;
                 let d = (dx * dx + dy * dy).sqrt().max(1e-12);
                 let r = (d / 2.0) / (angle / 2.0).sin().abs();
-                let mx = (ox0 + ox1) * 0.5; let my = (oy0 + oy1) * 0.5;
-                let px = -dy / d; let py = dx / d;
+                let mx = (ox0 + ox1) * 0.5;
+                let my = (oy0 + oy1) * 0.5;
+                let px = -dy / d;
+                let py = dx / d;
                 let ss = if bulge > 0.0 { 1.0_f64 } else { -1.0_f64 };
                 let h = r - (r * r - d * d / 4.0).max(0.0).sqrt();
-                let ocx = mx + ss * px * (r - h); let ocy = my + ss * py * (r - h);
+                let ocx = mx + ss * px * (r - h);
+                let ocy = my + ss * py * (r - h);
                 let a0 = (oy0 - ocy).atan2(ox0 - ocx);
                 let mut a1 = (oy1 - ocy).atan2(ox1 - ocx);
-                if bulge > 0.0 { if a1 < a0 { a1 += TAU; } } else { if a1 > a0 { a1 -= TAU; } }
+                if bulge > 0.0 {
+                    if a1 < a0 {
+                        a1 += TAU;
+                    }
+                } else {
+                    if a1 > a0 {
+                        a1 -= TAU;
+                    }
+                }
                 let (wcx, wcy, wcz) = to_wcs(ocx, ocy);
-                tgs.push(TangentGeom::Circle { center: [wcx as f32, wcy as f32, wcz as f32], radius: r as f32 });
+                tgs.push(TangentGeom::Circle {
+                    center: [wcx as f32, wcy as f32, wcz as f32],
+                    radius: r as f32,
+                });
                 for j in 1..=16usize {
                     let a = a0 + (a1 - a0) * (j as f64 / 16.0);
                     let (wx, wy, wz) = to_wcs(ocx + r * a.cos(), ocy + r * a.sin());
@@ -199,26 +233,43 @@ fn to_truck(pline: &LwPolyline) -> TruckEntity {
             let (wx0, wy0, wz0) = to_wcs(ox0, oy0);
             let p_start = [wx0 as f32, wy0 as f32, wz0 as f32];
             pts.push(p_start);
-            if i == 0 { kv.push(p_start); }
+            if i == 0 {
+                kv.push(p_start);
+            }
             if bulge.abs() < 1e-9 {
                 let (wx1, wy1, wz1) = to_wcs(ox1, oy1);
                 let p_end = [wx1 as f32, wy1 as f32, wz1 as f32];
                 pts.push(p_end);
                 kv.push(p_end);
-                tgs.push(TangentGeom::Line { p1: p_start, p2: p_end });
+                tgs.push(TangentGeom::Line {
+                    p1: p_start,
+                    p2: p_end,
+                });
             } else {
                 let angle = 4.0 * bulge.atan();
-                let dx = ox1 - ox0; let dy = oy1 - oy0;
+                let dx = ox1 - ox0;
+                let dy = oy1 - oy0;
                 let d = (dx * dx + dy * dy).sqrt().max(1e-12);
                 let r = (d / 2.0) / (angle / 2.0).sin().abs();
-                let mx = (ox0 + ox1) * 0.5; let my = (oy0 + oy1) * 0.5;
-                let px = -dy / d; let py = dx / d;
+                let mx = (ox0 + ox1) * 0.5;
+                let my = (oy0 + oy1) * 0.5;
+                let px = -dy / d;
+                let py = dx / d;
                 let ss = if bulge > 0.0 { 1.0_f64 } else { -1.0_f64 };
                 let h = r - (r * r - d * d / 4.0).max(0.0).sqrt();
-                let ocx = mx + ss * px * (r - h); let ocy = my + ss * py * (r - h);
+                let ocx = mx + ss * px * (r - h);
+                let ocy = my + ss * py * (r - h);
                 let a0 = (oy0 - ocy).atan2(ox0 - ocx);
                 let mut a1 = (oy1 - ocy).atan2(ox1 - ocx);
-                if bulge > 0.0 { if a1 < a0 { a1 += TAU; } } else { if a1 > a0 { a1 -= TAU; } }
+                if bulge > 0.0 {
+                    if a1 < a0 {
+                        a1 += TAU;
+                    }
+                } else {
+                    if a1 > a0 {
+                        a1 -= TAU;
+                    }
+                }
                 for j in 1..=16usize {
                     let a = a0 + (a1 - a0) * (j as f64 / 16.0);
                     let (wx, wy, wz) = to_wcs(ocx + r * a.cos(), ocy + r * a.sin());
@@ -227,7 +278,10 @@ fn to_truck(pline: &LwPolyline) -> TruckEntity {
                 let (wx1, wy1, wz1) = to_wcs(ox1, oy1);
                 kv.push([wx1 as f32, wy1 as f32, wz1 as f32]);
                 let (wcx, wcy, wcz) = to_wcs(ocx, ocy);
-                tgs.push(TangentGeom::Circle { center: [wcx as f32, wcy as f32, wcz as f32], radius: r as f32 });
+                tgs.push(TangentGeom::Circle {
+                    center: [wcx as f32, wcy as f32, wcz as f32],
+                    radius: r as f32,
+                });
             }
             if i + 1 < seg_count {
                 pts.push([f32::NAN; 3]);
@@ -314,7 +368,11 @@ fn to_truck(pline: &LwPolyline) -> TruckEntity {
 fn grips(pline: &LwPolyline) -> Vec<GripDef> {
     let elev = pline.elevation as f32;
     let n = pline.vertices.len();
-    let seg_count = if pline.is_closed { n } else { n.saturating_sub(1) };
+    let seg_count = if pline.is_closed {
+        n
+    } else {
+        n.saturating_sub(1)
+    };
 
     let mut out: Vec<GripDef> = pline
         .vertices
@@ -335,7 +393,10 @@ fn grips(pline: &LwPolyline) -> Vec<GripDef> {
             [v1.location.x, v1.location.y],
             v0.bulge,
         );
-        out.push(diamond_grip(n + i, Vec3::new(mid[0] as f32, mid[1] as f32, elev)));
+        out.push(diamond_grip(
+            n + i,
+            Vec3::new(mid[0] as f32, mid[1] as f32, elev),
+        ));
     }
     out
 }
@@ -382,7 +443,11 @@ fn apply_grip(pline: &mut LwPolyline, grip_id: usize, apply: GripApply) {
     } else {
         // Arc midpoint grip for segment (grip_id - n)
         let seg = grip_id - n;
-        let count = if pline.is_closed { n } else { n.saturating_sub(1) };
+        let count = if pline.is_closed {
+            n
+        } else {
+            n.saturating_sub(1)
+        };
         if seg >= count {
             return;
         }
@@ -399,7 +464,10 @@ fn apply_grip(pline: &mut LwPolyline, grip_id: usize, apply: GripApply) {
                 [old[0] + d.x as f64, old[1] + d.y as f64]
             }
         };
-        let p0 = [pline.vertices[seg].location.x, pline.vertices[seg].location.y];
+        let p0 = [
+            pline.vertices[seg].location.x,
+            pline.vertices[seg].location.y,
+        ];
         let p1 = [
             pline.vertices[(seg + 1) % n].location.x,
             pline.vertices[(seg + 1) % n].location.y,

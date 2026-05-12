@@ -36,21 +36,30 @@ pub struct MLeaderCommand {
 
 impl MLeaderCommand {
     pub fn new() -> Self {
-        Self { step: Step::CollectPoints { verts: Vec::new() } }
+        Self {
+            step: Step::CollectPoints { verts: Vec::new() },
+        }
     }
 }
 
 impl CadCommand for MLeaderCommand {
-    fn name(&self) -> &'static str { "MLEADER" }
+    fn name(&self) -> &'static str {
+        "MLEADER"
+    }
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::CollectPoints { verts } if verts.is_empty() =>
-                "MLEADER  Specify arrowhead point:".into(),
-            Step::CollectPoints { verts } =>
-                format!("MLEADER  Specify next point [{} pts — Enter to finish]:", verts.len()),
-            Step::AskText { verts } =>
-                format!("MLEADER  Enter annotation text [{} pts — blank = no text]:", verts.len()),
+            Step::CollectPoints { verts } if verts.is_empty() => {
+                "MLEADER  Specify arrowhead point:".into()
+            }
+            Step::CollectPoints { verts } => format!(
+                "MLEADER  Specify next point [{} pts — Enter to finish]:",
+                verts.len()
+            ),
+            Step::AskText { verts } => format!(
+                "MLEADER  Enter annotation text [{} pts — blank = no text]:",
+                verts.len()
+            ),
         }
     }
 
@@ -67,7 +76,9 @@ impl CadCommand for MLeaderCommand {
 
     fn on_enter(&mut self) -> CmdResult {
         if let Step::CollectPoints { verts } = &self.step {
-            if verts.len() < 2 { return CmdResult::Cancel; }
+            if verts.len() < 2 {
+                return CmdResult::Cancel;
+            }
             let verts = verts.clone();
             self.step = Step::AskText { verts };
             CmdResult::NeedPoint
@@ -86,11 +97,15 @@ impl CadCommand for MLeaderCommand {
         }
     }
 
-    fn on_escape(&mut self) -> CmdResult { CmdResult::Cancel }
+    fn on_escape(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
 
     fn on_mouse_move(&mut self, pt: Vec3) -> Option<WireModel> {
         if let Step::CollectPoints { verts } = &self.step {
-            if verts.is_empty() { return None; }
+            if verts.is_empty() {
+                return None;
+            }
             let mut pts = verts.clone();
             pts.push(pt);
             Some(preview_wire(&pts))
@@ -102,7 +117,9 @@ impl CadCommand for MLeaderCommand {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn v3(p: Vec3) -> Vector3 { Vector3::new(p.x as f64, p.y as f64, p.z as f64) }
+fn v3(p: Vec3) -> Vector3 {
+    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+}
 
 fn build_mleader(text: &str, verts: &[Vec3]) -> MultiLeader {
     // Last vertex = content/text location; remaining = leader line points
@@ -115,13 +132,15 @@ fn build_mleader(text: &str, verts: &[Vec3]) -> MultiLeader {
     let mut ml = MultiLeader::with_text(text, content_v3, leader_v3);
 
     // Match Leader entity defaults
-    ml.text_height          = 2.5;
-    ml.context.text_height  = 2.5;
-    ml.arrowhead_size       = 2.5;
-    ml.dogleg_length        = 2.5;
+    ml.text_height = 2.5;
+    ml.context.text_height = 2.5;
+    ml.arrowhead_size = 2.5;
+    ml.dogleg_length = 2.5;
 
     // Direction: from last leader pt toward content
-    if let (Some(last_leader), Some(root)) = (leader_pts.last(), ml.context.leader_roots.first_mut()) {
+    if let (Some(last_leader), Some(root)) =
+        (leader_pts.last(), ml.context.leader_roots.first_mut())
+    {
         let dx = (content_pt.x - last_leader.x) as f64;
         let dy = (content_pt.y - last_leader.y) as f64;
         let len = (dx * dx + dy * dy).sqrt().max(1e-9);
@@ -153,11 +172,11 @@ fn preview_wire(pts: &[Vec3]) -> WireModel {
         snap_pts: vec![],
         tangent_geoms: vec![],
         aci: 0,
-            key_vertices: vec![],
-            aabb: WireModel::UNBOUNDED_AABB,
-            plinegen: true,
-            vp_scissor: None,
-            fill_tris: vec![],
+        key_vertices: vec![],
+        aabb: WireModel::UNBOUNDED_AABB,
+        plinegen: true,
+        vp_scissor: None,
+        fill_tris: vec![],
     }
 }
 
@@ -168,7 +187,15 @@ fn arrowhead_wings(tip: Vec3, next: Vec3, size: f32) -> [Vec3; 2] {
     let angle = std::f32::consts::PI / 6.0;
     let (s, c) = angle.sin_cos();
     [
-        Vec3::new(tip.x + (dx*c - dy*s)*size, tip.y + (dx*s + dy*c)*size, tip.z),
-        Vec3::new(tip.x + (dx*c + dy*s)*size, tip.y + (-dx*s + dy*c)*size, tip.z),
+        Vec3::new(
+            tip.x + (dx * c - dy * s) * size,
+            tip.y + (dx * s + dy * c) * size,
+            tip.z,
+        ),
+        Vec3::new(
+            tip.x + (dx * c + dy * s) * size,
+            tip.y + (-dx * s + dy * c) * size,
+            tip.z,
+        ),
     ]
 }

@@ -10,19 +10,19 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::ui::ROW_H;
 use acadrust::types::{Color as AcadColor, LineWeight};
 use acadrust::Handle;
 use iced::widget::{button, column, combo_box, container, row, scrollable, text, text_input};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme};
-use crate::ui::ROW_H;
 
 // ── Row-height-derived constants ─────────────────────────────────────────
-const FONT_SZ: f32       = ROW_H * 0.42;                          // ≈11 px
-const COMBO_PAD_V: f32   = (ROW_H - FONT_SZ * 1.3 - 2.0) / 2.0;  // fills combo to ROW_H
-const SWATCH_SZ: f32     = ROW_H * 0.54;                          // ≈14 px color swatch
+const FONT_SZ: f32 = ROW_H * 0.42; // ≈11 px
+const COMBO_PAD_V: f32 = (ROW_H - FONT_SZ * 1.3 - 2.0) / 2.0; // fills combo to ROW_H
+const SWATCH_SZ: f32 = ROW_H * 0.54; // ≈14 px color swatch
 
-use crate::scene::object::{PropSection, PropValue};
 use crate::app::Message;
+use crate::scene::object::{PropSection, PropValue};
 
 const VARIES_LABEL: &str = "*VARIES*";
 
@@ -321,7 +321,12 @@ impl PropertiesPanel {
             Message::PropLayerChanged,
         )
         .size(FONT_SZ)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .input_style(combo_input_style)
         .width(Length::Fill);
 
@@ -360,7 +365,12 @@ impl PropertiesPanel {
         )
         .on_press(Message::PropColorPickerToggle)
         .style(combo_btn_style)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .width(Length::Fill);
 
         let color_row = prop_row_widget(label, color_btn.into());
@@ -409,7 +419,12 @@ impl PropertiesPanel {
         )
         .on_press(Message::PropColorPickerToggle)
         .style(combo_btn_style)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .width(Length::Fill);
 
         let color_row = prop_row_widget(label, color_btn.into());
@@ -443,7 +458,12 @@ impl PropertiesPanel {
             |item: LwItem| Message::PropLwChanged(item.0),
         )
         .size(FONT_SZ)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .input_style(combo_input_style)
         .width(Length::Fill);
 
@@ -458,7 +478,12 @@ impl PropertiesPanel {
             |item: LwItem| Message::PropLwChanged(item.0),
         )
         .size(FONT_SZ)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .input_style(combo_input_style)
         .width(Length::Fill);
 
@@ -486,7 +511,12 @@ impl PropertiesPanel {
             |item: LinetypeItem| Message::PropLinetypeChanged(item.name),
         )
         .size(FONT_SZ)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .input_style(combo_input_style)
         .width(Length::Fill);
 
@@ -513,7 +543,12 @@ impl PropertiesPanel {
             Message::PropGeomChoiceChanged { field, value }
         })
         .size(FONT_SZ)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .input_style(combo_input_style)
         .width(Length::Fill);
 
@@ -562,7 +597,12 @@ impl PropertiesPanel {
             Message::PropHatchPatternChanged,
         )
         .size(FONT_SZ)
-        .padding(Padding { top: COMBO_PAD_V, bottom: COMBO_PAD_V, left: 6.0, right: 6.0 })
+        .padding(Padding {
+            top: COMBO_PAD_V,
+            bottom: COMBO_PAD_V,
+            left: 6.0,
+            right: 6.0,
+        })
         .input_style(combo_input_style)
         .width(Length::Fill);
 
@@ -583,17 +623,19 @@ pub fn color_picker_dropdown<'a>(
     on_aci: impl Fn(u8) -> Message + 'a,
 ) -> Element<'a, Message> {
     // ByLayer / ByBlock row (optional)
-    let extras: Option<Element<'a, Message>> =
-        match (by_layer_msg, by_block_msg) {
-            (Some(bl), Some(bb)) => Some(
-                row![picker_text_btn("ByLayer", bl), picker_text_btn("ByBlock", bb)]
-                    .spacing(4)
-                    .into(),
-            ),
-            (Some(bl), None) => Some(picker_text_btn("ByLayer", bl)),
-            (None, Some(bb)) => Some(picker_text_btn("ByBlock", bb)),
-            (None, None) => None,
-        };
+    let extras: Option<Element<'a, Message>> = match (by_layer_msg, by_block_msg) {
+        (Some(bl), Some(bb)) => Some(
+            row![
+                picker_text_btn("ByLayer", bl),
+                picker_text_btn("ByBlock", bb)
+            ]
+            .spacing(4)
+            .into(),
+        ),
+        (Some(bl), None) => Some(picker_text_btn("ByLayer", bl)),
+        (None, Some(bb)) => Some(picker_text_btn("ByBlock", bb)),
+        (None, None) => None,
+    };
 
     // 9 standard ACI swatches (1-9)
     let standard: Element<'a, Message> = (1u8..=9u8)
@@ -612,7 +654,11 @@ pub fn color_picker_dropdown<'a>(
                             } else {
                                 Color::BLACK
                             },
-                            width: if matches!(status, button::Status::Hovered) { 1.5 } else { 1.0 },
+                            width: if matches!(status, button::Status::Hovered) {
+                                1.5
+                            } else {
+                                1.0
+                            },
                             radius: 2.0.into(),
                         },
                         ..Default::default()
@@ -624,9 +670,13 @@ pub fn color_picker_dropdown<'a>(
 
     // "More Colors…" toggle button
     let more_btn = button(
-        text(if palette_open { "▲ Less" } else { "▼ More Colors…" })
-            .size(10)
-            .color(HINT_COLOR),
+        text(if palette_open {
+            "▲ Less"
+        } else {
+            "▼ More Colors…"
+        })
+        .size(10)
+        .color(HINT_COLOR),
     )
     .on_press(palette_toggle_msg)
     .style(|_: &Theme, _| button::Style {
@@ -646,7 +696,11 @@ pub fn color_picker_dropdown<'a>(
     let mut col = column![container(inner)
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(PICKER_BG)),
-            border: Border { color: BORDER, width: 1.0, radius: 0.0.into() },
+            border: Border {
+                color: BORDER,
+                width: 1.0,
+                radius: 0.0.into()
+            },
             ..Default::default()
         })
         .padding([6, 8])
@@ -661,7 +715,9 @@ pub fn color_picker_dropdown<'a>(
         while idx <= 255 {
             let mut r = row![].spacing(1);
             for _ in 0..COLS {
-                if idx > 255 { break; }
+                if idx > 255 {
+                    break;
+                }
                 let ci = idx as u8;
                 let (bg, _) = acad_color_display(AcadColor::Index(ci));
                 let msg = on_aci(ci);
@@ -674,9 +730,18 @@ pub fn color_picker_dropdown<'a>(
                                 color: if matches!(status, button::Status::Hovered) {
                                     Color::WHITE
                                 } else {
-                                    Color { r: 0.0, g: 0.0, b: 0.0, a: 0.4 }
+                                    Color {
+                                        r: 0.0,
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 0.4,
+                                    }
                                 },
-                                width: if matches!(status, button::Status::Hovered) { 1.5 } else { 1.0 },
+                                width: if matches!(status, button::Status::Hovered) {
+                                    1.5
+                                } else {
+                                    1.0
+                                },
                                 radius: 1.0.into(),
                             },
                             ..Default::default()
@@ -691,7 +756,11 @@ pub fn color_picker_dropdown<'a>(
             container(scrollable(rows).height(160))
                 .style(|_: &Theme| container::Style {
                     background: Some(Background::Color(PICKER_BG)),
-                    border: Border { color: BORDER, width: 1.0, radius: 0.0.into() },
+                    border: Border {
+                        color: BORDER,
+                        width: 1.0,
+                        radius: 0.0.into(),
+                    },
                     ..Default::default()
                 })
                 .padding([4, 6])
@@ -707,30 +776,31 @@ pub fn color_picker_dropdown<'a>(
 /// A boolean toggle button row (for "Invisible" etc.).
 fn render_bool_row<'a>(label: &'a str, field: &'static str, value: bool) -> Element<'a, Message> {
     let btn_label = if value { "Yes" } else { "No" };
-    let btn = button(
-        text(btn_label)
-            .size(FONT_SZ)
-            .color(if value { WARN_COLOR } else { VALUE_COLOR }),
-    )
-    .on_press(Message::PropBoolToggle(field))
-    .style(move |_: &Theme, status| {
-        let bg = match status {
-            button::Status::Hovered | button::Status::Pressed => HOVER_BG,
-            _ => VALUE_BG,
-        };
-        button::Style {
-            background: Some(Background::Color(bg)),
-            border: Border {
-                color: BORDER,
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-            text_color: if value { WARN_COLOR } else { VALUE_COLOR },
-            ..Default::default()
-        }
-    })
-    .padding([2, 6])
-    .width(Length::Fill);
+    let btn =
+        button(
+            text(btn_label)
+                .size(FONT_SZ)
+                .color(if value { WARN_COLOR } else { VALUE_COLOR }),
+        )
+        .on_press(Message::PropBoolToggle(field))
+        .style(move |_: &Theme, status| {
+            let bg = match status {
+                button::Status::Hovered | button::Status::Pressed => HOVER_BG,
+                _ => VALUE_BG,
+            };
+            button::Style {
+                background: Some(Background::Color(bg)),
+                border: Border {
+                    color: BORDER,
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
+                text_color: if value { WARN_COLOR } else { VALUE_COLOR },
+                ..Default::default()
+            }
+        })
+        .padding([2, 6])
+        .width(Length::Fill);
 
     prop_row_widget(label, btn.into())
 }
@@ -744,7 +814,12 @@ fn render_ro_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
         .width(Length::FillPortion(5))
         .height(Length::Fixed(ROW_H))
         .align_y(iced::Center)
-        .padding(Padding { top: 0.0, bottom: 0.0, left: 6.0, right: 6.0 });
+        .padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 6.0,
+            right: 6.0,
+        });
     let value_col = container(text(value).size(FONT_SZ).color(VALUE_COLOR))
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(VALUE_BG)),
@@ -753,7 +828,12 @@ fn render_ro_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
         .width(Length::FillPortion(6))
         .height(Length::Fixed(ROW_H))
         .align_y(iced::Center)
-        .padding(Padding { top: 0.0, bottom: 0.0, left: 6.0, right: 6.0 });
+        .padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 6.0,
+            right: 6.0,
+        });
     container(row![label_col, value_col])
         .height(Length::Fixed(ROW_H))
         .style(|_: &Theme| container::Style {
@@ -777,7 +857,12 @@ fn prop_row_widget<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<
         .width(Length::FillPortion(5))
         .height(Length::Fixed(ROW_H))
         .align_y(iced::Center)
-        .padding(Padding { top: 0.0, bottom: 0.0, left: 6.0, right: 6.0 });
+        .padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 6.0,
+            right: 6.0,
+        });
     let value_col = container(widget)
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(VALUE_BG)),
@@ -786,7 +871,12 @@ fn prop_row_widget<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<
         .width(Length::FillPortion(6))
         .height(Length::Fixed(ROW_H))
         .align_y(iced::Center)
-        .padding(Padding { top: 0.0, bottom: 0.0, left: 2.0, right: 2.0 });
+        .padding(Padding {
+            top: 0.0,
+            bottom: 0.0,
+            left: 2.0,
+            right: 2.0,
+        });
     container(row![label_col, value_col])
         .height(Length::Fixed(ROW_H))
         .style(|_: &Theme| container::Style {

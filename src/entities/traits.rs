@@ -132,82 +132,62 @@ impl EntityTypeOps for EntityType {
                 pline,
                 text_style_names,
             )),
-            EntityType::Polyline(pl) => Some(PropertyEditable::geometry_properties(
-                pl,
-                text_style_names,
-            )),
-            EntityType::Polyline2D(pl) => Some(PropertyEditable::geometry_properties(
-                pl,
-                text_style_names,
-            )),
-            EntityType::Polyline3D(pl) => Some(PropertyEditable::geometry_properties(
-                pl,
-                text_style_names,
-            )),
-            EntityType::Ray(ray) => Some(PropertyEditable::geometry_properties(
-                ray,
-                text_style_names,
-            )),
-            EntityType::XLine(xl) => Some(PropertyEditable::geometry_properties(
-                xl,
-                text_style_names,
-            )),
-            EntityType::RasterImage(img) => Some(PropertyEditable::geometry_properties(
-                img,
-                text_style_names,
-            )),
-            EntityType::Wipeout(wo) => Some(PropertyEditable::geometry_properties(
-                wo,
-                text_style_names,
-            )),
-            EntityType::AttributeDefinition(a) => Some(PropertyEditable::geometry_properties(
-                a,
-                text_style_names,
-            )),
-            EntityType::AttributeEntity(a) => Some(PropertyEditable::geometry_properties(
-                a,
-                text_style_names,
-            )),
-            EntityType::MLine(ml) => Some(PropertyEditable::geometry_properties(
-                ml,
-                text_style_names,
-            )),
-            EntityType::Tolerance(tol) => Some(PropertyEditable::geometry_properties(
-                tol,
-                text_style_names,
-            )),
+            EntityType::Polyline(pl) => {
+                Some(PropertyEditable::geometry_properties(pl, text_style_names))
+            }
+            EntityType::Polyline2D(pl) => {
+                Some(PropertyEditable::geometry_properties(pl, text_style_names))
+            }
+            EntityType::Polyline3D(pl) => {
+                Some(PropertyEditable::geometry_properties(pl, text_style_names))
+            }
+            EntityType::Ray(ray) => {
+                Some(PropertyEditable::geometry_properties(ray, text_style_names))
+            }
+            EntityType::XLine(xl) => {
+                Some(PropertyEditable::geometry_properties(xl, text_style_names))
+            }
+            EntityType::RasterImage(img) => {
+                Some(PropertyEditable::geometry_properties(img, text_style_names))
+            }
+            EntityType::Wipeout(wo) => {
+                Some(PropertyEditable::geometry_properties(wo, text_style_names))
+            }
+            EntityType::AttributeDefinition(a) => {
+                Some(PropertyEditable::geometry_properties(a, text_style_names))
+            }
+            EntityType::AttributeEntity(a) => {
+                Some(PropertyEditable::geometry_properties(a, text_style_names))
+            }
+            EntityType::MLine(ml) => {
+                Some(PropertyEditable::geometry_properties(ml, text_style_names))
+            }
+            EntityType::Tolerance(tol) => {
+                Some(PropertyEditable::geometry_properties(tol, text_style_names))
+            }
             EntityType::Solid(solid) => Some(PropertyEditable::geometry_properties(
                 solid,
                 text_style_names,
             )),
-            EntityType::Solid3D(s) => Some(PropertyEditable::geometry_properties(
-                s,
-                text_style_names,
-            )),
-            EntityType::Region(r) => Some(PropertyEditable::geometry_properties(
-                r,
-                text_style_names,
-            )),
-            EntityType::Body(b) => Some(PropertyEditable::geometry_properties(
-                b,
-                text_style_names,
-            )),
-            EntityType::Face3D(f) => Some(PropertyEditable::geometry_properties(
-                f,
-                text_style_names,
-            )),
-            EntityType::PolygonMesh(pm) => Some(PropertyEditable::geometry_properties(
-                pm,
-                text_style_names,
-            )),
-            EntityType::PolyfaceMesh(pfm) => Some(PropertyEditable::geometry_properties(
-                pfm,
-                text_style_names,
-            )),
-            EntityType::Table(tbl) => Some(PropertyEditable::geometry_properties(
-                tbl,
-                text_style_names,
-            )),
+            EntityType::Solid3D(s) => {
+                Some(PropertyEditable::geometry_properties(s, text_style_names))
+            }
+            EntityType::Region(r) => {
+                Some(PropertyEditable::geometry_properties(r, text_style_names))
+            }
+            EntityType::Body(b) => Some(PropertyEditable::geometry_properties(b, text_style_names)),
+            EntityType::Face3D(f) => {
+                Some(PropertyEditable::geometry_properties(f, text_style_names))
+            }
+            EntityType::PolygonMesh(pm) => {
+                Some(PropertyEditable::geometry_properties(pm, text_style_names))
+            }
+            EntityType::PolyfaceMesh(pfm) => {
+                Some(PropertyEditable::geometry_properties(pfm, text_style_names))
+            }
+            EntityType::Table(tbl) => {
+                Some(PropertyEditable::geometry_properties(tbl, text_style_names))
+            }
             EntityType::Hatch(hatch) => Some(PropertyEditable::geometry_properties(
                 hatch,
                 text_style_names,
@@ -233,30 +213,25 @@ impl EntityTypeOps for EntityType {
             EntityType::Insert(ins) => {
                 Some(PropertyEditable::geometry_properties(ins, text_style_names))
             }
-            EntityType::Dimension(dim) => Some(PropertyEditable::geometry_properties(
-                dim,
-                text_style_names,
-            )),
+            EntityType::Dimension(dim) => {
+                Some(PropertyEditable::geometry_properties(dim, text_style_names))
+            }
             EntityType::Leader(leader) => Some(PropertyEditable::geometry_properties(
                 leader,
                 text_style_names,
             )),
-            EntityType::MultiLeader(ml) => Some(PropertyEditable::geometry_properties(
-                ml,
-                text_style_names,
-            )),
-            EntityType::Underlay(ul) => Some(PropertyEditable::geometry_properties(
-                ul,
-                text_style_names,
-            )),
-            EntityType::Shape(shp) => Some(PropertyEditable::geometry_properties(
-                shp,
-                text_style_names,
-            )),
-            EntityType::Ole2Frame(ole) => Some(PropertyEditable::geometry_properties(
-                ole,
-                text_style_names,
-            )),
+            EntityType::MultiLeader(ml) => {
+                Some(PropertyEditable::geometry_properties(ml, text_style_names))
+            }
+            EntityType::Underlay(ul) => {
+                Some(PropertyEditable::geometry_properties(ul, text_style_names))
+            }
+            EntityType::Shape(shp) => {
+                Some(PropertyEditable::geometry_properties(shp, text_style_names))
+            }
+            EntityType::Ole2Frame(ole) => {
+                Some(PropertyEditable::geometry_properties(ole, text_style_names))
+            }
             _ => None,
         }
     }
@@ -277,7 +252,9 @@ impl EntityTypeOps for EntityType {
             EntityType::XLine(xl) => PropertyEditable::apply_geom_prop(xl, field, value),
             EntityType::RasterImage(img) => PropertyEditable::apply_geom_prop(img, field, value),
             EntityType::Wipeout(wo) => PropertyEditable::apply_geom_prop(wo, field, value),
-            EntityType::AttributeDefinition(a) => PropertyEditable::apply_geom_prop(a, field, value),
+            EntityType::AttributeDefinition(a) => {
+                PropertyEditable::apply_geom_prop(a, field, value)
+            }
             EntityType::AttributeEntity(a) => PropertyEditable::apply_geom_prop(a, field, value),
             EntityType::MLine(ml) => PropertyEditable::apply_geom_prop(ml, field, value),
             EntityType::Tolerance(tol) => PropertyEditable::apply_geom_prop(tol, field, value),

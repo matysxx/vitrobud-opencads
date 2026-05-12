@@ -29,10 +29,17 @@ impl TruckConvertible for Solid {
         // AutoCAD stores corners in "Z" order: p0-p1 are top edge, p2-p3 are bottom edge,
         // so the visual quad is p0→p1→p3→p2→p0.
         let pts = vec![
-            p0, p1, [f32::NAN; 3],
-            p1, p3, [f32::NAN; 3],
-            p3, p2, [f32::NAN; 3],
-            p2, p0,
+            p0,
+            p1,
+            [f32::NAN; 3],
+            p1,
+            p3,
+            [f32::NAN; 3],
+            p3,
+            p2,
+            [f32::NAN; 3],
+            p2,
+            p0,
         ];
 
         let snap = vec![
@@ -108,7 +115,9 @@ impl PropertyEditable for Solid {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
-        let Ok(v) = value.trim().parse::<f64>() else { return };
+        let Ok(v) = value.trim().parse::<f64>() else {
+            return;
+        };
         match field {
             "sl_p1x" => self.first_corner.x = v,
             "sl_p1y" => self.first_corner.y = v,
@@ -137,12 +146,7 @@ impl Transformable for Solid {
                 &mut entity.third_corner,
                 &mut entity.fourth_corner,
             ] {
-                crate::scene::transform::reflect_xy_point(
-                    &mut corner.x,
-                    &mut corner.y,
-                    p1,
-                    p2,
-                );
+                crate::scene::transform::reflect_xy_point(&mut corner.x, &mut corner.y, p1, p2);
             }
         });
     }

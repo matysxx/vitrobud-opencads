@@ -1,8 +1,8 @@
+use super::helpers::{entity_type_key, entity_type_label, title_case_word};
 use super::{H7CAD, VARIES_LABEL};
-use super::helpers::{entity_type_label, entity_type_key, title_case_word};
+use crate::linetypes;
 use crate::scene::dispatch;
 use crate::ui;
-use crate::linetypes;
 use acadrust::{EntityType, Handle};
 
 impl H7CAD {
@@ -62,28 +62,41 @@ impl H7CAD {
                             .frozen_layers
                             .iter()
                             .filter_map(|&h| {
-                                self.tabs[i].scene.document.layers.iter()
+                                self.tabs[i]
+                                    .scene
+                                    .document
+                                    .layers
+                                    .iter()
                                     .find(|l| l.handle == h)
                                     .map(|l| l.name.clone())
                             })
                             .collect();
 
                         // Collect available UCS names for the name picker.
-                        let ucs_names: Vec<String> = self.tabs[i].scene.document.ucss
+                        let ucs_names: Vec<String> = self.tabs[i]
+                            .scene
+                            .document
+                            .ucss
                             .iter()
                             .map(|u| u.name.clone())
                             .filter(|n| !n.is_empty())
                             .collect();
 
                         // Current UCS name (resolved from vp.ucs_handle).
-                        let current_ucs = self.tabs[i].scene.document.ucss
+                        let current_ucs = self.tabs[i]
+                            .scene
+                            .document
+                            .ucss
                             .iter()
                             .find(|u| u.handle == vp.ucs_handle)
                             .map(|u| u.name.clone())
                             .unwrap_or_default();
 
                         // Collect available named view names.
-                        let view_names: Vec<String> = self.tabs[i].scene.document.views
+                        let view_names: Vec<String> = self.tabs[i]
+                            .scene
+                            .document
+                            .views
                             .iter()
                             .map(|v| v.name.clone())
                             .filter(|n| !n.is_empty())
@@ -122,7 +135,10 @@ impl H7CAD {
 
                     // Inject DimStyle picker for Dimension entities.
                     if let acadrust::EntityType::Dimension(_) = entity {
-                        let dim_style_names: Vec<String> = self.tabs[i].scene.document.dim_styles
+                        let dim_style_names: Vec<String> = self.tabs[i]
+                            .scene
+                            .document
+                            .dim_styles
                             .iter()
                             .map(|s| s.name.clone())
                             .filter(|n| !n.is_empty())
@@ -132,7 +148,9 @@ impl H7CAD {
                             // replace/upgrade it to a Choice if we have a list.
                             if let Some(geom) = sections.last_mut() {
                                 // Find and replace the style_name EditText with a Choice.
-                                if let Some(prop) = geom.props.iter_mut().find(|p| p.field == "style_name") {
+                                if let Some(prop) =
+                                    geom.props.iter_mut().find(|p| p.field == "style_name")
+                                {
                                     let current = match &prop.value {
                                         crate::scene::object::PropValue::EditText(s) => s.clone(),
                                         _ => String::new(),
@@ -247,7 +265,11 @@ impl H7CAD {
         let is_paper = self.tabs[i].scene.current_layout != "Model";
         // Paper-space entity coordinates are NOT offset by world_offset (same rule
         // as wire tessellation in wires_for_block). Only subtract in model space.
-        let wo = if is_paper { [0.0f64; 3] } else { self.tabs[i].scene.world_offset };
+        let wo = if is_paper {
+            [0.0f64; 3]
+        } else {
+            self.tabs[i].scene.world_offset
+        };
         let (new_handle, new_grips) = {
             let selected = self.tabs[i].scene.selected_entities();
             if selected.len() == 1 {
@@ -320,7 +342,11 @@ impl H7CAD {
                     .entities()
                     .filter_map(|e| {
                         if let acadrust::EntityType::Viewport(v) = e {
-                            if v.common.owner_handle == layout_block { Some(v.id) } else { None }
+                            if v.common.owner_handle == layout_block {
+                                Some(v.id)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -404,13 +430,17 @@ fn merge_sections(
 ) -> Vec<crate::scene::object::PropSection> {
     left.iter()
         .filter_map(|section| {
-            let rhs = right.iter().find(|candidate| candidate.title == section.title)?;
+            let rhs = right
+                .iter()
+                .find(|candidate| candidate.title == section.title)?;
             let props: Vec<crate::scene::object::Property> = section
                 .props
                 .iter()
                 .filter_map(|prop| {
-                    let other =
-                        rhs.props.iter().find(|candidate| candidate.field == prop.field)?;
+                    let other = rhs
+                        .props
+                        .iter()
+                        .find(|candidate| candidate.field == prop.field)?;
                     Some(crate::scene::object::Property {
                         label: prop.label.clone(),
                         field: prop.field,
@@ -475,8 +505,7 @@ fn merge_prop_value(
         (
             PropValue::BoolToggle { field, .. },
             PropValue::BoolToggle {
-                field: other_field,
-                ..
+                field: other_field, ..
             },
         ) if field == other_field => PropValue::ReadOnly(VARIES_LABEL.into()),
         _ => left.clone(),

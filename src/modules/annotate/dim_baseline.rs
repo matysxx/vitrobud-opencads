@@ -61,7 +61,11 @@ impl DimBaselineCommand {
     /// `definition_point` — dim-line position of the base dim (defines perpendicular side).
     /// `rotation` — 0.0 = horizontal, PI/2 = vertical.
     pub fn from_base(p1: Vec3, _p2: Vec3, definition_point: Vec3, rotation: f64) -> Self {
-        let axis = if rotation.abs() < 0.1 { Vec3::X } else { Vec3::Y };
+        let axis = if rotation.abs() < 0.1 {
+            Vec3::X
+        } else {
+            Vec3::Y
+        };
         let perp = Vec3::new(-axis.y, axis.x, 0.0);
         let base_offset = (definition_point - p1).dot(perp);
         // Next baseline dim goes one DIMDLI further from the baseline.
@@ -77,7 +81,9 @@ impl DimBaselineCommand {
 }
 
 impl CadCommand for DimBaselineCommand {
-    fn name(&self) -> &'static str { "DIMBASELINE" }
+    fn name(&self) -> &'static str {
+        "DIMBASELINE"
+    }
 
     fn prompt(&self) -> String {
         if !self.ready {
@@ -126,9 +132,11 @@ impl CadCommand for DimBaselineCommand {
         Some(WireModel {
             name: "dimbase_preview".into(),
             points: vec![
-                [p1.x, p1.y, p1.z], [dim_line_pt.x, dim_line_pt.y, dim_line_pt.z],
+                [p1.x, p1.y, p1.z],
+                [dim_line_pt.x, dim_line_pt.y, dim_line_pt.z],
                 [f32::NAN, 0.0, 0.0],
-                [pt.x, pt.y, pt.z], [dim_line_pt2.x, dim_line_pt2.y, dim_line_pt2.z],
+                [pt.x, pt.y, pt.z],
+                [dim_line_pt2.x, dim_line_pt2.y, dim_line_pt2.z],
                 [f32::NAN, 0.0, 0.0],
                 [dim_line_pt.x, dim_line_pt.y, dim_line_pt.z],
                 [dim_line_pt2.x, dim_line_pt2.y, dim_line_pt2.z],

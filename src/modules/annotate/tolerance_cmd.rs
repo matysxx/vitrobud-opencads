@@ -40,7 +40,9 @@ impl ToleranceCommand {
 }
 
 impl CadCommand for ToleranceCommand {
-    fn name(&self) -> &'static str { "TOLERANCE" }
+    fn name(&self) -> &'static str {
+        "TOLERANCE"
+    }
 
     fn prompt(&self) -> String {
         match &self.step {
@@ -84,9 +86,11 @@ impl CadCommand for ToleranceCommand {
         Some(WireModel {
             name: "tolerance_preview".into(),
             points: vec![
-                [pt.x - d, pt.y, pt.z], [pt.x + d, pt.y, pt.z],
+                [pt.x - d, pt.y, pt.z],
+                [pt.x + d, pt.y, pt.z],
                 [f32::NAN, 0.0, 0.0],
-                [pt.x, pt.y, pt.z - d], [pt.x, pt.y, pt.z + d],
+                [pt.x, pt.y, pt.z - d],
+                [pt.x, pt.y, pt.z + d],
             ],
             color: WireModel::CYAN,
             selected: false,

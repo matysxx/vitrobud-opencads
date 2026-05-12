@@ -23,7 +23,12 @@ pub struct ImageCommand {
 
 impl ImageCommand {
     pub fn new(file_path: String, pixel_width: u32, pixel_height: u32) -> Self {
-        Self { file_path, pixel_width, pixel_height, origin: None }
+        Self {
+            file_path,
+            pixel_width,
+            pixel_height,
+            origin: None,
+        }
     }
 
     fn aspect(&self) -> f64 {
@@ -61,7 +66,10 @@ impl CadCommand for ImageCommand {
 
     fn prompt(&self) -> String {
         if self.origin.is_none() {
-            format!("IMAGE  Specify insertion point ({}):  ", short_name(&self.file_path))
+            format!(
+                "IMAGE  Specify insertion point ({}):  ",
+                short_name(&self.file_path)
+            )
         } else {
             "IMAGE  Specify width (drag right):".into()
         }

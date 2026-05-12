@@ -44,18 +44,26 @@ pub struct TableCommand {
 
 impl TableCommand {
     pub fn new() -> Self {
-        Self { step: Step::Columns }
+        Self {
+            step: Step::Columns,
+        }
     }
 }
 
 impl CadCommand for TableCommand {
-    fn name(&self) -> &'static str { "TABLE" }
+    fn name(&self) -> &'static str {
+        "TABLE"
+    }
 
     fn prompt(&self) -> String {
         match &self.step {
             Step::Columns => format!("TABLE  Enter number of columns [{DEFAULT_COLS}]:"),
-            Step::Rows { cols } => format!("TABLE  Enter number of rows (incl. header) [{DEFAULT_ROWS}]  ({cols} cols):"),
-            Step::Insertion { cols, rows } => format!("TABLE  Specify insertion point  [{cols}×{rows}]:"),
+            Step::Rows { cols } => format!(
+                "TABLE  Enter number of rows (incl. header) [{DEFAULT_ROWS}]  ({cols} cols):"
+            ),
+            Step::Insertion { cols, rows } => {
+                format!("TABLE  Specify insertion point  [{cols}×{rows}]:")
+            }
         }
     }
 
@@ -98,7 +106,10 @@ impl CadCommand for TableCommand {
             }
             Step::Rows { cols } => {
                 let cols = *cols;
-                self.step = Step::Insertion { cols, rows: DEFAULT_ROWS };
+                self.step = Step::Insertion {
+                    cols,
+                    rows: DEFAULT_ROWS,
+                };
                 CmdResult::NeedPoint
             }
             Step::Insertion { .. } => CmdResult::Cancel,
@@ -130,10 +141,14 @@ impl CadCommand for TableCommand {
             Some(WireModel {
                 name: "table_preview".into(),
                 points: vec![
-                    [x, y, z], [x + w, y, z],
-                    [x + w, y, z], [x + w, y, z - h],
-                    [x + w, y, z - h], [x, y, z - h],
-                    [x, y, z - h], [x, y, z],
+                    [x, y, z],
+                    [x + w, y, z],
+                    [x + w, y, z],
+                    [x + w, y, z - h],
+                    [x + w, y, z - h],
+                    [x, y, z - h],
+                    [x, y, z - h],
+                    [x, y, z],
                 ],
                 color: WireModel::CYAN,
                 selected: false,
@@ -143,11 +158,11 @@ impl CadCommand for TableCommand {
                 snap_pts: vec![],
                 tangent_geoms: vec![],
                 aci: 0,
-            key_vertices: vec![],
-            aabb: WireModel::UNBOUNDED_AABB,
-            plinegen: true,
-            vp_scissor: None,
-            fill_tris: vec![],
+                key_vertices: vec![],
+                aabb: WireModel::UNBOUNDED_AABB,
+                plinegen: true,
+                vp_scissor: None,
+                fill_tris: vec![],
             })
         } else {
             None

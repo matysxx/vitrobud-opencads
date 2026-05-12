@@ -11,10 +11,10 @@ pub mod step;
 pub mod stl;
 pub mod xref;
 
+use crate::scene::DerivedCaches;
 use acadrust::entities::{Dimension, EntityType};
 use acadrust::io::dwg::DwgReader;
 use acadrust::{CadDocument, DwgWriter, DxfReader, DxfWriter};
-use crate::scene::DerivedCaches;
 use std::path::{Path, PathBuf};
 
 // ── Open ──────────────────────────────────────────────────────────────────
@@ -43,7 +43,9 @@ pub async fn pick_and_open() -> Result<(String, PathBuf, CadDocument, DerivedCac
 /// Load a CAD file from a known path (used by recent files).
 /// Parsing and cache building run on a dedicated OS thread so the async
 /// executor stays free for rendering during the load.
-pub async fn open_path(path: PathBuf) -> Result<(String, PathBuf, CadDocument, DerivedCaches), String> {
+pub async fn open_path(
+    path: PathBuf,
+) -> Result<(String, PathBuf, CadDocument, DerivedCaches), String> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -102,7 +104,9 @@ pub fn read_dir_entries(dir: &std::path::Path) -> Vec<(String, bool, PathBuf)> {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') { continue; }
+            if name.starts_with('.') {
+                continue;
+            }
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             if is_dir {
                 dirs.push((name, true, entry.path()));
@@ -126,13 +130,21 @@ pub fn parse_save_format(format: &str) -> (&'static str, acadrust::DxfVersion) {
     let f = format.to_ascii_uppercase();
     let is_dxf = f.starts_with("DXF");
     let ext = if is_dxf { "dxf" } else { "dwg" };
-    let version = if f.contains("2013") { DxfVersion::AC1027 }
-        else if f.contains("2010")      { DxfVersion::AC1024 }
-        else if f.contains("2007")      { DxfVersion::AC1021 }
-        else if f.contains("2004")      { DxfVersion::AC1018 }
-        else if f.contains("2000")      { DxfVersion::AC1015 }
-        else if f.contains("R14")       { DxfVersion::AC1014 }
-        else                            { DxfVersion::AC1032 }; // 2018
+    let version = if f.contains("2013") {
+        DxfVersion::AC1027
+    } else if f.contains("2010") {
+        DxfVersion::AC1024
+    } else if f.contains("2007") {
+        DxfVersion::AC1021
+    } else if f.contains("2004") {
+        DxfVersion::AC1018
+    } else if f.contains("2000") {
+        DxfVersion::AC1015
+    } else if f.contains("R14") {
+        DxfVersion::AC1014
+    } else {
+        DxfVersion::AC1032
+    }; // 2018
     (ext, version)
 }
 
@@ -185,8 +197,10 @@ pub fn save_as_version(
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "dxf" => DxfWriter::new(&doc).write_to_file(path).map_err(|e| e.to_string()),
-        _     => DwgWriter::write_to_file(path, &doc).map_err(|e| e.to_string()),
+        "dxf" => DxfWriter::new(&doc)
+            .write_to_file(path)
+            .map_err(|e| e.to_string()),
+        _ => DwgWriter::write_to_file(path, &doc).map_err(|e| e.to_string()),
     }
 }
 
@@ -194,7 +208,6 @@ pub fn save_as_version(
 pub fn save(doc: &CadDocument, path: &Path) -> Result<(), String> {
     save_as_version(doc, path, doc.version)
 }
-
 
 // ── Post-load fixups ──────────────────────────────────────────────────────
 

@@ -1,15 +1,15 @@
-use crate::scene::Scene;
-use crate::ui::{LayerPanel, PropertiesPanel};
 use crate::command::CadCommand;
-use crate::snap::SnapResult;
+use crate::linetypes;
+use crate::modules::home::modify::refedit::RefEditSession;
 use crate::scene::grip::GripEdit;
 use crate::scene::GripDef;
-use crate::modules::home::modify::refedit::RefEditSession;
-use acadrust::{CadDocument, Handle};
+use crate::scene::Scene;
+use crate::snap::SnapResult;
+use crate::ui::{LayerPanel, PropertiesPanel};
 use acadrust::tables::Ucs;
-use crate::linetypes;
-use std::path::PathBuf;
+use acadrust::{CadDocument, Handle};
 use iced;
+use std::path::PathBuf;
 
 // ── Per-document tab state ─────────────────────────────────────────────────
 

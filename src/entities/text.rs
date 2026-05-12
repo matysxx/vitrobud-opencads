@@ -3,7 +3,9 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, parse_f64, square_grip};
-use crate::entities::text_support::{resolve_dxf_special_chars, resolve_text_style, text_local_bounds};
+use crate::entities::text_support::{
+    resolve_dxf_special_chars, resolve_text_style, text_local_bounds,
+};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TextStroke, TruckEntity, TruckObject};
 use crate::scene::cxf;
@@ -49,17 +51,28 @@ fn sync_text_alignment_point(t: &mut Text) {
 fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
     let normal = (t.normal.x, t.normal.y, t.normal.z);
     let (wsx, wsy, wsz) = crate::scene::transform::ocs_point_to_wcs(
-        (t.insertion_point.x, t.insertion_point.y, t.insertion_point.z),
+        (
+            t.insertion_point.x,
+            t.insertion_point.y,
+            t.insertion_point.z,
+        ),
         normal,
     );
     let snap_pt = Vec3::new(wsx as f32, wsy as f32, wsz as f32);
     let resolved_style = resolve_text_style(&t.style, document);
     let font_name = resolved_style.font_name;
-    let base_wf = (if t.width_factor > 0.0 { t.width_factor as f32 } else { 1.0 }
-        * resolved_style.width_factor.max(0.01))
+    let base_wf = (if t.width_factor > 0.0 {
+        t.width_factor as f32
+    } else {
+        1.0
+    } * resolved_style.width_factor.max(0.01))
     .clamp(0.01, 100.0);
     // is_backward mirrors text left-right via negative width factor.
-    let width_factor = if resolved_style.is_backward { -base_wf } else { base_wf };
+    let width_factor = if resolved_style.is_backward {
+        -base_wf
+    } else {
+        base_wf
+    };
     // is_upside_down rotates 180° around the insertion point.
     let rotation = if resolved_style.is_upside_down {
         t.rotation as f32 + std::f32::consts::PI

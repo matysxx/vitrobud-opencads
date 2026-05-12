@@ -32,18 +32,22 @@ pub struct DiameterDimensionCommand {
 
 impl DiameterDimensionCommand {
     pub fn new() -> Self {
-        Self { step: Step::CenterPoint }
+        Self {
+            step: Step::CenterPoint,
+        }
     }
 }
 
 impl CadCommand for DiameterDimensionCommand {
-    fn name(&self) -> &'static str { "DIMDIAMETER" }
+    fn name(&self) -> &'static str {
+        "DIMDIAMETER"
+    }
 
     fn prompt(&self) -> String {
         match self.step {
-            Step::CenterPoint    => "DIMDIAMETER  Specify center point:".into(),
-            Step::ArcPoint(_)    => "DIMDIAMETER  Specify point on circle:".into(),
-            Step::TextPoint {..} => "DIMDIAMETER  Specify dimension line location:".into(),
+            Step::CenterPoint => "DIMDIAMETER  Specify center point:".into(),
+            Step::ArcPoint(_) => "DIMDIAMETER  Specify point on circle:".into(),
+            Step::TextPoint { .. } => "DIMDIAMETER  Specify dimension line location:".into(),
         }
     }
 
@@ -59,9 +63,9 @@ impl CadCommand for DiameterDimensionCommand {
             }
             Step::TextPoint { center, arc_pt } => {
                 let mut dim = DimensionDiameter::new(v3(center), v3(arc_pt));
-                dim.base.definition_point  = v3(arc_pt);
+                dim.base.definition_point = v3(arc_pt);
                 dim.base.text_middle_point = v3(pt);
-                dim.base.insertion_point   = v3(pt);
+                dim.base.insertion_point = v3(pt);
                 dim.leader_length = arc_pt.distance(pt) as f64;
                 dim.base.actual_measurement = dim.measurement();
                 CmdResult::CommitAndExit(EntityType::Dimension(Dimension::Diameter(dim)))
@@ -69,7 +73,9 @@ impl CadCommand for DiameterDimensionCommand {
         }
     }
 
-    fn on_enter(&mut self) -> CmdResult { CmdResult::Cancel }
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
 
     fn on_mouse_move(&mut self, pt: Vec3) -> Option<WireModel> {
         match self.step {
@@ -99,10 +105,10 @@ fn preview_line(a: Vec3, b: Vec3) -> WireModel {
         snap_pts: vec![],
         tangent_geoms: vec![],
         aci: 0,
-            key_vertices: vec![],
-            aabb: WireModel::UNBOUNDED_AABB,
-            plinegen: true,
-            vp_scissor: None,
-            fill_tris: vec![],
+        key_vertices: vec![],
+        aabb: WireModel::UNBOUNDED_AABB,
+        plinegen: true,
+        vp_scissor: None,
+        fill_tris: vec![],
     }
 }

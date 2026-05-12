@@ -52,7 +52,11 @@ fn to_truck(spl: &Spline) -> TruckEntity {
             .collect();
         let bspline = BSplineCurve::new(knot_vec, ctrl_pts);
         let (t0, t1) = bspline.range_tuple();
-        (bspline.subs(t0), bspline.subs(t1), Curve::BSplineCurve(bspline))
+        (
+            bspline.subs(t0),
+            bspline.subs(t1),
+            Curve::BSplineCurve(bspline),
+        )
     };
 
     let snap_source = if !spl.fit_points.is_empty() {

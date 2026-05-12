@@ -37,12 +37,16 @@ pub struct OrdinateDimCommand {
 
 impl OrdinateDimCommand {
     pub fn new() -> Self {
-        Self { step: Step::FeaturePoint }
+        Self {
+            step: Step::FeaturePoint,
+        }
     }
 }
 
 impl CadCommand for OrdinateDimCommand {
-    fn name(&self) -> &'static str { "DIMORDINATE" }
+    fn name(&self) -> &'static str {
+        "DIMORDINATE"
+    }
 
     fn prompt(&self) -> String {
         match self.step {
@@ -71,8 +75,12 @@ impl CadCommand for OrdinateDimCommand {
         }
     }
 
-    fn on_enter(&mut self) -> CmdResult { CmdResult::Cancel }
-    fn on_preview_wires(&mut self, _pt: Vec3) -> Vec<WireModel> { vec![] }
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+    fn on_preview_wires(&mut self, _pt: Vec3) -> Vec<WireModel> {
+        vec![]
+    }
 }
 
 fn v3(p: Vec3) -> Vector3 {

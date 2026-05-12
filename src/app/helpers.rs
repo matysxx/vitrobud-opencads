@@ -1,5 +1,5 @@
-use crate::ui::overlay::GridPlane;
 use crate::scene::WireModel;
+use crate::ui::overlay::GridPlane;
 use acadrust::tables::Ucs;
 
 // ── Coordinate parsing ─────────────────────────────────────────────────────
@@ -27,9 +27,21 @@ pub(super) fn parse_coord(text: &str) -> Option<glam::Vec3> {
 ///
 /// WCS = origin + x_axis*u + y_axis*v + z_axis*w
 pub(super) fn ucs_to_wcs(pt: glam::Vec3, ucs: &Ucs) -> glam::Vec3 {
-    let o = glam::Vec3::new(ucs.origin.x as f32, ucs.origin.y as f32, ucs.origin.z as f32);
-    let x = glam::Vec3::new(ucs.x_axis.x as f32, ucs.x_axis.y as f32, ucs.x_axis.z as f32);
-    let y = glam::Vec3::new(ucs.y_axis.x as f32, ucs.y_axis.y as f32, ucs.y_axis.z as f32);
+    let o = glam::Vec3::new(
+        ucs.origin.x as f32,
+        ucs.origin.y as f32,
+        ucs.origin.z as f32,
+    );
+    let x = glam::Vec3::new(
+        ucs.x_axis.x as f32,
+        ucs.x_axis.y as f32,
+        ucs.x_axis.z as f32,
+    );
+    let y = glam::Vec3::new(
+        ucs.y_axis.x as f32,
+        ucs.y_axis.y as f32,
+        ucs.y_axis.z as f32,
+    );
     let z_ax = ucs_z_axis(ucs);
     o + x * pt.x + y * pt.y + z_ax * pt.z
 }
@@ -37,9 +49,21 @@ pub(super) fn ucs_to_wcs(pt: glam::Vec3, ucs: &Ucs) -> glam::Vec3 {
 /// Convert a WCS point back to UCS local coordinates.
 #[allow(dead_code)]
 pub(super) fn wcs_to_ucs(pt: glam::Vec3, ucs: &Ucs) -> glam::Vec3 {
-    let o = glam::Vec3::new(ucs.origin.x as f32, ucs.origin.y as f32, ucs.origin.z as f32);
-    let x = glam::Vec3::new(ucs.x_axis.x as f32, ucs.x_axis.y as f32, ucs.x_axis.z as f32);
-    let y = glam::Vec3::new(ucs.y_axis.x as f32, ucs.y_axis.y as f32, ucs.y_axis.z as f32);
+    let o = glam::Vec3::new(
+        ucs.origin.x as f32,
+        ucs.origin.y as f32,
+        ucs.origin.z as f32,
+    );
+    let x = glam::Vec3::new(
+        ucs.x_axis.x as f32,
+        ucs.x_axis.y as f32,
+        ucs.x_axis.z as f32,
+    );
+    let y = glam::Vec3::new(
+        ucs.y_axis.x as f32,
+        ucs.y_axis.y as f32,
+        ucs.y_axis.z as f32,
+    );
     let z_ax = ucs_z_axis(ucs);
     let d = pt - o;
     glam::Vec3::new(d.dot(x), d.dot(y), d.dot(z_ax))
@@ -47,8 +71,16 @@ pub(super) fn wcs_to_ucs(pt: glam::Vec3, ucs: &Ucs) -> glam::Vec3 {
 
 /// Return the normalised Z axis of a UCS (cross product of X and Y axes).
 pub(super) fn ucs_z_axis(ucs: &Ucs) -> glam::Vec3 {
-    let x = glam::Vec3::new(ucs.x_axis.x as f32, ucs.x_axis.y as f32, ucs.x_axis.z as f32);
-    let y = glam::Vec3::new(ucs.y_axis.x as f32, ucs.y_axis.y as f32, ucs.y_axis.z as f32);
+    let x = glam::Vec3::new(
+        ucs.x_axis.x as f32,
+        ucs.x_axis.y as f32,
+        ucs.x_axis.z as f32,
+    );
+    let y = glam::Vec3::new(
+        ucs.y_axis.x as f32,
+        ucs.y_axis.y as f32,
+        ucs.y_axis.z as f32,
+    );
     x.cross(y).normalize_or_zero()
 }
 
@@ -57,9 +89,7 @@ pub(super) fn ucs_rotated_z(origin: glam::Vec3, angle_z: f32) -> Ucs {
     let cos = angle_z.cos() as f64;
     let sin = angle_z.sin() as f64;
     let mut ucs = Ucs::new("*ACTIVE*");
-    ucs.origin = acadrust::types::Vector3::new(
-        origin.x as f64, origin.y as f64, origin.z as f64,
-    );
+    ucs.origin = acadrust::types::Vector3::new(origin.x as f64, origin.y as f64, origin.z as f64);
     ucs.x_axis = acadrust::types::Vector3::new(cos, sin, 0.0);
     ucs.y_axis = acadrust::types::Vector3::new(-sin, cos, 0.0);
     ucs
@@ -134,7 +164,11 @@ pub(super) fn entities_centroid(wires: &[WireModel]) -> glam::Vec3 {
             count += 1;
         }
     }
-    if count > 0 { sum / count as f32 } else { glam::Vec3::ZERO }
+    if count > 0 {
+        sum / count as f32
+    } else {
+        glam::Vec3::ZERO
+    }
 }
 
 /// Generate the next available auto group name ("*A1", "*A2", …).

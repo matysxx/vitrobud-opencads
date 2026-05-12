@@ -108,9 +108,9 @@ fn resolve_path(raw: &str, base_dir: &Path) -> Option<PathBuf> {
 /// Make sure `doc` has BLOCK + ENDBLK entities for `block_name`.
 /// These are required so renderers can find the block content.
 fn ensure_block_entities(doc: &mut CadDocument, block_name: &str) {
-    let has_block = doc.entities().any(|e| {
-        matches!(e, EntityType::Block(b) if b.name == block_name)
-    });
+    let has_block = doc
+        .entities()
+        .any(|e| matches!(e, EntityType::Block(b) if b.name == block_name));
     if has_block {
         return;
     }

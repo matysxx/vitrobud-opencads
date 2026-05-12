@@ -8,12 +8,12 @@ use acadrust::entities::Shape;
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{ro_prop as ro, edit_prop as edit, square_grip};
+use crate::entities::common::{edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
-use crate::scene::wire_model::SnapHint;
 use crate::scene::transform;
+use crate::scene::wire_model::SnapHint;
 
 // ── Marker geometry ───────────────────────────────────────────────────────────
 
@@ -21,11 +21,11 @@ use crate::scene::transform;
 fn shape_marker(ox: f32, oy: f32, oz: f32, size: f32) -> Vec<[f32; 3]> {
     let s = size * 0.5;
     vec![
-        [ox,     oy + s, oz],  // top
-        [ox + s, oy,     oz],  // right
-        [ox,     oy - s, oz],  // bottom
-        [ox - s, oy,     oz],  // left
-        [ox,     oy + s, oz],  // close
+        [ox, oy + s, oz], // top
+        [ox + s, oy, oz], // right
+        [ox, oy - s, oz], // bottom
+        [ox - s, oy, oz], // left
+        [ox, oy + s, oz], // close
         [f32::NAN; 3],
     ]
 }
@@ -91,24 +91,26 @@ impl PropertyEditable for Shape {
         PropSection {
             title: "Geometry".into(),
             props: vec![
-                ro("Name",     "shp_name",  self.shape_name.clone()),
-                ro("Style",    "shp_style", self.style_name.clone()),
-                edit("Insert X", "shp_ix",  self.insertion_point.x),
-                edit("Insert Y", "shp_iy",  self.insertion_point.y),
-                edit("Insert Z", "shp_iz",  self.insertion_point.z),
-                edit("Size",     "shp_sz",  self.size),
-                edit("Rotation","shp_rot",  self.rotation.to_degrees()),
+                ro("Name", "shp_name", self.shape_name.clone()),
+                ro("Style", "shp_style", self.style_name.clone()),
+                edit("Insert X", "shp_ix", self.insertion_point.x),
+                edit("Insert Y", "shp_iy", self.insertion_point.y),
+                edit("Insert Z", "shp_iz", self.insertion_point.z),
+                edit("Size", "shp_sz", self.size),
+                edit("Rotation", "shp_rot", self.rotation.to_degrees()),
             ],
         }
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
-        let Ok(v) = value.trim().parse::<f64>() else { return };
+        let Ok(v) = value.trim().parse::<f64>() else {
+            return;
+        };
         match field {
-            "shp_ix"  => self.insertion_point.x = v,
-            "shp_iy"  => self.insertion_point.y = v,
-            "shp_iz"  => self.insertion_point.z = v,
-            "shp_sz"  => self.size = v.max(0.001),
+            "shp_ix" => self.insertion_point.x = v,
+            "shp_iy" => self.insertion_point.y = v,
+            "shp_iz" => self.insertion_point.z = v,
+            "shp_sz" => self.size = v.max(0.001),
             "shp_rot" => self.rotation = v.to_radians(),
             _ => {}
         }

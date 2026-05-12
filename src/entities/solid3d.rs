@@ -71,9 +71,21 @@ impl PropertyEditable for Solid3D {
         PropSection {
             title: "Geometry".into(),
             props: vec![
-                ro("Ref Pt X", "s3d_px", format!("{:.4}", self.point_of_reference.x)),
-                ro("Ref Pt Y", "s3d_py", format!("{:.4}", self.point_of_reference.y)),
-                ro("Ref Pt Z", "s3d_pz", format!("{:.4}", self.point_of_reference.z)),
+                ro(
+                    "Ref Pt X",
+                    "s3d_px",
+                    format!("{:.4}", self.point_of_reference.x),
+                ),
+                ro(
+                    "Ref Pt Y",
+                    "s3d_py",
+                    format!("{:.4}", self.point_of_reference.y),
+                ),
+                ro(
+                    "Ref Pt Z",
+                    "s3d_pz",
+                    format!("{:.4}", self.point_of_reference.z),
+                ),
                 ro("ACIS Data", "s3d_acis", size),
             ],
         }
@@ -113,9 +125,21 @@ impl PropertyEditable for Region {
         PropSection {
             title: "Geometry".into(),
             props: vec![
-                ro("Ref Pt X", "rgn_px", format!("{:.4}", self.point_of_reference.x)),
-                ro("Ref Pt Y", "rgn_py", format!("{:.4}", self.point_of_reference.y)),
-                ro("Ref Pt Z", "rgn_pz", format!("{:.4}", self.point_of_reference.z)),
+                ro(
+                    "Ref Pt X",
+                    "rgn_px",
+                    format!("{:.4}", self.point_of_reference.x),
+                ),
+                ro(
+                    "Ref Pt Y",
+                    "rgn_py",
+                    format!("{:.4}", self.point_of_reference.y),
+                ),
+                ro(
+                    "Ref Pt Z",
+                    "rgn_pz",
+                    format!("{:.4}", self.point_of_reference.z),
+                ),
                 ro("ACIS Data", "rgn_acis", size),
             ],
         }
@@ -155,9 +179,21 @@ impl PropertyEditable for Body {
         PropSection {
             title: "Geometry".into(),
             props: vec![
-                ro("Ref Pt X", "bdy_px", format!("{:.4}", self.point_of_reference.x)),
-                ro("Ref Pt Y", "bdy_py", format!("{:.4}", self.point_of_reference.y)),
-                ro("Ref Pt Z", "bdy_pz", format!("{:.4}", self.point_of_reference.z)),
+                ro(
+                    "Ref Pt X",
+                    "bdy_px",
+                    format!("{:.4}", self.point_of_reference.x),
+                ),
+                ro(
+                    "Ref Pt Y",
+                    "bdy_py",
+                    format!("{:.4}", self.point_of_reference.y),
+                ),
+                ro(
+                    "Ref Pt Z",
+                    "bdy_pz",
+                    format!("{:.4}", self.point_of_reference.z),
+                ),
                 ro("ACIS Data", "bdy_acis", size),
             ],
         }

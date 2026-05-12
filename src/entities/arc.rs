@@ -61,16 +61,28 @@ fn to_truck(arc: &Arc) -> TruckEntity {
         for i in 0..=n {
             let a = start_a + (end_a - start_a) * (i as f64 / n as f64);
             let p = arc_pt(a);
-            pts.push([(p.x + t * nx) as f32, (p.y + t * ny) as f32, (p.z + t * nz) as f32]);
+            pts.push([
+                (p.x + t * nx) as f32,
+                (p.y + t * ny) as f32,
+                (p.z + t * nz) as f32,
+            ]);
         }
         pts.push([f32::NAN; 3]);
         let ps = arc_pt(sa);
         pts.push([ps.x as f32, ps.y as f32, ps.z as f32]);
-        pts.push([(ps.x + t * nx) as f32, (ps.y + t * ny) as f32, (ps.z + t * nz) as f32]);
+        pts.push([
+            (ps.x + t * nx) as f32,
+            (ps.y + t * ny) as f32,
+            (ps.z + t * nz) as f32,
+        ]);
         pts.push([f32::NAN; 3]);
         let pe = arc_pt(ea);
         pts.push([pe.x as f32, pe.y as f32, pe.z as f32]);
-        pts.push([(pe.x + t * nx) as f32, (pe.y + t * ny) as f32, (pe.z + t * nz) as f32]);
+        pts.push([
+            (pe.x + t * nx) as f32,
+            (pe.y + t * ny) as f32,
+            (pe.z + t * nz) as f32,
+        ]);
         return TruckEntity {
             object: TruckObject::Lines(pts),
             snap_pts: vec![(cv, SnapHint::Center)],
@@ -129,7 +141,11 @@ fn properties(arc: &Arc) -> PropSection {
             edit("Center Y", "center_y", arc.center.y),
             edit("Center Z", "center_z", arc.center.z),
             edit("Radius", "radius", arc.radius),
-            edit("Start Angle (deg)", "start_angle", arc.start_angle.to_degrees()),
+            edit(
+                "Start Angle (deg)",
+                "start_angle",
+                arc.start_angle.to_degrees(),
+            ),
             edit("End Angle (deg)", "end_angle", arc.end_angle.to_degrees()),
         ],
     }

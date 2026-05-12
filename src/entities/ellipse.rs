@@ -92,9 +92,9 @@ fn to_truck(ell: &Ellipse) -> TruckEntity {
         };
         let snap_pts = vec![
             (center_v3, SnapHint::Center),
-            (q(r_major, 0.0),  SnapHint::Quadrant),
+            (q(r_major, 0.0), SnapHint::Quadrant),
             (q(-r_major, 0.0), SnapHint::Quadrant),
-            (q(0.0, r_minor),  SnapHint::Quadrant),
+            (q(0.0, r_minor), SnapHint::Quadrant),
             (q(0.0, -r_minor), SnapHint::Quadrant),
         ];
         TruckEntity {

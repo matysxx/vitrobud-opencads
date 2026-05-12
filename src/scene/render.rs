@@ -52,7 +52,8 @@ impl shader::Primitive for PaperViewportPrimitive {
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
-        self.0.prepare(&mut pipeline.0, device, queue, bounds, viewport);
+        self.0
+            .prepare(&mut pipeline.0, device, queue, bounds, viewport);
     }
 
     fn render(
@@ -163,10 +164,13 @@ impl Scene {
     /// Returns (entity_color, pattern_length, pattern, line_weight_px, aci).
     pub(super) fn render_style(&self, e: &EntityType) -> ([f32; 4], f32, [f32; 8], f32, u8) {
         let (color, pl, pat, lw, aci) = render_style_for(&self.document, e);
-        let bg = if self.current_layout == "Model" { self.bg_color } else { self.paper_bg_color };
+        let bg = if self.current_layout == "Model" {
+            self.bg_color
+        } else {
+            self.paper_bg_color
+        };
         (adapt_to_bg(color, bg), pl, pat, lw, aci)
     }
-
 }
 
 // ── Document-only render-style helpers (no &self, safe to call from parallel contexts) ──
@@ -338,7 +342,6 @@ impl Scene {
         }
     }
 
-
     /// Build a Primitive that renders model-space content through a specific
     /// paper-space viewport's camera, applying its layer-freeze list.
     pub(super) fn build_viewport_primitive(
@@ -415,10 +418,7 @@ impl Scene {
         }
     }
 
-    pub(super) fn viewcube_mouse_interaction(
-        &self,
-        state: &CameraState,
-    ) -> mouse::Interaction {
+    pub(super) fn viewcube_mouse_interaction(&self, state: &CameraState) -> mouse::Interaction {
         if state.hover_region.is_some() {
             mouse::Interaction::Pointer
         } else {
@@ -479,7 +479,9 @@ fn split_face3d_wires(
     let mut face3d = Vec::new();
     let mut others = Vec::new();
     for w in wires {
-        let is_face3d = w.name.parse::<u64>()
+        let is_face3d = w
+            .name
+            .parse::<u64>()
             .ok()
             .and_then(|v| document.get_entity(Handle::new(v)))
             .map(|e| matches!(e, EntityType::Face3D(_)))
