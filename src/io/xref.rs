@@ -13,6 +13,9 @@ pub enum XrefStatus {
     Loaded,
     /// File path is set but the file could not be found or read.
     NotFound,
+    /// XRef is marked Unloaded in the host DWG — we honor that and
+    /// skip resolving the external file. The user can re-load via UI.
+    Unloaded,
 }
 
 /// Describes a single external reference found in a document.
@@ -31,17 +34,28 @@ pub struct XrefInfo {
 ///
 /// Returns a list of [`XrefInfo`] describing each xref block found.
 pub fn resolve_xrefs(doc: &mut CadDocument, base_dir: &Path) -> Vec<XrefInfo> {
-    // Collect xref blocks: (name, raw_path, block_record_handle)
-    let xref_entries: Vec<(String, String, Handle)> = doc
+    // Collect xref blocks: (name, raw_path, block_record_handle, is_loaded)
+    // is_loaded == Some(false) means the host DWG marked this xref Unloaded
+    // via XREF→Unload; respect that and skip reading the external file.
+    let xref_entries: Vec<(String, String, Handle, Option<bool>)> = doc
         .block_records
         .iter()
         .filter(|br| (br.flags.is_xref || br.flags.is_xref_overlay) && !br.xref_path.is_empty())
-        .map(|br| (br.name.clone(), br.xref_path.clone(), br.handle))
+        .map(|br| (br.name.clone(), br.xref_path.clone(), br.handle, br.is_loaded))
         .collect();
 
     let mut result = Vec::new();
 
-    for (block_name, raw_path, br_handle) in xref_entries {
+    for (block_name, raw_path, br_handle, is_loaded) in xref_entries {
+        if is_loaded == Some(false) {
+            result.push(XrefInfo {
+                name: block_name,
+                path: raw_path,
+                status: XrefStatus::Unloaded,
+            });
+            continue;
+        }
+
         let resolved = resolve_path(&raw_path, base_dir);
 
         let status = match &resolved {

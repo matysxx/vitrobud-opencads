@@ -155,6 +155,12 @@ impl H7CAD {
                                     info.name, info.path
                                 ));
                             }
+                            crate::io::xref::XrefStatus::Unloaded => {
+                                self.command_line.push_info(&format!(
+                                    "XREF  Unloaded (skipped): \"{}\"",
+                                    info.name
+                                ));
+                            }
                         }
                     }
                 }
