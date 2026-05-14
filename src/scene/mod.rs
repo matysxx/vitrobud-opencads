@@ -4106,9 +4106,9 @@ fn tessellate_entity(
 
     // Text-specific LOD ladder, keyed off the entity's glyph height in
     // pixels (anno-scaled):
-    //   < 5 px  → drop entirely (illegible, no point even greeking)
-    //   5–10 px → emit a greeked rect in the text's color
-    //   ≥ 10 px → full per-glyph stroke tessellation
+    //   < 2 px → drop entirely (illegible, no point even greeking)
+    //   2–4 px → emit a greeked rect in the text's color
+    //   ≥ 4 px → full per-glyph stroke tessellation
     if let Some(wpp) = world_per_pixel {
         let text_height: Option<f64> = match e {
             EntityType::Text(t) => Some(t.height * anno_scale as f64),
@@ -4117,25 +4117,11 @@ fn tessellate_entity(
         };
         if let Some(h_world) = text_height {
             let h_px = (h_world as f32) / wpp;
-            if h_px < 5.0 {
+            if h_px < 2.0 {
                 return vec![];
             }
-            if h_px < 10.0 && aabb != WireModel::UNBOUNDED_AABB {
-                let [x0, y0, x1, y1] = aabb;
-                let z = match e {
-                    EntityType::Text(t) => (t.insertion_point.z - world_offset[2]) as f32,
-                    EntityType::MText(m) => (m.insertion_point.z - world_offset[2]) as f32,
-                    _ => 0.0,
-                };
-                // Two CCW triangles spanning the AABB.
-                let fill_tris = vec![
-                    [x0, y0, z],
-                    [x1, y0, z],
-                    [x1, y1, z],
-                    [x0, y0, z],
-                    [x1, y1, z],
-                    [x0, y1, z],
-                ];
+            if h_px < 4.0 && aabb != WireModel::UNBOUNDED_AABB {
+                let fill_tris = text_greek_obb_tris(e, anno_scale, world_offset);
                 // The face3d pipeline dims fill_tris colors to 45% to fake
                 // ambient occlusion on PolyfaceMesh / 3DFACE solids. Greeked
                 // text doesn't want that shading — pre-boost the color so it
@@ -4203,6 +4189,101 @@ fn tessellate_entity(
     }
 
     vec![base]
+}
+
+/// Build the 6-vertex (2-triangle) fill for a greeked Text / MText entity
+/// in **world-offset-subtracted** f32 space, oriented to match the text's
+/// rotation. Width is approximated from the glyph height × character count
+/// (TEXT) or from `rectangle_width` (MTEXT).
+fn text_greek_obb_tris(
+    e: &EntityType,
+    anno_scale: f32,
+    world_offset: [f64; 3],
+) -> Vec<[f32; 3]> {
+    use acadrust::entities::{TextHorizontalAlignment, TextVerticalAlignment};
+
+    let [ox, oy, oz] = world_offset;
+    let anno = anno_scale as f64;
+
+    let (ix, iy, iz, w, h, rot, h_anchor, v_anchor) = match e {
+        EntityType::Text(t) => {
+            let h_world = t.height * anno;
+            let w_factor = if t.width_factor > 0.0 { t.width_factor } else { 1.0 };
+            let n = t.value.chars().count().max(1) as f64;
+            // Approximate glyph width: AutoCAD's stroke fonts average ~0.6 em.
+            let w_world = n * h_world * w_factor * 0.6;
+            let h_anchor = match t.horizontal_alignment {
+                TextHorizontalAlignment::Left => 0.0,
+                TextHorizontalAlignment::Center
+                | TextHorizontalAlignment::Middle
+                | TextHorizontalAlignment::Aligned
+                | TextHorizontalAlignment::Fit => 0.5,
+                TextHorizontalAlignment::Right => 1.0,
+            };
+            let v_anchor = match t.vertical_alignment {
+                TextVerticalAlignment::Baseline | TextVerticalAlignment::Bottom => 0.0,
+                TextVerticalAlignment::Middle => 0.5,
+                TextVerticalAlignment::Top => 1.0,
+            };
+            (
+                t.insertion_point.x,
+                t.insertion_point.y,
+                t.insertion_point.z,
+                w_world,
+                h_world,
+                t.rotation,
+                h_anchor,
+                v_anchor,
+            )
+        }
+        EntityType::MText(m) => {
+            let h_world = m.height * anno;
+            let lines = (m.value.matches('\n').count() + 1) as f64;
+            let w_world = if m.rectangle_width > 0.0 {
+                m.rectangle_width
+            } else {
+                h_world * 8.0 * lines.max(1.0)
+            };
+            let total_h = m
+                .rectangle_height
+                .unwrap_or(h_world * lines.max(1.0) * m.line_spacing_factor.max(0.5));
+            (
+                m.insertion_point.x,
+                m.insertion_point.y,
+                m.insertion_point.z,
+                w_world,
+                total_h,
+                m.rotation,
+                0.0,
+                0.0,
+            )
+        }
+        _ => return vec![],
+    };
+
+    // Local-frame corners with anchor offsets applied.
+    let x0 = -h_anchor * w;
+    let x1 = (1.0 - h_anchor) * w;
+    let y0 = -v_anchor * h;
+    let y1 = (1.0 - v_anchor) * h;
+
+    let (s, c) = (rot.sin(), rot.cos());
+    let rot_pt = |lx: f64, ly: f64| -> [f32; 3] {
+        let rx = lx * c - ly * s;
+        let ry = lx * s + ly * c;
+        [
+            (ix + rx - ox) as f32,
+            (iy + ry - oy) as f32,
+            (iz - oz) as f32,
+        ]
+    };
+
+    let p00 = rot_pt(x0, y0);
+    let p10 = rot_pt(x1, y0);
+    let p11 = rot_pt(x1, y1);
+    let p01 = rot_pt(x0, y1);
+
+    vec![p00, p10, p11, p00, p11, p01]
 }
 
 fn entity_aabb(e: &acadrust::EntityType, world_offset: [f64; 3]) -> [f32; 4] {

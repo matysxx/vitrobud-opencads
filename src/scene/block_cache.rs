@@ -58,6 +58,11 @@ pub struct LocalWire {
     /// top-level text (cull / greek / full) to text that's been baked into
     /// a block defn. `None` for non-text entities.
     pub text_height_local: Option<f32>,
+    /// For Text / MText subs: the 4 OBB corners in block-local coords
+    /// (rotation, anchor offsets and width-approximation already applied).
+    /// Emitted at greek time so the rect matches the text's orientation
+    /// instead of falling back to the axis-aligned bbox.
+    pub text_obb_local: Option<[[f32; 3]; 4]>,
 }
 
 #[derive(Clone, Debug)]
@@ -725,10 +730,10 @@ fn expand_defn(
                             .sqrt() as f32;
                         let h_world = h_local * sy;
                         let h_px = h_world / wpp;
-                        if h_px < 5.0 {
+                        if h_px < 2.0 {
                             continue;
                         }
-                        if h_px < 10.0 {
+                        if h_px < 4.0 {
                             emit_greeked_text(lw, local, ctx, out);
                             continue;
                         }
