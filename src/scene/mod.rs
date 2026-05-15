@@ -385,7 +385,17 @@ impl Scene {
 
     /// World units per screen pixel at the current viewport size. Returns
     /// `None` until the first render captures real bounds.
+    ///
+    /// Also returns `None` in paper space: `set_render_pixel_scale` is only
+    /// fed by the shader pipeline (`build_primitive`), and the paper layout
+    /// renders through `PaperCanvas` (an Iced 2-D canvas) which never touches
+    /// it. Whatever value is cached would be a stale model-world wpp and,
+    /// applied to mm-sheet entity AABBs, would cull every paper-space
+    /// annotation. Matches the same skip already in `view_world_aabb`.
     pub(super) fn world_per_pixel(&self) -> Option<f32> {
+        if self.current_layout != "Model" {
+            return None;
+        }
         let v = self.last_world_per_pixel.get();
         if v > 0.0 && v.is_finite() {
             Some(v)
