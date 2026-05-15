@@ -4023,6 +4023,7 @@ fn tessellate_entity(
             line_weight_px,
             world_offset,
             anno_scale,
+            world_per_pixel,
         );
         for w in &mut wires {
             w.aci = aci;

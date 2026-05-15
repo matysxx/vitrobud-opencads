@@ -610,6 +610,7 @@ pub fn tessellate_multileader(
     line_weight_px: f32,
     world_offset: [f64; 3],
     anno_scale: f32,
+    world_per_pixel: Option<f32>,
 ) -> Vec<WireModel> {
     let line_color = if selected {
         WireModel::SELECTED
@@ -855,48 +856,87 @@ pub fn tessellate_multileader(
             color_or_inherit(&ctx.text_color, entity_color)
         };
 
-        // Build per-line stroke points in WCS.
-        let mut text_points: Vec<[f32; 3]> = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            let li = i as f32;
-            let line_y_local = -li * line_h + v_offset;
-            let line_w = line_widths[i];
-            let h_shift_local = -line_w * h_anchor;
-            let wcs_dx = h_shift_local * cos_r - line_y_local * sin_r;
-            let wcs_dy = h_shift_local * sin_r + line_y_local * cos_r;
-            // Origin already in offset-relative space — tessellator will rotate
-            // glyph offsets around it and produce points directly in render space.
-            let origin = [local_ins_x + wcs_dx, local_ins_y + wcs_dy];
-            let strokes = crate::scene::cxf::tessellate_text_ex(
-                origin,
-                height,
-                rot,
-                width_factor,
-                oblique,
-                &font_name,
-                line,
-            );
-            for stroke in &strokes {
-                if stroke.len() < 2 {
-                    continue;
-                }
-                text_points.push(nan);
-                for &[x, y] in stroke {
-                    text_points.push([x, y, z]);
-                }
-            }
-        }
+        // Same LOD ladder used for top-level Text / MText (see scene/mod.rs):
+        //   h_px < 1   → baseline line (skip glyphs)
+        //   1 ≤ h < 5  → greeked rect in text color (skip glyphs)
+        //   h_px ≥ 5   → full per-glyph stroke tessellation
+        let lod_h_px = world_per_pixel.map(|wpp| height / wpp);
+        let lod_mode = match lod_h_px {
+            Some(h) if h < 1.0 => 0,
+            Some(h) if h < 5.0 => 1,
+            _ => 2,
+        };
 
-        if !text_points.is_empty() {
+        // Helper: map a (local_x, local_y) in the text's pre-rotation frame
+        // (origin at the insertion point) into WCS render space.
+        let to_wcs = |lx: f32, ly: f32| -> [f32; 3] {
+            [
+                local_ins_x + lx * cos_r - ly * sin_r,
+                local_ins_y + lx * sin_r + ly * cos_r,
+                z,
+            ]
+        };
+
+        if lod_mode == 0 {
+            // Baseline of the top line only.
+            let line_w = line_widths.first().copied().unwrap_or(0.0);
+            let len_px = world_per_pixel
+                .map(|wpp| line_w / wpp)
+                .unwrap_or(f32::INFINITY);
+            if len_px >= 2.0 {
+                let line_y_local = v_offset;
+                let p0 = to_wcs(-line_w * h_anchor, line_y_local);
+                let p1 = to_wcs(line_w * (1.0 - h_anchor), line_y_local);
+                wires.push(WireModel {
+                    name: name.clone(),
+                    points: vec![p0, p1],
+                    color: text_color,
+                    selected,
+                    aci: 0,
+                    pattern_length: 0.0,
+                    pattern: [0.0; 8],
+                    line_weight_px,
+                    snap_pts: vec![(
+                        Vec3::new(local_ins_x, local_ins_y, z),
+                        SnapHint::Node,
+                    )],
+                    tangent_geoms: vec![],
+                    key_vertices: vec![],
+                    aabb: WireModel::UNBOUNDED_AABB,
+                    plinegen: true,
+                    vp_scissor: None,
+                    fill_tris: vec![],
+                });
+            }
+        } else if lod_mode == 1 {
+            // Greeked rect — tight text bbox (no frame padding).
+            let block_top = v_offset + height;
+            let block_bottom = v_offset - (n_lines - 1.0) * line_h;
+            let block_left = -max_line_w * h_anchor;
+            let block_right = max_line_w * (1.0 - h_anchor);
+            let c00 = to_wcs(block_left, block_bottom);
+            let c10 = to_wcs(block_right, block_bottom);
+            let c11 = to_wcs(block_right, block_top);
+            let c01 = to_wcs(block_left, block_top);
+            // Pre-boost the color so the face3d 0.45 fill_tris dim lands at
+            // the original text color (matches scene/mod.rs greek path).
+            let boost = 1.0 / 0.45_f32;
+            let [r, g, b, a] = text_color;
+            let greek_color = [
+                (r * boost).min(1.0),
+                (g * boost).min(1.0),
+                (b * boost).min(1.0),
+                a,
+            ];
             wires.push(WireModel {
                 name: name.clone(),
-                points: text_points,
-                color: text_color,
+                points: vec![],
+                color: greek_color,
                 selected,
                 aci: 0,
                 pattern_length: 0.0,
                 pattern: [0.0; 8],
-                line_weight_px,
+                line_weight_px: 1.0,
                 snap_pts: vec![(
                     Vec3::new(local_ins_x, local_ins_y, z),
                     SnapHint::Node,
@@ -906,8 +946,63 @@ pub fn tessellate_multileader(
                 aabb: WireModel::UNBOUNDED_AABB,
                 plinegen: true,
                 vp_scissor: None,
-                fill_tris: vec![],
+                fill_tris: vec![c00, c10, c11, c00, c11, c01],
             });
+        } else {
+            // Build per-line stroke points in WCS.
+            let mut text_points: Vec<[f32; 3]> = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                let li = i as f32;
+                let line_y_local = -li * line_h + v_offset;
+                let line_w = line_widths[i];
+                let h_shift_local = -line_w * h_anchor;
+                let wcs_dx = h_shift_local * cos_r - line_y_local * sin_r;
+                let wcs_dy = h_shift_local * sin_r + line_y_local * cos_r;
+                // Origin already in offset-relative space — tessellator will rotate
+                // glyph offsets around it and produce points directly in render space.
+                let origin = [local_ins_x + wcs_dx, local_ins_y + wcs_dy];
+                let strokes = crate::scene::cxf::tessellate_text_ex(
+                    origin,
+                    height,
+                    rot,
+                    width_factor,
+                    oblique,
+                    &font_name,
+                    line,
+                );
+                for stroke in &strokes {
+                    if stroke.len() < 2 {
+                        continue;
+                    }
+                    text_points.push(nan);
+                    for &[x, y] in stroke {
+                        text_points.push([x, y, z]);
+                    }
+                }
+            }
+
+            if !text_points.is_empty() {
+                wires.push(WireModel {
+                    name: name.clone(),
+                    points: text_points,
+                    color: text_color,
+                    selected,
+                    aci: 0,
+                    pattern_length: 0.0,
+                    pattern: [0.0; 8],
+                    line_weight_px,
+                    snap_pts: vec![(
+                        Vec3::new(local_ins_x, local_ins_y, z),
+                        SnapHint::Node,
+                    )],
+                    tangent_geoms: vec![],
+                    key_vertices: vec![],
+                    aabb: WireModel::UNBOUNDED_AABB,
+                    plinegen: true,
+                    vp_scissor: None,
+                    fill_tris: vec![],
+                });
+            }
         }
 
         // Text frame / background-fill rectangle in local frame, then rotated to WCS.
