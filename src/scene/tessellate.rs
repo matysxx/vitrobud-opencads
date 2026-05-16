@@ -28,7 +28,38 @@ use crate::scene::truck_tess::{
 };
 use crate::scene::wire_model::{SnapHint, TangentGeom, WireModel};
 
-const TAU: f64 = std::f64::consts::TAU;
+// ── Arc tessellation helpers ─────────────────────────────────────────────
+
+/// Convert arc `(start, end, ccw)` into a `(start, signed_span)` that
+/// (a) sweeps in the correct direction and (b) wraps through 2π when the
+/// short path crosses the seam. The legacy `(TAU - sa, TAU - ea)` flip
+/// was direction-correct for non-wrap arcs but silently rendered the
+/// long-way-around when the short path crossed 0 / 2π.
+pub(super) fn arc_signed_span(start: f64, end: f64, ccw: bool) -> (f64, f64) {
+    const TAU: f64 = std::f64::consts::TAU;
+    let mut span = end - start;
+    if ccw {
+        if span <= 0.0 {
+            span += TAU;
+        }
+    } else if span >= 0.0 {
+        span -= TAU;
+    }
+    (start, span)
+}
+
+/// Segment count for an arc targeting ~0.1% chord-height error vs.
+/// radius. Floors at 8 so very small arcs don't degenerate into
+/// triangles; rough cap of 256 prevents pathological huge-radius +
+/// near-full-circle inputs from exploding the boundary vertex count.
+pub(super) fn arc_segments(span_abs: f64) -> u32 {
+    if span_abs < 1e-9 {
+        return 1;
+    }
+    // 2 * acos(1 - 0.001) ≈ 0.0894 rad ≈ 5.12°
+    const MAX_STEP: f64 = 0.0894;
+    ((span_abs / MAX_STEP).ceil() as u32).clamp(8, 256)
+}
 
 // ── Colour helper ──────────────────────────────────────────────────────────
 
@@ -1189,20 +1220,17 @@ fn legacy_geometry(entity: &EntityType, world_offset: [f64; 3]) -> Geometry {
                             key_verts.push(p1);
                         }
                         acadrust::entities::BoundaryEdge::CircularArc(arc) => {
-                            let sa = arc.start_angle;
-                            let ea = arc.end_angle;
-                            let ccw = arc.counter_clockwise;
-                            let (sa, ea) = if ccw { (sa, ea) } else { (TAU - sa, TAU - ea) };
-                            let span = ea - sa;
-                            let segs = ((span.abs() / TAU) * 32.0).ceil().max(4.0) as u32;
+                            let (sa, span) =
+                                arc_signed_span(arc.start_angle, arc.end_angle, arc.counter_clockwise);
+                            let segs = arc_segments(span.abs());
                             if !pts.is_empty() {
                                 pts.push([f32::NAN; 3]);
                             }
                             for i in 0..=segs {
                                 let t = sa + span * (i as f64 / segs as f64);
                                 let p = to_wcs(
-                                    arc.center.x + arc.radius * t.cos() as f64,
-                                    arc.center.y + arc.radius * t.sin() as f64,
+                                    arc.center.x + arc.radius * t.cos(),
+                                    arc.center.y + arc.radius * t.sin(),
                                 );
                                 pts.push(p);
                                 if i == 0 || i == segs {
@@ -1215,34 +1243,29 @@ fn legacy_geometry(entity: &EntityType, world_offset: [f64; 3]) -> Geometry {
                             ));
                         }
                         acadrust::entities::BoundaryEdge::EllipticArc(ell) => {
-                            let r_maj = ((ell.major_axis_endpoint.x * ell.major_axis_endpoint.x
+                            let r_maj = (ell.major_axis_endpoint.x * ell.major_axis_endpoint.x
                                 + ell.major_axis_endpoint.y * ell.major_axis_endpoint.y)
-                                .sqrt()) as f32;
-                            let r_min = r_maj * ell.minor_axis_ratio as f32;
-                            let rot = (ell.major_axis_endpoint.y as f32)
-                                .atan2(ell.major_axis_endpoint.x as f32);
-                            const TAU: f32 = std::f32::consts::TAU;
-                            let ccw = ell.counter_clockwise;
-                            let sa = ell.start_angle as f32;
-                            let ea = ell.end_angle as f32;
-                            let (sa, ea) = if ccw {
-                                (sa, ea)
-                            } else {
-                                (TAU - sa, TAU - ea)
-                            };
-                            let span = ea - sa;
-                            let segs =
-                                ((span.abs() / TAU) * 32.0).ceil().max(4.0) as u32;
+                                .sqrt();
+                            let r_min = r_maj * ell.minor_axis_ratio;
+                            let rot = ell
+                                .major_axis_endpoint
+                                .y
+                                .atan2(ell.major_axis_endpoint.x);
+                            let (sa, span) =
+                                arc_signed_span(ell.start_angle, ell.end_angle, ell.counter_clockwise);
+                            let segs = arc_segments(span.abs());
                             if !pts.is_empty() {
                                 pts.push([f32::NAN; 3]);
                             }
+                            let (cr, sr) = (rot.cos(), rot.sin());
                             for i in 0..=segs {
-                                let t = sa + span * (i as f32 / segs as f32);
+                                let t = sa + span * (i as f64 / segs as f64);
                                 let lx = r_maj * t.cos();
                                 let ly = r_min * t.sin();
-                                let ocs_x = ell.center.x + (lx * rot.cos() - ly * rot.sin()) as f64;
-                                let ocs_y = ell.center.y + (lx * rot.sin() + ly * rot.cos()) as f64;
-                                let p = to_wcs(ocs_x, ocs_y);
+                                let p = to_wcs(
+                                    ell.center.x + lx * cr - ly * sr,
+                                    ell.center.y + lx * sr + ly * cr,
+                                );
                                 pts.push(p);
                                 if i == 0 || i == segs {
                                     key_verts.push(p);

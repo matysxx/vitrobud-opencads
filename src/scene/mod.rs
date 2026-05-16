@@ -2515,43 +2515,43 @@ impl Scene {
                         boundary.push(to_xy(line.end.x, line.end.y));
                     }
                     BoundaryEdge::CircularArc(arc) => {
-                        const TAU: f64 = std::f64::consts::TAU;
-                        let cx = arc.center.x;
-                        let cy = arc.center.y;
-                        let r = arc.radius;
-                        let sa = arc.start_angle;
-                        let ea = arc.end_angle;
-                        let ccw = arc.counter_clockwise;
-                        let (sa, ea) = if ccw { (sa, ea) } else { (TAU - sa, TAU - ea) };
-                        let span = ea - sa;
-                        let segs = ((span.abs() / TAU) * 32.0).ceil().max(4.0) as u32;
+                        let (sa, span) = tessellate::arc_signed_span(
+                            arc.start_angle,
+                            arc.end_angle,
+                            arc.counter_clockwise,
+                        );
+                        let segs = tessellate::arc_segments(span.abs());
                         for i in 0..=segs {
                             let t = sa + span * (i as f64 / segs as f64);
-                            boundary.push(to_xy(cx + r * t.cos(), cy + r * t.sin()));
+                            boundary.push(to_xy(
+                                arc.center.x + arc.radius * t.cos(),
+                                arc.center.y + arc.radius * t.sin(),
+                            ));
                         }
                     }
                     BoundaryEdge::EllipticArc(ell) => {
-                        const TAU: f32 = std::f32::consts::TAU;
-                        let cx = ell.center.x;
-                        let cy = ell.center.y;
-                        let maj_x = ell.major_axis_endpoint.x as f32;
-                        let maj_y = ell.major_axis_endpoint.y as f32;
-                        let r_maj = (maj_x * maj_x + maj_y * maj_y).sqrt();
-                        let r_min = r_maj * ell.minor_axis_ratio as f32;
-                        let rot = maj_y.atan2(maj_x);
-                        let ccw = ell.counter_clockwise;
-                        let sa = ell.start_angle as f32;
-                        let ea = ell.end_angle as f32;
-                        let (sa, ea) = if ccw { (sa, ea) } else { (TAU - sa, TAU - ea) };
-                        let span = ea - sa;
-                        let segs = ((span.abs() / TAU) * 32.0).ceil().max(4.0) as u32;
+                        let r_maj = (ell.major_axis_endpoint.x * ell.major_axis_endpoint.x
+                            + ell.major_axis_endpoint.y * ell.major_axis_endpoint.y)
+                            .sqrt();
+                        let r_min = r_maj * ell.minor_axis_ratio;
+                        let rot = ell
+                            .major_axis_endpoint
+                            .y
+                            .atan2(ell.major_axis_endpoint.x);
+                        let (sa, span) = tessellate::arc_signed_span(
+                            ell.start_angle,
+                            ell.end_angle,
+                            ell.counter_clockwise,
+                        );
+                        let segs = tessellate::arc_segments(span.abs());
+                        let (cr, sr) = (rot.cos(), rot.sin());
                         for i in 0..=segs {
-                            let t = sa + span * (i as f32 / segs as f32);
+                            let t = sa + span * (i as f64 / segs as f64);
                             let lx = r_maj * t.cos();
                             let ly = r_min * t.sin();
                             boundary.push(to_xy(
-                                cx + (lx * rot.cos() - ly * rot.sin()) as f64,
-                                cy + (lx * rot.sin() + ly * rot.cos()) as f64,
+                                ell.center.x + lx * cr - ly * sr,
+                                ell.center.y + lx * sr + ly * cr,
                             ));
                         }
                     }
