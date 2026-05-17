@@ -79,10 +79,19 @@ impl QuadTree {
         }
     }
 
+    // `len` / `is_empty` / `remove` / `update` are part of the public
+    // quadtree API and exercised by the unit tests, but production
+    // callers haven't landed yet (Scene::add/erase/transform paths
+    // still trigger an epoch-based full rebuild rather than mutating
+    // the index in place). The `#[allow(dead_code)]` is intentional —
+    // dropping them would shrink the public surface only to put it
+    // back once incremental updates ship.
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.locator.len() + self.overflow.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -112,6 +121,7 @@ impl QuadTree {
         }
     }
 
+    #[allow(dead_code)]
     pub fn remove(&mut self, handle: Handle) -> bool {
         if let Some((node_idx, item_idx)) = self.locator.remove(&handle) {
             let node = &mut self.nodes[node_idx as usize];
@@ -130,6 +140,7 @@ impl QuadTree {
         false
     }
 
+    #[allow(dead_code)]
     pub fn update(&mut self, handle: Handle, aabb: Aabb) {
         self.remove(handle);
         self.insert(handle, aabb);
