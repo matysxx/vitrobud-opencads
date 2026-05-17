@@ -132,10 +132,14 @@ impl HatchBatchedVertex {
 pub struct HatchBatchedGpu {
     pub vertex_buffer: wgpu::Buffer,
     pub vertex_count: u32,
-    pub instance_buffer: wgpu::Buffer,
-    pub boundary_buffer: wgpu::Buffer,
-    pub family_buffer: wgpu::Buffer,
-    pub dash_buffer: wgpu::Buffer,
+    // The four storage buffers below are referenced via `bind_group` —
+    // dropping them would invalidate it, but the bind group is the
+    // only direct consumer. Keep them as fields to keep ownership in
+    // one place; `#[allow(dead_code)]` silences the read-never warning.
+    #[allow(dead_code)] pub instance_buffer: wgpu::Buffer,
+    #[allow(dead_code)] pub boundary_buffer: wgpu::Buffer,
+    #[allow(dead_code)] pub family_buffer:   wgpu::Buffer,
+    #[allow(dead_code)] pub dash_buffer:     wgpu::Buffer,
     /// Per-instance visibility flag (1=draw, 0=skip). Stored in its
     /// own small storage buffer so per-frame updates don't have to
     /// touch the large `instance_buffer`. Vertex shader reads
@@ -144,7 +148,7 @@ pub struct HatchBatchedGpu {
     /// fragment stage runs.
     pub visibility_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
-    pub instance_count: u32,
+    #[allow(dead_code)] pub instance_count: u32,
     /// CPU mirror — `update_visibility` re-uploads this whole slice
     /// when any flag changes. ~4 B per hatch, so 40 KB / 10 k hatches
     /// per pan tick. Far cheaper than touching the 112 B-per-instance

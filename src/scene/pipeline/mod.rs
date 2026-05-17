@@ -64,17 +64,12 @@ pub struct Pipeline {
     wire_pixel_scissors: Vec<Option<[u32; 4]>>,
     /// Ghost copies (25% alpha) of selected wires for the X-ray depth pass.
     gpu_selected_wires: Vec<WireGpu>,
-    gpu_hatches: Vec<HatchGpu>,
-    /// Phase 4-B — single batched-hatch GPU resource. When `Some`, the
-    /// batched pipeline draws every hatch in one indexed call and the
-    /// per-hatch `gpu_hatches` path is skipped.
+    /// Phase 4-B — single batched-hatch GPU resource. Drawn in one
+    /// indexed call with per-instance visibility masking the rest.
+    /// Legacy per-hatch `Vec<HatchGpu>` + scissor / skip-flag plumbing
+    /// removed in step 5; the `hatch_pipeline` itself stays around to
+    /// serve the wipeout path which still uses `HatchGpu`.
     gpu_hatch_batched: Option<hatch_batched_gpu::HatchBatchedGpu>,
-    /// Pixel scissor rects [x, y, w, h] for viewport-clipped hatches. Recomputed each frame.
-    hatch_pixel_scissors: Vec<Option<[u32; 4]>>,
-    /// `true` for hatches whose AABB projects to less than ~2 px at the
-    /// current zoom. Render pass skips the draw call. Recomputed each
-    /// frame alongside the scissor pass (Phase 3.3 hatch LOD).
-    hatch_skip_flags: Vec<bool>,
     /// Wipeout fills — rendered after wires in a separate pass.
     gpu_wipeouts: Vec<HatchGpu>,
     /// Per-wipeout draw-time skip flag (Phase 2.3 frustum cull). `true`
@@ -689,10 +684,7 @@ impl Pipeline {
             gpu_wires: vec![],
             wire_pixel_scissors: vec![],
             gpu_selected_wires: vec![],
-            gpu_hatches: vec![],
             gpu_hatch_batched: None,
-            hatch_pixel_scissors: vec![],
-            hatch_skip_flags: vec![],
             gpu_wipeouts: vec![],
             wipeout_skip_flags: vec![],
             wipeout_pixel_scissors: vec![],
@@ -730,21 +722,12 @@ impl Pipeline {
             .collect();
     }
 
-    /// Recompute pixel scissor rects for viewport-clipped hatches.
-    pub fn compute_hatch_scissors(&mut self, view_proj: glam::Mat4, clip_w: u32, clip_h: u32) {
-        self.hatch_pixel_scissors = self
-            .gpu_hatches
-            .iter()
-            .map(|h| project_scissor(h.vp_scissor, view_proj, clip_w, clip_h))
-            .collect();
-    }
-
-    /// Recompute per-hatch LOD skip flags. A hatch whose entire AABB
-    /// projects to less than ~2 px is invisible at this zoom — skip the
-    /// draw call entirely instead of running the polygon test for every
-    /// fragment in the bounding quad. Pairs with the shader-side
-    /// solid-fill substitution for hatches between 2 px and the dense
-    /// pattern threshold.
+    /// Per-frame visibility refresh for the batched hatch path.
+    /// Combines Phase 3.3 sub-pixel LOD skip with Phase 2.3 frustum
+    /// cull and pushes the resulting 0/1 mask through to the GPU
+    /// `visibility_buffer`. Vertex shader maps 0 → out-of-NDC clip,
+    /// so the rasterizer culls the primitive before any fragment
+    /// runs.
     pub fn compute_hatch_lod(
         &mut self,
         queue: &wgpu::Queue,
@@ -752,34 +735,15 @@ impl Pipeline {
         clip_w: u32,
         clip_h: u32,
     ) {
-        // Phase 4-B batched path — write the same skip rule (sub-pixel
-        // LOD OR offscreen) into the GPU visibility buffer. The vertex
-        // shader maps 0 → out-of-NDC clip → primitive culled before
-        // fragment stage; equivalent to the per-hatch `skip_flags`
-        // gate but at GPU-side cost.
-        if let Some(batch) = &mut self.gpu_hatch_batched {
-            // Same skip rule as the legacy per-hatch path: sub-pixel
-            // LOD (`aabb_below_pixel`) OR offscreen (`aabb_offscreen`).
-            // Walks the per-instance AABB mirror — no GPU readback.
-            for (i, aabb) in batch.instance_aabbs.iter().enumerate() {
-                let skip = aabb_below_pixel(*aabb, view_proj, clip_w, clip_h, 2.0)
-                    || aabb_offscreen(*aabb, view_proj, clip_w, clip_h);
-                batch.visibility[i] = if skip { 0 } else { 1 };
-            }
-            batch.upload_visibility(queue);
+        let Some(batch) = &mut self.gpu_hatch_batched else {
             return;
+        };
+        for (i, aabb) in batch.instance_aabbs.iter().enumerate() {
+            let skip = aabb_below_pixel(*aabb, view_proj, clip_w, clip_h, 2.0)
+                || aabb_offscreen(*aabb, view_proj, clip_w, clip_h);
+            batch.visibility[i] = if skip { 0 } else { 1 };
         }
-
-        // Per-hatch (legacy) fallback path.
-        self.hatch_skip_flags = self
-            .gpu_hatches
-            .iter()
-            .map(|h| {
-                // Phase 3.3 sub-pixel LOD skip OR Phase 2.3 frustum skip.
-                aabb_below_pixel(h.world_aabb, view_proj, clip_w, clip_h, 2.0)
-                    || aabb_offscreen(h.world_aabb, view_proj, clip_w, clip_h)
-            })
-            .collect();
+        batch.upload_visibility(queue);
     }
 
     /// Recompute pixel scissor rects for viewport-clipped wipeouts.
@@ -861,12 +825,8 @@ impl Pipeline {
     }
 
     pub fn upload_hatches(&mut self, device: &wgpu::Device, hatches: &[HatchModel]) {
-        // Phase 4-B — build the single batched GPU resource. The
-        // per-hatch `gpu_hatches` Vec is left empty; the draw loop
-        // takes the batched path when `gpu_hatch_batched.is_some()`.
         let renderable: Vec<HatchModel> =
             hatches.iter().filter(|h| h.boundary.len() >= 3).cloned().collect();
-        self.gpu_hatches = vec![];
         self.gpu_hatch_batched =
             hatch_batched_gpu::HatchBatchedGpu::build(device, &self.hatch_batched_bgl1, &renderable);
     }
@@ -940,43 +900,17 @@ impl Pipeline {
             // MSAA texture is clip-bounds-sized, so viewport starts at (0, 0).
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
             // Phase 4-B — single batched draw covers every hatch.
-            // The vertex shader culls per-instance via the `visible`
-            // flag set by `compute_hatch_lod` (sub-pixel + offscreen).
-            // Viewport-clip scissors haven't been ported to the batched
-            // path yet; paper-space MSPACE rendering still uses the
-            // per-hatch fallback below when no batched resource exists.
+            // Vertex shader culls per-instance via the `visibility`
+            // buffer (sub-pixel LOD + frustum cull written each frame
+            // by `compute_hatch_lod`). Per-hatch viewport scissor
+            // (paper-space MSPACE) isn't ported to the batched path
+            // yet — follow-up if it shows up as a visual issue.
             if let Some(batch) = &self.gpu_hatch_batched {
                 pass.set_pipeline(&self.hatch_batched_pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_bind_group(1, &batch.bind_group, &[]);
                 pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));
                 pass.draw(0..batch.vertex_count, 0..1);
-            } else if !self.gpu_hatches.is_empty() {
-                pass.set_pipeline(&self.hatch_pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                let mut scissor_active = false;
-                for (i, hatch) in self.gpu_hatches.iter().enumerate() {
-                    if self.hatch_skip_flags.get(i).copied().unwrap_or(false) {
-                        continue;
-                    }
-                    match self.hatch_pixel_scissors.get(i) {
-                        Some(Some([x, y, w, h])) => {
-                            pass.set_scissor_rect(*x, *y, *w, *h);
-                            scissor_active = true;
-                        }
-                        _ if scissor_active => {
-                            pass.set_scissor_rect(0, 0, vp.width, vp.height);
-                            scissor_active = false;
-                        }
-                        _ => {}
-                    }
-                    pass.set_bind_group(1, &hatch.bind_group, &[]);
-                    pass.set_vertex_buffer(0, hatch.vertex_buffer.slice(..));
-                    pass.draw(0..6, 0..1);
-                }
-                if scissor_active {
-                    pass.set_scissor_rect(0, 0, vp.width, vp.height);
-                }
             }
         }
 
