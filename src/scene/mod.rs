@@ -1235,34 +1235,69 @@ impl Scene {
             }
         }
 
-        // Collect visible entities sequentially (filter needs &self).
-        let visible: Vec<&EntityType> = self
-            .document
-            .entities()
-            .filter(|e| {
-                let c = e.common();
-                if c.invisible {
-                    return false;
+        // Visibility test reused by both paths below.
+        let visibility_ok = |e: &EntityType| -> bool {
+            let c = e.common();
+            if c.invisible {
+                return false;
+            }
+            // Block/BlockEnd are block-defn sentinels, not drawable geometry.
+            // Without this skip they fall through to legacy_geometry's `_`
+            // arm and emit a 1-unit phantom segment at world_offset that
+            // poisons fit_all and shows up in selection.
+            if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
+                return false;
+            }
+            if self
+                .document
+                .layers
+                .get(&c.layer)
+                .map(|l| l.flags.off || l.flags.frozen)
+                .unwrap_or(false)
+            {
+                return false;
+            }
+            self.belongs_to_visible_block(e.common().handle, c.owner_handle, block_handle)
+        };
+
+        // Phase 2.1 — quadtree-driven candidate selection. When a view
+        // AABB exists (Model layout with a settled camera), only iterate
+        // entities whose stored WCS bbox intersects the view; unindexable
+        // entities (Insert/Viewport) are appended via a small linear scan.
+        // Paper space and the first-frame "settle" path fall back to the
+        // full doc scan — preserving prior behaviour.
+        let visible: Vec<&EntityType> = if let Some(local_view) = self.view_world_aabb() {
+            let [ox, oy, _] = self.world_offset;
+            let view_wcs: [f64; 4] = [
+                local_view[0] as f64 + ox,
+                local_view[1] as f64 + oy,
+                local_view[2] as f64 + ox,
+                local_view[3] as f64 + oy,
+            ];
+            let candidates: Vec<Handle> = {
+                let tree = self.entity_index();
+                tree.query_rect(view_wcs)
+            };
+            let mut out: Vec<&EntityType> = Vec::with_capacity(candidates.len() + 16);
+            for h in candidates {
+                if let Some(e) = self.document.get_entity(h) {
+                    if visibility_ok(e) {
+                        out.push(e);
+                    }
                 }
-                // Block/BlockEnd are block-defn sentinels, not drawable geometry.
-                // Without this skip they fall through to legacy_geometry's `_`
-                // arm and emit a 1-unit phantom segment at world_offset that
-                // poisons fit_all and shows up in selection.
-                if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
-                    return false;
+            }
+            for e in self.document.entities() {
+                if is_unindexable_entity(e) && visibility_ok(e) {
+                    out.push(e);
                 }
-                if self
-                    .document
-                    .layers
-                    .get(&c.layer)
-                    .map(|l| l.flags.off || l.flags.frozen)
-                    .unwrap_or(false)
-                {
-                    return false;
-                }
-                self.belongs_to_visible_block(e.common().handle, c.owner_handle, block_handle)
-            })
-            .collect();
+            }
+            out
+        } else {
+            self.document
+                .entities()
+                .filter(|e| visibility_ok(e))
+                .collect()
+        };
 
         // Tessellate in parallel across all available CPU cores.
         use rayon::prelude::*;
