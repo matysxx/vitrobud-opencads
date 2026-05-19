@@ -18,6 +18,7 @@ use acadrust::entities::{
     Dimension, Leader, LeaderContentType, MultiLeader, MultiLeaderPathType, Text,
     TextAttachmentPointType,
 };
+use acadrust::tables::DimStyle;
 use acadrust::types::{Color as AcadColor, Vector3};
 use acadrust::{CadDocument, EntityType, Handle};
 use glam::Vec3;
@@ -461,11 +462,6 @@ pub fn tessellate_dimension(
     world_offset: [f64; 3],
     anno_scale: f32,
 ) -> Vec<WireModel> {
-    let color = if selected {
-        WireModel::SELECTED
-    } else {
-        entity_color
-    };
     let name = handle.value().to_string();
     let style_name = &dim.base().style_name;
     let style = document.dim_styles.iter().find(|s| {
@@ -474,8 +470,8 @@ pub fn tessellate_dimension(
     });
 
     // DIMSCALE rule:
-    //   dimstyle.dimscale > 0  →  that's the *final* multiplier; ignore anno_scale.
-    //   dimstyle.dimscale == 0 →  annotative: use anno_scale (= 1/vp_scale in viewports).
+    //   dimstyle.dimscale > 0  →  final multiplier; ignore anno_scale.
+    //   dimstyle.dimscale == 0 →  annotative: use anno_scale (= 1/vp_scale).
     let dim_scale = style
         .map(|s| {
             if s.dimscale > 1e-6 {
@@ -485,50 +481,155 @@ pub fn tessellate_dimension(
             }
         })
         .unwrap_or(1.0);
-    let (arrow_size, dimexo, dimexe, dim_txt) = style
-        .map(|s| {
+
+    let (dimasz_raw, dimexo, dimexe, dim_txt, dimtsz_raw, dimsah, dimse1, dimse2, dimsd1, dimsd2) =
+        style
+            .map(|s| {
+                (
+                    s.dimasz * dim_scale,
+                    (s.dimexo * dim_scale) as f32,
+                    (s.dimexe * dim_scale) as f32,
+                    s.dimtxt * dim_scale,
+                    s.dimtsz * dim_scale,
+                    s.dimsah,
+                    s.dimse1,
+                    s.dimse2,
+                    s.dimsd1,
+                    s.dimsd2,
+                )
+            })
+            .unwrap_or((0.18, 0.0, 0.0, 2.5, 0.0, false, false, false, false, false));
+
+    // Arrow selection precedence:
+    //   1. DIMTSZ>0 → oblique tick (overrides DIMBLK*).
+    //   2. DIMSAH false → DIMBLK on both ends.
+    //   3. DIMSAH true  → DIMBLK1 (first end), DIMBLK2 (second end).
+    // Unknown / NULL block handles fall back to ClosedFilled.
+    let dimasz = (dimasz_raw as f32).max(0.001);
+    let (arrow1, arrow2) = if dimtsz_raw > 1e-9 {
+        let t = ArrowKind::Tick {
+            size: (dimtsz_raw as f32).max(0.001),
+        };
+        (t, t)
+    } else if let Some(s) = style {
+        if dimsah {
             (
-                ((s.dimasz * dim_scale) as f32).max(0.001),
-                (s.dimexo * dim_scale) as f32,
-                (s.dimexe * dim_scale) as f32,
-                s.dimtxt * dim_scale,
+                arrow_from_block(document, s.dimblk1, dimasz),
+                arrow_from_block(document, s.dimblk2, dimasz),
             )
-        })
-        .unwrap_or((0.12, 0.0, 0.0, 2.5));
-    let points = dimension_geometry(dim, arrow_size, dimexo, dimexe, world_offset);
-    let key_vertices = points
+        } else {
+            let a = arrow_from_block(document, s.dimblk, dimasz);
+            (a, a)
+        }
+    } else {
+        let a = ArrowKind::Triangle {
+            size: dimasz,
+            filled: true,
+            size_mul: 1.0,
+        };
+        (a, a)
+    };
+
+    let geom = dimension_geometry(
+        dim,
+        &arrow1,
+        &arrow2,
+        dimexo,
+        dimexe,
+        SuppressFlags {
+            ext1: dimse1,
+            ext2: dimse2,
+            dim1: dimsd1,
+            dim2: dimsd2,
+        },
+        world_offset,
+    );
+
+    // Per-spec colours: DIMCLRD (dim/arrows), DIMCLRE (ext), DIMCLRT (text).
+    // 0=ByBlock and 256=ByLayer fall through to entity_color.
+    let dim_color = if selected {
+        WireModel::SELECTED
+    } else {
+        resolve_dim_color(style.map(|s| s.dimclrd).unwrap_or(0), entity_color)
+    };
+    let ext_color = if selected {
+        WireModel::SELECTED
+    } else {
+        resolve_dim_color(style.map(|s| s.dimclre).unwrap_or(0), entity_color)
+    };
+    let text_color = if selected {
+        entity_color // text wire color set by inner tessellate; keep entity tint
+    } else {
+        resolve_dim_color(style.map(|s| s.dimclrt).unwrap_or(0), entity_color)
+    };
+
+    let snap_pts = dimension_snap_pts(dim, world_offset);
+    let key_vertices: Vec<[f32; 3]> = geom
+        .dim_lines
         .iter()
+        .chain(geom.ext_lines.iter())
         .copied()
         .filter(|p| !(p[0].is_nan() || p[1].is_nan() || p[2].is_nan()))
         .collect();
 
-    let snap_pts = dimension_snap_pts(dim, world_offset);
+    // DIMLWD (dim line + arrows) and DIMLWE (extension lines). Negative
+    // codes fall through to the entity's own resolved weight.
+    let lw_dim = resolve_dim_lineweight_px(
+        style.map(|s| s.dimlwd).unwrap_or(-2),
+        line_weight_px,
+    );
+    let lw_ext = resolve_dim_lineweight_px(
+        style.map(|s| s.dimlwe).unwrap_or(-2),
+        line_weight_px,
+    );
 
-    let mut wires = vec![WireModel {
+    let mut wires = Vec::new();
+
+    if !geom.ext_lines.is_empty() {
+        wires.push(WireModel {
+            name: name.clone(),
+            points: geom.ext_lines,
+            color: ext_color,
+            selected,
+            aci: 0,
+            pattern_length: 0.0,
+            pattern: [0.0; 8],
+            line_weight_px: lw_ext,
+            snap_pts: vec![],
+            tangent_geoms: vec![],
+            key_vertices: vec![],
+            aabb: WireModel::UNBOUNDED_AABB,
+            plinegen: true,
+            vp_scissor: None,
+            fill_tris: vec![],
+        });
+    }
+
+    wires.push(WireModel {
         name: name.clone(),
-        points,
-        color,
+        points: geom.dim_lines,
+        color: dim_color,
         selected,
         aci: 0,
         pattern_length: 0.0,
         pattern: [0.0; 8],
-        line_weight_px,
+        line_weight_px: lw_dim,
         snap_pts,
         tangent_geoms: vec![],
         key_vertices,
         aabb: WireModel::UNBOUNDED_AABB,
         plinegen: true,
         vp_scissor: None,
-        fill_tris: vec![],
-    }];
+        fill_tris: geom.arrow_fill,
+    });
 
-    if let Some(text) = dimension_text_entity(dim, dim_txt) {
+    if let Some(text) = dimension_text_entity(dim, dim_txt, style) {
         let mut wire = tessellate(
             document,
             handle,
             &EntityType::Text(text),
             selected,
-            entity_color,
+            text_color,
             0.0,
             [0.0; 8],
             line_weight_px,
@@ -542,6 +643,160 @@ pub fn tessellate_dimension(
     }
 
     wires
+}
+
+fn resolve_dim_color(idx: i16, fallback: [f32; 4]) -> [f32; 4] {
+    // DIMCLR* convention: 0 = BYBLOCK, 256 = BYLAYER → entity colour wins.
+    if idx == 0 || idx == 256 {
+        return fallback;
+    }
+    aci_to_rgba(&AcadColor::from_index(idx))
+}
+
+/// Resolve a DIMLWD / DIMLWE table value (the i16 lineweight code) into a
+/// pixel width. -1 (ByLayer) / -2 (ByBlock) / -3 (Default) fall through to
+/// the entity's already-resolved width.
+fn resolve_dim_lineweight_px(code: i16, fallback_px: f32) -> f32 {
+    const MM_TO_PX: f32 = 96.0 / 25.4;
+    if code < 0 {
+        return fallback_px;
+    }
+    // i16 value 0..=211 represents 1/100 mm.
+    let mm = code as f32 / 100.0;
+    (mm * MM_TO_PX).max(1.0)
+}
+
+#[derive(Clone, Copy)]
+enum ArrowKind {
+    None,
+    Triangle { size: f32, filled: bool, size_mul: f32 },
+    Tick { size: f32 },
+    Open { size: f32, half_angle: f32 },
+    Dot { size: f32, filled: bool },
+    Origin { size: f32 },
+    Box_ { size: f32, filled: bool },
+    Datum { size: f32, filled: bool },
+}
+
+fn arrow_from_block(
+    doc: &CadDocument,
+    handle: acadrust::types::Handle,
+    dimasz: f32,
+) -> ArrowKind {
+    let name = if handle.is_null() {
+        None
+    } else {
+        doc.block_records
+            .iter()
+            .find(|b| b.handle == handle)
+            .map(|b| b.name.as_str())
+    };
+    arrow_from_block_name(name, dimasz)
+}
+
+fn arrow_from_block_name(name: Option<&str>, dimasz: f32) -> ArrowKind {
+    // AutoCAD's standard arrow blocks are prefixed with "_" (e.g. "_OPEN").
+    // Strip the prefix, upper-case, and switch on canonical names. Unknown
+    // / missing names default to ClosedFilled.
+    let n = name
+        .map(|s| s.trim().trim_start_matches('_').to_ascii_uppercase())
+        .unwrap_or_default();
+    match n.as_str() {
+        "" | "CLOSEDFILLED" => ArrowKind::Triangle {
+            size: dimasz,
+            filled: true,
+            size_mul: 1.0,
+        },
+        "CLOSED" | "CLOSEDBLANK" => ArrowKind::Triangle {
+            size: dimasz,
+            filled: false,
+            size_mul: 1.0,
+        },
+        "SMALL" => ArrowKind::Triangle {
+            size: dimasz,
+            filled: true,
+            size_mul: 0.5,
+        },
+        "OPEN" => ArrowKind::Open {
+            size: dimasz,
+            half_angle: 9.5_f32.to_radians(),
+        },
+        "OPEN30" => ArrowKind::Open {
+            size: dimasz,
+            half_angle: 15.0_f32.to_radians(),
+        },
+        "OPEN90" => ArrowKind::Open {
+            size: dimasz,
+            half_angle: 45.0_f32.to_radians(),
+        },
+        "DOT" => ArrowKind::Dot {
+            size: dimasz,
+            filled: true,
+        },
+        "DOTSMALL" => ArrowKind::Dot {
+            size: dimasz * 0.5,
+            filled: true,
+        },
+        "DOTBLANK" => ArrowKind::Dot {
+            size: dimasz,
+            filled: false,
+        },
+        "DOTSMALLBLANK" => ArrowKind::Dot {
+            size: dimasz * 0.5,
+            filled: false,
+        },
+        "ORIGIN" | "ORIGIN2" | "ORIGININDICATOR" | "ORIGININDICATOR2" => {
+            ArrowKind::Origin { size: dimasz }
+        }
+        "OBLIQUE" | "ARCHTICK" => ArrowKind::Tick { size: dimasz },
+        "BOXFILLED" => ArrowKind::Box_ {
+            size: dimasz,
+            filled: true,
+        },
+        "BOXBLANK" | "BOX" => ArrowKind::Box_ {
+            size: dimasz,
+            filled: false,
+        },
+        "DATUMFILLED" | "DATUMTRIANGLEFILLED" => ArrowKind::Datum {
+            size: dimasz,
+            filled: true,
+        },
+        "DATUMBLANK" | "DATUMTRIANGLE" => ArrowKind::Datum {
+            size: dimasz,
+            filled: false,
+        },
+        "NONE" => ArrowKind::None,
+        // INTEGRAL and other complex glyphs aren't reproduced here; fall through.
+        _ => ArrowKind::Triangle {
+            size: dimasz,
+            filled: true,
+            size_mul: 1.0,
+        },
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct SuppressFlags {
+    ext1: bool,
+    ext2: bool,
+    dim1: bool,
+    dim2: bool,
+}
+
+struct DimGeom {
+    ext_lines: Vec<[f32; 3]>,
+    dim_lines: Vec<[f32; 3]>,
+    arrow_fill: Vec<[f32; 3]>,
+}
+
+impl DimGeom {
+    fn new() -> Self {
+        Self {
+            ext_lines: Vec::new(),
+            dim_lines: Vec::new(),
+            arrow_fill: Vec::new(),
+        }
+    }
 }
 
 fn tessellate_leader_single(
@@ -1463,13 +1718,15 @@ fn solid_wire_fallback(entity: &EntityType, world_offset: [f64; 3]) -> Vec<[f32;
 
 fn dimension_geometry(
     dim: &Dimension,
-    arrow_size: f32,
+    arrow1: &ArrowKind,
+    arrow2: &ArrowKind,
     dimexo: f32,
     dimexe: f32,
+    suppress: SuppressFlags,
     world_offset: [f64; 3],
-) -> Vec<[f32; 3]> {
+) -> DimGeom {
     let lv = |v| vec3_local(v, world_offset);
-    let mut points = Vec::new();
+    let mut g = DimGeom::new();
     match dim {
         Dimension::Aligned(d) => {
             let first = lv(d.first_point);
@@ -1477,14 +1734,7 @@ fn dimension_geometry(
             let def = lv(d.definition_point);
             let axis = normalized_or(second - first, Vec3::X);
             append_linear_dimension(
-                &mut points,
-                first,
-                second,
-                def,
-                axis,
-                arrow_size,
-                dimexo,
-                dimexe,
+                &mut g, first, second, def, axis, arrow1, arrow2, dimexo, dimexe, suppress,
             );
         }
         Dimension::Linear(d) => {
@@ -1493,106 +1743,121 @@ fn dimension_geometry(
             let def = lv(d.definition_point);
             let axis = Vec3::new(d.rotation.cos() as f32, d.rotation.sin() as f32, 0.0);
             append_linear_dimension(
-                &mut points,
+                &mut g,
                 first,
                 second,
                 def,
                 normalized_or(axis, Vec3::X),
-                arrow_size,
+                arrow1,
+                arrow2,
                 dimexo,
                 dimexe,
+                suppress,
             );
         }
         Dimension::Radius(d) => {
             let center = lv(d.angle_vertex);
             let point = lv(d.definition_point);
             let text = dimension_text_position(dim, world_offset);
-            add_segment(&mut points, center, point);
-            add_segment(&mut points, point, text);
-            append_arrow(
-                &mut points,
-                point,
-                normalized_or(center - point, Vec3::X),
-                arrow_size,
-            );
+            add_segment(&mut g.dim_lines, center, point);
+            add_segment(&mut g.dim_lines, point, text);
+            append_arrow(&mut g, point, normalized_or(center - point, Vec3::X), arrow1);
         }
         Dimension::Diameter(d) => {
             let p1 = lv(d.angle_vertex);
             let p2 = lv(d.definition_point);
-            add_segment(&mut points, p1, p2);
-            append_arrow(&mut points, p1, normalized_or(p2 - p1, Vec3::X), arrow_size);
-            append_arrow(&mut points, p2, normalized_or(p1 - p2, Vec3::X), arrow_size);
+            add_segment(&mut g.dim_lines, p1, p2);
+            append_arrow(&mut g, p1, normalized_or(p2 - p1, Vec3::X), arrow1);
+            append_arrow(&mut g, p2, normalized_or(p1 - p2, Vec3::X), arrow2);
         }
         Dimension::Angular2Ln(d) => {
             append_angular_dimension(
-                &mut points,
+                &mut g,
                 lv(d.angle_vertex),
                 lv(d.first_point),
                 lv(d.second_point),
                 lv(d.dimension_arc),
-                arrow_size,
+                arrow1,
+                arrow2,
             );
         }
         Dimension::Angular3Pt(d) => {
             append_angular_dimension(
-                &mut points,
+                &mut g,
                 lv(d.angle_vertex),
                 lv(d.first_point),
                 lv(d.second_point),
                 lv(d.definition_point),
-                arrow_size,
+                arrow1,
+                arrow2,
             );
         }
         Dimension::Ordinate(d) => {
-            add_segment(&mut points, lv(d.feature_location), lv(d.definition_point));
-            add_segment(&mut points, lv(d.definition_point), lv(d.leader_endpoint));
+            add_segment(
+                &mut g.dim_lines,
+                lv(d.feature_location),
+                lv(d.definition_point),
+            );
+            add_segment(
+                &mut g.dim_lines,
+                lv(d.definition_point),
+                lv(d.leader_endpoint),
+            );
         }
     }
-    points
+    g
 }
 
 fn append_linear_dimension(
-    points: &mut Vec<[f32; 3]>,
+    g: &mut DimGeom,
     first: Vec3,
     second: Vec3,
     def: Vec3,
     axis: Vec3,
-    arrow_size: f32,
+    arrow1: &ArrowKind,
+    arrow2: &ArrowKind,
     dimexo: f32,
     dimexe: f32,
+    suppress: SuppressFlags,
 ) {
     let perp = Vec3::new(-axis.y, axis.x, 0.0);
     let dim_line_pos = def.dot(perp);
-    // Perpendicular offset from each defpoint to the dimension line (signed).
     let offset1 = dim_line_pos - first.dot(perp);
     let offset2 = dim_line_pos - second.dot(perp);
     let d1 = first + perp * offset1;
     let d2 = second + perp * offset2;
-    // DIMEXO: gap from the definition point toward the dimension line.
-    // DIMEXE: overshoot past the dimension line.
     let sign1 = if offset1 >= 0.0 { 1.0_f32 } else { -1.0 };
     let sign2 = if offset2 >= 0.0 { 1.0_f32 } else { -1.0 };
     let ext1_start = first + perp * (sign1 * dimexo);
     let ext1_end = d1 + perp * (sign1 * dimexe);
     let ext2_start = second + perp * (sign2 * dimexo);
     let ext2_end = d2 + perp * (sign2 * dimexe);
-    add_segment(points, ext1_start, ext1_end);
-    add_segment(points, ext2_start, ext2_end);
-    add_segment(points, d1, d2);
-    append_arrow(points, d1, normalized_or(d2 - d1, axis), arrow_size);
-    append_arrow(points, d2, normalized_or(d1 - d2, -axis), arrow_size);
+    if !suppress.ext1 {
+        add_segment(&mut g.ext_lines, ext1_start, ext1_end);
+    }
+    if !suppress.ext2 {
+        add_segment(&mut g.ext_lines, ext2_start, ext2_end);
+    }
+    // DIMSD1/DIMSD2: when *both* set, omit the dim line entirely. AutoCAD
+    // splits at text otherwise — without that pivot info, leave as-is.
+    if !(suppress.dim1 && suppress.dim2) {
+        add_segment(&mut g.dim_lines, d1, d2);
+    }
+    append_arrow(g, d1, normalized_or(d2 - d1, axis), arrow1);
+    append_arrow(g, d2, normalized_or(d1 - d2, -axis), arrow2);
 }
 
 fn append_angular_dimension(
-    points: &mut Vec<[f32; 3]>,
+    g: &mut DimGeom,
     vertex: Vec3,
     first: Vec3,
     second: Vec3,
     arc_point: Vec3,
-    arrow_size: f32,
+    arrow1: &ArrowKind,
+    arrow2: &ArrowKind,
 ) {
-    add_segment(points, vertex, first);
-    add_segment(points, vertex, second);
+    add_segment(&mut g.ext_lines, vertex, first);
+    add_segment(&mut g.ext_lines, vertex, second);
 
     let radius = vertex.distance(arc_point);
     if radius <= 1e-6 {
@@ -1617,31 +1882,131 @@ fn append_angular_dimension(
         let a = start + delta * t;
         arc_pts.push(vertex + Vec3::new(a.cos() * radius, a.sin() * radius, 0.0));
     }
-    add_polyline(points, &arc_pts);
+    add_polyline(&mut g.dim_lines, &arc_pts);
 
     if arc_pts.len() >= 2 {
         append_arrow(
-            points,
+            g,
             arc_pts[0],
             normalized_or(arc_pts[1] - arc_pts[0], Vec3::X),
-            arrow_size,
+            arrow1,
         );
         let n = arc_pts.len();
         append_arrow(
-            points,
+            g,
             arc_pts[n - 1],
             normalized_or(arc_pts[n - 2] - arc_pts[n - 1], Vec3::X),
-            arrow_size,
+            arrow2,
         );
     }
 }
 
-fn append_arrow(points: &mut Vec<[f32; 3]>, tip: Vec3, dir: Vec3, size: f32) {
-    let dir = normalized_or(dir, Vec3::X) * size;
-    let left = rotate(dir, 2.6);
-    let right = rotate(dir, -2.6);
-    add_segment(points, tip, tip + left);
-    add_segment(points, tip, tip + right);
+fn push_tri(out: &mut Vec<[f32; 3]>, a: Vec3, b: Vec3, c: Vec3) {
+    out.push([a.x, a.y, a.z]);
+    out.push([b.x, b.y, b.z]);
+    out.push([c.x, c.y, c.z]);
+}
+
+fn append_arrow(g: &mut DimGeom, tip: Vec3, dir: Vec3, arrow: &ArrowKind) {
+    let dir = normalized_or(dir, Vec3::X);
+    let perp = Vec3::new(-dir.y, dir.x, 0.0);
+    match *arrow {
+        ArrowKind::None => {}
+        ArrowKind::Triangle {
+            size,
+            filled,
+            size_mul,
+        } => {
+            let size = size * size_mul;
+            let base = tip + dir * size;
+            // ~1:6 length:half-width ratio (≈9.5° half-angle) matches
+            // AutoCAD's standard ClosedFilled block.
+            let half_w = size / 6.0;
+            let left = base + perp * half_w;
+            let right = base - perp * half_w;
+            add_segment(&mut g.dim_lines, tip, left);
+            add_segment(&mut g.dim_lines, left, right);
+            add_segment(&mut g.dim_lines, right, tip);
+            if filled {
+                push_tri(&mut g.arrow_fill, tip, left, right);
+            }
+        }
+        ArrowKind::Tick { size } => {
+            // 45° oblique tick crossing the dim line at the tip; `size` is
+            // the half-length (matches AutoCAD's DIMTSZ semantics).
+            let off = (dir + perp).normalize_or_zero() * size;
+            add_segment(&mut g.dim_lines, tip - off, tip + off);
+        }
+        ArrowKind::Open { size, half_angle } => {
+            let base = tip + dir * size;
+            let half_w = size * half_angle.tan();
+            let left = base + perp * half_w;
+            let right = base - perp * half_w;
+            add_segment(&mut g.dim_lines, tip, left);
+            add_segment(&mut g.dim_lines, tip, right);
+        }
+        ArrowKind::Dot { size, filled } => {
+            let r = size * 0.5;
+            const N: usize = 16;
+            let mut ring: Vec<Vec3> = Vec::with_capacity(N + 1);
+            for i in 0..=N {
+                let a = i as f32 * std::f32::consts::TAU / N as f32;
+                ring.push(tip + Vec3::new(a.cos() * r, a.sin() * r, 0.0));
+            }
+            add_polyline(&mut g.dim_lines, &ring);
+            if filled {
+                for i in 0..N {
+                    push_tri(&mut g.arrow_fill, tip, ring[i], ring[i + 1]);
+                }
+            }
+        }
+        ArrowKind::Origin { size } => {
+            // Small filled dot at the tip with a perpendicular tick crossing
+            // the dim line — matches "_ORIGIN" / "_ORIGIN2" blocks.
+            let r = size * 0.25;
+            const N: usize = 12;
+            let mut ring: Vec<Vec3> = Vec::with_capacity(N + 1);
+            for i in 0..=N {
+                let a = i as f32 * std::f32::consts::TAU / N as f32;
+                ring.push(tip + Vec3::new(a.cos() * r, a.sin() * r, 0.0));
+            }
+            add_polyline(&mut g.dim_lines, &ring);
+            for i in 0..N {
+                push_tri(&mut g.arrow_fill, tip, ring[i], ring[i + 1]);
+            }
+            let half = size * 0.5;
+            add_segment(&mut g.dim_lines, tip - perp * half, tip + perp * half);
+        }
+        ArrowKind::Box_ { size, filled } => {
+            let half = size * 0.5;
+            let p1 = tip - dir * half - perp * half;
+            let p2 = tip + dir * half - perp * half;
+            let p3 = tip + dir * half + perp * half;
+            let p4 = tip - dir * half + perp * half;
+            add_segment(&mut g.dim_lines, p1, p2);
+            add_segment(&mut g.dim_lines, p2, p3);
+            add_segment(&mut g.dim_lines, p3, p4);
+            add_segment(&mut g.dim_lines, p4, p1);
+            if filled {
+                push_tri(&mut g.arrow_fill, p1, p2, p3);
+                push_tri(&mut g.arrow_fill, p1, p3, p4);
+            }
+        }
+        ArrowKind::Datum { size, filled } => {
+            // Right-pointing triangle with the base perpendicular to the dim
+            // line at the tip and the apex along +dir.
+            let half = size * 0.5;
+            let base_a = tip + perp * half;
+            let base_b = tip - perp * half;
+            let apex = tip + dir * size;
+            add_segment(&mut g.dim_lines, base_a, apex);
+            add_segment(&mut g.dim_lines, apex, base_b);
+            add_segment(&mut g.dim_lines, base_b, base_a);
+            if filled {
+                push_tri(&mut g.arrow_fill, base_a, apex, base_b);
+            }
+        }
+    }
 }
 
 fn add_segment(points: &mut Vec<[f32; 3]>, a: Vec3, b: Vec3) {
@@ -1704,22 +2069,44 @@ fn dimension_snap_pts(dim: &Dimension, world_offset: [f64; 3]) -> Vec<(Vec3, Sna
     }
 }
 
-fn dimension_text_entity(dim: &Dimension, text_height: f64) -> Option<Text> {
-    let value = dimension_text_value(dim)?;
+fn dimension_text_entity(
+    dim: &Dimension,
+    text_height: f64,
+    style: Option<&DimStyle>,
+) -> Option<Text> {
+    let value = dimension_text_value(dim, style)?;
     // Use f64 position directly to avoid f32 round-trip precision loss at large
     // coordinates (e.g. Turkish UTM ~4,000,000 m). tessellate() will apply
     // world_offset when rendering this synthetic Text entity.
-    let pos_f64 = dimension_text_pos_f64(dim);
+    let pos_f64 = dimension_text_pos_f64(dim, style, text_height);
     let base = dim.base();
+
+    // DIMTIH/DIMTOH: when set, text is forced horizontal (rotation = 0)
+    // regardless of the dim line angle. Honour explicit base.text_rotation first.
+    let dimtih = style.map(|s| s.dimtih).unwrap_or(false);
+    let dimtoh = style.map(|s| s.dimtoh).unwrap_or(false);
     let rotation = if base.text_rotation.abs() > 1e-9 {
         base.text_rotation
+    } else if dimtih || dimtoh {
+        0.0
     } else {
         dimension_text_natural_rotation(dim)
     };
+
     let mut text = Text::with_value(value, pos_f64)
         .with_height(text_height)
         .with_rotation(rotation);
-    text.style = base.style_name.clone();
+    // Prefer the dim style's text style (DIMTXSTY) over the dim's own style_name
+    // (which is the *dim style* name, not the text style).
+    if let Some(s) = style {
+        if !s.dimtxsty.trim().is_empty() {
+            text.style = s.dimtxsty.clone();
+        } else {
+            text.style = base.style_name.clone();
+        }
+    } else {
+        text.style = base.style_name.clone();
+    }
     text.common = base.common.clone();
     Some(text)
 }
@@ -1745,24 +2132,185 @@ fn dimension_text_natural_rotation(dim: &Dimension) -> f64 {
     }
 }
 
-fn dimension_text_value(dim: &Dimension) -> Option<String> {
+fn dimension_text_value(dim: &Dimension, style: Option<&DimStyle>) -> Option<String> {
     let base = dim.base();
-    if let Some(user_text) = &base.user_text {
-        if !user_text.trim().is_empty() {
-            return Some(user_text.clone());
+
+    // Auto-generated body (the value AutoCAD would emit if the user did not
+    // override it). Built first so user_text "<>" substitution can re-use it.
+    let measured = match dim {
+        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_) => {
+            format_angular_value(dim.measurement(), style)
         }
+        Dimension::Radius(_) => {
+            // R prefix is part of the conventional radial marker; DIMPOST wraps it.
+            format!("R{}", format_linear_value(dim.measurement(), style))
+        }
+        Dimension::Diameter(_) => {
+            format!("Ø{}", format_linear_value(dim.measurement(), style))
+        }
+        _ => format_linear_value(dim.measurement(), style),
+    };
+
+    let wrapped = apply_dimpost(&measured, style);
+
+    // Explicit user override (mtext-style "user_text") wins, but "<>" inside
+    // it substitutes the measured value. " " (single space) suppresses text.
+    if let Some(user_text) = &base.user_text {
+        let trimmed = user_text;
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.trim().is_empty() {
+            return None;
+        }
+        return Some(trimmed.replace("<>", &measured));
     }
     if !base.text.trim().is_empty() {
-        return Some(base.text.clone());
+        return Some(base.text.replace("<>", &measured));
     }
-    Some(match dim {
-        Dimension::Radius(_) => format!("R{:.4}", dim.measurement()),
-        Dimension::Diameter(_) => format!("Ø{:.4}", dim.measurement()),
-        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_) => {
-            format!("{:.2}°", dim.measurement())
+    Some(wrapped)
+}
+
+/// Wrap a measured value with the style's DIMPOST prefix/suffix template.
+/// "<>" inside DIMPOST is replaced by the value; absent "<>" appends.
+fn apply_dimpost(value: &str, style: Option<&DimStyle>) -> String {
+    let post = style.map(|s| s.dimpost.as_str()).unwrap_or("");
+    if post.is_empty() {
+        return value.to_string();
+    }
+    if post.contains("<>") {
+        post.replace("<>", value)
+    } else {
+        format!("{}{}", value, post)
+    }
+}
+
+/// Format a linear measurement honouring DIMLFAC, DIMRND, DIMDEC, DIMZIN, DIMDSEP.
+fn format_linear_value(measurement: f64, style: Option<&DimStyle>) -> String {
+    let (dec, zin, lfac, rnd, dsep) = style
+        .map(|s| (s.dimdec, s.dimzin, s.dimlfac, s.dimrnd, s.dimdsep))
+        .unwrap_or((4, 8, 1.0, 0.0, 46));
+
+    let lfac = if lfac.abs() < 1e-12 { 1.0 } else { lfac };
+    let mut v = measurement * lfac;
+    if rnd > 1e-12 {
+        v = (v / rnd).round() * rnd;
+    }
+    let dec = dec.max(0) as usize;
+    let raw = format!("{:.*}", dec, v);
+    let suppressed = apply_linear_zero_suppression(&raw, zin);
+    swap_decimal_sep(&suppressed, dsep)
+}
+
+/// Format an angular measurement (input in degrees as Dimension::measurement
+/// returns for angular variants) honouring DIMAUNIT, DIMADEC, DIMAZIN.
+fn format_angular_value(measurement_deg: f64, style: Option<&DimStyle>) -> String {
+    let (aunit, adec, azin) = style
+        .map(|s| (s.dimaunit, s.dimadec, s.dimazin))
+        .unwrap_or((0, 2, 0));
+    let adec = adec.max(0) as usize;
+
+    match aunit {
+        // 1 = Degrees / Minutes / Seconds
+        1 => format_dms(measurement_deg, adec, azin),
+        // 2 = Gradians
+        2 => {
+            let g = measurement_deg / 0.9;
+            let raw = format!("{:.*}", adec, g);
+            format!("{}g", apply_angular_zero_suppression(&raw, azin))
         }
-        _ => format!("{:.4}", dim.measurement()),
-    })
+        // 3 = Radians
+        3 => {
+            let r = measurement_deg.to_radians();
+            let raw = format!("{:.*}", adec, r);
+            format!("{}r", apply_angular_zero_suppression(&raw, azin))
+        }
+        // 0 or unknown = Decimal Degrees
+        _ => {
+            let raw = format!("{:.*}", adec, measurement_deg);
+            format!("{}°", apply_angular_zero_suppression(&raw, azin))
+        }
+    }
+}
+
+fn format_dms(deg: f64, sec_dec: usize, azin: i16) -> String {
+    let sign = if deg < 0.0 { "-" } else { "" };
+    let abs = deg.abs();
+    let d = abs.floor();
+    let m_full = (abs - d) * 60.0;
+    let m = m_full.floor();
+    let s = (m_full - m) * 60.0;
+    let s_str = format!("{:.*}", sec_dec, s);
+    let mut out = format!("{}{:.0}°{:.0}'{}\"", sign, d, m, s_str);
+    if azin & 4 != 0 {
+        // suppress 0° / 0' parts
+        if d == 0.0 {
+            out = out.trim_start_matches('0').to_string();
+            out = out.replacen("°", "", 1);
+        }
+    }
+    out
+}
+
+/// Apply DIMZIN bit flags to a formatted linear value.
+///  bit 0 (1)  suppress 0' (imperial feet)        — not applicable for decimal
+///  bit 1 (2)  suppress 0" (imperial inches)      — not applicable for decimal
+///  bit 2 (4)  suppress leading zeros             (e.g. ".5" not "0.5")
+///  bit 3 (8)  suppress trailing zeros            (e.g. "1.5" not "1.50")
+/// Default = 8 (trailing-zero suppression on).
+fn apply_linear_zero_suppression(s: &str, zin: i16) -> String {
+    let mut out = s.to_string();
+    if zin & 8 != 0 {
+        out = strip_trailing_zeros(&out);
+    }
+    if zin & 4 != 0 {
+        out = strip_leading_zero(&out);
+    }
+    out
+}
+
+fn apply_angular_zero_suppression(s: &str, azin: i16) -> String {
+    // DIMAZIN: 0=neither, 1=leading, 2=trailing, 3=both.
+    let mut out = s.to_string();
+    if azin & 2 != 0 {
+        out = strip_trailing_zeros(&out);
+    }
+    if azin & 1 != 0 {
+        out = strip_leading_zero(&out);
+    }
+    out
+}
+
+fn strip_trailing_zeros(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn strip_leading_zero(s: &str) -> String {
+    // "0.5" → ".5",  "-0.5" → "-.5",  "0" stays.
+    if let Some(rest) = s.strip_prefix("-0.") {
+        return format!("-.{rest}");
+    }
+    if let Some(rest) = s.strip_prefix("0.") {
+        return format!(".{rest}");
+    }
+    s.to_string()
+}
+
+fn swap_decimal_sep(s: &str, dsep_code: i16) -> String {
+    // DIMDSEP holds an ASCII code (0 means default '.'). 46='.', 44=',', etc.
+    if dsep_code <= 0 || dsep_code == 46 {
+        return s.to_string();
+    }
+    let ch = char::from_u32(dsep_code as u32).unwrap_or('.');
+    s.replace('.', &ch.to_string())
 }
 
 fn dimension_text_position(dim: &Dimension, world_offset: [f64; 3]) -> Vec3 {
@@ -1805,13 +2353,19 @@ fn offset_snap_pts(pts: Vec<(Vec3, SnapHint)>, off: [f64; 3]) -> Vec<(Vec3, Snap
 
 /// Returns the text position of a dimension in DXF world-space (f64, no offset applied).
 /// Used when building a synthetic Text entity so tessellate() can apply world_offset itself.
-fn dimension_text_pos_f64(dim: &Dimension) -> Vector3 {
+/// When the saved `text_middle_point` is zero (i.e. AutoCAD never wrote one),
+/// computes a fallback from the dim geometry and applies DIMTAD/DIMGAP.
+fn dimension_text_pos_f64(
+    dim: &Dimension,
+    style: Option<&DimStyle>,
+    text_height: f64,
+) -> Vector3 {
     let base = dim.base();
     let p = base.text_middle_point;
     if p.x * p.x + p.y * p.y + p.z * p.z > 1e-16 {
         return p;
     }
-    match dim {
+    let mid = match dim {
         Dimension::Aligned(d) => Vector3::new(
             (d.first_point.x + d.second_point.x) * 0.5,
             (d.first_point.y + d.second_point.y) * 0.5,
@@ -1835,7 +2389,48 @@ fn dimension_text_pos_f64(dim: &Dimension) -> Vector3 {
         Dimension::Angular2Ln(d) => d.dimension_arc,
         Dimension::Angular3Pt(d) => d.definition_point,
         Dimension::Ordinate(d) => d.leader_endpoint,
+    };
+
+    // DIMTAD: 0=centred (on the line), 1=above (offset perpendicular), 2=outside,
+    //         3=JIS. We honour 0 and 1; 2/3 fall back to "above".
+    let dimtad = style.map(|s| s.dimtad).unwrap_or(1);
+    let dimgap = style.map(|s| s.dimgap).unwrap_or(0.0);
+    if dimtad == 0 {
+        return mid;
     }
+    // Need a perpendicular vector inside the drawing plane for the offset.
+    let (axis_x, axis_y, perp_sign) = match dim {
+        Dimension::Linear(d) => {
+            let ax = d.rotation.cos();
+            let ay = d.rotation.sin();
+            // The sign-of-offset side (perp pointing FROM defpoints TOWARD dim line,
+            // and past it = "above").
+            let px = -ay;
+            let py = ax;
+            let off = (d.definition_point.x - d.first_point.x) * px
+                + (d.definition_point.y - d.first_point.y) * py;
+            (ax, ay, if off >= 0.0 { 1.0 } else { -1.0 })
+        }
+        Dimension::Aligned(d) => {
+            let dx = d.second_point.x - d.first_point.x;
+            let dy = d.second_point.y - d.first_point.y;
+            let len = (dx * dx + dy * dy).sqrt().max(1e-12);
+            let ax = dx / len;
+            let ay = dy / len;
+            let px = -ay;
+            let py = ax;
+            let off = (d.definition_point.x - d.first_point.x) * px
+                + (d.definition_point.y - d.first_point.y) * py;
+            (ax, ay, if off >= 0.0 { 1.0 } else { -1.0 })
+        }
+        _ => (1.0, 0.0, 1.0),
+    };
+    let offset = (text_height * 0.5 + dimgap) * perp_sign;
+    Vector3::new(
+        mid.x + (-axis_y) * offset,
+        mid.y + (axis_x) * offset,
+        mid.z,
+    )
 }
 
 fn normalized_or(v: Vec3, fallback: Vec3) -> Vec3 {
@@ -1846,7 +2441,3 @@ fn normalized_or(v: Vec3, fallback: Vec3) -> Vec3 {
     }
 }
 
-fn rotate(v: Vec3, angle: f32) -> Vec3 {
-    let (s, c) = angle.sin_cos();
-    Vec3::new(v.x * c - v.y * s, v.x * s + v.y * c, v.z)
-}
