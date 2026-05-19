@@ -156,12 +156,41 @@ impl Grippable for MLine {
 
 impl PropertyEditable for MLine {
     fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+        let just_str = match self.justification {
+            acadrust::entities::MLineJustification::Top => "Top",
+            acadrust::entities::MLineJustification::Zero => "Zero",
+            acadrust::entities::MLineJustification::Bottom => "Bottom",
+        };
         PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Style", "ml_style", self.style_name.clone()),
+                ro(
+                    "Style Handle",
+                    "ml_style_handle",
+                    match self.style_handle {
+                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+                        _ => "(none)".to_string(),
+                    },
+                ),
                 ro("Vertices", "ml_verts", self.vertices.len().to_string()),
+                ro(
+                    "Style Elements",
+                    "ml_style_elem_count",
+                    self.style_element_count.to_string(),
+                ),
                 edit("Scale", "ml_scale", self.scale_factor),
+                Property {
+                    label: "Justification".into(),
+                    field: "ml_justification",
+                    value: PropValue::Choice {
+                        selected: just_str.to_string(),
+                        options: ["Top", "Zero", "Bottom"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                },
                 Property {
                     label: "Closed".into(),
                     field: "ml_closed",
@@ -184,6 +213,14 @@ impl PropertyEditable for MLine {
                 };
                 self.flags
                     .set(acadrust::entities::MLineFlags::CLOSED, closed);
+                return;
+            }
+            "ml_justification" => {
+                self.justification = match value {
+                    "Top" => acadrust::entities::MLineJustification::Top,
+                    "Bottom" => acadrust::entities::MLineJustification::Bottom,
+                    _ => acadrust::entities::MLineJustification::Zero,
+                };
                 return;
             }
             _ => {}

@@ -186,6 +186,27 @@ impl PropertyEditable for RasterImage {
                         value: self.clipping_enabled,
                     },
                 },
+                ro(
+                    "Class Version",
+                    "ri_class_version",
+                    self.class_version.to_string(),
+                ),
+                ro(
+                    "Definition",
+                    "ri_def_handle",
+                    match self.definition_handle {
+                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+                        _ => "(none)".to_string(),
+                    },
+                ),
+                ro(
+                    "Def Reactor",
+                    "ri_def_reactor_handle",
+                    match self.definition_reactor_handle {
+                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+                        _ => "(none)".to_string(),
+                    },
+                ),
             ],
         }
     }
@@ -421,6 +442,32 @@ impl PropertyEditable for Wipeout {
                         value: self.clipping_enabled,
                     },
                 },
+                ro(
+                    "Class Version",
+                    "wo_class_version",
+                    self.class_version.to_string(),
+                ),
+                ro(
+                    "Clip Mode",
+                    "wo_clip_mode",
+                    format!("{:?}", self.clip_mode),
+                ),
+                ro(
+                    "Definition",
+                    "wo_def_handle",
+                    match self.definition_handle {
+                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+                        _ => "(none)".to_string(),
+                    },
+                ),
+                ro(
+                    "Def Reactor",
+                    "wo_def_reactor_handle",
+                    match self.definition_reactor_handle {
+                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+                        _ => "(none)".to_string(),
+                    },
+                ),
             ],
         }
     }

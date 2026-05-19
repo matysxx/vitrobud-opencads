@@ -290,6 +290,41 @@ impl PropertyEditable for Tolerance {
                 edit("Insert X", "tol_ix", self.insertion_point.x),
                 edit("Insert Y", "tol_iy", self.insertion_point.y),
                 edit("Insert Z", "tol_iz", self.insertion_point.z),
+                ro(
+                    "Dim Style",
+                    "tol_dim_style",
+                    if self.dimension_style_name.is_empty() {
+                        "(default)".to_string()
+                    } else {
+                        self.dimension_style_name.clone()
+                    },
+                ),
+                ro(
+                    "Dim Style Handle",
+                    "tol_dim_style_handle",
+                    match self.dimension_style_handle {
+                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+                        _ => "(none)".to_string(),
+                    },
+                ),
+                edit("Text Height", "tol_text_height", self.text_height),
+                edit("Dim Gap", "tol_dim_gap", self.dimension_gap),
+                ro(
+                    "Direction",
+                    "tol_direction",
+                    format!(
+                        "{:.3}, {:.3}, {:.3}",
+                        self.direction.x, self.direction.y, self.direction.z
+                    ),
+                ),
+                ro(
+                    "Normal",
+                    "tol_normal",
+                    format!(
+                        "{:.3}, {:.3}, {:.3}",
+                        self.normal.x, self.normal.y, self.normal.z
+                    ),
+                ),
             ],
         }
     }
@@ -302,6 +337,8 @@ impl PropertyEditable for Tolerance {
             "tol_ix" => self.insertion_point.x = v,
             "tol_iy" => self.insertion_point.y = v,
             "tol_iz" => self.insertion_point.z = v,
+            "tol_text_height" if v > 0.0 => self.text_height = v,
+            "tol_dim_gap" => self.dimension_gap = v,
             _ => {}
         }
     }

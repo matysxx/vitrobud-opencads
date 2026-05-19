@@ -2,7 +2,9 @@ use acadrust::entities::{Viewport, ViewportRenderMode};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, parse_f64, square_grip};
+use crate::entities::common::{
+    diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
 
@@ -230,6 +232,84 @@ fn properties(vp: &Viewport) -> PropSection {
             edit("UCS Y-Axis X", "vp_ucs_yx", vp.ucs_y_axis.x),
             edit("UCS Y-Axis Y", "vp_ucs_yy", vp.ucs_y_axis.y),
             edit("UCS Y-Axis Z", "vp_ucs_yz", vp.ucs_y_axis.z),
+            // Snap / grid metadata (drives the snap-aware UI; not rendered
+            // into the viewport contents directly).
+            edit("Snap Base X", "vp_snap_bx", vp.snap_base.x),
+            edit("Snap Base Y", "vp_snap_by", vp.snap_base.y),
+            edit("Snap Spacing X", "vp_snap_sx", vp.snap_spacing.x),
+            edit("Snap Spacing Y", "vp_snap_sy", vp.snap_spacing.y),
+            edit("Snap Angle", "vp_snap_ang", vp.snap_angle.to_degrees()),
+            edit("Twist Angle", "vp_twist", vp.twist_angle.to_degrees()),
+            edit("Front Clip Z", "vp_front_clip", vp.front_clip_z),
+            edit("Back Clip Z", "vp_back_clip", vp.back_clip_z),
+            edit(
+                "Circle Sides",
+                "vp_circle_sides",
+                vp.circle_sides as f64,
+            ),
+            ro(
+                "Grid Flags",
+                "vp_grid_flags",
+                format!("{:#06b}", vp.grid_flags.to_bits()),
+            ),
+            ro("Grid Major", "vp_grid_major", vp.grid_major.to_string()),
+            ro(
+                "Base UCS",
+                "vp_base_ucs_handle",
+                if vp.base_ucs_handle.is_null() {
+                    "(none)".to_string()
+                } else {
+                    format!("{:X}", vp.base_ucs_handle.value())
+                },
+            ),
+            ro(
+                "UCS Ortho",
+                "vp_ucs_ortho",
+                vp.ucs_ortho_type.to_string(),
+            ),
+            ro(
+                "Background",
+                "vp_background_handle",
+                if vp.background_handle.is_null() {
+                    "(none)".to_string()
+                } else {
+                    format!("{:X}", vp.background_handle.value())
+                },
+            ),
+            ro(
+                "Shade Plot",
+                "vp_shade_plot_handle",
+                if vp.shade_plot_handle.is_null() {
+                    "(none)".to_string()
+                } else {
+                    format!("{:X}", vp.shade_plot_handle.value())
+                },
+            ),
+            ro(
+                "Visual Style",
+                "vp_visual_style_handle",
+                if vp.visual_style_handle.is_null() {
+                    "(none)".to_string()
+                } else {
+                    format!("{:X}", vp.visual_style_handle.value())
+                },
+            ),
+            // 3D lighting (not yet applied to the viewport mesh path).
+            ro(
+                "Default Lighting",
+                "vp_default_lighting",
+                if vp.default_lighting { "Yes" } else { "No" },
+            ),
+            ro(
+                "Lighting Type",
+                "vp_lighting_type",
+                vp.default_lighting_type.to_string(),
+            ),
+            ro(
+                "Ambient Color",
+                "vp_ambient_color",
+                format!("{:#010x}", vp.ambient_color as u32),
+            ),
         ],
     }
 }
@@ -404,6 +484,17 @@ fn apply_geom_prop(vp: &mut Viewport, field: &str, value: &str) {
         "vp_ucs_yx" => vp.ucs_y_axis.x = v,
         "vp_ucs_yy" => vp.ucs_y_axis.y = v,
         "vp_ucs_yz" => vp.ucs_y_axis.z = v,
+        "vp_snap_bx" => vp.snap_base.x = v,
+        "vp_snap_by" => vp.snap_base.y = v,
+        "vp_snap_sx" if v >= 0.0 => vp.snap_spacing.x = v,
+        "vp_snap_sy" if v >= 0.0 => vp.snap_spacing.y = v,
+        "vp_snap_ang" => vp.snap_angle = v.to_radians(),
+        "vp_twist" => vp.twist_angle = v.to_radians(),
+        "vp_front_clip" => vp.front_clip_z = v,
+        "vp_back_clip" => vp.back_clip_z = v,
+        "vp_circle_sides" if v >= 0.0 && v <= i16::MAX as f64 => {
+            vp.circle_sides = v as i16;
+        }
         _ => {}
     }
 }

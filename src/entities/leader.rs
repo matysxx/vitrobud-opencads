@@ -227,6 +227,25 @@ fn properties(leader: &Leader) -> PropSection {
         // Stats
         ro("Vertices", "vertex_count", n.to_string()),
         ro("Length", "length", format!("{:.4}", leader.length())),
+        // Annotation reference + dim-style colour override (read-only —
+        // they are written by the file and survive a round-trip).
+        ro(
+            "Annotation",
+            "annotation_handle",
+            if leader.annotation_handle.is_null() {
+                "(none)".to_string()
+            } else {
+                format!("{:X}", leader.annotation_handle.value())
+            },
+        ),
+        ro(
+            "Override Color",
+            "override_color",
+            match leader.override_color.rgb() {
+                Some((r, g, b)) => format!("RGB({},{},{})", r, g, b),
+                None => format!("{:?}", leader.override_color),
+            },
+        ),
     ];
 
     // Arrow point (vertex[0])

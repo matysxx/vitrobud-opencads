@@ -88,6 +88,32 @@ fn properties(ole: &Ole2Frame) -> PropSection {
             edit("Upper Left Y", "ole_uly", ole.upper_left_corner.y),
             edit("Lower Right X", "ole_lrx", ole.lower_right_corner.x),
             edit("Lower Right Y", "ole_lry", ole.lower_right_corner.y),
+            ro("Version", "ole_version", ole.version.to_string()),
+            ro(
+                "Source App",
+                "ole_source_app",
+                if ole.source_application.is_empty() {
+                    "(unknown)".to_string()
+                } else {
+                    ole.source_application.clone()
+                },
+            ),
+            ro(
+                "Data Size",
+                "ole_data_size",
+                format!("{} bytes", ole.binary_data.len()),
+            ),
+            ro("DWG Mode", "ole_dwg_mode", ole.dwg_mode.to_string()),
+            ro(
+                "DWG Trailing Byte",
+                "ole_dwg_trailing",
+                format!("{:#04x}", ole.dwg_trailing_byte),
+            ),
+            ro(
+                "Paper Space",
+                "ole_paper_space",
+                if ole.is_paper_space { "Yes" } else { "No" },
+            ),
         ],
     }
 }

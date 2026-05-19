@@ -63,6 +63,17 @@ fn properties(h: &Hatch) -> PropSection {
                 if h.is_associative { "Yes" } else { "No" },
             ),
             edit("Elevation", "elevation", h.elevation),
+            ro("Seed Points", "seed_count", h.seed_points.len().to_string()),
+            ro(
+                "Pixel Size",
+                "pixel_size",
+                format!("{:.6}", h.pixel_size),
+            ),
+            ro(
+                "Normal",
+                "normal",
+                format!("{:.3}, {:.3}, {:.3}", h.normal.x, h.normal.y, h.normal.z),
+            ),
         ],
     }
 }

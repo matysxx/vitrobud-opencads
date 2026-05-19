@@ -347,11 +347,29 @@ impl Grippable for Polyline2D {
 
 impl PropertyEditable for Polyline2D {
     fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+        let smooth = match self.smooth_surface {
+            acadrust::entities::SmoothSurfaceType::None => "None",
+            acadrust::entities::SmoothSurfaceType::QuadraticBSpline => "Quadratic",
+            acadrust::entities::SmoothSurfaceType::CubicBSpline => "Cubic",
+            acadrust::entities::SmoothSurfaceType::Bezier => "Bezier",
+        };
         PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Vertices", "vertices", self.vertices.len().to_string()),
                 edit("Elevation", "pl2_elevation", self.elevation),
+                edit("Default Start W", "pl2_start_w", self.start_width),
+                edit("Default End W", "pl2_end_w", self.end_width),
+                edit("Thickness", "pl2_thickness", self.thickness),
+                ro("Smooth Surface", "pl2_smooth", smooth),
+                ro(
+                    "Normal",
+                    "pl2_normal",
+                    format!(
+                        "{:.3}, {:.3}, {:.3}",
+                        self.normal.x, self.normal.y, self.normal.z
+                    ),
+                ),
                 Property {
                     label: "Closed".into(),
                     field: "pl2_closed",
@@ -381,6 +399,25 @@ impl PropertyEditable for Polyline2D {
             "pl2_elevation" => {
                 if let Ok(v) = value.trim().parse::<f64>() {
                     self.elevation = v;
+                }
+            }
+            "pl2_start_w" => {
+                if let Ok(v) = value.trim().parse::<f64>() {
+                    if v >= 0.0 {
+                        self.start_width = v;
+                    }
+                }
+            }
+            "pl2_end_w" => {
+                if let Ok(v) = value.trim().parse::<f64>() {
+                    if v >= 0.0 {
+                        self.end_width = v;
+                    }
+                }
+            }
+            "pl2_thickness" => {
+                if let Ok(v) = value.trim().parse::<f64>() {
+                    self.thickness = v;
                 }
             }
             _ => {}

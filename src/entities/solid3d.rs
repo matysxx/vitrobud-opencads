@@ -87,6 +87,28 @@ impl PropertyEditable for Solid3D {
                     format!("{:.4}", self.point_of_reference.z),
                 ),
                 ro("ACIS Data", "s3d_acis", size),
+                ro(
+                    "UID",
+                    "s3d_uid",
+                    if self.uid.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        self.uid.clone()
+                    },
+                ),
+                ro(
+                    "Silhouettes",
+                    "s3d_silhouettes",
+                    self.silhouettes.len().to_string(),
+                ),
+                ro(
+                    "History",
+                    "s3d_history",
+                    match self.history_handle {
+                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+                        _ => "(none)".to_string(),
+                    },
+                ),
             ],
         }
     }
@@ -141,6 +163,20 @@ impl PropertyEditable for Region {
                     format!("{:.4}", self.point_of_reference.z),
                 ),
                 ro("ACIS Data", "rgn_acis", size),
+                ro(
+                    "UID",
+                    "rgn_uid",
+                    if self.uid.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        self.uid.clone()
+                    },
+                ),
+                ro(
+                    "Silhouettes",
+                    "rgn_silhouettes",
+                    self.silhouettes.len().to_string(),
+                ),
             ],
         }
     }
@@ -195,6 +231,20 @@ impl PropertyEditable for Body {
                     format!("{:.4}", self.point_of_reference.z),
                 ),
                 ro("ACIS Data", "bdy_acis", size),
+                ro(
+                    "UID",
+                    "bdy_uid",
+                    if self.uid.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        self.uid.clone()
+                    },
+                ),
+                ro(
+                    "Silhouettes",
+                    "bdy_silhouettes",
+                    self.silhouettes.len().to_string(),
+                ),
             ],
         }
     }

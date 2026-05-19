@@ -195,6 +195,11 @@ impl PropertyEditable for Underlay {
                         "No"
                     },
                 ),
+                ro(
+                    "Clip Inverted",
+                    "ul_clip_inverted",
+                    if self.clip_inverted { "Yes" } else { "No" },
+                ),
             ],
         }
     }
