@@ -116,12 +116,9 @@ No installation required — runs directly on any modern Linux distribution.
 
 Download `H7CAD-*-windows-x86_64.exe` from the [latest release](https://github.com/HakanSeven12/H7CAD/releases/latest) and run it directly. Windows SmartScreen may show "Windows protected your PC" because the binary is not yet code-signed — click **More info → Run anyway**.
 
-### macOS
+### macOS (Apple Silicon)
 
-Download the matching `.dmg` from the [latest release](https://github.com/HakanSeven12/H7CAD/releases/latest):
-
-- Apple Silicon: `H7CAD-*-macos-arm64.dmg`
-- Intel: `H7CAD-*-macos-x86_64.dmg`
+Download `H7CAD-*-macos-arm64.dmg` from the [latest release](https://github.com/HakanSeven12/H7CAD/releases/latest) — Apple Silicon (M-series) only; Intel macOS isn't built.
 
 Open the .dmg and drag `H7CAD.app` to `/Applications`. The first launch may be blocked by Gatekeeper because the app is not notarised — right-click `H7CAD.app → Open` and confirm, or run once via `xattr -dr com.apple.quarantine /Applications/H7CAD.app`.
 
