@@ -1,6 +1,6 @@
 [package]
 name = "H7CAD"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 build = "build.rs"
 
@@ -24,4 +24,7 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 windows-sys = { version = "0.59", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [patch.crates-io]
-acadrust = { git = "https://github.com/hakanaktt/acadrust", branch = "main" }
+# TEMP: tracks https://github.com/hakanaktt/acadrust/pull/27 (hatch
+# boundary-handle cap). When that PR lands on hakanaktt/main, revert to
+# `git = "https://github.com/hakanaktt/acadrust", branch = "main"`.
+acadrust = { git = "https://github.com/HakanSeven12/acadrust", branch = "fix/hatch-boundary-handle-cap" }
