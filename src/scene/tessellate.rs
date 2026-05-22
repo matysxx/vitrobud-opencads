@@ -13,9 +13,9 @@
 // Entities not handled by acad_to_truck (Viewport, Hatch, …) are tessellated
 // by the legacy geometry() path so nothing regresses.
 
-use crate::entities::multileader::{catmull_rom_pts, v_offset_for_attachment};
+use crate::entities::multileader::catmull_rom_pts;
 use acadrust::entities::{
-    Dimension, Leader, LeaderContentType, MultiLeader, MultiLeaderPathType, Text,
+    Dimension, Leader, LeaderContentType, MText, MultiLeader, MultiLeaderPathType, Text,
     TextAttachmentPointType,
 };
 use acadrust::tables::DimStyle;
@@ -864,15 +864,14 @@ pub fn tessellate_dimension(
         }
     }
 
-    if let Some(text) = dimension_text_entity(dim, dim_txt, style, document) {
+    if let Some(synth_text_entity) = dimension_text_entity(dim, dim_txt, style, document) {
         // Tolerance Text rendered separately so DIMTFAC scales its height
         // and DIMTOLJ aligns it vertically against the primary text.
-        let tol_entity = dimension_tolerance_entity(dim, style, &text, dim_txt);
+        let tol_entity = dimension_tolerance_entity(dim, style, &synth_text_entity, dim_txt);
         // Route synthesised dim text through tessellate_entity so the
         // baseline/greek/full LOD ladder applies (zoom-out behaviour
-        // matches top-level Text). The text already has dim_scale baked
-        // into its height, so anno_scale stays 1.0.
-        let synth_text_entity = EntityType::Text(text);
+        // matches top-level Text / MText). The text already has dim_scale
+        // baked into its height, so anno_scale stays 1.0.
         let text_wires = crate::scene::tessellate_entity_dim_text(
             document,
             selected_set,
@@ -890,8 +889,7 @@ pub fn tessellate_dimension(
             wires.push(w);
         }
 
-        if let Some(tol_text) = tol_entity {
-            let tol_entity_e = EntityType::Text(tol_text);
+        if let Some(tol_entity_e) = tol_entity {
             let tol_wires = crate::scene::tessellate_entity_dim_text(
                 document,
                 selected_set,
@@ -1703,48 +1701,10 @@ pub fn tessellate_multileader(
             })
             .unwrap_or_else(|| "STANDARD".to_string());
         let style = crate::entities::text_support::resolve_text_style(&style_name, document);
-        let font_name = style.font_name;
-        let font = crate::scene::cxf::get_font(&font_name);
-        // MultiLeader text takes its width factor / oblique from the style
-        // (no entity-level override exists for MText-content multileaders).
-        // is_backward flips the sign on width_factor; is_upside_down adds π
-        // to the text rotation — same convention as Text / MText.
-        let base_wf = style.width_factor.max(0.01);
-        let width_factor = if style.is_backward { -base_wf } else { base_wf };
-        let oblique = style.oblique_angle;
         if style.is_upside_down {
             rot += std::f32::consts::PI;
         }
         let (cos_r, sin_r) = (rot.cos(), rot.sin());
-
-        // Strip MText format codes (e.g. `{\fArial Black|b0|i0|c162|p34;...}`),
-        // then split on \P / \n / \N and optionally word-wrap to text_width.
-        let plain = crate::entities::text_support::strip_mtext_codes(&ctx.text_string);
-        let explicit_lines = crate::entities::text_support::split_mtext_lines(&plain);
-        let lines: Vec<String> = if ctx.text_width > 0.0 {
-            // Measurement uses positive width magnitude; the sign on
-            // width_factor is a render-time mirror flag.
-            let scale = height / 9.0 * width_factor.abs();
-            // ctx.text_width lives in the same WCS frame as ctx.text_height;
-            // it does not need a second multiplication by effective_scale.
-            let max_w = ctx.text_width as f32;
-            explicit_lines
-                .iter()
-                .flat_map(|line| {
-                    crate::entities::text_support::word_wrap(line, max_w, scale, font)
-                })
-                .collect()
-        } else {
-            explicit_lines
-        };
-
-        let ls_factor = if ctx.line_spacing_factor > 0.0 {
-            ctx.line_spacing_factor as f32
-        } else {
-            1.0
-        };
-        let line_h = height * ls_factor * (5.0 / 3.0) * font.line_spacing;
-        let n_lines = lines.len().max(1) as f32;
 
         // ml.text_alignment overrides the per-context attachment_point when
         // not Left (which is the default zero). Otherwise we honour the
@@ -1780,16 +1740,32 @@ pub fn tessellate_multileader(
             }
             TextAttachmentDirectionType::Horizontal => ctx.text_left_attachment,
         };
-        let v_offset = v_offset_for_attachment(vertical_attach, n_lines, height, line_h);
+        let v_anchor =
+            crate::entities::multileader::mleader_v_anchor(vertical_attach);
 
-        // line_widths use positive magnitude for measurement; tessellate_text_ex
-        // gets the signed width_factor below to honour the backward flag.
-        let scale = height / 9.0 * width_factor.abs();
-        let line_widths: Vec<f32> = lines
-            .iter()
-            .map(|line| crate::entities::text_support::measure_mtext_chars(line, scale, font))
-            .collect();
+        // Shared MText pipeline — every inline format code (`\f`, `\C`/`\c`,
+        // `\H`, `\W`, `\Q`, `\T`, `\A`, `\p…`, decorations, stacked
+        // fractions, …) reaches the stroke output. Stroke origins are
+        // already in offset-relative space because we pass local_ins_x/y.
+        let layout = crate::entities::text_support::layout_mtext(
+            &crate::entities::text_support::MTextRenderOpts {
+                value: &ctx.text_string,
+                insertion: [local_ins_x as f64, local_ins_y as f64, z as f64],
+                height,
+                rect_w: ctx.text_width as f32,
+                rotation: rot,
+                style: &style,
+                attach_h_anchor: h_anchor,
+                v_anchor,
+                line_spacing_factor: ctx.line_spacing_factor as f32,
+                vertical_text: false,
+            },
+        );
+        let line_widths = &layout.line_widths;
         let max_line_w = line_widths.iter().cloned().fold(0.0_f32, f32::max);
+        let line_h = layout.line_height;
+        let v_offset = layout.v_offset;
+        let n_lines = layout.line_count.max(1) as f32;
 
         // Resolve text color (falls back to entity color for ByLayer / ByBlock).
         let text_color = if selected {
@@ -1855,12 +1831,11 @@ pub fn tessellate_multileader(
             // per row" hint that multi-line MText carries, in the text's
             // own color. Empty `points` opts out of the face3d 0.45 dim so
             // the fill renders at full intensity.
-            let mut greek_tris: Vec<[f32; 3]> = Vec::with_capacity(lines.len() * 6);
-            for (i, _) in lines.iter().enumerate() {
+            let mut greek_tris: Vec<[f32; 3]> = Vec::with_capacity(line_widths.len() * 6);
+            for (i, &line_w) in line_widths.iter().enumerate() {
                 let li = i as f32;
                 let line_y_bottom = -li * line_h + v_offset;
                 let line_y_top = line_y_bottom + height;
-                let line_w = line_widths[i];
                 if line_w <= 0.0 {
                     continue;
                 }
@@ -1895,34 +1870,20 @@ pub fn tessellate_multileader(
                 });
             }
         } else {
-            // Build per-line stroke points in WCS.
+            // Pre-tessellated by `layout_mtext`. Each TextStroke is in
+            // local glyph space with its world origin (already offset-
+            // relative because we passed local_ins_x/y) stored as f64.
             let mut text_points: Vec<[f32; 3]> = Vec::new();
-            for (i, line) in lines.iter().enumerate() {
-                let li = i as f32;
-                let line_y_local = -li * line_h + v_offset;
-                let line_w = line_widths[i];
-                let h_shift_local = -line_w * h_anchor;
-                let wcs_dx = h_shift_local * cos_r - line_y_local * sin_r;
-                let wcs_dy = h_shift_local * sin_r + line_y_local * cos_r;
-                // Origin already in offset-relative space — tessellator will rotate
-                // glyph offsets around it and produce points directly in render space.
-                let origin = [local_ins_x + wcs_dx, local_ins_y + wcs_dy];
-                let strokes = crate::scene::cxf::tessellate_text_ex(
-                    origin,
-                    height,
-                    rot,
-                    width_factor,
-                    oblique,
-                    &font_name,
-                    line,
-                );
-                for stroke in &strokes {
+            for ts in &layout.strokes {
+                let ox = ts.origin[0] as f32;
+                let oy = ts.origin[1] as f32;
+                for stroke in &ts.strokes {
                     if stroke.len() < 2 {
                         continue;
                     }
                     text_points.push(nan);
                     for &[x, y] in stroke {
-                        text_points.push([x, y, z]);
+                        text_points.push([x + ox, y + oy, z]);
                     }
                 }
             }
@@ -2805,16 +2766,68 @@ fn dimension_snap_pts(dim: &Dimension, world_offset: [f64; 3]) -> Vec<(Vec3, Sna
     }
 }
 
+/// Cheap heuristic: does this string contain anything the MText parser would
+/// interpret? Used by `dimension_text_entity` to pick between a synthetic
+/// `Text` (plain DXF special chars only) and a synthetic `MText` (full inline
+/// format-code pipeline) for the dim text override.
+fn value_has_mtext_codes(s: &str) -> bool {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' || c == '}' {
+            return true;
+        }
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                // Any backslash followed by a known MText escape letter.
+                if matches!(
+                    next,
+                    'H' | 'W'
+                        | 'Q'
+                        | 'T'
+                        | 'A'
+                        | 'C'
+                        | 'c'
+                        | 'f'
+                        | 'F'
+                        | 'p'
+                        | 'L'
+                        | 'l'
+                        | 'O'
+                        | 'o'
+                        | 'K'
+                        | 'k'
+                        | 'S'
+                        | 's'
+                        | 'P'
+                        | 'n'
+                        | 'N'
+                        | 't'
+                        | 'U'
+                        | 'u'
+                        | 'M'
+                        | 'X'
+                        | '~'
+                        | '{'
+                        | '}'
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn dimension_text_entity(
     dim: &Dimension,
     text_height: f64,
     style: Option<&DimStyle>,
     document: &CadDocument,
-) -> Option<Text> {
+) -> Option<EntityType> {
     let value = dimension_text_value(dim, style)?;
     // Use f64 position directly to avoid f32 round-trip precision loss at large
     // coordinates (e.g. Turkish UTM ~4,000,000 m). tessellate() will apply
-    // world_offset when rendering this synthetic Text entity.
+    // world_offset when rendering this synthetic entity.
     let pos_f64 = dimension_text_pos_f64(dim, style, text_height);
     let base = dim.base();
 
@@ -2835,15 +2848,11 @@ fn dimension_text_entity(
         dimension_text_natural_rotation(dim)
     };
 
-    let mut text = Text::with_value(value, pos_f64)
-        .with_height(text_height)
-        .with_rotation(rotation);
-
     // Text style resolution priority:
     //   1. DIMTXSTY by handle (most reliable; survives rename)
     //   2. DIMTXSTY by name
     //   3. dim's own style_name (rare fallback)
-    text.style = style
+    let style_name = style
         .and_then(|s| {
             if !s.dimtxsty_handle.is_null() {
                 document
@@ -2862,6 +2871,41 @@ fn dimension_text_entity(
         })
         .unwrap_or_else(|| base.style_name.clone());
 
+    // Route through MText whenever the value carries inline format codes
+    // (`\f`, `\C`, `\H`, `\S`, brace scopes, …). Otherwise stay on the Text
+    // path — single-line dim text doesn't need the full MText pipeline.
+    if value_has_mtext_codes(&value) {
+        use acadrust::entities::dimension::AttachmentPointType as DA;
+        use acadrust::entities::AttachmentPoint as MA;
+        let attachment_point = match base.attachment_point {
+            DA::TopLeft => MA::TopLeft,
+            DA::TopCenter => MA::TopCenter,
+            DA::TopRight => MA::TopRight,
+            DA::MiddleLeft => MA::MiddleLeft,
+            DA::MiddleCenter => MA::MiddleCenter,
+            DA::MiddleRight => MA::MiddleRight,
+            DA::BottomLeft => MA::BottomLeft,
+            DA::BottomCenter => MA::BottomCenter,
+            DA::BottomRight => MA::BottomRight,
+        };
+        let mut mtext = MText::with_value(value, pos_f64);
+        mtext.height = text_height;
+        mtext.rotation = rotation;
+        mtext.style = style_name;
+        mtext.attachment_point = attachment_point;
+        if base.line_spacing_factor.abs() > 1e-9 {
+            mtext.line_spacing_factor = base.line_spacing_factor;
+        }
+        mtext.normal = base.normal;
+        mtext.common = base.common.clone();
+        return Some(EntityType::MText(mtext));
+    }
+
+    let mut text = Text::with_value(value, pos_f64)
+        .with_height(text_height)
+        .with_rotation(rotation);
+    text.style = style_name;
+
     // Map AttachmentPointType (1..9 grid) to Text horizontal + vertical
     // alignments. 1=TopLeft … 9=BottomRight (column-major).
     let (ha, va) = attachment_to_text_align(base.attachment_point);
@@ -2876,7 +2920,7 @@ fn dimension_text_entity(
     let _ = base.normal;
 
     text.common = base.common.clone();
-    Some(text)
+    Some(EntityType::Text(text))
 }
 
 fn attachment_to_text_align(
@@ -3073,9 +3117,9 @@ fn alternate_units_text(measurement: f64, style: Option<&DimStyle>) -> Option<St
 fn dimension_tolerance_entity(
     dim: &Dimension,
     style: Option<&DimStyle>,
-    primary: &Text,
+    primary: &EntityType,
     primary_height: f64,
-) -> Option<Text> {
+) -> Option<EntityType> {
     let s = style?;
     let is_angular = matches!(dim, Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_));
     let tol = build_tolerance_suffix(dim.measurement(), style, is_angular)?;
@@ -3086,8 +3130,30 @@ fn dimension_tolerance_entity(
     };
     let tol_height = primary_height * dimtfac;
 
+    // Pull the geometry we need from the synthetic primary entity (Text or
+    // MText — `dimension_text_entity` routes to MText when the dim value
+    // carries inline format codes).
+    let (primary_value_len, primary_insertion, primary_rotation, primary_style, primary_common) =
+        match primary {
+            EntityType::Text(t) => (
+                t.value.chars().count(),
+                t.insertion_point,
+                t.rotation,
+                t.style.clone(),
+                t.common.clone(),
+            ),
+            EntityType::MText(m) => (
+                m.value.chars().count(),
+                m.insertion_point,
+                m.rotation,
+                m.style.clone(),
+                m.common.clone(),
+            ),
+            _ => return None,
+        };
+
     // Approximate widths from glyph counts (~0.6 × cell size per char).
-    let primary_w = primary.value.chars().count() as f64 * primary_height * 0.6;
+    let primary_w = primary_value_len as f64 * primary_height * 0.6;
     let tol_w = tol.chars().count() as f64 * tol_height * 0.6;
     let gap = primary_height * 0.2;
     let dx_local = primary_w * 0.5 + tol_w * 0.5 + gap;
@@ -3096,21 +3162,21 @@ fn dimension_tolerance_entity(
         2 => primary_height * 0.5 - tol_height * 0.5,  // top-aligned with primary top
         _ => 0.0,                                       // centred (default for ±)
     };
-    let rot = primary.rotation;
+    let rot = primary_rotation;
     let (sr, cr) = rot.sin_cos();
     let pos = Vector3::new(
-        primary.insertion_point.x + dx_local * cr - dy_local * sr,
-        primary.insertion_point.y + dx_local * sr + dy_local * cr,
-        primary.insertion_point.z,
+        primary_insertion.x + dx_local * cr - dy_local * sr,
+        primary_insertion.y + dx_local * sr + dy_local * cr,
+        primary_insertion.z,
     );
     let mut t = Text::with_value(tol, pos)
         .with_height(tol_height)
         .with_rotation(rot);
-    t.style = primary.style.clone();
-    t.common = primary.common.clone();
+    t.style = primary_style;
+    t.common = primary_common;
     t.horizontal_alignment = acadrust::entities::text::TextHorizontalAlignment::Center;
     t.vertical_alignment = acadrust::entities::text::TextVerticalAlignment::Middle;
-    Some(t)
+    Some(EntityType::Text(t))
 }
 
 /// Wrap a measured value with the style's DIMPOST prefix/suffix template.

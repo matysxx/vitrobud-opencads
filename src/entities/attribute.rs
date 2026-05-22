@@ -7,7 +7,10 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
-use crate::entities::text_support::{resolve_dxf_special_chars, resolve_text_style, text_local_bounds};
+use crate::entities::text_support::{
+    layout_mtext, resolve_dxf_special_chars, resolve_text_style, text_local_bounds, MTextRenderOpts,
+    MTextVAnchor, ResolvedTextStyle,
+};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TextStroke, TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
@@ -153,13 +156,73 @@ fn build_attr_truck(input: AttrTextInputs<'_>, document: &acadrust::CadDocument)
         [input.insertion_point.x, input.insertion_point.y]
     };
 
-    // Multi-line: split on \\P or \n. line_count is informational and we
-    // recompute lines from the actual value.
-    let raw_value = if input.is_multiline || !matches!(input.mtext_flag, MTextFlag::SingleLine) {
-        input.value.to_string()
-    } else {
-        input.value.to_string()
-    };
+    // MText-flag attributes (`mtext_flag = MultiLine | ConstantMultiLine`)
+    // route through the shared MText pipeline so every inline format code
+    // (`\f`, `\C`/`\c`, `\H`, `\W`, `\Q`, `\T`, `\A`, `\p…`, decorations,
+    // stacked fractions, …) reaches the stroke output. SingleLine attribs
+    // keep the Text-style anchor math below — they don't accept MText codes
+    // in the DXF spec.
+    if matches!(input.mtext_flag, MTextFlag::MultiLine | MTextFlag::ConstantMultiLine) {
+        let display_value = if input.value.is_empty() {
+            String::new()
+        } else {
+            input.value.to_string()
+        };
+        let attach_h_anchor: f32 = match input.horizontal_alignment {
+            AHA::Left => 0.0,
+            AHA::Center | AHA::Middle => 0.5,
+            AHA::Right | AHA::Aligned | AHA::Fit => 1.0,
+        };
+        let v_anchor = match input.vertical_alignment {
+            AVA::Top => MTextVAnchor::Top,
+            AVA::Middle => MTextVAnchor::Middle,
+            AVA::Baseline | AVA::Bottom => MTextVAnchor::Bottom,
+        };
+        let needs_align_pt = !(matches!(input.horizontal_alignment, AHA::Left)
+            && matches!(input.vertical_alignment, AVA::Baseline));
+        let anchor_pt = if needs_align_pt {
+            input.alignment_point
+        } else {
+            input.insertion_point
+        };
+        // Compose a ResolvedTextStyle that carries the merged width-factor
+        // sign (entity backward XOR style backward) and the
+        // entity-overridden oblique. is_upside_down is false because the
+        // backwards / upside-down flips are already folded into `rotation`
+        // and `width_factor`.
+        let style_for_mtext = ResolvedTextStyle {
+            font_name: resolved.font_name.clone(),
+            width_factor: width_factor.abs(),
+            oblique_angle,
+            is_backward: width_factor < 0.0,
+            is_upside_down: false,
+        };
+        let layout = layout_mtext(&MTextRenderOpts {
+            value: &display_value,
+            insertion: [anchor_pt.x, anchor_pt.y, anchor_pt.z],
+            height: input.height as f32,
+            rect_w: 0.0,
+            rotation,
+            style: &style_for_mtext,
+            attach_h_anchor,
+            v_anchor,
+            line_spacing_factor: 1.0,
+            vertical_text: false,
+        });
+        let _ = input.line_count;
+        let _ = input.is_multiline;
+        return TruckEntity {
+            object: TruckObject::Text(layout.strokes),
+            snap_pts: vec![(snap_pt, SnapHint::Insertion)],
+            tangent_geoms: vec![],
+            key_vertices: vec![],
+            fill_tris: vec![],
+        };
+    }
+
+    // SingleLine path — anchor maths uses glyph bounds for accurate
+    // horizontal / vertical positioning against alignment_point.
+    let raw_value = input.value.to_string();
     let plain: Vec<String> = raw_value
         .replace("\\P", "\n")
         .split('\n')

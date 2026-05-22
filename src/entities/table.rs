@@ -3,11 +3,12 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{ro_prop as ro, square_grip};
+use crate::entities::text_support::{layout_mtext, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
 use crate::scene::wire_model::SnapHint;
-use crate::scene::{cxf, transform};
+use crate::scene::transform;
 
 fn v3(v: &acadrust::types::Vector3) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
@@ -157,6 +158,20 @@ impl TruckConvertible for Table {
                 None
             })
         };
+        // Build a ResolvedTextStyle for the cell — needed by the shared MText
+        // pipeline so inline `\W`, `\Q`, etc. compose with the style baseline.
+        let resolved_style_for_handle = |handle: Option<acadrust::Handle>,
+                                         font_name: String|
+         -> ResolvedTextStyle {
+            let style = handle.and_then(|h| lookup_style(h));
+            ResolvedTextStyle {
+                font_name,
+                width_factor: style.map(|s| s.width_factor as f32).unwrap_or(1.0),
+                oblique_angle: style.map(|s| s.oblique_angle as f32).unwrap_or(0.0),
+                is_backward: style.map(|s| s.is_backward()).unwrap_or(false),
+                is_upside_down: style.map(|s| s.is_upside_down()).unwrap_or(false),
+            }
+        };
 
         for (ri, row) in self.rows.iter().enumerate() {
             let row_top = row_offsets[ri];
@@ -210,7 +225,7 @@ impl TruckConvertible for Table {
                     .or_else(|| row_style.and_then(|s| s.text_style_handle));
                 let font_owned =
                     font_for_handle(style_handle).unwrap_or_else(|| "txt".to_string());
-                let font_name: &str = &font_owned;
+                let resolved = resolved_style_for_handle(style_handle, font_owned);
 
                 // Alignment resolution: cell.style.alignment (1-9) overrides;
                 // otherwise fall back to row_style.alignment, then MiddleCenter.
@@ -224,39 +239,54 @@ impl TruckConvertible for Table {
                 let horiz = ((align - 1).rem_euclid(3)) + 1; // 1=left, 2=center, 3=right
                 let vert = ((align - 1) / 3) + 1; // 1=top, 2=middle, 3=bottom
 
-                let text_w = cxf::measure_text(text, cell_h, 1.0, font_name);
-
-                let x_offset = match horiz {
-                    1 => col_left + margin,                     // left
-                    3 => col_right - margin - text_w,           // right
-                    _ => col_left + (col_width - text_w) * 0.5, // center (default)
+                // Position the cell's MText block anchor at the requested
+                // alignment corner / midpoint of the cell's content area.
+                let (x_offset, attach_h_anchor) = match horiz {
+                    1 => (col_left + margin, 0.0_f32),
+                    3 => (col_right - margin, 1.0_f32),
+                    _ => (col_left + col_width * 0.5, 0.5_f32),
                 };
-                let y_offset = match vert {
-                    1 => row_top + margin,               // top
-                    3 => row_bot - margin - cell_h,      // bottom
-                    _ => row_mid - cell_h * 0.5,         // middle (default)
+                let (y_offset, v_anchor) = match vert {
+                    1 => (row_top + margin, MTextVAnchor::Top),
+                    3 => (row_bot - margin, MTextVAnchor::Bottom),
+                    _ => (row_mid, MTextVAnchor::Middle),
                 };
-
                 let text_origin = origin + h * x_offset + v_down * y_offset;
 
                 // Content rotation (radians) on top of table cell rotation.
                 let rot = content.map(|c| c.rotation as f32).unwrap_or(0.0)
                     + cell.rotation as f32;
-                let strokes = cxf::tessellate_text_ex(
-                    [text_origin.x, text_origin.y],
-                    cell_h,
-                    rot,
-                    1.0,
-                    0.0,
-                    font_name,
-                    text,
-                );
-                for stroke in strokes {
-                    if !pts.is_empty() {
-                        pts.push([f32::NAN; 3]);
-                    }
-                    for [x, y] in stroke {
-                        pts.push([x, y, origin.z]);
+                let layout = layout_mtext(&MTextRenderOpts {
+                    value: text,
+                    insertion: [text_origin.x as f64, text_origin.y as f64, origin.z as f64],
+                    height: cell_h,
+                    rect_w: 0.0,
+                    rotation: rot,
+                    style: &resolved,
+                    attach_h_anchor,
+                    v_anchor,
+                    line_spacing_factor: 1.0,
+                    vertical_text: false,
+                });
+                // Flatten TextStroke groups into the table's Lines buffer.
+                // Per-run inline `\C` / `\c` colour is dropped here because the
+                // table emits a single TruckObject::Lines for borders + text;
+                // tracking it would require splitting the table into multiple
+                // WireModels per cell colour. Borders + uniform-coloured runs
+                // honour the entity's outer colour.
+                for ts in &layout.strokes {
+                    let ox = ts.origin[0] as f32;
+                    let oy = ts.origin[1] as f32;
+                    for stroke in &ts.strokes {
+                        if stroke.len() < 2 {
+                            continue;
+                        }
+                        if !pts.is_empty() {
+                            pts.push([f32::NAN; 3]);
+                        }
+                        for &[x, y] in stroke {
+                            pts.push([x + ox, y + oy, origin.z]);
+                        }
                     }
                 }
             }

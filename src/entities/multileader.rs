@@ -2,29 +2,28 @@ use acadrust::entities::{
     LeaderContentType, MultiLeader, MultiLeaderPathType, TextAttachmentPointType, TextAttachmentType,
 };
 
-/// Local-frame vertical baseline offset for line 0 given a vertical attachment
-/// and the overall block geometry. The baseline is at y=0 for `BottomOfTopLine*`
-/// (i.e. text_location coincides with line-0 baseline); other variants offset
-/// the block above/below/around text_location.
-pub(crate) fn v_offset_for_attachment(
-    attach: TextAttachmentType,
-    n_lines: f32,
-    h: f32,
-    line_h: f32,
-) -> f32 {
+use crate::entities::text_support::{
+    layout_mtext, resolve_text_style, MTextRenderOpts, MTextVAnchor,
+};
+
+/// Map MLEADER's vertical attachment enum onto the shared `MTextVAnchor`
+/// used by `layout_mtext`. Replaces the old `v_offset_for_attachment`
+/// (which inlined the offset math); the shared pipeline now derives the
+/// offset from the variant + n_lines / line_h.
+pub(crate) fn mleader_v_anchor(attach: TextAttachmentType) -> MTextVAnchor {
     match attach {
-        TextAttachmentType::TopOfTopLine => -h,
-        TextAttachmentType::MiddleOfTopLine => -h * 0.5,
+        TextAttachmentType::TopOfTopLine => MTextVAnchor::Top,
+        TextAttachmentType::MiddleOfTopLine => MTextVAnchor::MiddleOfTopLine,
         TextAttachmentType::MiddleOfText
         | TextAttachmentType::CenterOfText
-        | TextAttachmentType::CenterOfTextOverline => ((n_lines - 1.0) * line_h - h) * 0.5,
-        TextAttachmentType::MiddleOfBottomLine => (n_lines - 1.0) * line_h - h * 0.5,
+        | TextAttachmentType::CenterOfTextOverline => MTextVAnchor::Middle,
+        TextAttachmentType::MiddleOfBottomLine => MTextVAnchor::MiddleOfBottomLine,
         TextAttachmentType::BottomOfBottomLine | TextAttachmentType::BottomLine => {
-            (n_lines - 1.0) * line_h
+            MTextVAnchor::Bottom
         }
         TextAttachmentType::BottomOfTopLineUnderlineBottomLine
         | TextAttachmentType::BottomOfTopLineUnderlineTopLine
-        | TextAttachmentType::BottomOfTopLineUnderlineAll => 0.0,
+        | TextAttachmentType::BottomOfTopLineUnderlineAll => MTextVAnchor::BottomOfTopLine,
     }
 }
 use glam::Vec3;
@@ -222,92 +221,53 @@ fn to_truck(ml: &MultiLeader, document: &acadrust::CadDocument) -> Option<TruckE
                     .map(|s| s.name.clone())
             })
             .unwrap_or_else(|| "STANDARD".to_string());
-        let style = crate::entities::text_support::resolve_text_style(&style_name, document);
-        let font_name = style.font_name;
-        let font = crate::scene::cxf::get_font(&font_name);
-        // MultiLeader text inherits width factor / oblique from the style.
-        // is_backward flips the sign on width_factor; is_upside_down adds π
-        // to the text rotation — same convention as Text / MText.
-        let base_wf = style.width_factor.max(0.01);
-        let width_factor = if style.is_backward { -base_wf } else { base_wf };
-        let oblique = style.oblique_angle;
-        if style.is_upside_down {
+        let resolved = resolve_text_style(&style_name, document);
+        if resolved.is_upside_down {
             rot += std::f32::consts::PI;
         }
-        let (cos_r, sin_r) = (rot.cos(), rot.sin());
 
-        // Strip MText format codes (e.g. `{\fArial Black|b0|i0|c162|p34;...}`),
-        // then split on \P / \n / \N and optionally word-wrap to text_width.
-        let plain = crate::entities::text_support::strip_mtext_codes(&ctx.text_string);
-        let explicit_lines = crate::entities::text_support::split_mtext_lines(&plain);
-        let lines: Vec<String> = if ctx.text_width > 0.0 {
-            // Width-factor sign is a render-time mirror flag; measurement uses
-            // the magnitude only.
-            let scale = height / 9.0 * width_factor.abs();
-            // ctx.text_width is in the same WCS frame as ctx.text_height —
-            // do not re-multiply by scale_factor.
-            let max_w = ctx.text_width as f32;
-            explicit_lines
-                .iter()
-                .flat_map(|line| {
-                    crate::entities::text_support::word_wrap(line, max_w, scale, font)
-                })
-                .collect()
-        } else {
-            explicit_lines
+        // ml.text_alignment overrides ctx.text_attachment_point when not
+        // Left (which is the default zero); otherwise honour the stored
+        // attachment.
+        use acadrust::entities::multileader::TextAlignmentType;
+        let attach_h_anchor: f32 = match (ml.text_alignment, ctx.text_attachment_point) {
+            (TextAlignmentType::Center, _) => 0.5,
+            (TextAlignmentType::Right, _) => 1.0,
+            (TextAlignmentType::Left, TextAttachmentPointType::Center) => 0.5,
+            (TextAlignmentType::Left, TextAttachmentPointType::Right) => 1.0,
+            _ => 0.0,
         };
+        let v_anchor = mleader_v_anchor(ctx.text_left_attachment);
 
-        let ls_factor = if ctx.line_spacing_factor > 0.0 {
-            ctx.line_spacing_factor as f32
-        } else {
-            1.0
-        };
-        let line_h = height * ls_factor * (5.0 / 3.0) * font.line_spacing;
-        let n_lines = lines.len().max(1) as f32;
-
-        let h_anchor = match ctx.text_attachment_point {
-            TextAttachmentPointType::Left => 0.0_f32,
-            TextAttachmentPointType::Center => 0.5,
-            TextAttachmentPointType::Right => 1.0,
-        };
-        let v_offset =
-            v_offset_for_attachment(ctx.text_left_attachment, n_lines, height, line_h);
-
-        // Line-width measurement uses positive magnitude; mirror sign feeds
-        // tessellate_text_ex below.
-        let scale = height / 9.0 * width_factor.abs();
-        for (i, line) in lines.iter().enumerate() {
-            let li = i as f32;
-            let line_y_local = -li * line_h + v_offset;
-            let line_w = if h_anchor > 0.0 {
-                crate::entities::text_support::measure_mtext_chars(line, scale, font)
-            } else {
-                0.0
-            };
-            let h_shift_local = -line_w * h_anchor;
-            let wcs_dx = h_shift_local * cos_r - line_y_local * sin_r;
-            let wcs_dy = h_shift_local * sin_r + line_y_local * cos_r;
-            // tessellate_text_ex emits f32 glyph points around `origin`.
-            // For entity-level WCS output, we accept the f32 cast here since
-            // glyph offsets are small relative to the insertion point and the
-            // entity path doesn't apply a world_offset before render.
-            let origin = [ins_x as f32 + wcs_dx, ins_y as f32 + wcs_dy];
-            let strokes = crate::scene::cxf::tessellate_text_ex(
-                origin,
-                height,
-                rot,
-                width_factor,
-                oblique,
-                &font_name,
-                line,
-            );
-            for stroke in &strokes {
+        // Shared MText pipeline — handles every inline format code (font,
+        // colour, height, width factor, oblique, tracking, paragraph align,
+        // tabs, indents, decorations, stacked fractions, …). Inline per-run
+        // colour (`\C` / `\c`) is dropped here because the entity-level
+        // MultiLeader output is a single `TruckObject::Lines` (leader +
+        // arrowheads + text in one polyline blob); preserving the override
+        // would require emitting a separate object per colour.
+        let layout = layout_mtext(&MTextRenderOpts {
+            value: &ctx.text_string,
+            insertion: [ins_x, ins_y, z],
+            height,
+            rect_w: ctx.text_width as f32,
+            rotation: rot,
+            style: &resolved,
+            attach_h_anchor,
+            v_anchor,
+            line_spacing_factor: ctx.line_spacing_factor as f32,
+            vertical_text: false,
+        });
+        for ts in &layout.strokes {
+            let ox = ts.origin[0];
+            let oy = ts.origin[1];
+            for stroke in &ts.strokes {
                 if stroke.len() < 2 {
                     continue;
                 }
                 points.push(nan);
                 for &[x, y] in stroke {
-                    points.push([x as f64, y as f64, z]);
+                    points.push([ox + x as f64, oy + y as f64, z]);
                 }
             }
         }
