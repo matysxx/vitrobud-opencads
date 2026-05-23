@@ -91,7 +91,7 @@ decode until **first render** (per-handle lazy `OnceCell`).
 ### 1.7 File-hash cache (warm re-open)
 
 When re-opening the same file (`(path, mtime, size)` key) keep a disk
-snapshot of `CadDocument` + `DerivedCaches` (e.g. `~/.cache/open-cad-studio/`). Skip
+snapshot of `CadDocument` + `DerivedCaches` (e.g. `~/.cache/OpenCADStudio/`). Skip
 DWG parse entirely. **Win:** most-recently-opened file goes from 1-2 s to
 sub-100 ms.
 

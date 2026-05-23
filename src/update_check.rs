@@ -7,9 +7,9 @@
 // `None` when up to date / on network failure / on parse error.
 
 const RELEASES_API: &str =
-    "https://api.github.com/repos/HakanSeven12/open-cad-studio/releases/latest";
+    "https://api.github.com/repos/HakanSeven12/OpenCADStudio/releases/latest";
 pub const RELEASES_PAGE: &str =
-    "https://github.com/HakanSeven12/open-cad-studio/releases/latest";
+    "https://github.com/HakanSeven12/OpenCADStudio/releases/latest";
 
 /// What `check_for_update` reports when a newer release exists.
 #[derive(Debug, Clone)]

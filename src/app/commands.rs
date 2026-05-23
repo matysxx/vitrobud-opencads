@@ -2524,7 +2524,7 @@ impl OpenCADStudio {
             }
 
             "REPORT" => {
-                let _ = open::that("https://github.com/HakanSeven12/open-cad-studio/issues/new");
+                let _ = open::that("https://github.com/HakanSeven12/OpenCADStudio/issues/new");
                 self.command_line.push_info("Opening GitHub issue page...");
             }
 
@@ -2533,7 +2533,7 @@ impl OpenCADStudio {
             }
 
             "CHANGELOG" => {
-                let _ = open::that("https://github.com/HakanSeven12/open-cad-studio/releases");
+                let _ = open::that("https://github.com/HakanSeven12/OpenCADStudio/releases");
                 self.command_line.push_info("Opening release notes...");
             }
 

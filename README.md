@@ -102,7 +102,7 @@ A CAD application for 2D drafting and 3D modeling, built with Rust. Reads and wr
 
 ### Linux (AppImage)
 
-Download `OpenCADStudio-*-linux-x86_64.AppImage` from the [latest release](https://github.com/HakanSeven12/open-cad-studio/releases/latest), then:
+Download `OpenCADStudio-*-linux-x86_64.AppImage` from the [latest release](https://github.com/HakanSeven12/OpenCADStudio/releases/latest), then:
 
 ```bash
 chmod +x OpenCADStudio-*-linux-x86_64.AppImage
@@ -113,11 +113,11 @@ No installation required — runs directly on any modern Linux distribution.
 
 ### Windows
 
-Download `OpenCADStudio-*-windows-x86_64.exe` from the [latest release](https://github.com/HakanSeven12/open-cad-studio/releases/latest) and run it directly. Windows SmartScreen may show "Windows protected your PC" because the binary is not yet code-signed — click **More info → Run anyway**.
+Download `OpenCADStudio-*-windows-x86_64.exe` from the [latest release](https://github.com/HakanSeven12/OpenCADStudio/releases/latest) and run it directly. Windows SmartScreen may show "Windows protected your PC" because the binary is not yet code-signed — click **More info → Run anyway**.
 
 ### macOS (Apple Silicon)
 
-Download `OpenCADStudio-*-macos-arm64.dmg` from the [latest release](https://github.com/HakanSeven12/open-cad-studio/releases/latest) — Apple Silicon (M-series) only; Intel macOS isn't built.
+Download `OpenCADStudio-*-macos-arm64.dmg` from the [latest release](https://github.com/HakanSeven12/OpenCADStudio/releases/latest) — Apple Silicon (M-series) only; Intel macOS isn't built.
 
 Open the .dmg and drag `OpenCADStudio.app` to `/Applications`. The first launch may be blocked by Gatekeeper because the app is not notarised — right-click `OpenCADStudio.app → Open` and confirm, or run once via `xattr -dr com.apple.quarantine /Applications/OpenCADStudio.app`.
 
@@ -126,8 +126,8 @@ Open the .dmg and drag `OpenCADStudio.app` to `/Applications`. The first launch 
 Requirements: Rust 1.75+
 
 ```bash
-git clone https://github.com/HakanSeven12/open-cad-studio.git
-cd open-cad-studio
+git clone https://github.com/HakanSeven12/OpenCADStudio.git
+cd OpenCADStudio
 cargo build --release --bin OpenCADStudio
 ./target/release/OpenCADStudio
 ```
