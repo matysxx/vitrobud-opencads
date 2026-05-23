@@ -566,3 +566,22 @@ impl Transformable for Viewport {
         apply_transform(self, t);
     }
 }
+
+impl crate::entities::traits::LegacyTess for Viewport {
+    fn legacy_geometry(&self, world_offset: [f64; 3]) -> crate::scene::tess_util::LegacyGeometry {
+        let [ox, oy, oz] = world_offset;
+        let cx = (self.center.x - ox) as f32;
+        let cy = (self.center.y - oy) as f32;
+        let cz = (self.center.z - oz) as f32;
+        let hw = (self.width / 2.0) as f32;
+        let hh = (self.height / 2.0) as f32;
+        let pts = vec![
+            [cx - hw, cy - hh, cz],
+            [cx + hw, cy - hh, cz],
+            [cx + hw, cy + hh, cz],
+            [cx - hw, cy + hh, cz],
+            [cx - hw, cy - hh, cz],
+        ];
+        (pts, vec![], vec![], vec![])
+    }
+}

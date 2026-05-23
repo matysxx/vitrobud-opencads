@@ -480,3 +480,167 @@ impl Transformable for Leader {
         apply_transform(self, t);
     }
 }
+
+/// Per-entity tessellation entry for `Leader`. Lives here so all leader
+/// tess code stays alongside the entity definition. Cross-entity dim
+/// machinery (arrow shapes, `DimGeom`) lives in `scene::tessellate` and
+/// is reused via the dim arrow emitter so the leader matches the active
+/// DIMSTYLE.
+pub trait LeaderTess {
+    fn tessellate(
+        &self,
+        document: &acadrust::CadDocument,
+        handle: acadrust::Handle,
+        selected: bool,
+        entity_color: [f32; 4],
+        line_weight_px: f32,
+        world_offset: [f64; 3],
+        anno_scale: f32,
+    ) -> crate::scene::wire_model::WireModel;
+}
+
+impl LeaderTess for Leader {
+    fn tessellate(
+        &self,
+        document: &acadrust::CadDocument,
+        handle: acadrust::Handle,
+        selected: bool,
+        entity_color: [f32; 4],
+        line_weight_px: f32,
+        world_offset: [f64; 3],
+        anno_scale: f32,
+    ) -> crate::scene::wire_model::WireModel {
+        use crate::scene::tessellate::{append_arrow, arrow_from_block, ArrowKind, DimGeom};
+        use crate::scene::wire_model::WireModel;
+        let color = if selected {
+            WireModel::SELECTED
+        } else {
+            entity_color
+        };
+        let name = handle.value().to_string();
+        let [ox, oy, oz] = world_offset;
+        let p3 = |v: &acadrust::types::Vector3| -> [f32; 3] {
+            [(v.x - ox) as f32, (v.y - oy) as f32, (v.z - oz) as f32]
+        };
+        let nan = [f32::NAN; 3];
+
+        let verts = &self.vertices;
+
+        if verts.len() < 2 {
+            return WireModel {
+                name,
+                points: vec![],
+                color,
+                selected,
+                aci: 0,
+                pattern_length: 0.0,
+                pattern: [0.0; 8],
+                line_weight_px,
+                snap_pts: vec![],
+                tangent_geoms: vec![],
+                key_vertices: vec![],
+                aabb: WireModel::UNBOUNDED_AABB,
+                plinegen: true,
+                vp_scissor: None,
+                fill_tris: vec![],
+            };
+        }
+
+        let mut points: Vec<[f32; 3]> = verts.iter().map(|v| p3(v)).collect();
+        let mut tangents: Vec<TangentGeom> = Vec::new();
+        let key_vertices: Vec<[f32; 3]> = verts.iter().map(|v| p3(v)).collect();
+        let mut fill_tris: Vec<[f32; 3]> = Vec::new();
+
+        for i in 0..verts.len().saturating_sub(1) {
+            tangents.push(TangentGeom::Line {
+                p1: p3(&verts[i]),
+                p2: p3(&verts[i + 1]),
+            });
+        }
+
+        if self.arrow_enabled {
+            // Resolve the active dim style → DIMLDRBLK to pick the arrow shape.
+            // DIMASZ × DIMSCALE drives the size when available; otherwise fall
+            // back to the legacy text-height heuristic.
+            let style = document.dim_styles.iter().find(|s| {
+                s.name.eq_ignore_ascii_case(&self.dimension_style)
+                    || (self.dimension_style.trim().is_empty()
+                        && s.name.eq_ignore_ascii_case("Standard"))
+            });
+            let dim_scale = style
+                .map(|s| {
+                    if s.dimscale > 1e-6 {
+                        s.dimscale
+                    } else {
+                        anno_scale as f64
+                    }
+                })
+                .unwrap_or(anno_scale as f64);
+            let arrow_size = match style {
+                Some(s) => (s.dimasz * dim_scale) as f32,
+                None => (self.text_height as f32).max(1.0) * 0.8 * anno_scale,
+            };
+            let arrow = match style {
+                Some(s) => arrow_from_block(document, s.dimldrblk, arrow_size.max(0.001)),
+                None => ArrowKind::Triangle {
+                    size: arrow_size.max(0.001),
+                    filled: true,
+                    size_mul: 1.0,
+                },
+            };
+
+            let tip = &verts[0];
+            let next = &verts[1];
+            let dx = (next.x - tip.x) as f32;
+            let dy = (next.y - tip.y) as f32;
+            let len = (dx * dx + dy * dy).sqrt().max(1e-9);
+            let dir = Vec3::new(dx / len, dy / len, 0.0);
+            let tip_f = p3(tip);
+            let tip_v = Vec3::new(tip_f[0], tip_f[1], tip_f[2]);
+            // Reuse the dim arrow emitter so the leader shape matches the
+            // DIMSTYLE in use (Closed Filled by default, Dot, Tick, …).
+            let mut arrow_pts: Vec<[f32; 3]> = Vec::new();
+            let mut arrow_geom = DimGeom::new();
+            append_arrow(&mut arrow_geom, tip_v, dir, &arrow);
+            if !arrow_geom.dim_lines.is_empty() {
+                arrow_pts.push(nan);
+                arrow_pts.extend(arrow_geom.dim_lines);
+            }
+            points.extend(arrow_pts);
+            fill_tris.extend(arrow_geom.arrow_fill);
+        }
+
+        if self.hookline_enabled {
+            let last = verts.last().unwrap();
+            let prev = &verts[verts.len() - 2];
+            let sign = if (last.x - prev.x) >= 0.0 {
+                1.0_f32
+            } else {
+                -1.0_f32
+            };
+            let land_len = self.text_height as f32 * 1.5 * anno_scale;
+            let last_f = p3(last);
+            points.push(nan);
+            points.push(last_f);
+            points.push([last_f[0] + sign * land_len, last_f[1], last_f[2]]);
+        }
+
+        WireModel {
+            name,
+            points,
+            color,
+            selected,
+            aci: 0,
+            pattern_length: 0.0,
+            pattern: [0.0; 8],
+            line_weight_px,
+            snap_pts: vec![],
+            tangent_geoms: tangents,
+            key_vertices,
+            aabb: WireModel::UNBOUNDED_AABB,
+            plinegen: true,
+            vp_scissor: None,
+            fill_tris,
+        }
+    }
+}

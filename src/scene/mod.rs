@@ -23,9 +23,10 @@ pub(super) struct EntityIndex {
     pub tree: quadtree::QuadTree,
     pub unbounded_handles: Vec<Handle>,
 }
-mod render;
+pub(crate) mod render;
 mod selection;
 pub mod solid3d_tess;
+pub mod tess_util;
 pub mod tessellate;
 pub mod transform;
 pub mod truck_tess;
@@ -178,11 +179,11 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
             };
             let model = match e {
                 EntityType::Hatch(dxf) => {
-                    let color = tessellate::aci_to_rgba(&dxf.common.color);
+                    let color = tess_util::aci_to_rgba(&dxf.common.color);
                     Scene::hatch_model_from_dxf(dxf, color, offset)
                 }
                 EntityType::Solid(solid) => {
-                    let color = tessellate::aci_to_rgba(&solid.common.color);
+                    let color = tess_util::aci_to_rgba(&solid.common.color);
                     Some(Scene::solid_hatch_model(solid, color, offset))
                 }
                 _ => None,
@@ -211,7 +212,7 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
         .par_iter()
         .filter_map(|&handle| {
             let e = doc.get_entity(handle)?;
-            let color = tessellate::aci_to_rgba(&e.common().color);
+            let color = tess_util::aci_to_rgba(&e.common().color);
             let model = match e {
                 EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color, facet_res),
                 EntityType::Region(r) => solid3d_tess::tessellate_region(r, color, facet_res),
@@ -2445,7 +2446,7 @@ impl Scene {
         let color = layer_entry
             .map(|l| &l.color)
             .unwrap_or(&acadrust::types::Color::WHITE);
-        let [r, g, b, _] = crate::scene::tessellate::aci_to_rgba(color);
+        let [r, g, b, _] = crate::scene::tess_util::aci_to_rgba(color);
         [r, g, b, 1.0]
     }
 
@@ -2888,10 +2889,10 @@ impl Scene {
                                 if sweep.abs() < 1e-9 {
                                     sweep = if bulge > 0.0 { TAU } else { -TAU };
                                 }
-                                let segs = tessellate::arc_segments(
+                                let segs = tess_util::arc_segments(
                                     r,
                                     sweep.abs(),
-                                    tessellate::fill_chord_tol(r),
+                                    tess_util::fill_chord_tol(r),
                                 );
                                 for j in 0..segs {
                                     let a = a0 + sweep * (j as f64 / segs as f64);
@@ -2910,15 +2911,15 @@ impl Scene {
                         boundary.push(to_xy(line.end.x, line.end.y));
                     }
                     BoundaryEdge::CircularArc(arc) => {
-                        let (sa, span) = tessellate::arc_signed_span(
+                        let (sa, span) = tess_util::arc_signed_span(
                             arc.start_angle,
                             arc.end_angle,
                             arc.counter_clockwise,
                         );
-                        let segs = tessellate::arc_segments(
+                        let segs = tess_util::arc_segments(
                             arc.radius,
                             span.abs(),
-                            tessellate::fill_chord_tol(arc.radius),
+                            tess_util::fill_chord_tol(arc.radius),
                         );
                         for i in 0..=segs {
                             let t = sa + span * (i as f64 / segs as f64);
@@ -2937,15 +2938,15 @@ impl Scene {
                             .major_axis_endpoint
                             .y
                             .atan2(ell.major_axis_endpoint.x);
-                        let (sa, span) = tessellate::arc_signed_span(
+                        let (sa, span) = tess_util::arc_signed_span(
                             ell.start_angle,
                             ell.end_angle,
                             ell.counter_clockwise,
                         );
-                        let segs = tessellate::arc_segments(
+                        let segs = tess_util::arc_segments(
                             r_maj,
                             span.abs(),
-                            tessellate::fill_chord_tol(r_maj),
+                            tess_util::fill_chord_tol(r_maj),
                         );
                         let (cr, sr) = (rot.cos(), rot.sin());
                         for i in 0..=segs {
@@ -2999,7 +3000,7 @@ impl Scene {
                         let diag = ((sp_max_x - sp_min_x).powi(2)
                             + (sp_max_y - sp_min_y).powi(2))
                         .sqrt();
-                        let tol = tessellate::fill_chord_tol(diag.max(1.0));
+                        let tol = tess_util::fill_chord_tol(diag.max(1.0));
 
                         let mut sampled = false;
                         if knot_ok {
@@ -3211,11 +3212,11 @@ impl Scene {
                 };
                 let model = match &kind {
                     EntityType::Hatch(dxf) => {
-                        let color = tessellate::aci_to_rgba(&dxf.common.color);
+                        let color = tess_util::aci_to_rgba(&dxf.common.color);
                         Self::hatch_model_from_dxf(dxf, color, offset)
                     }
                     EntityType::Solid(solid) => {
-                        let color = tessellate::aci_to_rgba(&solid.common.color);
+                        let color = tess_util::aci_to_rgba(&solid.common.color);
                         Some(Self::solid_hatch_model(solid, color, offset))
                     }
                     _ => None,
@@ -3241,7 +3242,7 @@ impl Scene {
             .entities()
             .filter_map(|e| match e {
                 EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) => {
-                    let color = tessellate::aci_to_rgba(&e.common().color);
+                    let color = tess_util::aci_to_rgba(&e.common().color);
                     Some((e.common().handle, e.clone(), color))
                 }
                 _ => None,
@@ -3644,7 +3645,7 @@ impl Scene {
             let h = self.document.add_entity(entity).unwrap_or(Handle::NULL);
             if !h.is_null() {
                 let new_model = if let Some(EntityType::Hatch(dxf)) = self.document.get_entity(h) {
-                    let color = tessellate::aci_to_rgba(&dxf.common.color);
+                    let color = tess_util::aci_to_rgba(&dxf.common.color);
                     Self::hatch_model_from_dxf(dxf, color, hatch_offset)
                 } else {
                     None
@@ -3736,7 +3737,7 @@ impl Scene {
         };
         match self.document.get_entity(handle) {
             Some(EntityType::Hatch(dxf)) => {
-                let color = tessellate::aci_to_rgba(&dxf.common.color);
+                let color = tess_util::aci_to_rgba(&dxf.common.color);
                 if let Some(model) = Self::hatch_model_from_dxf(dxf, color, hatch_offset) {
                     self.hatches.insert(handle, model);
                 } else {
@@ -3744,7 +3745,7 @@ impl Scene {
                 }
             }
             Some(EntityType::Solid(solid)) => {
-                let color = tessellate::aci_to_rgba(&solid.common.color);
+                let color = tess_util::aci_to_rgba(&solid.common.color);
                 self.hatches
                     .insert(handle, Self::solid_hatch_model(solid, color, hatch_offset));
             }
@@ -4691,7 +4692,7 @@ fn clip_polyline_to_rect(
 /// so it picks up the standard text LOD ladder (baseline / greek / full),
 /// then re-color the returned wires with the dimension's resolved text colour
 /// (so DIMCLRT / DIMSTYLE colours win over the synthetic Text's defaults).
-pub(super) fn tessellate_entity_dim_text(
+pub(crate) fn tessellate_entity_dim_text(
     document: &acadrust::CadDocument,
     selected: &HashSet<Handle>,
     active_viewport: Option<Handle>,
@@ -4899,10 +4900,10 @@ fn tessellate_entity(
 
     if let EntityType::Dimension(dim) = e {
         let aabb = entity_aabb(e, world_offset);
-        let mut wires = tessellate::tessellate_dimension(
+        use crate::entities::dimension::DimensionTess;
+        let mut wires = dim.tessellate(
             document,
             h,
-            dim,
             sel,
             entity_color,
             line_weight_px,
@@ -4923,10 +4924,10 @@ fn tessellate_entity(
 
     if let EntityType::MultiLeader(ml) = e {
         let aabb = entity_aabb(e, world_offset);
-        let mut wires = tessellate::tessellate_multileader(
+        use crate::entities::multileader::MultiLeaderTess;
+        let mut wires = ml.tessellate(
             document,
             h,
-            ml,
             sel,
             entity_color,
             line_weight_px,

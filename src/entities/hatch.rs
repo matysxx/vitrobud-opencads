@@ -3,8 +3,10 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro};
-use crate::entities::traits::{Grippable, PropertyEditable, Transformable};
+use crate::entities::traits::{Grippable, LegacyTess, PropertyEditable, Transformable};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
+use crate::scene::tess_util::{arc_segments, arc_signed_span, wire_chord_tol, LegacyGeometry};
+use crate::scene::wire_model::SnapHint;
 
 fn properties(h: &Hatch) -> PropSection {
     let pattern_type = match h.pattern_type {
@@ -345,5 +347,183 @@ impl Grippable for Hatch {
                 }
             }
         }
+    }
+}
+
+impl LegacyTess for Hatch {
+    fn legacy_geometry(&self, world_offset: [f64; 3]) -> LegacyGeometry {
+        let [ox, oy, oz] = world_offset;
+        let normal = (self.normal.x, self.normal.y, self.normal.z);
+        // Convert a 2D OCS hatch boundary point to WCS, then subtract world_offset.
+        let to_wcs = |x: f64, y: f64| -> [f32; 3] {
+            let (wx, wy, wz) =
+                crate::scene::transform::ocs_point_to_wcs((x, y, self.elevation), normal);
+            [(wx - ox) as f32, (wy - oy) as f32, (wz - oz) as f32]
+        };
+        let mut pts: Vec<[f32; 3]> = Vec::new();
+        let mut key_verts: Vec<[f32; 3]> = Vec::new();
+        let mut snap_pts: Vec<(Vec3, SnapHint)> = Vec::new();
+        for path in &self.paths {
+            for edge in &path.edges {
+                match edge {
+                    BoundaryEdge::Polyline(poly) => {
+                        // Hatch-boundary polyline vertices encode bulge in
+                        // `Vector3.z`; straight segments emit just the
+                        // start vertex, bulged segments tessellate the arc
+                        // between v0 → v1.
+                        let start_idx = pts.len();
+                        let verts = &poly.vertices;
+                        let count = verts.len();
+                        let seg_count = if poly.is_closed {
+                            count
+                        } else {
+                            count.saturating_sub(1)
+                        };
+                        if count > 0 && pts.len() != start_idx {
+                            pts.push([f32::NAN; 3]);
+                        }
+                        for i in 0..seg_count {
+                            let v0 = &verts[i];
+                            let v1 = &verts[(i + 1) % count];
+                            let bulge = v0.z;
+                            if bulge.abs() < 1e-9 {
+                                let p = to_wcs(v0.x, v0.y);
+                                pts.push(p);
+                                key_verts.push(p);
+                                continue;
+                            }
+                            let theta = 4.0 * bulge.atan();
+                            let dx = v1.x - v0.x;
+                            let dy = v1.y - v0.y;
+                            let d = (dx * dx + dy * dy).sqrt();
+                            if d < 1e-12 {
+                                let p = to_wcs(v0.x, v0.y);
+                                pts.push(p);
+                                key_verts.push(p);
+                                continue;
+                            }
+                            let r = (d * 0.5) / (theta * 0.5).sin().abs();
+                            let mx = (v0.x + v1.x) * 0.5;
+                            let my = (v0.y + v1.y) * 0.5;
+                            let px = -dy / d;
+                            let py = dx / d;
+                            let sign = if bulge > 0.0 { 1.0_f64 } else { -1.0_f64 };
+                            let center_offset = r * (theta * 0.5).cos();
+                            let cx = mx + sign * px * center_offset;
+                            let cy = my + sign * py * center_offset;
+                            let a0 = (v0.y - cy).atan2(v0.x - cx);
+                            let a1 = (v1.y - cy).atan2(v1.x - cx);
+                            let mut sweep = a1 - a0;
+                            const TAU: f64 = std::f64::consts::TAU;
+                            if bulge > 0.0 {
+                                if sweep <= 0.0 {
+                                    sweep += TAU;
+                                }
+                            } else if sweep >= 0.0 {
+                                sweep -= TAU;
+                            }
+                            if sweep.abs() < 1e-9 {
+                                sweep = if bulge > 0.0 { TAU } else { -TAU };
+                            }
+                            let segs = arc_segments(r, sweep.abs(), wire_chord_tol(r));
+                            for j in 0..segs {
+                                let a = a0 + sweep * (j as f64 / segs as f64);
+                                let p = to_wcs(cx + r * a.cos(), cy + r * a.sin());
+                                pts.push(p);
+                                if j == 0 {
+                                    key_verts.push(p);
+                                }
+                            }
+                        }
+                        // Close the loop visually for closed polylines by
+                        // returning to the first emitted point.
+                        if poly.is_closed {
+                            if let Some(first) = pts.get(start_idx).cloned() {
+                                if first[0].is_finite() {
+                                    pts.push(first);
+                                }
+                            }
+                        } else if let Some(last) = verts.last() {
+                            let p = to_wcs(last.x, last.y);
+                            pts.push(p);
+                            key_verts.push(p);
+                        }
+                    }
+                    BoundaryEdge::Line(ln) => {
+                        let p0 = to_wcs(ln.start.x, ln.start.y);
+                        let p1 = to_wcs(ln.end.x, ln.end.y);
+                        if !pts.is_empty() {
+                            pts.push([f32::NAN; 3]);
+                        }
+                        pts.push(p0);
+                        pts.push(p1);
+                        key_verts.push(p0);
+                        key_verts.push(p1);
+                    }
+                    BoundaryEdge::CircularArc(arc) => {
+                        let (sa, span) =
+                            arc_signed_span(arc.start_angle, arc.end_angle, arc.counter_clockwise);
+                        let segs = arc_segments(arc.radius, span.abs(), wire_chord_tol(arc.radius));
+                        if !pts.is_empty() {
+                            pts.push([f32::NAN; 3]);
+                        }
+                        for i in 0..=segs {
+                            let t = sa + span * (i as f64 / segs as f64);
+                            let p = to_wcs(
+                                arc.center.x + arc.radius * t.cos(),
+                                arc.center.y + arc.radius * t.sin(),
+                            );
+                            pts.push(p);
+                            if i == 0 || i == segs {
+                                key_verts.push(p);
+                            }
+                        }
+                        snap_pts.push((
+                            Vec3::from(to_wcs(arc.center.x, arc.center.y)),
+                            SnapHint::Center,
+                        ));
+                    }
+                    BoundaryEdge::EllipticArc(ell) => {
+                        let r_maj = (ell.major_axis_endpoint.x * ell.major_axis_endpoint.x
+                            + ell.major_axis_endpoint.y * ell.major_axis_endpoint.y)
+                            .sqrt();
+                        let r_min = r_maj * ell.minor_axis_ratio;
+                        let rot = ell
+                            .major_axis_endpoint
+                            .y
+                            .atan2(ell.major_axis_endpoint.x);
+                        let (sa, span) =
+                            arc_signed_span(ell.start_angle, ell.end_angle, ell.counter_clockwise);
+                        let segs = arc_segments(r_maj, span.abs(), wire_chord_tol(r_maj));
+                        if !pts.is_empty() {
+                            pts.push([f32::NAN; 3]);
+                        }
+                        let (cr, sr) = (rot.cos(), rot.sin());
+                        for i in 0..=segs {
+                            let t = sa + span * (i as f64 / segs as f64);
+                            let lx = r_maj * t.cos();
+                            let ly = r_min * t.sin();
+                            let p = to_wcs(
+                                ell.center.x + lx * cr - ly * sr,
+                                ell.center.y + lx * sr + ly * cr,
+                            );
+                            pts.push(p);
+                            if i == 0 || i == segs {
+                                key_verts.push(p);
+                            }
+                        }
+                        snap_pts.push((
+                            Vec3::from(to_wcs(ell.center.x, ell.center.y)),
+                            SnapHint::Center,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if pts.is_empty() {
+            pts = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        }
+        (pts, snap_pts, vec![], key_verts)
     }
 }

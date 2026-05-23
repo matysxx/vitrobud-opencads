@@ -201,3 +201,44 @@ impl Transformable for Ole2Frame {
         apply_transform(self, t);
     }
 }
+
+impl crate::entities::traits::LegacyTess for Ole2Frame {
+    fn legacy_geometry(&self, world_offset: [f64; 3]) -> crate::scene::tess_util::LegacyGeometry {
+        // OLE objects carry a bounding rectangle in model space.
+        // Render a simple X-through-rectangle placeholder.
+        let [ox, oy, oz] = world_offset;
+        let x0 = (self.upper_left_corner.x - ox) as f32;
+        let y0 = (self.lower_right_corner.y - oy) as f32;
+        let x1 = (self.lower_right_corner.x - ox) as f32;
+        let y1 = (self.upper_left_corner.y - oy) as f32;
+        let z = (self.upper_left_corner.z - oz) as f32;
+        if (x1 - x0).abs() < 1e-6 && (y1 - y0).abs() < 1e-6 {
+            // Degenerate / unknown size — show a small cross.
+            let s = 0.5_f32;
+            return (
+                vec![[-s, 0.0, 0.0], [s, 0.0, 0.0]],
+                vec![],
+                vec![],
+                vec![],
+            );
+        }
+        let pts = vec![
+            // Outer rectangle
+            [x0, y0, z],
+            [x1, y0, z],
+            [x1, y0, z],
+            [x1, y1, z],
+            [x1, y1, z],
+            [x0, y1, z],
+            [x0, y1, z],
+            [x0, y0, z],
+            // Diagonal X
+            [x0, y0, z],
+            [x1, y1, z],
+            [f32::NAN, f32::NAN, f32::NAN],
+            [x1, y0, z],
+            [x0, y1, z],
+        ];
+        (pts, vec![], vec![], vec![[x0, y0, z], [x1, y1, z]])
+    }
+}

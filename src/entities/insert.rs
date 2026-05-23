@@ -118,3 +118,27 @@ impl Transformable for Insert {
         apply_transform(self, t);
     }
 }
+
+impl crate::entities::traits::LegacyTess for Insert {
+    fn legacy_geometry(&self, world_offset: [f64; 3]) -> crate::scene::tess_util::LegacyGeometry {
+        let [ox, oy, oz] = world_offset;
+        let ip = Vec3::new(
+            (self.insert_point.x - ox) as f32,
+            (self.insert_point.y - oy) as f32,
+            (self.insert_point.z - oz) as f32,
+        );
+        let s = 0.1_f32;
+        let pts = vec![
+            [ip.x - s, ip.y, ip.z],
+            [ip.x + s, ip.y, ip.z],
+            [ip.x, ip.y - s, ip.z],
+            [ip.x, ip.y + s, ip.z],
+        ];
+        (
+            pts,
+            vec![(ip, crate::scene::wire_model::SnapHint::Insertion)],
+            vec![],
+            vec![],
+        )
+    }
+}

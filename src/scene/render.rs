@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::pipeline::viewcube::{hover_id, VIEWCUBE_PX};
 use super::pipeline::Pipeline;
-use super::tessellate;
+use super::tess_util;
 use super::{HatchModel, ImageModel, MeshLodSet, Scene, Uniforms, WireModel};
 
 // ── PaperViewportPipeline / PaperViewportPrimitive ────────────────────────
@@ -242,7 +242,7 @@ pub(super) fn render_style_for(
             AcadColor::Index(i) => *i,
             _ => 0,
         };
-        let [r, g, b, _] = tessellate::aci_to_rgba(resolved);
+        let [r, g, b, _] = tess_util::aci_to_rgba(resolved);
         let alpha = 1.0 - e.common().transparency.as_percent() as f32;
         ([r, g, b, alpha], aci)
     };
@@ -473,7 +473,7 @@ impl Scene {
 
 // ── Linetype pattern helper ───────────────────────────────────────────────
 
-pub(super) fn resolve_pattern(
+pub(crate) fn resolve_pattern(
     table: &acadrust::tables::Table<LineType>,
     name: &str,
     scale: f32,
