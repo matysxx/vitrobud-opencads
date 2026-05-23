@@ -4522,7 +4522,7 @@ impl H7CAD {
                     Ok(Some(v)) => {
                         self.push_undo_snapshot(i, "LWDISPLAY");
                         self.tabs[i].scene.document.header.lineweight_display = v;
-                        self.tabs[i].scene.bump_geometry();
+                        // No retessellate — the wire shader honours the flag via uniforms.
                         self.tabs[i].dirty = true;
                         self.command_line.push_output(&format!(
                             "LWDISPLAY {}",

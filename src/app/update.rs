@@ -2514,7 +2514,7 @@ impl H7CAD {
                 if i < self.tabs.len() {
                     let h = &mut self.tabs[i].scene.document.header;
                     h.lineweight_display = !h.lineweight_display;
-                    self.tabs[i].scene.bump_geometry();
+                    // No retessellate — the wire shader reads the flag from uniforms.
                     self.tabs[i].dirty = true;
                 }
                 Task::none()

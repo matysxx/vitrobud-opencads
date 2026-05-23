@@ -11,10 +11,13 @@
 //   • pat0/pat1 encode up to 8 elements: positive=dash, negative=gap.
 
 struct Uniforms {
-    view_proj:     mat4x4<f32>,
-    camera_pos:    vec4<f32>,
-    viewport_size: vec2<f32>,
-    _pad:          vec2<f32>,
+    view_proj:        mat4x4<f32>,
+    camera_pos:       vec4<f32>,
+    viewport_size:    vec2<f32>,
+    world_per_pixel:  f32,
+    // LWDISPLAY toggle: 0.0 = force 1 px (half_width 0.5), 1.0 = use per-vertex
+    // baked half_width. Lets the LWT button switch without retessellating.
+    lwdisplay_enable: f32,
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -70,8 +73,11 @@ struct VertexOut {
     // Select the clip-space position for this vertex's endpoint.
     let clip_pos = mix(clip_a, clip_b, in.which_end);
 
+    // LWDISPLAY off → collapse to a 1-pixel-wide line (half_width = 0.5).
+    let hw = select(0.5, in.half_width, u.lwdisplay_enable > 0.5);
+
     // Offset in clip space (multiply by w to un-apply perspective division).
-    let ndc_offset = perp_ndc * in.half_width * in.side;
+    let ndc_offset = perp_ndc * hw * in.side;
     let final_clip = clip_pos + vec4<f32>(ndc_offset * clip_pos.w, 0.0, 0.0);
 
     var out: VertexOut;

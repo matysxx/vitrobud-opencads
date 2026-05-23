@@ -253,27 +253,24 @@ pub(super) fn render_style_for(
     let (pattern_length, pattern) = resolve_pattern(&document.line_types, lt_name, lt_scale);
 
     let line_weight_px = {
-        // LWDISPLAY (header.lineweight_display): when false, every entity
-        // draws at the 1-pixel base width regardless of its assigned weight.
-        // AutoCAD's "Show Lineweight" toggle maps onto this header var.
-        if !document.header.lineweight_display {
-            1.0
-        } else {
-            let ew = &e.common().line_weight;
-            let resolved = match ew {
-                LineWeight::ByLayer | LineWeight::ByBlock | LineWeight::Default => document
-                    .layers
-                    .get(layer_name)
-                    .map(|l| &l.line_weight)
-                    .unwrap_or(&LineWeight::Default),
-                _ => ew,
-            };
-            const MM_TO_PX: f32 = 96.0 / 25.4;
-            resolved
-                .millimeters()
-                .map(|mm| (mm as f32 * MM_TO_PX).max(1.0))
-                .unwrap_or(1.0)
-        }
+        // LWDISPLAY is no longer evaluated here — the toggle is now applied in
+        // the wire shader via `Uniforms.lwdisplay_enable`, so we always bake the
+        // entity's resolved (layer-inherited) weight. Toggling lineweight
+        // visibility costs only a uniform write, not a retessellate.
+        let ew = &e.common().line_weight;
+        let resolved = match ew {
+            LineWeight::ByLayer | LineWeight::ByBlock | LineWeight::Default => document
+                .layers
+                .get(layer_name)
+                .map(|l| &l.line_weight)
+                .unwrap_or(&LineWeight::Default),
+            _ => ew,
+        };
+        const MM_TO_PX: f32 = 96.0 / 25.4;
+        resolved
+            .millimeters()
+            .map(|mm| (mm as f32 * MM_TO_PX).max(1.0))
+            .unwrap_or(1.0)
     };
 
     (entity_color, pattern_length, pattern, line_weight_px, aci)
@@ -376,7 +373,7 @@ impl Scene {
             wipeout_hatches: self.wipeout_models_arc(),
             images: self.images_arc(),
             meshes: self.meshes_arc(),
-            uniforms: Uniforms::new(&cam, bounds),
+            uniforms: Uniforms::new(&cam, bounds, self.document.header.lineweight_display),
             cam_rotation: cam.view_rotation_mat(),
             hover_region,
             bg_color,
@@ -420,7 +417,7 @@ impl Scene {
             wipeout_hatches: self.wipeout_models_arc(),
             images: self.images_arc(),
             meshes: self.meshes_arc(),
-            uniforms: Uniforms::new(&cam, bounds),
+            uniforms: Uniforms::new(&cam, bounds, self.document.header.lineweight_display),
             cam_rotation: cam.view_rotation_mat(),
             hover_region,
             bg_color: self.bg_color,
