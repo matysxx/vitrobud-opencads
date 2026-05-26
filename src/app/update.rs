@@ -691,7 +691,7 @@ impl OpenCADStudio {
 
             Message::RibbonSelectTab(idx) => {
                 self.ribbon.select(idx);
-                Task::none()
+                self.focus_cmd_input()
             }
 
             Message::RibbonToolClick { tool_id, event } => {
@@ -727,7 +727,7 @@ impl OpenCADStudio {
                         return Task::done(Message::ToggleLayers);
                     }
                 }
-                Task::none()
+                self.focus_cmd_input()
             }
 
             // ── Application menu ──────────────────────────────────────────
@@ -759,7 +759,7 @@ impl OpenCADStudio {
                 // fresh tab's defaults (ByLayer) instead of inheriting the
                 // previous tab's last selection.
                 self.sync_ribbon_from_selection();
-                Task::none()
+                self.focus_cmd_input()
             }
 
             Message::TabSwitch(idx) => {
@@ -772,7 +772,7 @@ impl OpenCADStudio {
                     // if there is one), not the prior tab's choice.
                     self.sync_ribbon_from_selection();
                 }
-                Task::none()
+                self.focus_cmd_input()
             }
 
             Message::TabClose(idx) => {
@@ -807,9 +807,38 @@ impl OpenCADStudio {
             }
 
             Message::CommandInput(s) => {
-                // Any manual typing resets the history recall cursor.
+                // Space submits the current input the same way Enter does
+                // (CAD convention) — unless the active command is collecting
+                // free-form text (TEXT / MTEXT / DDEDIT / attribute value
+                // prompts) where Space must reach the buffer as a literal
+                // character. `wants_text_with_spaces()` flags those prompts.
+                let i = self.active_tab;
+                let allow_literal_space = self
+                    .tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|c| c.wants_text_input() && c.wants_text_with_spaces())
+                    .unwrap_or(false);
+                if !allow_literal_space && s.ends_with(' ') {
+                    self.command_line.input = s.trim_end_matches(' ').to_string();
+                    return Task::done(Message::CommandSubmit);
+                }
                 self.command_line.input = s;
                 Task::none()
+            }
+
+            Message::CommandAppendChar(s) => {
+                // Filter out control characters — only push the typed
+                // glyph(s). `Tab`, etc. arrive as Named keys, not here.
+                if s.chars().all(|c| !c.is_control()) {
+                    self.command_line.input.push_str(&s);
+                }
+                self.focus_cmd_input()
+            }
+
+            Message::CommandBackspace => {
+                self.command_line.input.pop();
+                self.focus_cmd_input()
             }
 
             Message::CommandHistoryPrev => {
@@ -1723,11 +1752,15 @@ impl OpenCADStudio {
 
             Message::ViewportLeftPress => {
                 let i = self.active_tab;
+                // Clicking inside the viewport must not park focus on the
+                // viewport widget — typed characters need to keep flowing
+                // into the command-line input. Refocus on every exit path.
+                let refocus = self.focus_cmd_input();
                 let (p, vp_size) = {
                     let sel = self.tabs[i].scene.selection.borrow();
                     let p = match sel.last_move_pos {
                         Some(p) => p,
-                        None => return Task::none(),
+                        None => return refocus,
                     };
                     (p, sel.vp_size)
                 };
@@ -1744,7 +1777,7 @@ impl OpenCADStudio {
                     if scene::hit_test(p.x, p.y, vw, vh, cam.view_rotation_mat(), VIEWCUBE_PX)
                         .is_some()
                     {
-                        return Task::none();
+                        return refocus;
                     }
                 }
 
@@ -1780,7 +1813,7 @@ impl OpenCADStudio {
                                 origin_world: world,
                                 last_world: world,
                             });
-                            return Task::none();
+                            return refocus;
                         }
                     }
                 }
@@ -1791,7 +1824,7 @@ impl OpenCADStudio {
                 sel.left_press_pos = Some(p);
                 sel.left_press_time = Some(Instant::now());
                 sel.left_dragging = false;
-                Task::none()
+                refocus
             }
 
             Message::ViewportLeftRelease => {
@@ -2443,7 +2476,7 @@ impl OpenCADStudio {
                 ) {
                     return Task::done(Message::ViewCubeSnap(region));
                 }
-                Task::none()
+                self.focus_cmd_input()
             }
 
             Message::WindowResized(w, h) => {
@@ -3129,13 +3162,13 @@ impl OpenCADStudio {
                             self.ribbon.select(idx);
                         }
                         self.command_line.push_output(&format!(
-                            "Layout \"{new_name}\" oluşturuldu — MVIEW ile viewport ekleyin"
+                            "Layout \"{new_name}\" created — use MVIEW to add a viewport"
                         ));
                         self.tabs[i].dirty = true;
                     }
                     Err(e) => self
                         .command_line
-                        .push_error(&format!("Layout oluşturulamadı: {e}")),
+                        .push_error(&format!("Failed to create layout: {e}")),
                 }
                 Task::none()
             }
@@ -3187,7 +3220,7 @@ impl OpenCADStudio {
                             .any(|n| *n == new_name);
                         if exists {
                             self.command_line
-                                .push_error(&format!("\"{}\" adı zaten kullanımda", new_name));
+                                .push_error(&format!("\"{}\" name already in use", new_name));
                         } else {
                             self.push_undo_snapshot(i, "LAYOUT RENAME");
                             self.tabs[i].scene.rename_layout(&orig, &new_name);

@@ -82,6 +82,12 @@ impl CadCommand for AtteditCommand {
         }
     }
 
+    fn wants_text_with_spaces(&self) -> bool {
+        // Editing an attribute value — same free-form semantics as the
+        // text-content prompts in TEXT / MTEXT / DDEDIT.
+        self.wants_text_input()
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         let Step::EditAttr { handle, attrs, idx } = &mut self.step else {
             return None;

@@ -80,6 +80,10 @@ impl CadCommand for DdeditCommand {
         matches!(self.step, DdeditStep::EnterText { .. })
     }
 
+    fn wants_text_with_spaces(&self) -> bool {
+        matches!(self.step, DdeditStep::EnterText { .. })
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         let (handle, current) = match &self.step {
             DdeditStep::EnterText { handle, current } => (*handle, current.clone()),

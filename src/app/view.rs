@@ -678,6 +678,11 @@ impl OpenCADStudio {
                             {
                                 Some(Message::DeleteSelected)
                             }
+                            keyboard::Key::Named(keyboard::key::Named::Backspace)
+                                if status == Status::Ignored =>
+                            {
+                                Some(Message::CommandBackspace)
+                            }
                             keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
                                 Some(Message::CommandHistoryPrev)
                             }
@@ -718,6 +723,15 @@ impl OpenCADStudio {
                                 "v" => Some(Message::Command("PASTECLIP".to_string())),
                                 _ => None,
                             },
+                            // Plain character keys (no ctrl) that nothing
+                            // else consumed — route them into the command
+                            // line input so typing always reaches it even
+                            // when focus is parked on a button / viewport.
+                            keyboard::Key::Character(c)
+                                if !ctrl && status == Status::Ignored =>
+                            {
+                                Some(Message::CommandAppendChar(c.to_string()))
+                            }
                             _ => None,
                         }
                     }
@@ -729,11 +743,6 @@ impl OpenCADStudio {
 
     pub(super) fn focus_cmd_input(&self) -> Task<Message> {
         iced::widget::operation::focus(iced::widget::Id::new(crate::ui::command_line::CMD_INPUT_ID))
-    }
-
-    pub(super) fn blur_cmd_input(&self) -> Task<Message> {
-        let op = iced::advanced::widget::operation::focusable::unfocus::<Message>();
-        iced::advanced::widget::operate(op)
     }
 }
 

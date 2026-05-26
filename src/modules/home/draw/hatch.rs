@@ -134,18 +134,18 @@ impl CadCommand for HatchCommand {
         match &self.mode {
             Mode::PickInside => {
                 let miss = if self.missed {
-                    "  ⚠ Kapalı sınır bulunamadı."
+                    "  ⚠ No closed boundary found."
                 } else {
                     ""
                 };
-                format!("HATCH  İçini tıklayın [S=Elle çiz]:{miss}")
+                format!("HATCH  Pick internal point [S=Draw manually]:{miss}")
             }
             Mode::Manual => {
                 if self.manual_pts.is_empty() {
-                    "HATCH  Sınır noktası 1:".into()
+                    "HATCH  Boundary point 1:".into()
                 } else {
                     format!(
-                        "HATCH  Nokta {} [Enter=onayla, ≥3 nokta]:",
+                        "HATCH  Point {} [Enter=accept, ≥3 points]:",
                         self.manual_pts.len() + 1
                     )
                 }
@@ -271,18 +271,18 @@ impl CadCommand for GradientCommand {
         match &self.mode {
             Mode::PickInside => {
                 let miss = if self.missed {
-                    "  ⚠ Kapalı sınır bulunamadı."
+                    "  ⚠ No closed boundary found."
                 } else {
                     ""
                 };
-                format!("GRADIENT  İçini tıklayın [S=Elle çiz]:{miss}")
+                format!("GRADIENT  Pick internal point [S=Draw manually]:{miss}")
             }
             Mode::Manual => {
                 if self.manual_pts.is_empty() {
-                    "GRADIENT  Sınır noktası 1:".into()
+                    "GRADIENT  Boundary point 1:".into()
                 } else {
                     format!(
-                        "GRADIENT  Nokta {} [Enter=onayla, ≥3 nokta]:",
+                        "GRADIENT  Point {} [Enter=accept, ≥3 points]:",
                         self.manual_pts.len() + 1
                     )
                 }
@@ -386,11 +386,11 @@ impl CadCommand for BoundaryCommand {
 
     fn prompt(&self) -> String {
         let miss = if self.missed {
-            "  ⚠ Kapalı sınır bulunamadı."
+            "  ⚠ No closed boundary found."
         } else {
             ""
         };
-        format!("BOUNDARY  İçini tıklayın:{miss}")
+        format!("BOUNDARY  Pick internal point:{miss}")
     }
 
     fn on_point(&mut self, pt: Vec3) -> CmdResult {

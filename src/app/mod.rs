@@ -343,6 +343,14 @@ pub enum Message {
     CommandInput(String),
     CommandSubmit,
     Command(String),
+    /// Append one typed character to the command-line input from the
+    /// global key-press subscription. Used when the text-input widget
+    /// itself isn't focused (focus parked on viewport / button / etc.)
+    /// so typing still routes to the command line.
+    CommandAppendChar(String),
+    /// Pop the trailing character off the command-line input — backspace
+    /// counterpart to `CommandAppendChar`.
+    CommandBackspace,
     /// Recall previous command in history (↑ arrow key).
     CommandHistoryPrev,
     /// Recall next command in history (↓ arrow key).
@@ -848,7 +856,8 @@ impl OpenCADStudio {
             crate::update_check::check_for_update(),
             Message::UpdateCheckResult,
         );
-        (s, Task::batch([open_main, check_update]))
+        let focus_cmd = s.focus_cmd_input();
+        (s, Task::batch([open_main, check_update, focus_cmd]))
     }
 }
 

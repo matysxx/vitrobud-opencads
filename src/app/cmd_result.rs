@@ -1539,13 +1539,14 @@ impl OpenCADStudio {
                 self.restore_pre_cmd_tangent();
             }
         }
-        // Focus the command-line input while a command is active; blur it when the command ends.
-        if self.tabs[i].active_cmd.is_some() {
-            self.focus_cmd_input()
-        } else {
+        // Keep the command-line input focused at all times — every typed
+        // character is meant to route there (the command processor reads
+        // its keystroke stream from this widget). When no command is
+        // running the ribbon tool button still has to visually deactivate.
+        if self.tabs[i].active_cmd.is_none() {
             self.ribbon.deactivate_tool();
-            self.blur_cmd_input()
         }
+        self.focus_cmd_input()
     }
 
     /// Restore the tangent snap state that was in effect before the command started.

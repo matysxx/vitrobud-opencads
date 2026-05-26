@@ -241,6 +241,19 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Returns `true` when the active text prompt expects free-form prose
+    /// that can legitimately contain whitespace (the body of a TEXT /
+    /// MTEXT / DDEDIT entity, an attribute default value, etc.). For
+    /// these prompts the command-line input must let `Space` be typed as
+    /// a literal character; for every other prompt `Space` submits the
+    /// input the same way `Enter` does.
+    ///
+    /// Default `false` — single-token prompts (option letters, numeric
+    /// radius, block name) do not embed spaces.
+    fn wants_text_with_spaces(&self) -> bool {
+        false
+    }
+
     /// Called when the user submits text via the command line while `wants_text_input` is true.
     fn on_text_input(&mut self, _text: &str) -> Option<CmdResult> {
         None

@@ -116,6 +116,11 @@ impl CadCommand for InsertBlockCommand {
         matches!(self.step, Step::Name | Step::FillAttr { .. })
     }
 
+    fn wants_text_with_spaces(&self) -> bool {
+        // Block names don't embed whitespace, but attribute values do.
+        matches!(self.step, Step::FillAttr { .. })
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         match &self.step {
             Step::Name => {

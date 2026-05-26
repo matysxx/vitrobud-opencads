@@ -909,11 +909,11 @@ pub fn build_geometry() -> (Vec<CubeVertex>, Vec<u32>) {
         &mut is,
     );
     for &([sx, sy, sz], region) in &[
-        ([1.0f32, 1.0, 1.0], CORNER_TBK_R), // sy=+1 = BACK yönü
+        ([1.0f32, 1.0, 1.0], CORNER_TBK_R), // sy=+1 → BACK direction
         ([-1.0, 1.0, 1.0], CORNER_TBK_L),
         ([1.0, 1.0, -1.0], CORNER_BBK_R),
         ([-1.0, 1.0, -1.0], CORNER_BBK_L),
-        ([1.0, -1.0, 1.0], CORNER_TPF_R), // sy=-1 = FRONT yönü
+        ([1.0, -1.0, 1.0], CORNER_TPF_R), // sy=-1 → FRONT direction
         ([-1.0, -1.0, 1.0], CORNER_TPF_L),
         ([1.0, -1.0, -1.0], CORNER_BTF_R),
         ([-1.0, -1.0, -1.0], CORNER_BTF_L),

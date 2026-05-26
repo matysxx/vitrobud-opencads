@@ -65,6 +65,10 @@ impl CadCommand for MTextCommand {
         matches!(self.step, Step::WaitText(_))
     }
 
+    fn wants_text_with_spaces(&self) -> bool {
+        matches!(self.step, Step::WaitText(_))
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         if let Step::WaitText(pos) = &self.step {
             if text.trim().is_empty() {

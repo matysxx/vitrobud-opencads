@@ -43,9 +43,9 @@ impl CadCommand for MviewCommand {
 
     fn prompt(&self) -> String {
         if self.corner1.is_none() {
-            "MVIEW  İlk köşeyi belirtin:".to_string()
+            "MVIEW  Specify first corner:".to_string()
         } else {
-            "MVIEW  Karşı köşeyi belirtin:".to_string()
+            "MVIEW  Specify opposite corner:".to_string()
         }
     }
 

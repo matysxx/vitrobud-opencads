@@ -65,6 +65,12 @@ impl CadCommand for AttdefCommand {
         !matches!(self.step, Step::Insertion { .. })
     }
 
+    fn wants_text_with_spaces(&self) -> bool {
+        // Tag must be a single token (so disallow spaces there); the
+        // Prompt and Default value steps are free-form text.
+        matches!(self.step, Step::Prompt { .. } | Step::Default { .. })
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         match &self.step {
             Step::Tag => {

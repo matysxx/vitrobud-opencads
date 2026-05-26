@@ -359,7 +359,7 @@ pub(super) fn render_small<'a>(
                 .height(ROW_H)
                 .padding([4, 4]);
 
-            let arr_tip = format!("{} seçenekleri", cur_label);
+            let arr_tip = format!("{} options", cur_label);
             let arr_btn = button(
                 container(text("▾").size(7).color(ARROW_COLOR))
                     .width(Fill)
@@ -488,7 +488,7 @@ pub(super) fn render_large<'a>(
                 .or_else(|| items.first().map(|(_, lbl, _)| *lbl))
                 .unwrap_or(label);
             let tip_text = format!("{}\nCommand: {}", cur_label, last);
-            let arr_tip = format!("{} seçenekleri", label);
+            let arr_tip = format!("{} options", label);
 
             let top_btn = button(
                 column![
