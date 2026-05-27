@@ -2568,34 +2568,25 @@ impl OpenCADStudio {
             Message::ViewCubeSnap(region) => {
                 let i = self.active_tab;
                 let mut region = region;
-                let (yaw, pitch) = {
-                    let (target_yaw, target_pitch) = region.snap_angles();
-                    // Check current orientation to detect "already there → flip to opposite".
-                    let already_there = if let Some((cur_yaw, cur_pitch)) =
-                        self.tabs[i].scene.active_viewport_yaw_pitch()
-                    {
-                        angle_close(cur_yaw, target_yaw, 0.01)
-                            && angle_close(cur_pitch, target_pitch, 0.01)
-                    } else if self.tabs[i].scene.active_viewport.is_some() {
-                        false
-                    } else {
-                        let cam = self.tabs[i].scene.camera.borrow();
-                        angle_close(cam.yaw, target_yaw, 0.01)
-                            && angle_close(cam.pitch, target_pitch, 0.01)
-                    };
-                    if already_there {
-                        region = region.opposite();
-                    }
-                    region.snap_angles()
+                // "Already there → flip to opposite" check: compare the
+                // current gaze direction with the region's target gaze.
+                let target_dir = region.snap_direction();
+                let cur_dir = {
+                    let cam = self.tabs[i].scene.camera.borrow();
+                    cam.rotation * glam::Vec3::Z
                 };
+                if cur_dir.dot(target_dir) > 0.9999 {
+                    region = region.opposite();
+                }
+                let eye_dir = region.snap_direction();
 
                 if self.tabs[i].scene.active_viewport.is_some() {
                     self.tabs[i]
                         .scene
-                        .snap_active_viewport_to_angles(yaw, pitch);
+                        .snap_active_viewport_to_direction(eye_dir);
                 } else {
                     let mut cam = self.tabs[i].scene.camera.borrow_mut();
-                    cam.snap_to_angles(yaw, pitch);
+                    cam.snap_to_direction(eye_dir);
                 }
                 self.tabs[i].scene.camera_generation += 1;
                 self.command_line

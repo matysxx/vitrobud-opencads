@@ -46,7 +46,7 @@ impl Default for Camera {
         let pitch = std::f32::consts::FRAC_PI_2;
         Self {
             target: Vec3::ZERO,
-            rotation: yaw_pitch_to_quat(yaw, pitch),
+            rotation: yaw_pitch_to_quat(yaw, pitch, 0.0),
             distance: 60.36,
             fov_y: 45.0_f32.to_radians(),
             projection: Projection::Orthographic,
@@ -250,12 +250,59 @@ impl Camera {
 
     // ── ViewCube snap ─────────────────────────────────────────────────────
 
-    /// Snap to canonical yaw+pitch (called by ViewCubeSnap message).
-    /// Updates the arcball quaternion to match.
-    pub fn snap_to_angles(&mut self, yaw: f32, pitch: f32) {
-        self.yaw = yaw;
-        self.pitch = pitch;
-        self.rotation = yaw_pitch_to_quat(yaw, pitch);
+    /// Snap to a canonical view direction (called by ViewCubeSnap).
+    /// `eye_dir` is the unit vector from the target toward the camera.
+    ///
+    /// Up vector resolution:
+    ///  1. Take the current up.
+    ///  2. Pick the world axis (±X, ±Y, ±Z) whose dot product with the
+    ///     current up is highest — skipping any axis (anti-)parallel to
+    ///     the new gaze direction.
+    ///  3. Project that axis onto the plane ⊥ `new_eye` and use that as
+    ///     the new up.
+    ///
+    /// Result: small tilts collapse onto the nearest world axis (so the
+    /// view always lands cleanly aligned), while genuine flips of the
+    /// up-sense (e.g. orbited upside-down) are preserved.
+    pub fn snap_to_direction(&mut self, eye_dir: Vec3) {
+        let new_eye = eye_dir.normalize_or(Vec3::Z);
+        let cur_up = self.rotation * Vec3::Y;
+        let cardinals = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ];
+        let mut best_score = f32::NEG_INFINITY;
+        let mut best_up = Vec3::Z;
+        for axis in cardinals {
+            // Skip axes (nearly) collinear with the new gaze — they can't
+            // serve as up because the projection onto the plane would
+            // vanish.
+            if axis.dot(new_eye).abs() > 0.999 {
+                continue;
+            }
+            let score = axis.dot(cur_up);
+            if score > best_score {
+                best_score = score;
+                best_up = axis;
+            }
+        }
+        // Project the chosen axis onto the plane ⊥ new_eye and normalize.
+        let projected = best_up - new_eye * best_up.dot(new_eye);
+        let new_up = projected.normalize_or(if new_eye.z.abs() < 0.99 {
+            (Vec3::Z - new_eye * Vec3::Z.dot(new_eye)).normalize()
+        } else {
+            (Vec3::Y - new_eye * Vec3::Y.dot(new_eye)).normalize()
+        });
+        let new_right = new_up.cross(new_eye).normalize();
+        // Camera rotation columns: [cam_x | cam_y | cam_z] where
+        // cam_z = eye_dir (canonical "+Z is toward eye"), cam_y = up.
+        let mat = glam::Mat3::from_cols(new_right, new_up, new_eye);
+        self.rotation = Quat::from_mat3(&mat).normalize();
+        self.sync_yaw_pitch();
     }
 
     // ── Internal helpers ───────────────────────────────────────────────────
@@ -283,11 +330,14 @@ impl Camera {
 ///   yaw   = 0          → camera looks along +Y axis (front view)
 ///   pitch = PI/2       → camera looks down -Z (top view)
 ///   pitch = 0          → camera in the XY plane
-/// Build a rotation quaternion from yaw and pitch.
+/// Build a rotation quaternion from yaw, pitch and roll.
 /// Positive yaw rotates the view direction clockwise when seen from above (Z-up).
-pub fn yaw_pitch_to_quat(yaw: f32, pitch: f32) -> Quat {
+/// Roll rotates the camera around its own view axis (post-multiplied so it
+/// composes after the yaw/pitch gaze direction is set).
+pub fn yaw_pitch_to_quat(yaw: f32, pitch: f32, roll: f32) -> Quat {
     // +yaw so ViewCube faces match camera direction (FRONT at yaw=0 = +Y world axis).
     let q_yaw = Quat::from_rotation_z(yaw);
     let q_pitch = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 - pitch);
-    (q_yaw * q_pitch).normalize()
+    let q_roll = Quat::from_rotation_z(roll);
+    (q_yaw * q_pitch * q_roll).normalize()
 }

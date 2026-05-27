@@ -2179,15 +2179,16 @@ impl Scene {
         }
     }
 
-    /// Snap the active viewport's view direction to a canonical yaw/pitch.
-    /// No-op when there is no active viewport or it is locked.
-    pub fn snap_active_viewport_to_angles(&mut self, yaw: f32, pitch: f32) {
+    /// Snap the active viewport's view direction to `eye_dir` (unit
+    /// vector from target toward camera). Twist angle is left at its
+    /// current value so the up-sense is preserved across successive
+    /// snaps. No-op when there is no active viewport or it is locked.
+    pub fn snap_active_viewport_to_direction(&mut self, eye_dir: glam::Vec3) {
         let vp_handle = match self.active_viewport {
             Some(h) => h,
             None => return,
         };
-        let cos_p = pitch.cos();
-        let eye = glam::Vec3::new(cos_p * yaw.sin(), cos_p * yaw.cos(), pitch.sin());
+        let eye = eye_dir.normalize_or(glam::Vec3::Z);
         if let Some(acadrust::EntityType::Viewport(vp)) = self.document.get_entity_mut(vp_handle) {
             if vp.status.locked {
                 return;
@@ -3807,7 +3808,7 @@ impl Scene {
         } else {
             vd.x.atan2(-vd.y)
         };
-        let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
+        let rotation = camera::yaw_pitch_to_quat(yaw, pitch, 0.0);
         let view_right = rotation * glam::Vec3::X;
         let view_up = rotation * glam::Vec3::Y;
         let base = if model_space {
@@ -3877,7 +3878,7 @@ impl Scene {
         } else {
             vd.x.atan2(-vd.y)
         };
-        let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
+        let rotation = camera::yaw_pitch_to_quat(yaw, pitch, 0.0);
         let view_right = rotation * glam::Vec3::X;
         let view_up = rotation * glam::Vec3::Y;
 
@@ -3964,7 +3965,7 @@ impl Scene {
         } else {
             vd.x.atan2(-vd.y)
         };
-        let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
+        let rotation = camera::yaw_pitch_to_quat(yaw, pitch, 0.0);
         let view_right = rotation * glam::Vec3::X;
         let view_up = rotation * glam::Vec3::Y;
 
@@ -4337,7 +4338,7 @@ impl Scene {
             vd.x.atan2(-vd.y)
         };
 
-        let rotation = camera::yaw_pitch_to_quat(yaw, pitch);
+        let rotation = camera::yaw_pitch_to_quat(yaw, pitch, 0.0);
         let view_right = rotation * glam::Vec3::X;
         let view_up = rotation * glam::Vec3::Y;
 
