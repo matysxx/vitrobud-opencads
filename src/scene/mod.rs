@@ -4694,21 +4694,58 @@ fn tessellate_entity(
                         // (baseline-line / greek / full) and must reach it
                         // even when projected size is sub-5 px.
                         let is_text = matches!(e, EntityType::Text(_) | EntityType::MText(_));
+                        let is_3d_entity = matches!(
+                            e,
+                            EntityType::Face3D(_)
+                                | EntityType::Solid3D(_)
+                                | EntityType::Mesh(_)
+                                | EntityType::PolyfaceMesh(_)
+                                | EntityType::PolygonMesh(_)
+                                | EntityType::Body(_)
+                                | EntityType::Region(_)
+                        );
                         if !is_text && w_px.max(h_px) / wpp < 5.0 {
                             // Sub-pixel entity: emit a stub instead of
-                            // nothing. Stays visible as a 1-pixel speck,
-                            // tracks its `selected` highlight across zoom
-                            // levels, and remains hit-test'able via the
-                            // AABB. See #19.
+                            // nothing so it stays visible / selectable /
+                            // hit-test'able at any zoom. 2-D entities
+                            // get the cheap diagonal segment; 3-D
+                            // entities get an AABB cube so their
+                            // footprint doesn't drift when the camera
+                            // crosses the LOD threshold. See #19.
                             let (entity_color, _, _, _, aci_idx) =
                                 render::render_style_for(document, e);
                             let entity_color = render::adapt_to_bg(entity_color, bg_color);
+                            if is_3d_entity {
+                                // `ab` is already in the local frame
+                                // (entity_aabb subtracted world_offset
+                                // XY). The bbox z fields are still in
+                                // WCS, so subtract `world_offset[2]` to
+                                // match — otherwise the stub sits at a
+                                // different z than the full tessellation
+                                // and the geometry visibly shifts when
+                                // the camera crosses the LOD threshold.
+                                let bbox = e.as_entity().bounding_box();
+                                let oz = world_offset[2];
+                                let z_min = (bbox.min.z - oz) as f32;
+                                let z_max = (bbox.max.z - oz) as f32;
+                                return vec![lod_stub_wire_3d(
+                                    h.value().to_string(),
+                                    entity_color,
+                                    sel,
+                                    aci_idx,
+                                    ab,
+                                    z_min,
+                                    z_max,
+                                )];
+                            }
                             return vec![lod_stub_wire(
                                 h.value().to_string(),
                                 entity_color,
                                 sel,
                                 aci_idx,
                                 ab,
+                                0.0,
+                                0.0,
                             )];
                         }
                     }
@@ -5122,13 +5159,16 @@ fn tessellate_entity(
                 if len_px < 2.0 {
                     // Text projects to under 2 px — fall back to the
                     // generic LOD stub so the entity stays visible /
-                    // selectable. #19.
+                    // selectable. #19. Text is 2-D in the XY plane so
+                    // z_min = z_max = 0 keeps the historical behaviour.
                     return vec![lod_stub_wire(
                         h.value().to_string(),
                         entity_color,
                         sel,
                         aci,
                         aabb,
+                        0.0,
+                        0.0,
                     )];
                 }
                 return vec![WireModel {
@@ -5152,12 +5192,15 @@ fn tessellate_entity(
             if h_px < 5.0 && aabb != WireModel::UNBOUNDED_AABB {
                 let fill_tris = crate::entities::text_support::text_greek_obb_tris(e, anno_scale, world_offset, n_lines);
                 if fill_tris.is_empty() {
+                    // Text greek fallback: also 2-D, keep stub at z=0.
                     return vec![lod_stub_wire(
                         h.value().to_string(),
                         entity_color,
                         sel,
                         aci,
                         aabb,
+                        0.0,
+                        0.0,
                     )];
                 }
                 // Greek text renders via the face3d fill batch, which colours
@@ -5253,10 +5296,13 @@ fn lod_stub_wire(
     selected: bool,
     aci: u8,
     aabb: [f32; 4],
+    z_min: f32,
+    z_max: f32,
 ) -> WireModel {
     let [ax, ay, bx, by] = aabb;
     let cx = (ax + bx) * 0.5;
     let cy = (ay + by) * 0.5;
+    let cz = (z_min + z_max) * 0.5;
     // Mirror what tessellate.rs does for the non-stub paths: bake the
     // selection-highlight colour into the wire so a re-tessellate triggered
     // by a zoom-induced LOD change keeps the entity highlighted. Without
@@ -5266,9 +5312,12 @@ fn lod_stub_wire(
     let stored_color = if selected { WireModel::SELECTED } else { color };
     WireModel {
         name,
-        // Diagonal: projects to 1-5 px at the LOD threshold so the entity
-        // shows as a tiny mark.
-        points: vec![[ax, ay, 0.0], [bx, by, 0.0]],
+        // Diagonal of the entity's 3D AABB so depth tests against
+        // shaded / hidden-line geometry are correct — the stub doesn't
+        // flatten to z=0 and pop in front of objects that sit at a
+        // different elevation. 2D entities (text fallbacks) pass
+        // z_min = z_max = 0 to keep the historical behaviour.
+        points: vec![[ax, ay, z_min], [bx, by, z_max]],
         color: stored_color,
         selected,
         aci,
@@ -5277,7 +5326,65 @@ fn lod_stub_wire(
         line_weight_px: 1.0,
         snap_pts: vec![],
         tangent_geoms: vec![],
-        key_vertices: vec![[cx, cy, 0.0]],
+        key_vertices: vec![[cx, cy, cz]],
+        aabb,
+        plinegen: true,
+        vp_scissor: None,
+        fill_tris: vec![],
+    }
+}
+
+/// Sub-pixel LOD stub for 3D entities. Emits the entity's 3D AABB as a
+/// 12-edge cube so the geometry occupies the same screen footprint and
+/// depth range as the full tessellation, just with a tiny constant cost
+/// (12 line segments). Without this, the diagonal stub used by
+/// `lod_stub_wire` cuts off at two opposite bbox corners and drifts
+/// visibly when the camera crosses the LOD threshold.
+fn lod_stub_wire_3d(
+    name: String,
+    color: [f32; 4],
+    selected: bool,
+    aci: u8,
+    aabb: [f32; 4],
+    z_min: f32,
+    z_max: f32,
+) -> WireModel {
+    let [x0, y0, x1, y1] = aabb;
+    let (z0, z1) = if z_min <= z_max { (z_min, z_max) } else { (z_max, z_min) };
+    let p = [
+        [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+        [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+    ];
+    // 12 edges = 4 bottom-face + 4 top-face + 4 vertical connectors.
+    const EDGES: [(usize, usize); 12] = [
+        (0, 1), (1, 2), (2, 3), (3, 0),
+        (4, 5), (5, 6), (6, 7), (7, 4),
+        (0, 4), (1, 5), (2, 6), (3, 7),
+    ];
+    let mut points: Vec<[f32; 3]> = Vec::with_capacity(EDGES.len() * 3);
+    for (a, b) in EDGES {
+        if !points.is_empty() {
+            points.push([f32::NAN; 3]);
+        }
+        points.push(p[a]);
+        points.push(p[b]);
+    }
+    let stored_color = if selected { WireModel::SELECTED } else { color };
+    WireModel {
+        name,
+        points,
+        color: stored_color,
+        selected,
+        aci,
+        pattern_length: 0.0,
+        pattern: [0.0; 8],
+        line_weight_px: 1.0,
+        snap_pts: vec![],
+        tangent_geoms: vec![],
+        // No `key_vertices` — Face3DGpu requires 4 corners to emit a
+        // fill quad, and we don't want this stub painted as a solid
+        // face. The wire pass still draws its 12 edges.
+        key_vertices: vec![],
         aabb,
         plinegen: true,
         vp_scissor: None,
