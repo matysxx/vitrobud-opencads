@@ -1394,6 +1394,15 @@ impl Pipeline {
                 if wire.instance_count == 0 {
                     continue;
                 }
+                // PolyfaceMesh / PolygonMesh outline edges live in
+                // `gpu_wires` (their `WireModel` has both `points` and
+                // `fill_tris`). In FlatShaded / GouraudShaded the user
+                // wants a clean shaded surface, so the wire pass skips
+                // these instances; the *WithEdges and pure wireframe
+                // modes leave the flag at true and draw them.
+                if !show_3d_edges && wire.is_3d_mesh_edge {
+                    continue;
+                }
                 match self.wire_pixel_scissors.get(i) {
                     Some(Some([x, y, w, h])) => {
                         pass.set_scissor_rect(*x, *y, *w, *h);

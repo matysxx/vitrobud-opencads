@@ -137,6 +137,12 @@ pub struct WireGpu {
     /// Paper-space bbox [x0, y0, x1, y1] for GPU scissor clipping.
     /// Set only for viewport-projected wires; None for regular wires.
     pub vp_scissor: Option<[f32; 4]>,
+    /// `true` when the source `WireModel` also carries `fill_tris`
+    /// (i.e. it is a 3D mesh face — PolyfaceMesh / PolygonMesh — whose
+    /// outline lives in `points`). The wire pass skips these instances
+    /// in shaded modes so the surface reads as a clean solid; pure
+    /// wireframe / HiddenLine / *WithEdges modes draw them.
+    pub is_3d_mesh_edge: bool,
 }
 
 /// Expand one `WireModel` into its per-segment instance stream (1 instance per
@@ -225,6 +231,7 @@ impl WireGpu {
     pub fn new(device: &wgpu::Device, wire: &WireModel) -> Self {
         let mut g = Self::build(device, wire, wire.color);
         g.vp_scissor = wire.vp_scissor;
+        g.is_3d_mesh_edge = !wire.fill_tris.is_empty();
         g
     }
 
@@ -273,6 +280,7 @@ impl WireGpu {
                     instance_buffer,
                     instance_count: chunk.len() as u32,
                     vp_scissor: None,
+                    is_3d_mesh_edge: false,
                 }
             })
             .collect()
@@ -287,6 +295,7 @@ impl WireGpu {
             instance_buffer,
             instance_count: instances.len() as u32,
             vp_scissor: None,
+            is_3d_mesh_edge: false,
         }
     }
 }
