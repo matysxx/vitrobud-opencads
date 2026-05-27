@@ -963,6 +963,15 @@ impl OpenCADStudio {
                 // dropdown so the dispatched command's new prompt is
                 // immediately visible on the overlay.
                 self.command_line.close_history();
+                // Interactive VPORTS: the entry after a bare `VPORTS` is the
+                // tiled configuration. Empty input defaults to SINGLE.
+                if self.awaiting_vports {
+                    self.awaiting_vports = false;
+                    let cfg = self.command_line.input.trim().to_string();
+                    self.command_line.input.clear();
+                    let cfg = if cfg.is_empty() { "SINGLE".to_string() } else { cfg };
+                    return self.dispatch_command(&format!("VPORTS {cfg}"));
+                }
                 // If the user navigated the autocomplete list with the
                 // arrow keys, Enter dispatches the highlighted command
                 // rather than the partial text actually in the buffer.

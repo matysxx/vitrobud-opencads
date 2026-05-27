@@ -70,6 +70,9 @@ pub(super) struct OpenCADStudio {
     show_grid: bool,
     /// Dynamic input overlay (F12): show coordinate tooltip near cursor.
     dyn_input: bool,
+    /// `true` after a bare `VPORTS` in model space — the next command-line
+    /// entry is treated as the tiled-config option (SIngle/2H/2V/4).
+    awaiting_vports: bool,
     /// Show the UCS icon in the bottom-left corner of model space (UCSICON).
     show_ucs_icon: bool,
     /// Whether the ViewCube 3D gizmo is visible in model space (NAVVCUBE).
@@ -743,6 +746,7 @@ impl OpenCADStudio {
             polar_increment_deg: 45.0,
             show_grid: false,
             dyn_input: true,
+            awaiting_vports: false,
             show_ucs_icon: true,
             show_viewcube: true,
             show_properties: true,

@@ -2663,8 +2663,48 @@ impl OpenCADStudio {
                 let sub = cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase();
                 let scene = &self.tabs[i].scene;
                 if scene.current_layout == "Model" {
-                    self.command_line
-                        .push_error("VPORTS: switch to a paper space layout first.");
+                    // Bare VPORTS → ask for the configuration interactively;
+                    // the next command-line entry supplies it.
+                    if sub.is_empty() {
+                        self.awaiting_vports = true;
+                        self.command_line
+                            .push_info("VPORTS  Configuration [SIngle/2H/2V/4]:");
+                        return self.focus_cmd_input();
+                    }
+                    // Model space: split the tiled viewport layout.
+                    use iced::Rectangle as R;
+                    let full = R { x: 0.0, y: 0.0, width: 1.0, height: 1.0 };
+                    let rects: Option<Vec<R>> = match sub.as_str() {
+                        "SINGLE" | "SI" | "1" => Some(vec![full]),
+                        "2H" | "2" => Some(vec![
+                            R { x: 0.0, y: 0.0, width: 1.0, height: 0.5 },
+                            R { x: 0.0, y: 0.5, width: 1.0, height: 0.5 },
+                        ]),
+                        "2V" => Some(vec![
+                            R { x: 0.0, y: 0.0, width: 0.5, height: 1.0 },
+                            R { x: 0.5, y: 0.0, width: 0.5, height: 1.0 },
+                        ]),
+                        "4" => Some(vec![
+                            R { x: 0.0, y: 0.0, width: 0.5, height: 0.5 },
+                            R { x: 0.5, y: 0.0, width: 0.5, height: 0.5 },
+                            R { x: 0.0, y: 0.5, width: 0.5, height: 0.5 },
+                            R { x: 0.5, y: 0.5, width: 0.5, height: 0.5 },
+                        ]),
+                        _ => None,
+                    };
+                    match rects {
+                        Some(rects) => {
+                            let n = rects.len();
+                            self.tabs[i].scene.set_model_tile_layout(rects);
+                            self.tabs[i].scene.camera_generation += 1;
+                            self.command_line
+                                .push_output(&format!("VPORTS: {n} viewport(s)."));
+                        }
+                        None => {
+                            self.command_line
+                                .push_error("VPORTS: use SINGLE | 2H | 2V | 4.");
+                        }
+                    }
                 } else if sub.is_empty() {
                     // ── List existing viewports ──────────────────────────
                     let layout_block = scene.current_layout_block_handle_pub();

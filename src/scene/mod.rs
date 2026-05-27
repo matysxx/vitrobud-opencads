@@ -4362,18 +4362,31 @@ impl Scene {
         true
     }
 
-    /// Reset the Model layout to a single full-window tile.
-    pub fn reset_model_tiles(&self) {
+    /// Replace the Model tiled layout with the given normalized rectangles
+    /// (each in 0..1). Every tile inherits the current camera; the first
+    /// tile becomes active. Used by VPORTS presets and `reset_model_tiles`.
+    pub fn set_model_tile_layout(&self, rects: Vec<iced::Rectangle>) {
         let cam_now = self.camera.borrow().clone();
-        *self.model_tiles.borrow_mut() = vec![ModelTile {
-            rect: iced::Rectangle {
-                x: 0.0,
-                y: 0.0,
-                width: 1.0,
-                height: 1.0,
-            },
-            camera: cam_now,
-        }];
+        let tiles: Vec<ModelTile> = rects
+            .into_iter()
+            .map(|rect| ModelTile {
+                rect,
+                camera: cam_now.clone(),
+            })
+            .collect();
+        *self.model_tiles.borrow_mut() = if tiles.is_empty() {
+            vec![ModelTile {
+                rect: iced::Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
+                camera: cam_now,
+            }]
+        } else {
+            tiles
+        };
         self.active_model_tile.set(0);
     }
 
