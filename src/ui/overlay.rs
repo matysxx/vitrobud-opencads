@@ -26,6 +26,10 @@ pub struct GripMarker {
     pub shape: GripShape,
     /// True → grip is currently being dragged (drawn filled red).
     pub is_hot: bool,
+    /// World-XY direction vector — only consumed by the `Rectangle`
+    /// shape to orient the box along its segment. `None` for grips
+    /// that don't need rotation.
+    pub dir: Option<[f32; 2]>,
 }
 
 // ── Grid display params ───────────────────────────────────────────────────
@@ -424,29 +428,38 @@ impl canvas::Program<Message> for SelectionCanvas {
                     Size::new(h * 2.0, h * 2.0),
                 ),
                 GripShape::Rectangle => {
-                    // Wider-than-tall box — direction-aware mid-segment
-                    // stretch handle.
-                    let w = h * 1.4;
-                    let t = h * 0.7;
-                    canvas::Path::rectangle(
-                        Point::new(sp.x - w, sp.y - t),
-                        Size::new(w * 2.0, t * 2.0),
-                    )
+                    // Mid-segment stretch handle: small box, longer along
+                    // the segment direction so the affordance reads as
+                    // "stretch perpendicular to the segment". `dir` is a
+                    // world-XY direction vector; project it onto the
+                    // screen-X / screen-Y axes implied by the grip's
+                    // 2-D screen position to compute the in-plane angle.
+                    let half_long = h * 1.4;
+                    let half_short = h * 0.7;
+                    let (cos_t, sin_t) = match grip.dir {
+                        Some([dx, dy]) if (dx * dx + dy * dy) > 1e-12 => {
+                            let n = (dx * dx + dy * dy).sqrt();
+                            // Screen Y is inverted vs world Y → flip sin.
+                            (dx / n, -dy / n)
+                        }
+                        _ => (1.0, 0.0),
+                    };
+                    let ax = (cos_t * half_long, sin_t * half_long);
+                    let ay = (-sin_t * half_short, cos_t * half_short);
+                    canvas::Path::new(|b| {
+                        b.move_to(Point::new(sp.x + ax.0 + ay.0, sp.y + ax.1 + ay.1));
+                        b.line_to(Point::new(sp.x + ax.0 - ay.0, sp.y + ax.1 - ay.1));
+                        b.line_to(Point::new(sp.x - ax.0 - ay.0, sp.y - ax.1 - ay.1));
+                        b.line_to(Point::new(sp.x - ax.0 + ay.0, sp.y - ax.1 + ay.1));
+                        b.close();
+                    })
                 }
-                GripShape::Diamond => canvas::Path::new(|b| {
-                    b.move_to(Point::new(sp.x, sp.y - h));
-                    b.line_to(Point::new(sp.x + h, sp.y));
-                    b.line_to(Point::new(sp.x, sp.y + h));
-                    b.line_to(Point::new(sp.x - h, sp.y));
-                    b.close();
-                }),
                 GripShape::Triangle => canvas::Path::new(|b| {
                     b.move_to(Point::new(sp.x, sp.y - h));
                     b.line_to(Point::new(sp.x + h, sp.y + h));
                     b.line_to(Point::new(sp.x - h, sp.y + h));
                     b.close();
                 }),
-                GripShape::Circle => canvas::Path::circle(sp, h),
             };
 
             if grip.is_hot {

@@ -2,7 +2,7 @@ use acadrust::entities::{BoundaryEdge, Hatch};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro};
+use crate::entities::common::{center_grip, edit_prop as edit, parse_f64, ro_prop as ro};
 use crate::entities::traits::{Grippable, FallbackTess, PropertyEditable, Transformable};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::tess_util::{arc_segments, arc_signed_span, wire_chord_tol, FallbackGeometry};
@@ -182,31 +182,31 @@ impl Grippable for Hatch {
                 match edge {
                     BoundaryEdge::Polyline(p) => {
                         for v in &p.vertices {
-                            out.push(diamond_grip(id, Vec3::new(v.x as f32, v.y as f32, elev)));
+                            out.push(center_grip(id, Vec3::new(v.x as f32, v.y as f32, elev)));
                             id += 1;
                         }
                     }
                     BoundaryEdge::Line(l) => {
-                        out.push(diamond_grip(
+                        out.push(center_grip(
                             id,
                             Vec3::new(l.start.x as f32, l.start.y as f32, elev),
                         ));
                         id += 1;
-                        out.push(diamond_grip(
+                        out.push(center_grip(
                             id,
                             Vec3::new(l.end.x as f32, l.end.y as f32, elev),
                         ));
                         id += 1;
                     }
                     BoundaryEdge::CircularArc(a) => {
-                        out.push(diamond_grip(
+                        out.push(center_grip(
                             id,
                             Vec3::new(a.center.x as f32, a.center.y as f32, elev),
                         ));
                         id += 1;
                     }
                     BoundaryEdge::EllipticArc(e) => {
-                        out.push(diamond_grip(
+                        out.push(center_grip(
                             id,
                             Vec3::new(e.center.x as f32, e.center.y as f32, elev),
                         ));
@@ -219,7 +219,7 @@ impl Grippable for Hatch {
                             s.control_points.iter().map(|p| [p.x, p.y]).collect()
                         };
                         for [x, y] in pts {
-                            out.push(diamond_grip(id, Vec3::new(x as f32, y as f32, elev)));
+                            out.push(center_grip(id, Vec3::new(x as f32, y as f32, elev)));
                             id += 1;
                         }
                     }

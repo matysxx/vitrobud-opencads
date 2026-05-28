@@ -8,7 +8,7 @@ use acadrust::entities::{Underlay, UnderlayDisplayFlags};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
@@ -87,7 +87,7 @@ impl Grippable for Underlay {
         if !self.clip_boundary_vertices.is_empty() {
             let world_verts = self.world_clip_boundary();
             for (i, v) in world_verts.iter().enumerate() {
-                grips.push(diamond_grip(
+                grips.push(center_grip(
                     i + 1,
                     Vec3::new(v.x as f32, v.y as f32, v.z as f32),
                 ));

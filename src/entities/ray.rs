@@ -2,7 +2,7 @@ use acadrust::entities::{Ray, XLine};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
@@ -48,7 +48,7 @@ impl Grippable for Ray {
         let guide_dist = 10.0_f64;
         vec![
             square_grip(0, Vec3::new(bp.x as f32, bp.y as f32, bp.z as f32)),
-            diamond_grip(
+            center_grip(
                 1,
                 Vec3::new(
                     (bp.x + dir.x * guide_dist) as f32,
@@ -186,7 +186,7 @@ impl Grippable for XLine {
         let guide_dist = 10.0_f64;
         vec![
             square_grip(0, Vec3::new(bp.x as f32, bp.y as f32, bp.z as f32)),
-            diamond_grip(
+            center_grip(
                 1,
                 Vec3::new(
                     (bp.x + dir.x * guide_dist) as f32,

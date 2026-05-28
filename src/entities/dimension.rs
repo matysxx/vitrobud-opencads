@@ -7,7 +7,7 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+    center_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
 };
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable};
 use crate::scene::object::{GripApply, GripDef, PropSection};
@@ -594,45 +594,45 @@ impl Grippable for Dimension {
         match self {
             Dimension::Linear(d) => vec![
                 square_grip(0, v3(&d.first_point)),
-                diamond_grip(1, v3(&d.second_point)),
-                diamond_grip(2, v3(&d.definition_point)),
-                diamond_grip(3, text),
+                center_grip(1, v3(&d.second_point)),
+                center_grip(2, v3(&d.definition_point)),
+                center_grip(3, text),
             ],
             Dimension::Aligned(d) => vec![
                 square_grip(0, v3(&d.first_point)),
-                diamond_grip(1, v3(&d.second_point)),
-                diamond_grip(2, v3(&d.definition_point)),
-                diamond_grip(3, text),
+                center_grip(1, v3(&d.second_point)),
+                center_grip(2, v3(&d.definition_point)),
+                center_grip(3, text),
             ],
             Dimension::Radius(d) => vec![
                 square_grip(0, v3(&d.angle_vertex)),
-                diamond_grip(1, v3(&d.definition_point)),
-                diamond_grip(2, text),
+                center_grip(1, v3(&d.definition_point)),
+                center_grip(2, text),
             ],
             Dimension::Diameter(d) => vec![
                 square_grip(0, v3(&d.angle_vertex)),
-                diamond_grip(1, v3(&d.definition_point)),
-                diamond_grip(2, text),
+                center_grip(1, v3(&d.definition_point)),
+                center_grip(2, text),
             ],
             Dimension::Angular2Ln(d) => vec![
                 square_grip(0, v3(&d.angle_vertex)),
-                diamond_grip(1, v3(&d.first_point)),
-                diamond_grip(2, v3(&d.second_point)),
-                diamond_grip(3, v3(&d.definition_point)),
-                diamond_grip(4, text),
+                center_grip(1, v3(&d.first_point)),
+                center_grip(2, v3(&d.second_point)),
+                center_grip(3, v3(&d.definition_point)),
+                center_grip(4, text),
             ],
             Dimension::Angular3Pt(d) => vec![
                 square_grip(0, v3(&d.angle_vertex)),
-                diamond_grip(1, v3(&d.first_point)),
-                diamond_grip(2, v3(&d.second_point)),
-                diamond_grip(3, v3(&d.definition_point)),
-                diamond_grip(4, text),
+                center_grip(1, v3(&d.first_point)),
+                center_grip(2, v3(&d.second_point)),
+                center_grip(3, v3(&d.definition_point)),
+                center_grip(4, text),
             ],
             Dimension::Ordinate(d) => vec![
                 square_grip(0, v3(&d.definition_point)),
-                diamond_grip(1, v3(&d.feature_location)),
-                diamond_grip(2, v3(&d.leader_endpoint)),
-                diamond_grip(3, text),
+                center_grip(1, v3(&d.feature_location)),
+                center_grip(2, v3(&d.leader_endpoint)),
+                center_grip(3, text),
             ],
         }
     }

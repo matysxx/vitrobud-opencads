@@ -3,7 +3,7 @@ use glam::Vec3;
 use truck_modeling::{builder, BSplineCurve, Curve, Edge, KnotVec, Point3, Wire};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::TruckConvertible;
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
@@ -164,7 +164,7 @@ fn grips(ell: &Ellipse) -> Vec<GripDef> {
         ell.center.z as f32,
     );
     vec![
-        diamond_grip(0, ctr),
+        center_grip(0, ctr),
         square_grip(1, maj),
         square_grip(2, min),
     ]

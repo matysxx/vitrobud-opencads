@@ -4,7 +4,7 @@ use truck_modeling::{builder, Point3, Wire};
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+    center_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
 };
 use crate::entities::traits::TruckConvertible;
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
@@ -119,7 +119,7 @@ fn grips(circle: &Circle) -> Vec<GripDef> {
     );
     let r = circle.radius as f32;
     vec![
-        diamond_grip(0, ctr),
+        center_grip(0, ctr),
         square_grip(1, ctr + Vec3::new(r, 0.0, 0.0)),
         square_grip(2, ctr + Vec3::new(0.0, r, 0.0)),
         square_grip(3, ctr - Vec3::new(r, 0.0, 0.0)),

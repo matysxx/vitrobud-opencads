@@ -4,7 +4,7 @@ use truck_modeling::{builder, Edge, Point3, Wire};
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+    edit_prop as edit, parse_f64, rectangle_grip, ro_prop as ro, square_grip,
 };
 use crate::entities::traits::{TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
@@ -295,21 +295,31 @@ fn grips(pline: &LwPolyline) -> Vec<GripDef> {
         .map(|(i, v)| square_grip(i, Vec3::new(v.location.x as f32, v.location.y as f32, elev)))
         .collect();
 
-    // Diamond midpoint grip for each arc segment
+    // One mid-segment stretch grip per segment (straight or arc). The
+    // marker is a small box rotated along the chord direction so the
+    // shape itself signals which way the segment runs.
     for i in 0..seg_count {
         let v0 = &pline.vertices[i];
-        if v0.bulge.abs() < 1e-9 {
-            continue;
-        }
         let v1 = &pline.vertices[(i + 1) % n];
-        let mid = arc_midpoint(
-            [v0.location.x, v0.location.y],
-            [v1.location.x, v1.location.y],
-            v0.bulge,
-        );
-        out.push(diamond_grip(
+        let (mx, my) = if v0.bulge.abs() < 1e-9 {
+            (
+                (v0.location.x + v1.location.x) * 0.5,
+                (v0.location.y + v1.location.y) * 0.5,
+            )
+        } else {
+            let m = arc_midpoint(
+                [v0.location.x, v0.location.y],
+                [v1.location.x, v1.location.y],
+                v0.bulge,
+            );
+            (m[0], m[1])
+        };
+        let dx = (v1.location.x - v0.location.x) as f32;
+        let dy = (v1.location.y - v0.location.y) as f32;
+        out.push(rectangle_grip(
             n + i,
-            Vec3::new(mid[0] as f32, mid[1] as f32, elev),
+            Vec3::new(mx as f32, my as f32, elev),
+            [dx, dy],
         ));
     }
     out
@@ -355,7 +365,11 @@ fn apply_grip(pline: &mut LwPolyline, grip_id: usize, apply: GripApply) {
             }
         }
     } else {
-        // Arc midpoint grip for segment (grip_id - n)
+        // Mid-segment stretch grip for segment (grip_id - n).
+        // Straight segments translate both endpoints by the drag delta
+        // (the shared vertices then carry along whichever adjacent
+        // segments share them). Arc segments adjust their bulge from
+        // the new midpoint position.
         let seg = grip_id - n;
         let count = if pline.is_closed {
             n
@@ -365,11 +379,31 @@ fn apply_grip(pline: &mut LwPolyline, grip_id: usize, apply: GripApply) {
         if seg >= count {
             return;
         }
+        let i0 = seg;
+        let i1 = (seg + 1) % n;
+        let is_arc = pline.vertices[i0].bulge.abs() >= 1e-9;
+        if !is_arc {
+            let d = match apply {
+                GripApply::Translate(d) => [d.x as f64, d.y as f64],
+                GripApply::Absolute(p) => {
+                    let old_mid = (
+                        (pline.vertices[i0].location.x + pline.vertices[i1].location.x) * 0.5,
+                        (pline.vertices[i0].location.y + pline.vertices[i1].location.y) * 0.5,
+                    );
+                    [p.x as f64 - old_mid.0, p.y as f64 - old_mid.1]
+                }
+            };
+            pline.vertices[i0].location.x += d[0];
+            pline.vertices[i0].location.y += d[1];
+            pline.vertices[i1].location.x += d[0];
+            pline.vertices[i1].location.y += d[1];
+            return;
+        }
         let new_mid: [f64; 2] = match apply {
             GripApply::Absolute(p) => [p.x as f64, p.y as f64],
             GripApply::Translate(d) => {
-                let v0 = &pline.vertices[seg];
-                let v1 = &pline.vertices[(seg + 1) % n];
+                let v0 = &pline.vertices[i0];
+                let v1 = &pline.vertices[i1];
                 let old = arc_midpoint(
                     [v0.location.x, v0.location.y],
                     [v1.location.x, v1.location.y],
@@ -379,15 +413,15 @@ fn apply_grip(pline: &mut LwPolyline, grip_id: usize, apply: GripApply) {
             }
         };
         let p0 = [
-            pline.vertices[seg].location.x,
-            pline.vertices[seg].location.y,
+            pline.vertices[i0].location.x,
+            pline.vertices[i0].location.y,
         ];
         let p1 = [
-            pline.vertices[(seg + 1) % n].location.x,
-            pline.vertices[(seg + 1) % n].location.y,
+            pline.vertices[i1].location.x,
+            pline.vertices[i1].location.y,
         ];
         if let Some(new_bulge) = bulge_from_midpoint(p0, p1, new_mid) {
-            pline.vertices[seg].bulge = new_bulge.clamp(-1e6, 1e6);
+            pline.vertices[i0].bulge = new_bulge.clamp(-1e6, 1e6);
         }
     }
 }

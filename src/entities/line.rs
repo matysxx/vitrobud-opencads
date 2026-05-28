@@ -4,7 +4,7 @@ use truck_modeling::{builder, Point3};
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+    center_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
 };
 use crate::entities::traits::TruckConvertible;
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
@@ -74,7 +74,7 @@ fn grips(line: &Line) -> Vec<GripDef> {
     );
     let e = Vec3::new(line.end.x as f32, line.end.y as f32, line.end.z as f32);
     let m = (s + e) * 0.5;
-    vec![square_grip(0, s), square_grip(1, e), diamond_grip(2, m)]
+    vec![square_grip(0, s), square_grip(1, e), center_grip(2, m)]
 }
 
 fn properties(line: &Line) -> PropSection {

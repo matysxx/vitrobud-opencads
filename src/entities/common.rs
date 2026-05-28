@@ -127,44 +127,43 @@ pub fn square_grip(id: usize, world: Vec3) -> GripDef {
         world,
         is_midpoint: false,
         shape: GripShape::Square,
+        dir: None,
     }
 }
 
-pub fn diamond_grip(id: usize, world: Vec3) -> GripDef {
+/// Centre / translate grip — same square marker as a vertex grip but
+/// flagged as a "whole-object move" handle for the grip-edit code.
+pub fn center_grip(id: usize, world: Vec3) -> GripDef {
     GripDef {
         id,
         world,
         is_midpoint: true,
-        shape: GripShape::Diamond,
+        shape: GripShape::Square,
+        dir: None,
     }
 }
 
+/// Mid-segment stretch grip oriented along `dir` (the segment's in-plane
+/// world-XY direction). Drawn as a small rectangle elongated along the
+/// segment so the affordance reads as "stretch perpendicular".
+pub fn rectangle_grip(id: usize, world: Vec3, dir: [f32; 2]) -> GripDef {
+    GripDef {
+        id,
+        world,
+        is_midpoint: true,
+        shape: GripShape::Rectangle,
+        dir: Some(dir),
+    }
+}
+
+#[allow(dead_code)]
 pub fn triangle_grip(id: usize, world: Vec3) -> GripDef {
     GripDef {
         id,
         world,
         is_midpoint: false,
         shape: GripShape::Triangle,
-    }
-}
-
-#[allow(dead_code)]
-pub fn rectangle_grip(id: usize, world: Vec3) -> GripDef {
-    GripDef {
-        id,
-        world,
-        is_midpoint: true,
-        shape: GripShape::Rectangle,
-    }
-}
-
-#[allow(dead_code)]
-pub fn circle_grip(id: usize, world: Vec3) -> GripDef {
-    GripDef {
-        id,
-        world,
-        is_midpoint: false,
-        shape: GripShape::Circle,
+        dir: None,
     }
 }
 

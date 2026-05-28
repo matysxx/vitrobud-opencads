@@ -29,7 +29,7 @@ pub(crate) fn mleader_v_anchor(attach: TextAttachmentType) -> MTextVAnchor {
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
@@ -310,7 +310,7 @@ fn grips(ml: &MultiLeader) -> Vec<GripDef> {
 
     if ml.content_type == LeaderContentType::MText {
         let tl = &ml.context.text_location;
-        result.push(diamond_grip(
+        result.push(center_grip(
             id,
             Vec3::new(tl.x as f32, tl.y as f32, tl.z as f32),
         ));

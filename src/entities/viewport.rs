@@ -3,7 +3,7 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    diamond_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+    center_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
 };
 
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
@@ -97,7 +97,7 @@ fn grips(vp: &Viewport) -> Vec<GripDef> {
     let hw = (vp.width / 2.0) as f32;
     let hh = (vp.height / 2.0) as f32;
     vec![
-        diamond_grip(0, Vec3::new(cx, cy, cz)),
+        center_grip(0, Vec3::new(cx, cy, cz)),
         square_grip(1, Vec3::new(cx + hw, cy + hh, cz)),
         square_grip(2, Vec3::new(cx - hw, cy + hh, cz)),
         square_grip(3, Vec3::new(cx - hw, cy - hh, cz)),

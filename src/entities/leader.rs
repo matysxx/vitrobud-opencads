@@ -3,7 +3,7 @@ use acadrust::Entity;
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
@@ -98,7 +98,7 @@ fn grips(leader: &Leader) -> Vec<GripDef> {
         let sum = leader.vertices.iter().fold(Vec3::ZERO, |acc, v| {
             acc + Vec3::new(v.x as f32, v.y as f32, v.z as f32)
         });
-        grips.push(diamond_grip(n, sum / n as f32));
+        grips.push(center_grip(n, sum / n as f32));
     }
 
     grips

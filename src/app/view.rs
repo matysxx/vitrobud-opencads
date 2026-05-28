@@ -299,7 +299,7 @@ impl OpenCADStudio {
                     };
                     screen_grips
                         .into_iter()
-                        .filter(|(_, screen, _, _)| {
+                        .filter(|(_, screen, _, _, _)| {
                             screen.x.is_finite()
                                 && screen.y.is_finite()
                                 && screen.x >= -bounds.width
@@ -307,7 +307,7 @@ impl OpenCADStudio {
                                 && screen.y >= -bounds.height
                                 && screen.y <= bounds.height * 2.0
                         })
-                        .map(|(grip_id, screen, _is_midpoint, shape)| {
+                        .map(|(grip_id, screen, _is_midpoint, shape, dir)| {
                             let is_hot = tab
                                 .active_grip
                                 .as_ref()
@@ -316,6 +316,7 @@ impl OpenCADStudio {
                                 pos: screen,
                                 shape,
                                 is_hot,
+                                dir,
                             }
                         })
                         .collect()

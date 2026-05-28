@@ -9,7 +9,7 @@
 use acadrust::entities::{Body, Region, Solid3D};
 use glam::Vec3;
 
-use crate::entities::common::{diamond_grip, ro_prop as ro};
+use crate::entities::common::{center_grip, ro_prop as ro};
 use crate::entities::traits::{Grippable, PropertyEditable};
 use crate::scene::object::{GripApply, GripDef, PropSection};
 
@@ -44,7 +44,7 @@ fn acis_size_str(has_data: bool, sat_len: usize, sab_len: usize, is_binary: bool
 
 impl Grippable for Solid3D {
     fn grips(&self) -> Vec<GripDef> {
-        vec![diamond_grip(0, por_to_vec3(&self.point_of_reference))]
+        vec![center_grip(0, por_to_vec3(&self.point_of_reference))]
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
@@ -120,7 +120,7 @@ impl PropertyEditable for Solid3D {
 
 impl Grippable for Region {
     fn grips(&self) -> Vec<GripDef> {
-        vec![diamond_grip(0, por_to_vec3(&self.point_of_reference))]
+        vec![center_grip(0, por_to_vec3(&self.point_of_reference))]
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
@@ -188,7 +188,7 @@ impl PropertyEditable for Region {
 
 impl Grippable for Body {
     fn grips(&self) -> Vec<GripDef> {
-        vec![diamond_grip(0, por_to_vec3(&self.point_of_reference))]
+        vec![center_grip(0, por_to_vec3(&self.point_of_reference))]
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {

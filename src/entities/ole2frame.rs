@@ -2,7 +2,7 @@ use acadrust::entities::{Ole2Frame, OleObjectType};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
@@ -70,7 +70,7 @@ fn grips(ole: &Ole2Frame) -> Vec<GripDef> {
     vec![
         square_grip(0, ul),
         square_grip(1, lr),
-        diamond_grip(2, center),
+        center_grip(2, center),
     ]
 }
 

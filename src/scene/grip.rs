@@ -36,7 +36,7 @@ pub fn grips_to_screen(
     grips: &[GripDef],
     view_proj: Mat4,
     bounds: Rectangle,
-) -> Vec<(usize, Point, bool, GripShape)> {
+) -> Vec<(usize, Point, bool, GripShape, Option<[f32; 2]>)> {
     grips
         .iter()
         .map(|g| {
@@ -45,7 +45,7 @@ pub fn grips_to_screen(
                 bounds.x + (ndc.x + 1.0) * 0.5 * bounds.width,
                 bounds.y + (1.0 - ndc.y) * 0.5 * bounds.height,
             );
-            (g.id, screen, g.is_midpoint, g.shape)
+            (g.id, screen, g.is_midpoint, g.shape, g.dir)
         })
         .collect()
 }
@@ -59,7 +59,7 @@ pub fn grips_to_screen_paper(
     half_w: f32,
     half_h: f32,
     bounds: Rectangle,
-) -> Vec<(usize, Point, bool, GripShape)> {
+) -> Vec<(usize, Point, bool, GripShape, Option<[f32; 2]>)> {
     grips
         .iter()
         .map(|g| {
@@ -67,7 +67,7 @@ pub fn grips_to_screen_paper(
                 (g.world.x - tx + half_w) / (2.0 * half_w) * bounds.width,
                 (ty + half_h - g.world.y) / (2.0 * half_h) * bounds.height,
             );
-            (g.id, screen, g.is_midpoint, g.shape)
+            (g.id, screen, g.is_midpoint, g.shape, g.dir)
         })
         .collect()
 }

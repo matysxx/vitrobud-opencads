@@ -51,23 +51,23 @@ pub struct PropSection {
 
 // ── Grip types ─────────────────────────────────────────────────────────────
 
-/// Visual marker shape for a grip point. The complete vocabulary used
-/// across entity types:
-/// * `Square` — vertex / endpoint that moves a single point.
-/// * `Rectangle` — direction-aware mid-segment stretch (polyline
-///   straight segments, dimension extension lines).
-/// * `Diamond` — midpoint of a curve / centre of a closed shape (drags
-///   the whole shape or stretches the midpoint).
-/// * `Triangle` — directional control (rotate / add vertex / continue).
-/// * `Circle` — parametric control (radius / dimension value).
+/// Visual marker shape for a grip point. The complete vocabulary that
+/// matches the standard CAD grip conventions:
+/// * `Square` — endpoint / vertex / centre. Drag → moves a single
+///   point or translates the entity.
+/// * `Rectangle` — direction-aware mid-segment stretch handle.
+///   Drawn as a small box rotated along `dir` (the in-plane segment
+///   direction in world XY). Used for polyline / wipeout / image /
+///   dimension segment midpoints.
+/// * `Triangle` — directional indicator (Phase 2: dynamic-block
+///   parameters, dimension reverse-arrow flips, multi-functional
+///   hover popups).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum GripShape {
     Square,
     Rectangle,
-    Diamond,
     Triangle,
-    Circle,
 }
 
 /// Describes one grip point for an entity.
@@ -77,11 +77,15 @@ pub struct GripDef {
     pub id: usize,
     /// World-space position of the grip.
     pub world: Vec3,
-    /// `true` → midpoint grip (diamond, translates whole object).
-    /// `false` → endpoint grip (square, moves a single vertex).
+    /// `true` → midpoint / centre grip (drags the whole shape).
+    /// `false` → endpoint / vertex grip (moves a single point).
     pub is_midpoint: bool,
     /// Visual marker shape for the grip.
     pub shape: GripShape,
+    /// World-XY direction vector used to orient a `Rectangle` grip
+    /// along its segment. `None` for shapes that don't need rotation
+    /// (Square, Triangle in non-directional contexts).
+    pub dir: Option<[f32; 2]>,
 }
 
 /// How to apply a grip drag result.

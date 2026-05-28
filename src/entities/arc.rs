@@ -3,7 +3,7 @@ use glam::Vec3;
 use truck_modeling::{builder, Point3};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, parse_f64, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, parse_f64, square_grip};
 use crate::entities::traits::TruckConvertible;
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
@@ -118,10 +118,10 @@ fn grips(arc: &Arc) -> Vec<GripDef> {
     let ea = arc.end_angle as f32;
     let ma = sa + angle_span(sa, ea) * 0.5;
     vec![
-        diamond_grip(0, ctr),
+        center_grip(0, ctr),
         square_grip(1, ctr + Vec3::new(r * sa.cos(), r * sa.sin(), 0.0)),
         square_grip(2, ctr + Vec3::new(r * ea.cos(), r * ea.sin(), 0.0)),
-        diamond_grip(3, ctr + Vec3::new(r * ma.cos(), r * ma.sin(), 0.0)),
+        center_grip(3, ctr + Vec3::new(r * ma.cos(), r * ma.sin(), 0.0)),
     ]
 }
 

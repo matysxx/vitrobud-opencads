@@ -2,7 +2,7 @@ use acadrust::entities::{RasterImage, Wipeout};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{diamond_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
@@ -140,9 +140,9 @@ impl Grippable for RasterImage {
         );
         vec![
             square_grip(0, Vec3::from(to_f32_3(corners[0]))),
-            diamond_grip(1, Vec3::from(to_f32_3(corners[1]))),
-            diamond_grip(2, Vec3::from(to_f32_3(corners[2]))),
-            diamond_grip(3, Vec3::from(to_f32_3(corners[3]))),
+            center_grip(1, Vec3::from(to_f32_3(corners[1]))),
+            center_grip(2, Vec3::from(to_f32_3(corners[2]))),
+            center_grip(3, Vec3::from(to_f32_3(corners[3]))),
         ]
     }
 
@@ -346,7 +346,7 @@ impl Grippable for Wipeout {
                     if i == 0 {
                         square_grip(i, Vec3::new(ox + wx, oy + wy, oz + wz))
                     } else {
-                        diamond_grip(i, Vec3::new(ox + wx, oy + wy, oz + wz))
+                        center_grip(i, Vec3::new(ox + wx, oy + wy, oz + wz))
                     }
                 })
                 .collect()
@@ -360,9 +360,9 @@ impl Grippable for Wipeout {
             );
             vec![
                 square_grip(0, Vec3::from(to_f32_3(corners[0]))),
-                diamond_grip(1, Vec3::from(to_f32_3(corners[1]))),
-                diamond_grip(2, Vec3::from(to_f32_3(corners[2]))),
-                diamond_grip(3, Vec3::from(to_f32_3(corners[3]))),
+                center_grip(1, Vec3::from(to_f32_3(corners[1]))),
+                center_grip(2, Vec3::from(to_f32_3(corners[2]))),
+                center_grip(3, Vec3::from(to_f32_3(corners[3]))),
             ]
         }
     }
