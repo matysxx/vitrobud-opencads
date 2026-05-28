@@ -15,6 +15,9 @@ impl OpenCADStudio {
         // Reset the last committed point so the first click of the new command
         // is not constrained by ortho/polar relative to a previous command's endpoint.
         self.last_point = None;
+        // A fresh command starts at the polar/cartesian default — clear
+        // any `,`-driven reshape from a previous command (#35).
+        self.dyn_user_reshaped = false;
 
         if let Some(path_str) = cmd.strip_prefix("OPEN_RECENT:") {
             let path = PathBuf::from(path_str);

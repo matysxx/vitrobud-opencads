@@ -1097,6 +1097,8 @@ impl OpenCADStudio {
                             }
                         };
                         self.last_point = Some(wcs_pt);
+                        self.dyn_user_reshaped = false;
+                        self.sync_dyn_fields();
                         let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(wcs_pt));
                         if let Some(r) = result {
                             let task = self.apply_cmd_result(r);
@@ -2476,6 +2478,8 @@ impl OpenCADStudio {
                         }
                     } else {
                         self.last_point = Some(world_pt);
+                        self.dyn_user_reshaped = false;
+                        self.sync_dyn_fields();
                         self.tabs[i]
                             .active_cmd
                             .as_mut()
@@ -5400,19 +5404,28 @@ impl OpenCADStudio {
         // move.
         let current: Vec<DynComponent> =
             self.tabs[i].dyn_fields.iter().map(|f| f.component).collect();
-        let current_is_acceptable = match field {
-            crate::command::DynField::Distance => {
-                matches!(current.as_slice(), [DynComponent::Distance])
+        // Only treat a cartesian / polar variant as "good enough to keep"
+        // when the user explicitly reshaped via `,`. Otherwise we follow
+        // the command's default so e.g. clicking the first point of LINE
+        // flips a stale `[X, Y]` (from before there was a base) over to
+        // the polar `[Distance, Angle]` the prompt actually wants.
+        let current_is_acceptable = if self.dyn_user_reshaped {
+            match field {
+                crate::command::DynField::Distance => {
+                    matches!(current.as_slice(), [DynComponent::Distance])
+                }
+                crate::command::DynField::Angle => {
+                    matches!(current.as_slice(), [DynComponent::Angle])
+                }
+                crate::command::DynField::Point => matches!(
+                    current.as_slice(),
+                    [DynComponent::Distance, DynComponent::Angle]
+                        | [DynComponent::X, DynComponent::Y]
+                        | [DynComponent::X, DynComponent::Y, DynComponent::Z]
+                ),
             }
-            crate::command::DynField::Angle => {
-                matches!(current.as_slice(), [DynComponent::Angle])
-            }
-            crate::command::DynField::Point => matches!(
-                current.as_slice(),
-                [DynComponent::Distance, DynComponent::Angle]
-                    | [DynComponent::X, DynComponent::Y]
-                    | [DynComponent::X, DynComponent::Y, DynComponent::Z]
-            ),
+        } else {
+            current == default
         };
         if !current_is_acceptable {
             self.tabs[i].dyn_fields = default.into_iter().map(DynFieldEntry::new).collect();
@@ -5523,6 +5536,9 @@ impl OpenCADStudio {
         if self.tabs[i].dyn_fields.is_empty() {
             return;
         }
+        // The user picked a shape — `sync_dyn_fields` preserves it until
+        // the next commit / command-start clears the flag.
+        self.dyn_user_reshaped = true;
         let active = self
             .tabs[i]
             .dyn_active
@@ -5582,6 +5598,8 @@ impl OpenCADStudio {
         }
         let pt = self.dyn_resolve_point()?;
         self.last_point = Some(pt);
+        self.dyn_user_reshaped = false;
+        self.sync_dyn_fields();
         let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt));
         for f in self.tabs[i].dyn_fields.iter_mut() {
             f.buffer = None;

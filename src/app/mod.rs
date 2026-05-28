@@ -88,6 +88,12 @@ pub(super) struct OpenCADStudio {
     /// edge, updated on move, cleared on release (which also runs the
     /// collapse pass).
     tile_drag: Option<TileDrag>,
+    /// `true` once the user has reshaped the dynamic-input field set via
+    /// the `,` separator during the current command iteration. Tells
+    /// `sync_dyn_fields` to preserve the user's chosen shape instead of
+    /// reverting to the command-default when `has_base` flips. Cleared
+    /// on point commit / command start. See #35.
+    dyn_user_reshaped: bool,
     /// Show the UCS icon in the bottom-left corner of model space (UCSICON).
     show_ucs_icon: bool,
     /// Whether the ViewCube 3D gizmo is visible in model space (NAVVCUBE).
@@ -763,6 +769,7 @@ impl OpenCADStudio {
             dyn_input: true,
             awaiting_vports: false,
             tile_drag: None,
+            dyn_user_reshaped: false,
             show_ucs_icon: true,
             show_viewcube: true,
             show_properties: true,
