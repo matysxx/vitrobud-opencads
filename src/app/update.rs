@@ -1215,6 +1215,11 @@ impl OpenCADStudio {
 
             Message::ToggleLayers => {
                 if let Some(id) = self.layer_window.take() {
+                    // Close path: `OsWindowClosed`'s deactivate guard
+                    // sees `layer_window == None` after the take(), so do
+                    // it here so the button flips off in the same frame
+                    // (#40).
+                    self.ribbon.deactivate_tool_if("LAYERS");
                     window::close(id)
                 } else {
                     self.sync_ribbon_layers();
@@ -1255,35 +1260,55 @@ impl OpenCADStudio {
                     self.save_dialog_window = None;
                     return Task::none();
                 }
+                // Each popup window that's launched from a ribbon tool
+                // also turns that tool blue (`activate_tool`); when the
+                // window closes, the matching tool needs to be cleared
+                // or the button stays highlighted with no window behind
+                // it. The mapped IDs are the ribbon `ToolDef.id`s that
+                // dispatched the open in the first place. See #40.
                 if self.layer_window == Some(id) {
                     self.layer_window = None;
+                    self.ribbon.deactivate_tool_if("LAYERS");
                 }
                 if self.page_setup_window == Some(id) {
                     self.page_setup_window = None;
+                    self.ribbon.deactivate_tool_if("PAGESETUP");
                 }
                 if self.textstyle_window == Some(id) {
                     self.textstyle_window = None;
+                    self.ribbon.deactivate_tool_if("STYLE");
+                    self.ribbon.deactivate_tool_if("TEXTSTYLE");
                 }
                 if self.tablestyle_window == Some(id) {
                     self.tablestyle_window = None;
+                    self.ribbon.deactivate_tool_if("TABLESTYLE");
                 }
                 if self.mlstyle_window == Some(id) {
                     self.mlstyle_window = None;
+                    self.ribbon.deactivate_tool_if("MLSTYLE");
                 }
                 if self.layout_manager_window == Some(id) {
                     self.layout_manager_window = None;
+                    self.ribbon.deactivate_tool_if("LAYOUTMANAGER");
+                    self.ribbon.deactivate_tool_if("LAYOUTPANEL");
                 }
                 if self.plotstyle_window == Some(id) {
                     self.plotstyle_window = None;
+                    self.ribbon.deactivate_tool_if("PLOTSTYLE");
+                    self.ribbon.deactivate_tool_if("STYLESMANAGER");
                 }
                 if self.dimstyle_window == Some(id) {
                     self.dimstyle_window = None;
+                    self.ribbon.deactivate_tool_if("DIMSTYLE");
                 }
                 if self.shortcuts_window == Some(id) {
                     self.shortcuts_window = None;
+                    self.ribbon.deactivate_tool_if("SHORTCUTS");
+                    self.ribbon.deactivate_tool_if("KEYBOARD");
                 }
                 if self.about_window == Some(id) {
                     self.about_window = None;
+                    self.ribbon.deactivate_tool_if("ABOUT");
                 }
                 if self.update_notice_window == Some(id) {
                     self.update_notice_window = None;

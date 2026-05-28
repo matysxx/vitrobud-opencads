@@ -144,6 +144,15 @@ impl Ribbon {
     pub fn deactivate_tool(&mut self) {
         self.active_tool = None;
     }
+    /// Clear `active_tool` only when it currently equals `id`. Used by the
+    /// window-close path to deactivate the tool that owned a popup window
+    /// without disturbing a different tool the user picked in the
+    /// meantime. See #40.
+    pub fn deactivate_tool_if(&mut self, id: &str) {
+        if self.active_tool.as_deref() == Some(id) {
+            self.active_tool = None;
+        }
+    }
     pub fn set_wireframe(&mut self, w: bool) {
         self.wireframe = w;
     }
