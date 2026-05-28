@@ -138,6 +138,46 @@ struct SelectionCanvas {
     tile_edges: Vec<crate::scene::TileEdge>,
 }
 
+impl SelectionCanvas {
+    /// Returns the orientation of the Model-tile divider the cursor sits
+    /// on (within a few pixels of perpendicular distance, inside the
+    /// edge's span). Used by both `mouse_interaction` (to pick a resize
+    /// cursor) and `draw` (to suppress the CAD crosshair).
+    fn tile_edge_under(
+        &self,
+        cursor: mouse::Cursor,
+        bounds: iced::Rectangle,
+    ) -> Option<crate::scene::TileEdgeOrient> {
+        const TOL_PX: f32 = 4.0;
+        let pos = cursor.position_in(bounds)?;
+        for e in &self.tile_edges {
+            let (perp, edge_px, span_lo, span_hi, pos_along) = match e.orient {
+                crate::scene::TileEdgeOrient::Vertical => (
+                    pos.x,
+                    e.coord * bounds.width,
+                    e.span.0 * bounds.height,
+                    e.span.1 * bounds.height,
+                    pos.y,
+                ),
+                crate::scene::TileEdgeOrient::Horizontal => (
+                    pos.y,
+                    e.coord * bounds.height,
+                    e.span.0 * bounds.width,
+                    e.span.1 * bounds.width,
+                    pos.x,
+                ),
+            };
+            if (perp - edge_px).abs() <= TOL_PX
+                && pos_along >= span_lo
+                && pos_along <= span_hi
+            {
+                return Some(e.orient);
+            }
+        }
+        None
+    }
+}
+
 impl canvas::Program<Message> for SelectionCanvas {
     type State = ();
 
@@ -161,45 +201,26 @@ impl canvas::Program<Message> for SelectionCanvas {
                 }
             }
         }
-        // Hover over a Model-tile divider → resize cursor cue.
-        if !self.tile_edges.is_empty() {
-            if let Some(pos) = cursor.position_in(bounds) {
-                const TOL_PX: f32 = 4.0;
-                for e in &self.tile_edges {
-                    let (perp, edge_px, span_lo, span_hi, pos_along) = match e.orient {
-                        crate::scene::TileEdgeOrient::Vertical => (
-                            pos.x,
-                            e.coord * bounds.width,
-                            e.span.0 * bounds.height,
-                            e.span.1 * bounds.height,
-                            pos.y,
-                        ),
-                        crate::scene::TileEdgeOrient::Horizontal => (
-                            pos.y,
-                            e.coord * bounds.height,
-                            e.span.0 * bounds.width,
-                            e.span.1 * bounds.width,
-                            pos.x,
-                        ),
-                    };
-                    if (perp - edge_px).abs() <= TOL_PX
-                        && pos_along >= span_lo
-                        && pos_along <= span_hi
-                    {
-                        return match e.orient {
-                            crate::scene::TileEdgeOrient::Vertical => {
-                                mouse::Interaction::ResizingHorizontally
-                            }
-                            crate::scene::TileEdgeOrient::Horizontal => {
-                                mouse::Interaction::ResizingVertically
-                            }
-                        };
-                    }
+        // Hover over a Model-tile divider → resize cursor cue. The
+        // system cursor is intentionally shown here so the OS arrow gives
+        // its own resize affordance; the draw step suppresses the custom
+        // CAD crosshair while we're over a divider.
+        if let Some(orient) = self.tile_edge_under(cursor, bounds) {
+            return match orient {
+                crate::scene::TileEdgeOrient::Vertical => {
+                    mouse::Interaction::ResizingHorizontally
                 }
-            }
+                crate::scene::TileEdgeOrient::Horizontal => {
+                    mouse::Interaction::ResizingVertically
+                }
+            };
         }
+        // Over the viewport (no divider, no viewcube): hide the system
+        // cursor entirely. `Interaction::None` would let the stack fall
+        // through to a sibling — `Hidden` is the explicit "no cursor"
+        // signal that actually suppresses the OS arrow.
         if cursor.is_over(bounds) {
-            mouse::Interaction::Crosshair
+            mouse::Interaction::Hidden
         } else {
             mouse::Interaction::default()
         }
@@ -525,7 +546,11 @@ impl canvas::Program<Message> for SelectionCanvas {
                     && pos.y <= vc_y + VIEWCUBE_DRAW_PX
             })
         };
-        if !over_viewcube {
+        // Over a Model-tile divider the OS cursor switches to a resize
+        // arrow (see `mouse_interaction`); drawing the CAD crosshair on
+        // top of it would double up the visual feedback.
+        let over_divider = self.tile_edge_under(cursor, bounds).is_some();
+        if !over_viewcube && !over_divider {
             if let Some(cp) = self.selection.last_move_pos {
                 let color = Color {
                     r: 0.85,
