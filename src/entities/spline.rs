@@ -161,5 +161,114 @@ impl TruckConvertible for Spline {
     }
 }
 
-crate::impl_entity_basics!(Spline);
+impl crate::entities::traits::Grippable for Spline {
+    fn grips(&self) -> Vec<GripDef> {
+        grips(self)
+    }
+    fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
+        apply_grip(self, grip_id, apply);
+    }
+    fn grip_menu(
+        &self,
+        _grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        vec![
+            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
+            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+            GripMenuItem { label: "Refine Vertices", action: GripMenuAction::RefineVertices },
+        ]
+    }
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        let n = self.control_points.len();
+        let min_cv = (self.degree as usize).saturating_add(1).max(2);
+        match action {
+            A::AddVertex if grip_id < n => {
+                let i1 = (grip_id + 1).min(n - 1);
+                if i1 == grip_id {
+                    return;
+                }
+                let p0 = &self.control_points[grip_id];
+                let p1 = &self.control_points[i1];
+                let mid = acadrust::types::Vector3::new(
+                    (p0.x + p1.x) * 0.5,
+                    (p0.y + p1.y) * 0.5,
+                    (p0.z + p1.z) * 0.5,
+                );
+                self.control_points.insert(i1, mid);
+                if !self.weights.is_empty() && self.weights.len() == n {
+                    let w = (self.weights[grip_id] + self.weights[i1.min(self.weights.len() - 1)]) * 0.5;
+                    self.weights.insert(i1, w);
+                }
+                // Clear knots so to_truck rebuilds a uniform knot vector
+                // for the new CV count.
+                self.knots.clear();
+            }
+            A::RemoveVertex if grip_id < n && n > min_cv => {
+                self.control_points.remove(grip_id);
+                if grip_id < self.weights.len() {
+                    self.weights.remove(grip_id);
+                }
+                self.knots.clear();
+            }
+            A::RefineVertices => {
+                // Insert a CV between every adjacent pair (chord midpoints)
+                // and rebuild a uniform knot vector.
+                if n >= 2 {
+                    let mut refined = Vec::with_capacity(n * 2 - 1);
+                    let mut refined_w = Vec::with_capacity(n * 2 - 1);
+                    let has_w = !self.weights.is_empty() && self.weights.len() == n;
+                    for i in 0..n {
+                        refined.push(self.control_points[i].clone());
+                        if has_w {
+                            refined_w.push(self.weights[i]);
+                        }
+                        if i + 1 < n {
+                            let a = &self.control_points[i];
+                            let b = &self.control_points[i + 1];
+                            refined.push(acadrust::types::Vector3::new(
+                                (a.x + b.x) * 0.5,
+                                (a.y + b.y) * 0.5,
+                                (a.z + b.z) * 0.5,
+                            ));
+                            if has_w {
+                                refined_w.push((self.weights[i] + self.weights[i + 1]) * 0.5);
+                            }
+                        }
+                    }
+                    self.control_points = refined;
+                    if has_w {
+                        self.weights = refined_w;
+                    }
+                    self.knots.clear();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl crate::entities::traits::PropertyEditable for Spline {
+    fn geometry_properties(
+        &self,
+        _text_style_names: &[String],
+    ) -> PropSection {
+        properties(self)
+    }
+    fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        apply_geom_prop(self, field, value);
+    }
+}
+
+impl crate::entities::traits::Transformable for Spline {
+    fn apply_transform(&mut self, t: &EntityTransform) {
+        apply_transform(self, t);
+    }
+}
 

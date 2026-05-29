@@ -152,6 +152,46 @@ impl Grippable for MLine {
             }
         }
     }
+
+    fn grip_menu(
+        &self,
+        _grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        vec![
+            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
+            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+        ]
+    }
+
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        let n = self.vertices.len();
+        match action {
+            A::AddVertex if grip_id < n => {
+                let i1 = (grip_id + 1).min(n - 1);
+                if i1 == grip_id {
+                    return;
+                }
+                let v0 = &self.vertices[grip_id];
+                let v1 = &self.vertices[i1];
+                let mut new_v = v0.clone();
+                new_v.position.x = (v0.position.x + v1.position.x) * 0.5;
+                new_v.position.y = (v0.position.y + v1.position.y) * 0.5;
+                new_v.position.z = (v0.position.z + v1.position.z) * 0.5;
+                self.vertices.insert(i1, new_v);
+            }
+            A::RemoveVertex if grip_id < n && n > 2 => {
+                self.vertices.remove(grip_id);
+            }
+            _ => {}
+        }
+    }
 }
 
 impl PropertyEditable for MLine {

@@ -300,6 +300,57 @@ impl Grippable for MText {
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
         apply_grip(self, grip_id, apply);
     }
+
+    fn grip_menu(
+        &self,
+        grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        if grip_id == 0 {
+            // Insertion point
+            vec![
+                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+                GripMenuItem { label: "Move with Text", action: GripMenuAction::MoveWithText },
+                GripMenuItem { label: "Rotate", action: GripMenuAction::RotateText },
+            ]
+        } else {
+            // Width grip
+            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+        }
+    }
+
+    fn apply_grip_menu(
+        &mut self,
+        _grip_id: usize,
+        _action: crate::scene::object::GripMenuAction,
+    ) {
+        // Rotate needs a follow-up angle handled by
+        // `apply_grip_menu_value`; Move-with-Text is the default drag.
+    }
+
+    fn grip_menu_value_prompt(
+        &self,
+        _grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) -> Option<&'static str> {
+        use crate::scene::object::GripMenuAction as A;
+        match action {
+            A::RotateText => Some("Rotation (deg)"),
+            _ => None,
+        }
+    }
+
+    fn apply_grip_menu_value(
+        &mut self,
+        _grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+        value: f64,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        if matches!(action, A::RotateText) {
+            self.rotation = value.to_radians();
+        }
+    }
 }
 
 impl PropertyEditable for MText {

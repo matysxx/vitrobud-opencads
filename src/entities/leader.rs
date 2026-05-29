@@ -455,7 +455,80 @@ impl TruckConvertible for Leader {
     }
 }
 
-crate::impl_entity_basics!(Leader);
+impl crate::entities::traits::Grippable for Leader {
+    fn grips(&self) -> Vec<GripDef> {
+        grips(self)
+    }
+    fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
+        apply_grip(self, grip_id, apply);
+    }
+    fn grip_menu(
+        &self,
+        grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        let n = self.vertices.len();
+        if grip_id == 0 {
+            // Arrow head — stretch only.
+            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+        } else if grip_id < n {
+            vec![
+                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+                GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
+                GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+            ]
+        } else {
+            // Centroid grip — move whole leader.
+            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+        }
+    }
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        let n = self.vertices.len();
+        match action {
+            A::AddVertex if grip_id < n => {
+                let i1 = (grip_id + 1).min(n - 1);
+                if i1 == grip_id {
+                    return;
+                }
+                let v0 = &self.vertices[grip_id];
+                let v1 = &self.vertices[i1];
+                let mid = acadrust::types::Vector3::new(
+                    (v0.x + v1.x) * 0.5,
+                    (v0.y + v1.y) * 0.5,
+                    (v0.z + v1.z) * 0.5,
+                );
+                self.vertices.insert(i1, mid);
+            }
+            A::RemoveVertex if grip_id < n && n > 2 => {
+                self.vertices.remove(grip_id);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl crate::entities::traits::PropertyEditable for Leader {
+    fn geometry_properties(
+        &self,
+        _text_style_names: &[String],
+    ) -> PropSection {
+        properties(self)
+    }
+    fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        apply_geom_prop(self, field, value);
+    }
+}
+
+impl crate::entities::traits::Transformable for Leader {
+    fn apply_transform(&mut self, t: &EntityTransform) {
+        apply_transform(self, t);
+    }
+}
 
 /// Per-entity tessellation entry for `Leader`. Lives here so all leader
 /// tess code stays alongside the entity definition. Cross-entity dim

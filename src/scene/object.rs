@@ -137,4 +137,11 @@ pub enum GripMenuAction {
     HatchScale,
     HatchPattern,
     TangentDirection,
+    AddFitPoint,
+    RemoveFitPoint,
+    Refit,
+    RefineVertices,
+    MoveWithText,
+    StackText,
+    UnstackText,
 }

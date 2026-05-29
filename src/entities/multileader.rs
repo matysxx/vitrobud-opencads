@@ -827,7 +827,71 @@ impl TruckConvertible for MultiLeader {
     }
 }
 
-crate::impl_entity_basics!(MultiLeader);
+impl crate::entities::traits::Grippable for MultiLeader {
+    fn grips(&self) -> Vec<GripDef> {
+        grips(self)
+    }
+    fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
+        apply_grip(self, grip_id, apply);
+    }
+    fn grip_menu(
+        &self,
+        grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        // Compute vertex count to identify text-location grip (last id).
+        let n_vertices: usize = self
+            .context
+            .leader_roots
+            .iter()
+            .flat_map(|r| r.lines.iter())
+            .map(|l| l.points.len())
+            .sum();
+        let is_text_loc = self.content_type == LeaderContentType::MText
+            && grip_id == n_vertices;
+
+        if is_text_loc {
+            vec![
+                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+                GripMenuItem { label: "Move with Leader", action: GripMenuAction::MoveWithLeader },
+                GripMenuItem { label: "Move Independent", action: GripMenuAction::MoveIndependent },
+            ]
+        } else {
+            vec![
+                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+                GripMenuItem { label: "Add Leader", action: GripMenuAction::AddLeader },
+                GripMenuItem { label: "Remove Leader", action: GripMenuAction::RemoveLeader },
+            ]
+        }
+    }
+    fn apply_grip_menu(
+        &mut self,
+        _grip_id: usize,
+        _action: crate::scene::object::GripMenuAction,
+    ) {
+        // Add/Remove Leader, Move with Leader, Move Independent — these
+        // require deeper structural edits across leader_roots/lines and
+        // are stubbed here; Stretch falls through to the regular drag.
+    }
+}
+
+impl crate::entities::traits::PropertyEditable for MultiLeader {
+    fn geometry_properties(
+        &self,
+        _text_style_names: &[String],
+    ) -> PropSection {
+        properties(self)
+    }
+    fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        apply_geom_prop(self, field, value);
+    }
+}
+
+impl crate::entities::traits::Transformable for MultiLeader {
+    fn apply_transform(&mut self, t: &EntityTransform) {
+        apply_transform(self, t);
+    }
+}
 
 /// Per-entity tessellation entry for `MultiLeader`. Returns multiple
 /// `WireModel`s (leader/dogleg + arrow fill, optional block content,

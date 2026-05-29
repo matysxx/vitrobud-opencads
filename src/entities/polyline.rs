@@ -73,6 +73,50 @@ impl Grippable for Polyline {
             }
         }
     }
+
+    fn grip_menu(
+        &self,
+        _grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        vec![
+            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
+            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+        ]
+    }
+
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        let n = self.vertices.len();
+        match action {
+            A::AddVertex if grip_id < n => {
+                let i1 = (grip_id + 1) % n;
+                if i1 == 0 && grip_id + 1 == n {
+                    return;
+                }
+                let v0 = &self.vertices[grip_id];
+                let v1 = &self.vertices[i1];
+                let mx = (v0.location.x + v1.location.x) * 0.5;
+                let my = (v0.location.y + v1.location.y) * 0.5;
+                let mz = (v0.location.z + v1.location.z) * 0.5;
+                let mut new_v = v0.clone();
+                new_v.location.x = mx;
+                new_v.location.y = my;
+                new_v.location.z = mz;
+                let insert_at = (grip_id + 1).min(self.vertices.len());
+                self.vertices.insert(insert_at, new_v);
+            }
+            A::RemoveVertex if grip_id < n && n > 2 => {
+                self.vertices.remove(grip_id);
+            }
+            _ => {}
+        }
+    }
 }
 
 impl PropertyEditable for Polyline {
@@ -300,6 +344,50 @@ impl Grippable for Polyline2D {
             }
         }
     }
+
+    fn grip_menu(
+        &self,
+        _grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        vec![
+            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
+            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+        ]
+    }
+
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        let n = self.vertices.len();
+        let elev = self.elevation;
+        match action {
+            A::AddVertex if grip_id < n => {
+                let i1 = (grip_id + 1) % n;
+                if i1 == 0 && grip_id + 1 == n {
+                    return;
+                }
+                let v0 = &self.vertices[grip_id];
+                let v1 = &self.vertices[i1];
+                let mx = (v0.location.x + v1.location.x) * 0.5;
+                let my = (v0.location.y + v1.location.y) * 0.5;
+                let mut new_v = v0.clone();
+                new_v.location.x = mx;
+                new_v.location.y = my;
+                new_v.location.z = elev;
+                let insert_at = (grip_id + 1).min(self.vertices.len());
+                self.vertices.insert(insert_at, new_v);
+            }
+            A::RemoveVertex if grip_id < n && n > 2 => {
+                self.vertices.remove(grip_id);
+            }
+            _ => {}
+        }
+    }
 }
 
 impl PropertyEditable for Polyline2D {
@@ -471,6 +559,50 @@ impl Grippable for Polyline3D {
                     v.position.z = p.z as f64;
                 }
             }
+        }
+    }
+
+    fn grip_menu(
+        &self,
+        _grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        vec![
+            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
+            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+        ]
+    }
+
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        let n = self.vertices.len();
+        match action {
+            A::AddVertex if grip_id < n => {
+                let i1 = (grip_id + 1) % n;
+                if i1 == 0 && grip_id + 1 == n {
+                    return;
+                }
+                let v0 = &self.vertices[grip_id];
+                let v1 = &self.vertices[i1];
+                let mx = (v0.position.x + v1.position.x) * 0.5;
+                let my = (v0.position.y + v1.position.y) * 0.5;
+                let mz = (v0.position.z + v1.position.z) * 0.5;
+                let mut new_v = v0.clone();
+                new_v.position.x = mx;
+                new_v.position.y = my;
+                new_v.position.z = mz;
+                let insert_at = (grip_id + 1).min(self.vertices.len());
+                self.vertices.insert(insert_at, new_v);
+            }
+            A::RemoveVertex if grip_id < n && n > 2 => {
+                self.vertices.remove(grip_id);
+            }
+            _ => {}
         }
     }
 }

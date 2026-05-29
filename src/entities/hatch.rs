@@ -329,6 +329,61 @@ impl Grippable for Hatch {
             }
         }
     }
+
+    fn grip_menu(
+        &self,
+        _grip_id: usize,
+    ) -> Vec<crate::scene::object::GripMenuItem> {
+        use crate::scene::object::{GripMenuAction, GripMenuItem};
+        vec![
+            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
+            GripMenuItem { label: "Origin Point", action: GripMenuAction::OriginPoint },
+            GripMenuItem { label: "Hatch Angle", action: GripMenuAction::HatchAngle },
+            GripMenuItem { label: "Hatch Scale", action: GripMenuAction::HatchScale },
+        ]
+    }
+
+    fn apply_grip_menu(
+        &mut self,
+        _grip_id: usize,
+        _action: crate::scene::object::GripMenuAction,
+    ) {
+        // Origin / Angle / Scale need a follow-up value — handled by
+        // `apply_grip_menu_value`.
+    }
+
+    fn grip_menu_value_prompt(
+        &self,
+        _grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+    ) -> Option<&'static str> {
+        use crate::scene::object::GripMenuAction as A;
+        match action {
+            A::HatchAngle => Some("Angle (deg)"),
+            A::HatchScale => Some("Scale"),
+            _ => None,
+        }
+    }
+
+    fn apply_grip_menu_value(
+        &mut self,
+        _grip_id: usize,
+        action: crate::scene::object::GripMenuAction,
+        value: f64,
+    ) {
+        use crate::scene::object::GripMenuAction as A;
+        match action {
+            A::HatchAngle => {
+                self.pattern_angle = value.to_radians();
+            }
+            A::HatchScale => {
+                if value > 0.0 {
+                    self.pattern_scale = value;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl FallbackTess for Hatch {
