@@ -1036,7 +1036,22 @@ impl OpenCADStudio {
             Message::UpdateCheckResult,
         );
         let focus_cmd = s.focus_cmd_input();
-        (s, Task::batch([open_main, check_update, focus_cmd]))
+        // Open a file path passed on the command line. Used by the
+        // OS file association: double-clicking a .dwg in the file
+        // explorer launches the binary with the file path as the
+        // first positional argument. Unknown / flag-style args are
+        // ignored. `Message::OpenRecent` does the existence check
+        // and reports a clean error if the path is bogus.
+        let cli_open: Task<Message> = std::env::args_os()
+            .nth(1)
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().to_string_lossy().starts_with('-'))
+            .map(|p| Task::done(Message::OpenRecent(p)))
+            .unwrap_or_else(Task::none);
+        (
+            s,
+            Task::batch([open_main, check_update, focus_cmd, cli_open]),
+        )
     }
 }
 

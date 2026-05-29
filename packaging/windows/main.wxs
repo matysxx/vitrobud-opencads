@@ -1,0 +1,118 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  WiX source for the Windows MSI installer.
+
+  Build (CI / locally with WiX Toolset 3.x in PATH):
+    candle.exe -arch x64 -dVersion=<x.y.z> -dSource=target\release\OpenCADStudio.exe \
+               -dIcon=packaging\windows\AppIcon.ico packaging\windows\main.wxs \
+               -out packaging\windows\main.wixobj
+    light.exe  packaging\windows\main.wixobj -out OpenCADStudio.msi
+
+  Provides:
+    * Per-machine install under Program Files\Open CAD Studio.
+    * Start Menu shortcut under Programs\Open CAD Studio.
+    * File associations for .dwg and .dxf via a single ProgID; both
+      route through `OpenCADStudio.exe "%1"` so the OS hands the file
+      path to the app as argv[1] (consumed in OpenCADStudio::boot).
+    * Standard Add/Remove Programs entry with icon.
+    * MajorUpgrade — installing a newer MSI replaces the old version.
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product
+    Id='*'
+    Name='Open CAD Studio'
+    UpgradeCode='bd6bceab-6c7a-4ce2-a62d-6ef06a92f8b1'
+    Manufacturer='Hakan Seven'
+    Language='1033'
+    Codepage='1252'
+    Version='$(var.Version)'>
+
+    <Package
+      Id='*'
+      Keywords='Installer'
+      Description='Open CAD Studio Installer'
+      Manufacturer='Hakan Seven'
+      InstallerVersion='450'
+      Languages='1033'
+      Compressed='yes'
+      InstallScope='perMachine'
+      SummaryCodepage='1252' />
+
+    <MajorUpgrade
+      Schedule='afterInstallInitialize'
+      DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.' />
+
+    <Media Id='1' Cabinet='product.cab' EmbedCab='yes' />
+
+    <Icon Id='AppIcon.ico' SourceFile='$(var.Icon)' />
+    <Property Id='ARPPRODUCTICON' Value='AppIcon.ico' />
+    <Property Id='ARPHELPLINK' Value='https://github.com/HakanSeven12/OpenCADStudio' />
+    <Property Id='ARPURLINFOABOUT' Value='https://github.com/HakanSeven12/OpenCADStudio' />
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder'>
+        <Directory Id='APPLICATIONROOTDIRECTORY' Name='Open CAD Studio'>
+
+          <Component Id='MainExecutable' Guid='2900c116-e9a5-4650-8a4c-48c0987d1a33' Win64='yes'>
+            <File
+              Id='OpenCADStudioEXE'
+              Name='OpenCADStudio.exe'
+              DiskId='1'
+              Source='$(var.Source)'
+              KeyPath='yes'>
+              <Shortcut
+                Id='StartMenuShortcut'
+                Directory='ProgramMenuDir'
+                Name='Open CAD Studio'
+                Description='Launch Open CAD Studio'
+                WorkingDirectory='APPLICATIONROOTDIRECTORY'
+                Icon='AppIcon.ico'
+                IconIndex='0'
+                Advertise='yes' />
+            </File>
+
+            <!--
+              File association: a single ProgID handles both .dwg and
+              .dxf. ContentType isn't strictly required on Windows but
+              improves "Open with…" suggestions.
+            -->
+            <ProgId
+              Id='OpenCADStudio.Drawing'
+              Description='Drawing'
+              Icon='OpenCADStudioEXE'
+              IconIndex='0'>
+              <Extension Id='dwg' ContentType='image/vnd.dwg'>
+                <Verb Id='open' Command='Open' TargetFile='OpenCADStudioEXE' Argument='"%1"' />
+              </Extension>
+              <Extension Id='dxf' ContentType='image/vnd.dxf'>
+                <Verb Id='open' Command='Open' TargetFile='OpenCADStudioEXE' Argument='"%1"' />
+              </Extension>
+            </ProgId>
+          </Component>
+
+        </Directory>
+      </Directory>
+
+      <Directory Id='ProgramMenuFolder'>
+        <Directory Id='ProgramMenuDir' Name='Open CAD Studio'>
+          <Component Id='ProgramMenuDirComp' Guid='34a788ba-f9d4-4e73-b1ff-9eb8749b369e'>
+            <RemoveFolder Id='ProgramMenuDir' On='uninstall' />
+            <RegistryValue
+              Root='HKCU'
+              Key='Software\Open CAD Studio'
+              Name='installed'
+              Type='integer'
+              Value='1'
+              KeyPath='yes' />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id='Complete' Title='Open CAD Studio' Level='1'>
+      <ComponentRef Id='MainExecutable' />
+      <ComponentRef Id='ProgramMenuDirComp' />
+    </Feature>
+
+  </Product>
+</Wix>
