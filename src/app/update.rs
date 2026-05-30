@@ -2782,8 +2782,16 @@ impl OpenCADStudio {
                                     )
                                 });
                             if let Some(handle) = hit {
-                                self.tabs[i].scene.select_entity(handle, true);
-                                self.tabs[i].scene.expand_selection_for_groups(&[handle]);
+                                // Individual picks accumulate (issue #47):
+                                // each plain click adds to the selection,
+                                // Shift+click removes the picked entity.
+                                // Esc / empty-space click clears.
+                                if self.shift_down {
+                                    self.tabs[i].scene.deselect_entity(handle);
+                                } else {
+                                    self.tabs[i].scene.select_entity(handle, false);
+                                    self.tabs[i].scene.expand_selection_for_groups(&[handle]);
+                                }
                                 self.refresh_properties();
                                 selection_just_completed = true;
                             } else {
@@ -3377,6 +3385,11 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                     self.refresh_properties();
                 }
+                Task::none()
+            }
+
+            Message::SetShiftDown(down) => {
+                self.shift_down = down;
                 Task::none()
             }
 

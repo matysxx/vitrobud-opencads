@@ -995,6 +995,9 @@ impl OpenCADStudio {
                     iced::Event::Window(window::Event::Resized(sz)) => {
                         Some(Message::WindowResized(sz.width as f32, sz.height as f32))
                     }
+                    iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+                        Some(Message::SetShiftDown(m.shift()))
+                    }
                     iced::Event::Keyboard(keyboard::Event::KeyPressed {
                         key, modifiers, text, ..
                     }) => {

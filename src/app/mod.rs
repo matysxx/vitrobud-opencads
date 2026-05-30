@@ -246,6 +246,10 @@ pub(super) struct OpenCADStudio {
     clipboard: Vec<acadrust::EntityType>,
     /// Centroid of the clipboard entities (XZ plane, Y-up).
     clipboard_centroid: glam::Vec3,
+    /// True while the Shift key is held — drives subtractive pick (Shift+click
+    /// removes the picked entity from the selection). Tracked from keyboard
+    /// modifier-change events since mouse click messages carry no modifiers.
+    shift_down: bool,
     /// Which layout tab has its context menu open (None = closed).
     layout_context_menu: Option<String>,
     /// Inline rename state: (original_name, current_edit_value).
@@ -702,6 +706,9 @@ pub enum Message {
     /// Extend the current selection with every entity in the active
     /// layout that matches a selected entity by (type, layer).
     SelectSimilar,
+    /// Keyboard modifier state changed — tracks whether Shift is held so the
+    /// pick path can do subtractive (Shift+click) selection.
+    SetShiftDown(bool),
     // ── Draw Order context menu ─────────────────────────────────────────
     /// Toggle the Draw Order sub-items in the viewport context menu.
     DrawOrderSubmenuToggle,
@@ -941,6 +948,7 @@ impl OpenCADStudio {
             update_notice_body: None,
             clipboard: Vec::new(),
             clipboard_centroid: glam::Vec3::ZERO,
+            shift_down: false,
             layout_context_menu: None,
             layout_rename_state: None,
             last_vp_click_time: None,

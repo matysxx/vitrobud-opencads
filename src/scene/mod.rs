@@ -3808,6 +3808,13 @@ impl Scene {
         self.bump_geometry();
     }
 
+    /// Remove a single entity from the selection (Shift+click subtractive pick).
+    pub fn deselect_entity(&mut self, handle: Handle) {
+        if self.selected.remove(&handle) {
+            self.bump_geometry();
+        }
+    }
+
     pub fn selected_entities(&self) -> Vec<(Handle, &EntityType)> {
         self.selected
             .iter()
