@@ -1230,6 +1230,11 @@ impl OpenCADStudio {
             }
 
             Message::CommandEscape => {
+                // Open MText editor swallows Escape (cancel without committing).
+                if self.mtext_editor.is_some() {
+                    self.mtext_cancel();
+                    return Task::none();
+                }
                 // Grip popup intercepts Escape — dismisses the menu
                 // without doing anything else.
                 if self.grip_popup.take().is_some() {
@@ -2929,6 +2934,20 @@ impl OpenCADStudio {
                         let hit = scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
                             .and_then(|s| Scene::handle_from_wire_name(s));
                         if let Some(handle) = hit {
+                            // MText opens the in-place editor; other text types
+                            // keep the command-line DDEDIT path.
+                            if let Some(AcadEntityType::MText(m)) =
+                                self.tabs[i].scene.document.get_entity(handle)
+                            {
+                                let pos = glam::Vec3::new(
+                                    m.insertion_point.x as f32,
+                                    m.insertion_point.y as f32,
+                                    m.insertion_point.z as f32,
+                                );
+                                let (val, h) = (m.value.clone(), m.height);
+                                self.open_mtext_editor(pos, Some(handle), &val, h);
+                                return Task::none();
+                            }
                             if let Some(entity) = self.tabs[i].scene.document.get_entity(handle) {
                                 use crate::modules::annotate::ddedit::{
                                     entity_text, DdeditCommand,
@@ -3438,6 +3457,94 @@ impl OpenCADStudio {
 
             Message::SetShiftDown(down) => {
                 self.shift_down = down;
+                Task::none()
+            }
+
+            // ── In-place MText editor ───────────────────────────────────
+            Message::MTextEdit(action) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.content.perform(action);
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextFmt(kind) => {
+                self.mtext_apply_fmt(kind);
+                Task::none()
+            }
+            Message::MTextHeight(s) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.height = s;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextColor(aci) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.color_aci = aci;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextStyle(s) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.style = s;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextFont(f) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.font = if f == "[Style default]" { String::new() } else { f };
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextOblique(s) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.oblique = s;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextWidth(s) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.width = s;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextCharSpace(s) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.char_space = s;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextJustify(ap) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.attachment = ap;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextAlign(a) => {
+                self.mtext_apply_align(a);
+                Task::none()
+            }
+            Message::MTextLineSpacing(f) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.line_spacing = f;
+                }
+                self.rebuild_mtext_preview();
+                Task::none()
+            }
+            Message::MTextOk => {
+                self.mtext_commit();
+                Task::none()
+            }
+            Message::MTextCancel => {
+                self.mtext_cancel();
                 Task::none()
             }
 

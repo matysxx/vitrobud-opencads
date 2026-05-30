@@ -794,6 +794,21 @@ impl OpenCADStudio {
             }
         }
 
+        // In-place MText editor (toolbar + text area), anchored at the
+        // insertion-point click.
+        if !tab.is_start {
+            if let Some(ed) = &self.mtext_editor {
+                let styles: Vec<String> = tab
+                    .scene
+                    .document
+                    .text_styles
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect();
+                viewport_stack = viewport_stack.push(mtext_editor_overlay(ed, styles));
+            }
+        }
+
         // Properties / layers panels carry no useful state on the Start tab.
         // Replace the properties panel with a Recent Documents list there.
         let properties_el: Element<'_, Message> = if tab.is_start {
@@ -1304,6 +1319,286 @@ fn position_canvas_overlay<'a>(
     .width(Fill)
     .height(Fill)
     .into()
+}
+
+// ── In-place MText editor overlay ───────────────────────────────────────────
+
+const MTEXT_FONTS: [&str; 5] = [
+    "[Style default]",
+    "Arial",
+    "Times New Roman",
+    "Courier New",
+    "ISOCPEUR",
+];
+/// (label, ACI). 256 = ByLayer.
+const MTEXT_COLORS: [(&str, u16); 8] = [
+    ("ByLayer", 256),
+    ("Red", 1),
+    ("Yellow", 2),
+    ("Green", 3),
+    ("Cyan", 4),
+    ("Blue", 5),
+    ("Magenta", 6),
+    ("White", 7),
+];
+
+/// Canvas program that renders the tessellated MText strokes inside the
+/// editor's own preview area (never on the drawing). Strokes lie in the
+/// world XY plane; the program fits + vertically flips them into the box.
+struct MTextPreview {
+    /// Disconnected polylines as (x, y) world points (NaN-split already done).
+    segments: Vec<Vec<(f32, f32)>>,
+}
+
+impl iced::widget::canvas::Program<Message> for MTextPreview {
+    type State = ();
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, Path, Stroke};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let (mut minx, mut miny, mut maxx, mut maxy) =
+            (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for seg in &self.segments {
+            for &(x, y) in seg {
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+            }
+        }
+        if minx > maxx {
+            return vec![frame.into_geometry()];
+        }
+        let pad = 10.0_f32;
+        let w = (maxx - minx).max(1e-4);
+        let h = (maxy - miny).max(1e-4);
+        let s = ((bounds.width - 2.0 * pad) / w)
+            .min((bounds.height - 2.0 * pad) / h)
+            .max(0.0);
+        let ox = pad + (bounds.width - 2.0 * pad - w * s) * 0.5;
+        let oy = pad + (bounds.height - 2.0 * pad - h * s) * 0.5;
+        // Flip Y: world up → screen down.
+        let map = |x: f32, y: f32| {
+            iced::Point::new(ox + (x - minx) * s, bounds.height - (oy + (y - miny) * s))
+        };
+        for seg in &self.segments {
+            if seg.len() < 2 {
+                continue;
+            }
+            let path = Path::new(|p| {
+                p.move_to(map(seg[0].0, seg[0].1));
+                for &(x, y) in &seg[1..] {
+                    p.line_to(map(x, y));
+                }
+            });
+            frame.stroke(
+                &path,
+                Stroke::default()
+                    .with_color(Color { r: 0.93, g: 0.93, b: 0.93, a: 1.0 })
+                    .with_width(1.4),
+            );
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Split every preview WireModel into finite (x, y) polyline runs.
+fn mtext_preview_segments(ed: &super::mtext_editor::MTextEditorState) -> Vec<Vec<(f32, f32)>> {
+    let mut out: Vec<Vec<(f32, f32)>> = Vec::new();
+    for w in &ed.preview_wires {
+        let mut run: Vec<(f32, f32)> = Vec::new();
+        for p in &w.points {
+            if p[0].is_finite() && p[1].is_finite() {
+                run.push((p[0], p[1]));
+            } else if !run.is_empty() {
+                out.push(std::mem::take(&mut run));
+            }
+        }
+        if !run.is_empty() {
+            out.push(run);
+        }
+    }
+    out
+}
+
+fn mtext_editor_overlay<'a>(
+    ed: &'a super::mtext_editor::MTextEditorState,
+    styles: Vec<String>,
+) -> Element<'a, Message> {
+    use super::mtext_editor::{JustifyChoice, MTextFmt, ParaAlign};
+    use iced::widget::{canvas, svg, text_editor};
+
+    const PANEL_BG: Color = Color { r: 0.16, g: 0.16, b: 0.16, a: 0.98 };
+    const BORDER: Color = Color { r: 0.40, g: 0.40, b: 0.40, a: 1.0 };
+    const TEXT_COL: Color = Color { r: 0.88, g: 0.88, b: 0.88, a: 1.0 };
+    const FIELD_BG: Color = Color { r: 0.12, g: 0.12, b: 0.12, a: 1.0 };
+
+    let btn_style = |_: &Theme, status: button::Status| button::Style {
+        background: Some(Background::Color(match status {
+            button::Status::Hovered | button::Status::Pressed => {
+                Color { r: 0.28, g: 0.40, b: 0.55, a: 1.0 }
+            }
+            _ => Color { r: 0.22, g: 0.22, b: 0.22, a: 1.0 },
+        })),
+        text_color: TEXT_COL,
+        border: Border { color: BORDER, width: 1.0, radius: 3.0.into() },
+        shadow: iced::Shadow::default(),
+        snap: false,
+    };
+    let icon_btn = move |bytes: &'static [u8], msg: Message| -> Element<'static, Message> {
+        button(svg(svg::Handle::from_memory(bytes)).width(18).height(18))
+            .on_press(msg)
+            .padding(3)
+            .style(btn_style)
+            .into()
+    };
+    let lbl = |s: &'static str| text(s).size(11).color(TEXT_COL);
+    let small_input = |placeholder: &'static str,
+                       val: &str,
+                       on: fn(String) -> Message,
+                       w: f32|
+     -> Element<'static, Message> {
+        text_input(placeholder, val)
+            .on_input(on)
+            .width(iced::Length::Fixed(w))
+            .padding(3)
+            .size(12)
+            .into()
+    };
+
+    // ── Row 1: style / font / height · format icons · colour ──────────────
+    let style_opts: Vec<String> = if styles.is_empty() {
+        vec!["Standard".to_string()]
+    } else {
+        styles
+    };
+    let style_pl = pick_list(style_opts, Some(ed.style.clone()), Message::MTextStyle)
+        .text_size(11)
+        .width(iced::Length::Fixed(96.0));
+    let font_sel = if ed.font.trim().is_empty() {
+        "[Style default]".to_string()
+    } else {
+        ed.font.clone()
+    };
+    let font_pl = pick_list(
+        MTEXT_FONTS.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        Some(font_sel),
+        Message::MTextFont,
+    )
+    .text_size(11)
+    .width(iced::Length::Fixed(120.0));
+    let color_sel = MTEXT_COLORS
+        .iter()
+        .find(|(_, a)| *a == ed.color_aci)
+        .map(|(n, _)| n.to_string())
+        .unwrap_or_else(|| "ByLayer".to_string());
+    let color_pl = pick_list(
+        MTEXT_COLORS.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>(),
+        Some(color_sel),
+        |name: String| {
+            let aci = MTEXT_COLORS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, a)| *a)
+                .unwrap_or(256);
+            Message::MTextColor(aci)
+        },
+    )
+    .text_size(11)
+    .width(iced::Length::Fixed(96.0));
+
+    let row1 = row![
+        style_pl,
+        font_pl,
+        small_input("2.5", &ed.height, Message::MTextHeight, 64.0),
+        iced::widget::Space::new().width(6),
+        icon_btn(include_bytes!("../../assets/icons/mt_bold.svg"), Message::MTextFmt(MTextFmt::Bold)),
+        icon_btn(include_bytes!("../../assets/icons/mt_italic.svg"), Message::MTextFmt(MTextFmt::Italic)),
+        icon_btn(include_bytes!("../../assets/icons/mt_underline.svg"), Message::MTextFmt(MTextFmt::Underline)),
+        icon_btn(include_bytes!("../../assets/icons/mt_overline.svg"), Message::MTextFmt(MTextFmt::Overline)),
+        icon_btn(include_bytes!("../../assets/icons/mt_strike.svg"), Message::MTextFmt(MTextFmt::Strike)),
+        icon_btn(include_bytes!("../../assets/icons/mt_upper.svg"), Message::MTextFmt(MTextFmt::Uppercase)),
+        icon_btn(include_bytes!("../../assets/icons/mt_lower.svg"), Message::MTextFmt(MTextFmt::Lowercase)),
+        iced::widget::Space::new().width(Fill),
+        color_pl,
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center);
+
+    // ── Row 2: oblique / width / char-spacing · align · line spacing · OK ─
+    let justify = pick_list(
+        JustifyChoice::ALL,
+        Some(JustifyChoice(ed.attachment)),
+        |c| Message::MTextJustify(c.0),
+    )
+    .text_size(11)
+    .width(iced::Length::Fixed(112.0));
+    let row2 = row![
+        lbl("O"),
+        small_input("0", &ed.oblique, Message::MTextOblique, 48.0),
+        lbl("W"),
+        small_input("1", &ed.width, Message::MTextWidth, 48.0),
+        lbl("◊"),
+        small_input("0", &ed.char_space, Message::MTextCharSpace, 48.0),
+        iced::widget::Space::new().width(6),
+        icon_btn(include_bytes!("../../assets/icons/mt_align_left.svg"), Message::MTextAlign(ParaAlign::Left)),
+        icon_btn(include_bytes!("../../assets/icons/mt_align_center.svg"), Message::MTextAlign(ParaAlign::Center)),
+        icon_btn(include_bytes!("../../assets/icons/mt_align_right.svg"), Message::MTextAlign(ParaAlign::Right)),
+        icon_btn(include_bytes!("../../assets/icons/mt_align_justify.svg"), Message::MTextAlign(ParaAlign::Justify)),
+        iced::widget::Space::new().width(6),
+        justify,
+        lbl("LS"),
+        button(lbl("1")).on_press(Message::MTextLineSpacing(1.0)).padding(3).style(btn_style),
+        button(lbl("1.5")).on_press(Message::MTextLineSpacing(1.5)).padding(3).style(btn_style),
+        button(lbl("2")).on_press(Message::MTextLineSpacing(2.0)).padding(3).style(btn_style),
+        iced::widget::Space::new().width(Fill),
+        icon_btn(include_bytes!("../../assets/icons/mt_ok.svg"), Message::MTextOk),
+        icon_btn(include_bytes!("../../assets/icons/mt_cancel.svg"), Message::MTextCancel),
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center);
+
+    // ── Dedicated preview area (rendered MText) ──────────────────────────
+    let preview = container(
+        canvas(MTextPreview { segments: mtext_preview_segments(ed) })
+            .width(Fill)
+            .height(iced::Length::Fixed(96.0)),
+    )
+    .style(move |_: &Theme| container::Style {
+        background: Some(Background::Color(FIELD_BG)),
+        border: Border { color: BORDER, width: 1.0, radius: 3.0.into() },
+        ..Default::default()
+    })
+    .padding(2)
+    .width(Fill);
+
+    // ── Raw text + inline-code input ─────────────────────────────────────
+    let editor = text_editor(&ed.content)
+        .on_action(Message::MTextEdit)
+        .height(iced::Length::Fixed(72.0))
+        .padding(6)
+        .size(13);
+
+    let panel = container(column![row1, row2, preview, editor].spacing(5))
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(PANEL_BG)),
+            border: Border { color: BORDER, width: 1.0, radius: 5.0.into() },
+            ..Default::default()
+        })
+        .padding(6)
+        .width(iced::Length::Fixed(640.0));
+
+    let anchor = iced::Point::new(
+        (ed.screen_anchor.x - 10.0).max(0.0),
+        (ed.screen_anchor.y - 90.0).max(0.0),
+    );
+    position_canvas_overlay(anchor, panel.into())
 }
 
 // ── Viewport right-click context menu ──────────────────────────────────────

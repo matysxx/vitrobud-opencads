@@ -126,6 +126,15 @@ pub enum CmdResult {
     SetPlotWindow { p1: Vec3, p2: Vec3 },
     /// Replace the text content of a Text/MText entity in-place.
     DdeditEntity { handle: Handle, new_text: String },
+    /// Open the in-place MText editor (formatting toolbar + multi-line text
+    /// area with live viewport preview). `handle` is `Some` when editing an
+    /// existing MText, `None` when creating a new one at `pos`.
+    OpenMTextEditor {
+        pos: Vec3,
+        handle: Option<Handle>,
+        initial: String,
+        height: f64,
+    },
     /// Apply new pattern/scale/angle to an existing hatch entity.
     HatcheditApply {
         handle: Handle,

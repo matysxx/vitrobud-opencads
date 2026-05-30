@@ -1496,6 +1496,16 @@ impl OpenCADStudio {
                 self.tabs[i].scene.clear_preview_wire();
                 self.restore_pre_cmd_tangent();
             }
+            CmdResult::OpenMTextEditor {
+                pos,
+                handle,
+                initial,
+                height,
+            } => {
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.open_mtext_editor(pos, handle, &initial, height);
+            }
             CmdResult::DdeditEntity { handle, new_text } => {
                 let mut updated = false;
                 if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {

@@ -4,6 +4,7 @@ mod document;
 mod helpers;
 mod history;
 mod layers;
+mod mtext_editor;
 mod properties;
 mod update;
 mod view;
@@ -250,6 +251,8 @@ pub(super) struct OpenCADStudio {
     /// removes the picked entity from the selection). Tracked from keyboard
     /// modifier-change events since mouse click messages carry no modifiers.
     shift_down: bool,
+    /// Open in-place MText editor (toolbar + text area + live preview), if any.
+    mtext_editor: Option<mtext_editor::MTextEditorState>,
     /// Which layout tab has its context menu open (None = closed).
     layout_context_menu: Option<String>,
     /// Inline rename state: (original_name, current_edit_value).
@@ -709,6 +712,35 @@ pub enum Message {
     /// Keyboard modifier state changed — tracks whether Shift is held so the
     /// pick path can do subtractive (Shift+click) selection.
     SetShiftDown(bool),
+    // ── In-place MText editor ───────────────────────────────────────────
+    /// Text-area edit action from the multi-line editor widget.
+    MTextEdit(iced::widget::text_editor::Action),
+    /// Toolbar character-format toggle applied to the selection.
+    MTextFmt(mtext_editor::MTextFmt),
+    /// Toolbar height field changed.
+    MTextHeight(String),
+    /// Toolbar text-style dropdown changed.
+    MTextStyle(String),
+    /// Toolbar font dropdown changed.
+    MTextFont(String),
+    /// Toolbar oblique-angle field changed.
+    MTextOblique(String),
+    /// Toolbar width-factor field changed.
+    MTextWidth(String),
+    /// Toolbar character-spacing field changed.
+    MTextCharSpace(String),
+    /// Toolbar colour dropdown — global text colour (ACI index, 256 = ByLayer).
+    MTextColor(u16),
+    /// Toolbar justification / attachment-point change.
+    MTextJustify(acadrust::entities::mtext::AttachmentPoint),
+    /// Toolbar paragraph-alignment change.
+    MTextAlign(mtext_editor::ParaAlign),
+    /// Toolbar line-spacing change.
+    MTextLineSpacing(f32),
+    /// Commit the editor: create or update the MText entity.
+    MTextOk,
+    /// Discard the editor without creating / changing the entity.
+    MTextCancel,
     // ── Draw Order context menu ─────────────────────────────────────────
     /// Toggle the Draw Order sub-items in the viewport context menu.
     DrawOrderSubmenuToggle,
@@ -949,6 +981,7 @@ impl OpenCADStudio {
             clipboard: Vec::new(),
             clipboard_centroid: glam::Vec3::ZERO,
             shift_down: false,
+            mtext_editor: None,
             layout_context_menu: None,
             layout_rename_state: None,
             last_vp_click_time: None,
