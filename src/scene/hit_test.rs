@@ -11,6 +11,7 @@ use glam::{Mat4, Vec3};
 use iced::{Point, Rectangle};
 
 use super::hatch_model::HatchModel;
+use super::mesh_model::MeshModel;
 use super::wire_model::WireModel;
 
 /// Pixel radius used for single-click wire detection.
@@ -52,6 +53,50 @@ pub fn click_hit<'a>(
     }
 
     best
+}
+
+/// Pick a 3D solid by clicking anywhere on its shaded body: project each
+/// mesh triangle to screen space and test whether the cursor lands inside it.
+/// Returns the front-most hit (smallest projected depth). Lets meshed solids
+/// (whose only wire geometry is thin edges) be selected on their faces.
+pub fn mesh_click_hit<'a>(
+    cursor: Point,
+    meshes: impl Iterator<Item = (Handle, &'a MeshModel)>,
+    view_proj: Mat4,
+    bounds: Rectangle,
+) -> Option<Handle> {
+    let mut best: Option<(f32, Handle)> = None;
+    for (handle, mesh) in meshes {
+        let v = &mesh.verts;
+        let idx = &mesh.indices;
+        let mut t = 0;
+        while t + 2 < idx.len() {
+            let tri = [
+                v[idx[t] as usize],
+                v[idx[t + 1] as usize],
+                v[idx[t + 2] as usize],
+            ];
+            t += 3;
+            let mut sp = [Point::ORIGIN; 3];
+            let mut depth = 0.0f32;
+            for (j, w) in tri.iter().enumerate() {
+                let ndc = view_proj.project_point3(Vec3::new(w[0], w[1], w[2]));
+                sp[j] = Point::new(
+                    (ndc.x + 1.0) * 0.5 * bounds.width,
+                    (1.0 - ndc.y) * 0.5 * bounds.height,
+                );
+                depth += ndc.z;
+            }
+            if point_in_polygon(cursor, &sp) {
+                let d = depth / 3.0;
+                if best.map_or(true, |(bd, _)| d < bd) {
+                    best = Some((d, handle));
+                }
+                break; // one hit per mesh is enough
+            }
+        }
+    }
+    best.map(|(_, h)| h)
 }
 
 // ── Box / window selection ────────────────────────────────────────────────

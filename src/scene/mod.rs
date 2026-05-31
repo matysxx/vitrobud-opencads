@@ -1593,6 +1593,21 @@ impl Scene {
         }
     }
 
+    /// Pick a meshed 3D solid by clicking on its shaded body (face), not just
+    /// its thin projected edges. Returns the front-most mesh under `cursor`.
+    pub fn mesh_click_hit(
+        &self,
+        cursor: iced::Point,
+        view_proj: glam::Mat4,
+        bounds: iced::Rectangle,
+    ) -> Option<Handle> {
+        let iter = self
+            .meshes
+            .iter()
+            .filter_map(|(h, set)| set.lods.first().map(|m| (*h, m)));
+        hit_test::mesh_click_hit(cursor, iter, view_proj, bounds)
+    }
+
     /// Tessellate all non-invisible entities owned by `block_handle`.
     fn wires_for_block(&self, block_handle: Handle) -> Vec<WireModel> {
         // Default culling is driven by the live `Scene::camera`. Multi-tile

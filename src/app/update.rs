@@ -2850,6 +2850,11 @@ impl OpenCADStudio {
                                         vp_mat,
                                         bounds,
                                     )
+                                })
+                                .or_else(|| {
+                                    // 3D solids: click anywhere on the shaded
+                                    // body, not just the thin projected edges.
+                                    self.tabs[i].scene.mesh_click_hit(p, vp_mat, bounds)
                                 });
                             if let Some(handle) = hit {
                                 // Individual picks accumulate (issue #47):
