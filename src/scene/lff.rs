@@ -46,6 +46,7 @@ const FONTS_SRC: &[(&str, &str)] = &[
     ("kochigothic", include_str!("../../assets/fonts/kochigothic.lff")),
     ("kochimincho", include_str!("../../assets/fonts/kochimincho.lff")),
     ("kst32b", include_str!("../../assets/fonts/kst32b.lff")),
+    ("ltypeshp", include_str!("../../assets/fonts/ltypeshp.lff")),
     ("lc_opengost-ar", include_str!("../../assets/fonts/lc_opengost-ar.lff")),
     ("lc_opengost-br", include_str!("../../assets/fonts/lc_opengost-br.lff")),
     ("opengosttypea-regular", include_str!("../../assets/fonts/opengosttypea-regular.lff")),
@@ -122,6 +123,10 @@ pub struct Font {
     pub word_spacing: f32,
     pub line_spacing: f32,
     glyphs: HashMap<char, Glyph>,
+    /// Named shapes — blocks whose `[hex] LABEL` label is a word rather than
+    /// the single codepoint character (used by `ltypeshp` for complex
+    /// linetype shapes, keyed by name since codepoints collide).
+    shapes: HashMap<String, Glyph>,
 }
 
 impl Font {
@@ -129,6 +134,15 @@ impl Font {
     pub fn glyph(&self, c: char) -> Option<&Glyph> {
         self.glyphs.get(&c)
     }
+    /// Look up a named shape (case-insensitive).
+    pub fn shape(&self, name: &str) -> Option<&Glyph> {
+        self.shapes.get(&name.to_ascii_uppercase())
+    }
+}
+
+/// Look up a complex-linetype shape by name in the `ltypeshp` font.
+pub fn shape(name: &str) -> Option<&'static Glyph> {
+    fonts_map().get("LTYPESHP").and_then(|f| f.shape(name))
 }
 
 // ── Registry ───────────────────────────────────────────────────────────────
@@ -177,6 +191,12 @@ fn unicode_font() -> &'static Font {
         .or_else(|| map.get("STANDARD"))
         .or_else(|| map.values().next())
         .expect("at least one LFF font must be embedded")
+}
+
+/// Secondary fallback covering Latin-extended / Turkish letters (ğ Ş İ …)
+/// that `unicode` lacks.
+fn latin_ext_font() -> Option<&'static Font> {
+    fonts_map().get("ISO3098")
 }
 
 /// Return a font by name (case-insensitive). `.shx` suffix is stripped.
@@ -390,10 +410,12 @@ pub fn tessellate_text_run(
             cursor_x += font.word_spacing;
             continue;
         }
-        // Selected family first, then the broad Unicode fallback.
+        // Selected family first, then the broad Unicode fallback, then
+        // iso3098 for Latin-extended/Turkish letters Unicode omits.
         let glyph = font
             .glyph(render_ch)
-            .or_else(|| unicode_font().glyph(render_ch));
+            .or_else(|| unicode_font().glyph(render_ch))
+            .or_else(|| latin_ext_font().and_then(|f| f.glyph(render_ch)));
         match glyph {
             Some(glyph) => {
                 for stroke in &glyph.strokes {
@@ -440,19 +462,29 @@ fn parse_lff(src: &str) -> Font {
         word_spacing: 6.75,
         line_spacing: 1.0,
         glyphs: HashMap::new(),
+        shapes: HashMap::new(),
     };
 
     let mut raw: HashMap<char, RawGlyph> = HashMap::new();
+    let mut raw_shapes: HashMap<String, RawGlyph> = HashMap::new();
     let mut cur: Option<char> = None;
+    let mut cur_name: Option<String> = None;
     let mut cur_glyph = RawGlyph::default();
 
-    let flush = |cur: &mut Option<char>, g: &mut RawGlyph, raw: &mut HashMap<char, RawGlyph>| {
-        if let Some(c) = cur.take() {
-            raw.insert(c, std::mem::take(g));
-        } else {
-            *g = RawGlyph::default();
-        }
-    };
+    // Route the just-finished block to the glyph map (by char) or, when it
+    // carried a shape name, to the shape map (by name).
+    macro_rules! flush {
+        () => {{
+            if let Some(c) = cur.take() {
+                raw.insert(c, std::mem::take(&mut cur_glyph));
+            } else if let Some(n) = cur_name.take() {
+                raw_shapes.insert(n, std::mem::take(&mut cur_glyph));
+            } else {
+                // Discard any strokes seen before the first header.
+                let _ = std::mem::take(&mut cur_glyph);
+            }
+        }};
+    }
 
     for line in src.lines() {
         let t = line.trim();
@@ -478,16 +510,22 @@ fn parse_lff(src: &str) -> Font {
             continue;
         }
         if t.starts_with('[') {
-            flush(&mut cur, &mut cur_glyph, &mut raw);
+            flush!();
             if let Some(end) = t.find(']') {
                 let hex = t[1..end].trim();
-                if let Some(c) = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
-                    cur = Some(c);
+                let label = t[end + 1..].trim();
+                let cp = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+                // A 0/1-char label is a normal glyph (keyed by codepoint); a
+                // word label (BOX, CIRC1, …) is a named shape.
+                if label.chars().count() > 1 {
+                    cur_name = Some(label.to_ascii_uppercase());
+                } else {
+                    cur = cp;
                 }
             }
             continue;
         }
-        if cur.is_none() {
+        if cur.is_none() && cur_name.is_none() {
             continue;
         }
         // `C<hex>` — reference another glyph's strokes.
@@ -506,7 +544,7 @@ fn parse_lff(src: &str) -> Font {
             }
         }
     }
-    flush(&mut cur, &mut cur_glyph, &mut raw);
+    flush!();
 
     // Resolve `C<hex>` references. Each pass folds in targets that are
     // themselves already reference-free; repeat so ref-to-ref chains settle.
@@ -537,20 +575,20 @@ fn parse_lff(src: &str) -> Font {
         }
     }
 
-    for (c, g) in raw {
-        let advance = g
-            .strokes
+    let advance_of = |strokes: &[Vec<[f32; 2]>]| -> f32 {
+        strokes
             .iter()
             .flat_map(|s| s.iter())
             .map(|&[x, _]| x)
-            .fold(0.0_f32, f32::max);
-        font.glyphs.insert(
-            c,
-            Glyph {
-                strokes: g.strokes,
-                advance,
-            },
-        );
+            .fold(0.0_f32, f32::max)
+    };
+    for (c, g) in raw {
+        let advance = advance_of(&g.strokes);
+        font.glyphs.insert(c, Glyph { strokes: g.strokes, advance });
+    }
+    for (n, g) in raw_shapes {
+        let advance = advance_of(&g.strokes);
+        font.shapes.insert(n, Glyph { strokes: g.strokes, advance });
     }
     font
 }
@@ -661,6 +699,27 @@ mod tests {
             }
             let (w, h) = (maxx - minx, maxy - miny);
             assert!(h > w, "{name} O should be upright (h {h:.1} > w {w:.1})");
+        }
+        // Turkish letters absent from simplex/unicode still render via the
+        // iso3098 fallback (ı/U+0131 is the one exception iso3098 lacks).
+        for ch in ['Ğ', 'ş', 'İ', 'Ş', 'ğ'] {
+            let s = tessellate_text_run(
+                [0.0, 0.0],
+                2.5,
+                0.0,
+                1.0,
+                0.0,
+                1.0,
+                "simplex",
+                &ch.to_string(),
+            );
+            assert!(!s.is_empty(), "Turkish '{ch}' should render via fallback");
+        }
+        // Complex-linetype shapes load by name (codepoints collide, so they
+        // must be keyed by label).
+        for sh in ["BOX", "CIRC1", "ZIG", "TRACK1"] {
+            let g = shape(sh).unwrap_or_else(|| panic!("shape {sh} missing"));
+            assert!(!g.strokes.is_empty(), "shape {sh} has no strokes");
         }
     }
 }

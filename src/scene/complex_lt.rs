@@ -291,16 +291,44 @@ fn offset_pt(pt: [f32; 3], fwd: [f32; 3], perp: [f32; 3], dx: f32, dy: f32) -> [
     ]
 }
 
-/// Embedded SHAPE elements in complex linetypes are no longer supported:
-/// the LFF font set ships no shape file (matching LibreCAD). Shape elements
-/// are skipped; text-in-linetype still renders via the LFF fonts.
+/// Transform a named linetype shape (from the converted `ltypeshp` LFF font)
+/// into world-space strokes at the pen position.
 fn emit_shape(
-    _name: &str,
-    _insert: [f32; 3],
-    _fwd: [f32; 3],
-    _perp: [f32; 3],
-    _scale: f32,
-    _rot_deg: f32,
+    name: &str,
+    insert: [f32; 3],
+    fwd: [f32; 3],
+    perp: [f32; 3],
+    scale: f32,
+    rot_deg: f32,
 ) -> Vec<Vec<[f32; 3]>> {
-    Vec::new()
+    let shape = match lff::shape(name) {
+        Some(s) => s,
+        None => return vec![],
+    };
+
+    let rot_r = rot_deg.to_radians();
+    let (cos_r, sin_r) = (rot_r.cos(), rot_r.sin());
+
+    shape
+        .strokes
+        .iter()
+        .map(|stroke| {
+            stroke
+                .iter()
+                .map(|&[lx, ly]| {
+                    let scaled_x = lx * scale;
+                    let scaled_y = ly * scale;
+                    // Rotate in the shape's local frame, then place along the
+                    // line tangent (fwd) and perpendicular (perp).
+                    let along_fwd = cos_r * scaled_x - sin_r * scaled_y;
+                    let along_perp = sin_r * scaled_x + cos_r * scaled_y;
+                    [
+                        insert[0] + fwd[0] * along_fwd + perp[0] * along_perp,
+                        insert[1] + fwd[1] * along_fwd + perp[1] * along_perp,
+                        insert[2] + fwd[2] * along_fwd + perp[2] * along_perp,
+                    ]
+                })
+                .collect()
+        })
+        .collect()
 }
