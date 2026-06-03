@@ -305,6 +305,12 @@ pub(super) struct OpenCADStudio {
     textstyle_width: String,
     /// Edit buffer for oblique angle (degrees).
     textstyle_oblique: String,
+    /// Edit buffer for fixed text height (0 = variable).
+    textstyle_height: String,
+    /// Edit buffer for big-font file name.
+    textstyle_bigfont: String,
+    /// Edit buffer for TrueType font name.
+    textstyle_ttf: String,
 
     // ── Color Scheme ──────────────────────────────────────────────────────
     active_theme: Theme,
@@ -880,6 +886,9 @@ pub enum Message {
     TextStyleApply,
     /// Select a font from the built-in font list.
     TextStyleFontPick(String),
+    /// Flip a boolean flag on the selected text style (backward / upside_down /
+    /// vertical / annotative), applied immediately.
+    TextStyleToggle(&'static str),
     // ── TableStyle Dialog ─────────────────────────────────────────────────
     TableStyleDialogOpen,
     #[allow(dead_code)]
@@ -1053,6 +1062,9 @@ impl OpenCADStudio {
             textstyle_font: String::new(),
             textstyle_width: "1.0".to_string(),
             textstyle_oblique: "0.0".to_string(),
+            textstyle_height: "0.0".to_string(),
+            textstyle_bigfont: String::new(),
+            textstyle_ttf: String::new(),
             // TableStyle dialog
             tablestyle_selected: "Standard".to_string(),
             // MLineStyle dialog

@@ -5634,7 +5634,28 @@ impl OpenCADStudio {
                     "font" => self.textstyle_font = value,
                     "width" => self.textstyle_width = value,
                     "oblique" => self.textstyle_oblique = value,
+                    "height" => self.textstyle_height = value,
+                    "bigfont" => self.textstyle_bigfont = value,
+                    "ttf" => self.textstyle_ttf = value,
                     _ => {}
+                }
+                Task::none()
+            }
+            Message::TextStyleToggle(field) => {
+                let i = self.active_tab;
+                let name = self.textstyle_selected.clone();
+                if self.tabs[i].scene.document.text_styles.get(&name).is_some() {
+                    self.push_undo_snapshot(i, "STYLE EDIT");
+                    if let Some(s) = self.tabs[i].scene.document.text_styles.get_mut(&name) {
+                        match field {
+                            "backward" => s.flags.backward = !s.flags.backward,
+                            "upside_down" => s.flags.upside_down = !s.flags.upside_down,
+                            "annotative" => s.annotative = !s.annotative,
+                            _ => {}
+                        }
+                    }
+                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].dirty = true;
                 }
                 Task::none()
             }
@@ -5646,15 +5667,24 @@ impl OpenCADStudio {
                     let font = self.textstyle_font.clone();
                     let width_str = self.textstyle_width.clone();
                     let oblique_str = self.textstyle_oblique.clone();
+                    let height_str = self.textstyle_height.clone();
+                    let bigfont = self.textstyle_bigfont.clone();
+                    let ttf = self.textstyle_ttf.clone();
                     if let Some(s) = self.tabs[i].scene.document.text_styles.get_mut(&name) {
                         s.font_file = font;
+                        s.big_font_file = bigfont;
+                        s.true_type_font = ttf;
                         if let Ok(w) = width_str.trim().parse::<f64>() {
                             s.width_factor = w;
                         }
                         if let Ok(a) = oblique_str.trim().parse::<f64>() {
                             s.oblique_angle = a.to_radians();
                         }
+                        if let Ok(h) = height_str.trim().parse::<f64>() {
+                            s.height = h.max(0.0);
+                        }
                     }
+                    self.tabs[i].scene.bump_geometry();
                     self.tabs[i].dirty = true;
                 }
                 Task::none()
@@ -6635,6 +6665,9 @@ impl OpenCADStudio {
             self.textstyle_font = s.font_file.clone();
             self.textstyle_width = format!("{:.4}", s.width_factor);
             self.textstyle_oblique = format!("{:.2}", s.oblique_angle.to_degrees());
+            self.textstyle_height = format!("{:.4}", s.height);
+            self.textstyle_bigfont = s.big_font_file.clone();
+            self.textstyle_ttf = s.true_type_font.clone();
         }
     }
 }

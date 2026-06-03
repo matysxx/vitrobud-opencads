@@ -65,13 +65,26 @@ impl OpenCADStudio {
                 .iter()
                 .map(|s| s.name.clone())
                 .collect();
-            return crate::ui::textstyle::view_window(
+            let (backward, upside_down, annotative) = tab
+                .scene
+                .document
+                .text_styles
+                .get(&self.textstyle_selected)
+                .map(|s| (s.flags.backward, s.flags.upside_down, s.annotative))
+                .unwrap_or((false, false, false));
+            return crate::ui::textstyle::view_window(crate::ui::textstyle::TextStyleView {
                 styles,
-                &self.textstyle_selected,
-                &self.textstyle_font,
-                &self.textstyle_width,
-                &self.textstyle_oblique,
-            );
+                selected: &self.textstyle_selected,
+                font_buf: &self.textstyle_font,
+                width_buf: &self.textstyle_width,
+                oblique_buf: &self.textstyle_oblique,
+                height_buf: &self.textstyle_height,
+                bigfont_buf: &self.textstyle_bigfont,
+                ttf_buf: &self.textstyle_ttf,
+                backward,
+                upside_down,
+                annotative,
+            });
         }
         if Some(window_id) == self.tablestyle_window {
             use acadrust::objects::ObjectType;

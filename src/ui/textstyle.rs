@@ -1,8 +1,23 @@
 //! Text Style Font Browser window — fills the entire OS window.
 
 use crate::app::Message;
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Theme};
+
+/// View-model for the Text Style editor window.
+pub struct TextStyleView<'a> {
+    pub styles: Vec<String>,
+    pub selected: &'a str,
+    pub font_buf: &'a str,
+    pub width_buf: &'a str,
+    pub oblique_buf: &'a str,
+    pub height_buf: &'a str,
+    pub bigfont_buf: &'a str,
+    pub ttf_buf: &'a str,
+    pub backward: bool,
+    pub upside_down: bool,
+    pub annotative: bool,
+}
 
 const TB: Color = Color {
     r: 0.13,
@@ -169,13 +184,20 @@ fn vsep<'a>() -> Element<'a, Message> {
         .into()
 }
 
-pub fn view_window<'a>(
-    styles: Vec<String>,
-    selected: &'a str,
-    font_buf: &'a str,
-    width_buf: &'a str,
-    oblique_buf: &'a str,
-) -> Element<'a, Message> {
+pub fn view_window<'a>(v: TextStyleView<'a>) -> Element<'a, Message> {
+    let TextStyleView {
+        styles,
+        selected,
+        font_buf,
+        width_buf,
+        oblique_buf,
+        height_buf,
+        bigfont_buf,
+        ttf_buf,
+        backward,
+        upside_down,
+        annotative,
+    } = v;
     // ── Toolbar ───────────────────────────────────────────────────────────
     let toolbar = container(
         row![
@@ -296,36 +318,48 @@ pub fn view_window<'a>(
     .height(Fill)
     .padding([12, 8]);
 
+    // Labeled numeric/text field row → TextStyleEdit { field, value }.
+    fn frow<'a>(label: &'a str, ph: &'a str, buf: &'a str, field: &'static str) -> Element<'a, Message> {
+        row![
+            text(label).size(11).color(DIM).width(120),
+            text_input(ph, buf)
+                .on_input(move |v| Message::TextStyleEdit { field, value: v })
+                .style(field_style)
+                .size(11)
+                .width(140),
+        ]
+        .spacing(6)
+        .align_y(iced::Center)
+        .into()
+    }
+
     // ── Right: Properties ─────────────────────────────────────────────────
     let props_panel = container(
         column![
             text("Properties").size(11).color(ACCENT),
+            frow("Big Font:", "big-font file…", bigfont_buf, "bigfont"),
+            frow("TrueType Font:", "e.g. Arial", ttf_buf, "ttf"),
+            frow("Fixed Height:", "0 = variable", height_buf, "height"),
+            frow("Width Factor:", "1.0", width_buf, "width"),
+            frow("Oblique (°):", "0.0", oblique_buf, "oblique"),
             row![
-                text("Width Factor:").size(11).color(DIM).width(120),
-                text_input("1.0", width_buf)
-                    .on_input(|v| Message::TextStyleEdit {
-                        field: "width",
-                        value: v
-                    })
-                    .style(field_style)
-                    .size(11)
-                    .width(90),
+                checkbox(backward)
+                    .label("Backward")
+                    .on_toggle(|_| Message::TextStyleToggle("backward"))
+                    .size(15)
+                    .text_size(11),
+                checkbox(upside_down)
+                    .label("Upside down")
+                    .on_toggle(|_| Message::TextStyleToggle("upside_down"))
+                    .size(15)
+                    .text_size(11),
             ]
-            .spacing(6)
-            .align_y(iced::Center),
-            row![
-                text("Oblique (°):").size(11).color(DIM).width(120),
-                text_input("0.0", oblique_buf)
-                    .on_input(|v| Message::TextStyleEdit {
-                        field: "oblique",
-                        value: v
-                    })
-                    .style(field_style)
-                    .size(11)
-                    .width(90),
-            ]
-            .spacing(6)
-            .align_y(iced::Center),
+            .spacing(16),
+            checkbox(annotative)
+                .label("Annotative")
+                .on_toggle(|_| Message::TextStyleToggle("annotative"))
+                .size(15)
+                .text_size(11),
             Space::new().height(8),
             text("Preview").size(10).color(DIM),
             container(text("AaBbCc 0123").size(20))
