@@ -107,12 +107,14 @@ sub-100 ms.
 After `FileOpened`, `bump_geometry()` fires; the first frame tessellates
 **every** model-space wire. Measurable hitch at ~100 k entities.
 
-### 2.1 Parallelize block-definition build
+### 2.1 Parallelize block-definition build ✅ DONE
 
-[`block_cache::build`](src/scene/block_cache.rs#L238) is single-threaded —
-the comment says "nested expansion is fiddly". Fix: stratify blocks in
-**topological order** (leaf blocks → callers → …) and build each layer in
-parallel via rayon. Dependency order is preserved.
+[`block_cache::build`](src/scene/block_cache.rs#L127) was single-threaded.
+No topological stratification was needed after all: `build_defn` stores
+nested INSERTs as by-name references (`LocalSub::Nested`) and never expands
+them at build time, so each defn depends only on the read-only `doc` — the
+builds are embarrassingly parallel. Now a plain rayon `par_iter().collect()`.
+`compute_block_aabbs` stays a serial post-pass (resolves nested refs, cheap).
 
 ### 2.2 Incremental wire cache (delta tessellation)
 

@@ -125,12 +125,19 @@ impl BlockCache {
     /// because their entities are emitted as top-level wires, not via the
     /// cache.
     pub fn build(doc: &CadDocument, anno_scale: f32, bg_color: [f32; 4]) -> Self {
+        use rayon::prelude::*;
         let mut cache = Self::new();
         let referenced = collect_referenced_blocks(doc);
-        for name in &referenced {
-            let defn = build_defn(doc, name, anno_scale, bg_color);
-            cache.defns.insert(name.clone(), Arc::new(defn));
-        }
+        // Each defn is built independently: nested INSERTs are stored as
+        // by-name references (`LocalSub::Nested`), never expanded here, so a
+        // block's build never depends on another block's defn. That makes the
+        // builds embarrassingly parallel over the read-only `doc` — no
+        // topological ordering required. `compute_block_aabbs` stays a serial
+        // post-pass (it resolves nested references and is comparatively cheap).
+        cache.defns = referenced
+            .par_iter()
+            .map(|name| (name.clone(), Arc::new(build_defn(doc, name, anno_scale, bg_color))))
+            .collect();
         cache.compute_block_aabbs(&referenced);
         cache
     }
