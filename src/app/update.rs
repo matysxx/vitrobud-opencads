@@ -2910,9 +2910,11 @@ impl OpenCADStudio {
                             let all_wires = self.tabs[i].scene.hit_test_wires();
                             let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
 
-                            // Selection cycling: step through overlapping objects
-                            // under the cursor on repeated clicks at the same spot.
-                            // Gated behind the toggle, so default picking is unchanged.
+                            // Selection cycling: where two or more objects
+                            // overlap, open a list box to pick which one; a
+                            // single object falls through to the normal click.
+                            // Gated behind the toggle, so default picking is
+                            // unchanged when off.
                             let mut handled_by_cycling = false;
                             if self.selection_cycling {
                                 let cands: Vec<Handle> = scene::hit_test::click_hits_all(
@@ -2925,25 +2927,9 @@ impl OpenCADStudio {
                                 .filter_map(|s| Scene::handle_from_wire_name(s))
                                 .filter(|&h| self.tabs[i].scene.passes_selection_filter(h))
                                 .collect();
-                                if !cands.is_empty() {
-                                    let same =
-                                        self.cycle_state.as_ref().map_or(false, |(pt, list, _)| {
-                                            (pt.x - p.x).abs() < 3.0
-                                                && (pt.y - p.y).abs() < 3.0
-                                                && *list == cands
-                                        });
-                                    let idx = if same {
-                                        (self.cycle_state.as_ref().unwrap().2 + 1) % cands.len()
-                                    } else {
-                                        0
-                                    };
-                                    let handle = cands[idx];
-                                    self.cycle_state = Some((p, cands, idx));
-                                    self.tabs[i].scene.deselect_all();
-                                    self.tabs[i].scene.select_entity(handle, false);
-                                    self.tabs[i].scene.expand_selection_for_groups(&[handle]);
-                                    self.refresh_properties();
-                                    selection_just_completed = true;
+                                if cands.len() >= 2 {
+                                    // Overlap: open the list box at the cursor.
+                                    self.cycle_candidates = Some((p_full, cands));
                                     handled_by_cycling = true;
                                 }
                             }
@@ -3644,7 +3630,20 @@ impl OpenCADStudio {
             }
             Message::ToggleSelectionCycling => {
                 self.selection_cycling ^= true;
-                self.cycle_state = None;
+                self.cycle_candidates = None;
+                Task::none()
+            }
+            Message::CycleSelect(handle) => {
+                // Add the picked object to the current selection (accumulate).
+                self.cycle_candidates = None;
+                let i = self.active_tab;
+                self.tabs[i].scene.select_entity(handle, false);
+                self.tabs[i].scene.expand_selection_for_groups(&[handle]);
+                self.refresh_properties();
+                Task::none()
+            }
+            Message::CycleCancel => {
+                self.cycle_candidates = None;
                 Task::none()
             }
             Message::ToggleSelectionFilterPopup => {

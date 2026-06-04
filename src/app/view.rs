@@ -1014,6 +1014,24 @@ impl OpenCADStudio {
             }
         }
 
+        // Selection-cycling list box: pick among overlapping objects.
+        if let Some((pt, cands)) = &self.cycle_candidates {
+            if !tab.is_start {
+                let items: Vec<(acadrust::Handle, String)> = cands
+                    .iter()
+                    .filter_map(|&h| {
+                        tab.scene.document.get_entity(h).map(|e| {
+                            (h, crate::entities::traits::entity_type_name(e).to_string())
+                        })
+                    })
+                    .collect();
+                if !items.is_empty() {
+                    viewport_stack = viewport_stack
+                        .push(crate::ui::cycle_popup::cycle_popup_overlay(*pt, items));
+                }
+            }
+        }
+
         // Right-click context menu. Lives inside the viewport stack so
         // the cursor position (canvas-relative) anchors the menu under
         // the cursor instead of drifting into window-relative space.

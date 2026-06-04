@@ -7,6 +7,7 @@ pub mod app_menu;
 pub mod isolate_popup;
 pub mod update_notice;
 pub mod command_line;
+pub mod cycle_popup;
 pub mod dimstyle;
 pub mod layers;
 pub mod layout_manager;

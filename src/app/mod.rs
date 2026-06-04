@@ -183,11 +183,11 @@ pub(super) struct OpenCADStudio {
     clean_screen: bool,
     /// Quick Properties: show a compact floating property panel on selection.
     quick_properties: bool,
-    /// Selection cycling: repeated clicks at one spot step through the
-    /// overlapping objects there instead of accumulating the selection.
+    /// Selection cycling: clicking where objects overlap opens a list box
+    /// to pick which one; the pick is added to the current selection.
     selection_cycling: bool,
-    /// Cycling cursor: (screen point, ordered candidates, current index).
-    cycle_state: Option<(iced::Point, Vec<acadrust::Handle>, usize)>,
+    /// When set, the cycling list box is open: (canvas point, candidates).
+    cycle_candidates: Option<(iced::Point, Vec<acadrust::Handle>)>,
     /// Which status-bar pills the user has chosen to show (persisted).
     statusbar_config: crate::ui::statusbar_config::StatusBarConfig,
     /// Whether Tangent snap was enabled before a tangent-pick command started.
@@ -765,6 +765,10 @@ pub enum Message {
     ToggleQuickProperties,
     /// Toggle selection cycling for overlapping objects.
     ToggleSelectionCycling,
+    /// Add an object from the selection-cycling list box to the selection.
+    CycleSelect(acadrust::Handle),
+    /// Dismiss the selection-cycling list box without picking.
+    CycleCancel,
     /// Toggle the selection-filter type picker open/closed.
     ToggleSelectionFilterPopup,
     /// Close the selection-filter type picker.
@@ -1245,7 +1249,7 @@ impl OpenCADStudio {
             clean_screen: false,
             quick_properties: false,
             selection_cycling: false,
-            cycle_state: None,
+            cycle_candidates: None,
             pre_cmd_tangent: None,
             ortho_mode: false,
             polar_mode: false,
