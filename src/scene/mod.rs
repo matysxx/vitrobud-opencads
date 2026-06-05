@@ -4890,7 +4890,10 @@ impl Scene {
             }
             _ => {}
         }
-        self.bump_geometry();
+        // NOTE: no `bump_geometry()` here. The grip-drag caller hides the
+        // edited entity and previews it as an overlay during the drag (so a
+        // move doesn't re-tessellate the whole model), then bumps once on
+        // commit. Any other caller must bump geometry itself.
     }
 
     // ── Hit-test convenience: wire name → Handle ──────────────────────────

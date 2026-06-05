@@ -231,6 +231,12 @@ pub(super) struct OpenCADStudio {
     /// being placed (follows the cursor). `(entity handle, new-arrow grip id)`.
     /// Esc before the placement click removes it again.
     grip_add_provisional: Option<(acadrust::Handle, usize)>,
+    /// Handle hidden from the base tessellation during an in-progress grip
+    /// drag. While dragging, the edited entity is excluded from the cached
+    /// wire set and shown as a cheap overlay preview instead, so each move
+    /// updates only the overlay rather than re-tessellating the whole model.
+    /// Committed (un-hidden + one re-tess) when the drag ends. `None` = idle.
+    grip_preview_handle: Option<acadrust::Handle>,
     /// Open Quick Select panel state. `None` = panel closed. Filters are
     /// applied via `Message::QSelectApply`; the panel is dismissed on
     /// Apply / Cancel / Esc / outside-click.
@@ -1272,6 +1278,7 @@ impl OpenCADStudio {
             grip_popup: None,
             grip_pending: None,
             grip_add_provisional: None,
+            grip_preview_handle: None,
             qselect: None,
             show_ucs_icon: true,
             show_viewcube: true,

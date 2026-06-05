@@ -1313,6 +1313,14 @@ impl OpenCADStudio {
                         self.tabs[i].scene.bump_geometry();
                         self.refresh_selected_grips();
                     }
+                    // Commit/cleanup an in-progress grip drag: un-hide the
+                    // edited entity, re-tessellate once, drop the preview.
+                    if let Some(h) = self.grip_preview_handle.take() {
+                        let i = self.active_tab;
+                        self.tabs[i].scene.hidden.remove(&h);
+                        self.tabs[i].scene.clear_preview_wire();
+                        self.tabs[i].scene.bump_geometry();
+                    }
                     self.tabs[self.active_tab].snap_result = None;
                     self.refresh_properties();
                     return Task::none();
@@ -2100,14 +2108,24 @@ impl OpenCADStudio {
                     drop(cam);
                     let raw = self.tabs[i].scene.paper_to_model(raw_paper);
 
-                    let edited_name = grip.handle.value().to_string();
+                    // First move of this drag: hide the edited entity from the
+                    // base tessellation (one re-tess) so subsequent moves only
+                    // refresh a cheap overlay preview instead of re-tessellating
+                    // the whole model on every move.
+                    if self.grip_preview_handle != Some(grip.handle) {
+                        if let Some(prev) = self.grip_preview_handle.take() {
+                            self.tabs[i].scene.hidden.remove(&prev);
+                        }
+                        self.tabs[i].scene.hidden.insert(grip.handle);
+                        self.tabs[i].scene.bump_geometry();
+                        self.grip_preview_handle = Some(grip.handle);
+                    }
+
+                    // The edited entity is hidden, so it's already absent from
+                    // `hit_test_wires` — snap against the set directly, no clone
+                    // and no self-snap.
                     let all_wires = self.tabs[i].scene.hit_test_wires();
-                    let snap_wires: Vec<_> = all_wires
-                        .iter()
-                        .filter(|w| w.name != edited_name)
-                        .cloned()
-                        .collect();
-                    let snap_hit = self.snapper.snap(raw, p, &snap_wires, vp_mat, bounds);
+                    let snap_hit = self.snapper.snap(raw, p, &all_wires[..], vp_mat, bounds);
                     let mut snapped = snap_hit.map(|s| s.world).unwrap_or(raw);
                     self.tabs[i].snap_result = snap_hit;
                     if let Some(s) = self.tabs[i].snap_result.as_mut() {
@@ -2142,6 +2160,10 @@ impl OpenCADStudio {
                         .apply_grip(grip.handle, grip.grip_id, apply);
                     self.tabs[i].dirty = true;
                     self.tabs[i].active_grip.as_mut().unwrap().last_world = snapped;
+                    // Overlay the moved entity (hidden from the base) — no base
+                    // re-tessellation, just a one-entity preview tessellation.
+                    let preview = self.tabs[i].scene.wire_models_for(&[grip.handle]);
+                    self.tabs[i].scene.set_preview_wires(preview);
                     self.refresh_selected_grips();
                     self.refresh_properties();
                     return Task::none();
@@ -2611,6 +2633,14 @@ impl OpenCADStudio {
                         return Task::none();
                     }
                     self.tabs[i].active_grip = None;
+                    // Commit the grip drag: un-hide the edited entity and
+                    // re-tessellate the base once with its final geometry,
+                    // dropping the overlay preview.
+                    if let Some(h) = self.grip_preview_handle.take() {
+                        self.tabs[i].scene.hidden.remove(&h);
+                        self.tabs[i].scene.clear_preview_wire();
+                        self.tabs[i].scene.bump_geometry();
+                    }
                     // Placement confirmed — keep the just-added leader.
                     self.grip_add_provisional = None;
                     self.tabs[i].snap_result = None;

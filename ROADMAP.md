@@ -132,6 +132,15 @@ handles; the render path re-tessellates only those, reusing the rest.
 Also useful on open: any partial cache (e.g. from block defns) can be
 re-used.
 
+**Partial (landed): grip drag.** Dragging an entity's grip called
+`scene.apply_grip` every move, which `bump_geometry`'d → a full model
+re-tessellation per move (plus an O(N) clone of all wires for snapping). Now
+the first move hides the edited entity from the base (one re-tess) and shows
+it as a one-entity overlay preview; subsequent moves only re-tessellate that
+one entity (cheap) — the base stays a cache hit. Snapping runs against the
+set directly (the edited entity is already hidden, so no clone and no
+self-snap). The drag commits on release / Esc: un-hide + one final re-tess.
+
 **Partial (landed): preview / interim overlays.** `set_preview_wires`,
 `clear_preview_wire` and `set_interim_wire` used to `bump_geometry`, so every
 rubber-band frame of a drawing command re-tessellated the whole model (the
