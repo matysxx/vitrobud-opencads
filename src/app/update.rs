@@ -2180,6 +2180,27 @@ impl OpenCADStudio {
                     self.tabs[i].last_cursor_world = world;
                 }
 
+                // Rollover highlight: when idle (no active command, no drag),
+                // highlight the entity under the cursor. Decoupling selection
+                // from tessellation makes this cheap — it only refreshes the GPU
+                // xray overlay via `bump_selection`, never re-tessellates.
+                if !dragging && self.tabs[i].active_cmd.is_none() {
+                    let bounds = iced::Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: vp_size.0,
+                        height: vp_size.1,
+                    };
+                    let view_proj = self.tabs[i].scene.camera.borrow().view_proj(bounds);
+                    let all_wires = self.tabs[i].scene.hit_test_wires();
+                    let hovered = scene::hit_test::click_hit(p, &all_wires[..], view_proj, bounds)
+                        .and_then(|s| Scene::handle_from_wire_name(s));
+                    self.tabs[i].scene.set_hover_highlight(hovered);
+                } else {
+                    // Suppress the rollover during a command or a drag.
+                    self.tabs[i].scene.set_hover_highlight(None);
+                }
+
                 if self.tabs[i].active_cmd.is_some() {
                     let (vw, vh) = vp_size;
                     let bounds = iced::Rectangle {
@@ -2375,6 +2396,11 @@ impl OpenCADStudio {
                 sel.poly_active = false;
                 sel.poly_points.clear();
                 sel.poly_crossing = false;
+                drop(sel);
+                // Clear the rollover highlight when the cursor leaves the
+                // viewport so it doesn't stick while the mouse is over the
+                // ribbon / panels.
+                self.tabs[i].scene.set_hover_highlight(None);
                 // Don't touch `context_menu` here. ViewportExit also fires
                 // when an upper overlay (the right-click menu panel) takes
                 // the cursor, so clearing the menu state on every exit
