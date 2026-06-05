@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "OpenCADStudio"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "acadrust",
  "bytemuck",
