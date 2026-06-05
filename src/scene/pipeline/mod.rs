@@ -81,6 +81,10 @@ pub struct Pipeline {
     wire_pixel_scissors: Vec<Option<[u32; 4]>>,
     /// Ghost copies (25% alpha) of selected wires for the X-ray depth pass.
     gpu_selected_wires: Vec<WireGpu>,
+    /// Command-preview / interim / grip-drag overlay wires. Re-uploaded every
+    /// frame they are present (small), drawn on top of the base wire pass — so
+    /// a live drag never re-uploads the resident base buffer.
+    gpu_preview_wires: Vec<WireGpu>,
     /// Phase 4-B — single batched-hatch GPU resource. Drawn in one
     /// indexed call with per-instance visibility masking the rest.
     /// Legacy per-hatch `Vec<HatchGpu>` + scissor / skip-flag plumbing
@@ -882,6 +886,7 @@ impl Pipeline {
             gpu_wires: vec![],
             wire_pixel_scissors: vec![],
             gpu_selected_wires: vec![],
+            gpu_preview_wires: vec![],
             gpu_hatch_batched: None,
             gpu_wipeouts: vec![],
             wipeout_skip_flags: vec![],
@@ -972,6 +977,22 @@ impl Pipeline {
             })
             .collect();
         self.gpu_selected_wires = WireGpu::from_run(device, &selected, depth_map, None, false);
+    }
+
+    /// Upload the live overlay (command preview / interim / grip-drag) wires.
+    /// Small and refreshed each frame they're present; kept separate from the
+    /// base wire buffer so a drag never re-uploads the resident base set.
+    pub fn upload_preview_wires(
+        &mut self,
+        device: &wgpu::Device,
+        wires: &[WireModel],
+        depth_map: &rustc_hash::FxHashMap<u64, f32>,
+    ) {
+        self.gpu_preview_wires = if wires.is_empty() {
+            vec![]
+        } else {
+            WireGpu::from_run(device, wires, depth_map, None, false)
+        };
     }
 
     /// Recompute pixel scissor rects for viewport-clipped wires from the current view_proj.
@@ -1558,6 +1579,14 @@ impl Pipeline {
             }
             if scissor_active {
                 pass.set_scissor_rect(0, 0, vp.width, vp.height);
+            }
+            // Live overlay wires (command preview / interim / grip drag) on top
+            // of the base pass, same pipeline + depth test. No scissor.
+            for pw in &self.gpu_preview_wires {
+                if pw.instance_count > 0 {
+                    pass.set_vertex_buffer(0, pw.instance_buffer.slice(..));
+                    pass.draw(0..6, 0..pw.instance_count);
+                }
             }
         }
 

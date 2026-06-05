@@ -266,6 +266,14 @@ the batched hatch pipeline (`hatch_batched_gpu.rs`) to wires:
 At 100 k wires that collapses thousands of draw calls into one. If iced
 0.14's widget-pipeline limits allow, immediate win.
 
+**Follow-up (landed): separate overlay buffer.** Command-preview / interim /
+grip-drag wires were appended into the main wire buffer, so every drag frame
+re-uploaded the entire (batched) base set. They now ride in their own small
+per-frame `gpu_preview_wires` buffer drawn on top in the wire pass, so the
+resident base buffer stays untouched during a drag — only the tiny overlay
+re-uploads. Combined with the no-re-tess work, a grip/command drag now costs
+one small overlay upload per move, nothing else.
+
 ### 3.4 Hardware instancing for repeated block inserts
 
 When the same block defn is `INSERT`-ed N times (every door / window in

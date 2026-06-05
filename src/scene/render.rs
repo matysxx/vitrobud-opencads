@@ -32,6 +32,10 @@ pub struct CameraState {
 #[derive(Debug)]
 pub struct ViewportData {
     pub(super) wires: Arc<Vec<WireModel>>,
+    /// Live command-preview / interim / grip-drag overlay wires. Kept out of
+    /// the main `wires` buffer so a drag re-uploads only this small set each
+    /// frame, never the resident base buffer. Drawn on top in the wire pass.
+    pub(super) preview_wires: Arc<Vec<WireModel>>,
     /// 3DFACE entity wires — separated so they are uploaded to the dedicated
     /// face3d pipeline (fill + batched edges) instead of N individual WireGpu.
     pub(super) face3d_wires: Arc<Vec<WireModel>>,
@@ -272,6 +276,10 @@ impl shader::Primitive for Primitive {
                 );
                 inner.cached_selection = sel_key;
             }
+            // Live overlay (command preview / interim / grip drag) — small and
+            // refreshed every frame it's present, so a drag never re-uploads
+            // the resident base wire buffer.
+            inner.upload_preview_wires(device, &vp.preview_wires[..], &vp.draw_depths);
             let vproj = vp.uniforms.view_proj;
             inner.compute_wire_scissors(vproj, clip_size.width, clip_size.height);
             inner.compute_wipeout_scissors(vproj, clip_size.width, clip_size.height);
@@ -642,13 +650,14 @@ impl Scene {
         } else {
             (self.model_wires_for_viewport_arc(inst.handle, full.height), None)
         };
-        // Wire-buffer content id for the upload gate. Live preview / interim
-        // wires are appended below and vary frame-to-frame, so any frame
-        // carrying them forces a fresh upload, as do the non-tile paths.
-        let has_overlay = self.interim_wire.is_some() || !self.preview_wires.is_empty();
+        // Wire-buffer content id for the upload gate. Preview / interim wires
+        // are NOT part of this buffer anymore (they go in a separate per-frame
+        // overlay buffer below), so the base id is the stable tile content gen
+        // — a drag no longer re-uploads the whole base wire set every move.
+        // Non-tile paths have no stable id and force a re-upload.
         let wire_content_id = match tile_wire_gen {
-            Some(g) if !has_overlay => g,
-            _ => {
+            Some(g) => g,
+            None => {
                 let n = self.wire_force_nonce.get().wrapping_add(1);
                 self.wire_force_nonce.set(n);
                 n | (1u64 << 63)
@@ -676,12 +685,15 @@ impl Scene {
                 (Arc::new(f), Arc::new(o))
             }
         };
-        // Reuse the cached `other` Arc directly when no live preview/interim
-        // wires need appending; otherwise clone once to extend.
-        let all_wires = if !has_overlay {
-            other_arc
+        // Base wire set — the cached `other` Arc directly, never cloned to
+        // append overlays. Preview / interim wires ride in their own small
+        // per-frame buffer so the (potentially huge) base buffer stays resident
+        // and unchanged while a command preview or grip drag is live.
+        let all_wires = other_arc;
+        let preview_wires = if self.interim_wire.is_none() && self.preview_wires.is_empty() {
+            Arc::new(Vec::new())
         } else {
-            let mut v = (*other_arc).clone();
+            let mut v: Vec<WireModel> = Vec::with_capacity(self.preview_wires.len() + 1);
             if let Some(iw) = &self.interim_wire {
                 v.push(iw.clone());
             }
@@ -749,6 +761,7 @@ impl Scene {
 
         Some(ViewportData {
             wires: all_wires,
+            preview_wires,
             face3d_wires,
             draw_depths: self.draw_depth_map(),
             hatches,
