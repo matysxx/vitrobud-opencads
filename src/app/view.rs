@@ -676,18 +676,45 @@ impl OpenCADStudio {
             if self.dyn_input && tab.active_cmd.is_some() && !tab.dyn_fields.is_empty() {
                 let w = tab.last_cursor_world;
                 let base = self.last_point;
+                // A command may drive a typed scalar by mouse (e.g. a
+                // perpendicular distance to a picked object); show that live
+                // value in the box until the user types over it.
+                let live = tab.active_cmd.as_ref().and_then(|c| c.dyn_live_value(w));
                 let boxes: Vec<overlay::DynBox> = tab
                     .dyn_fields
                     .iter()
                     .enumerate()
-                    .map(|(idx, f)| overlay::DynBox {
-                        label: dyn_component_label(f.component),
-                        value: dyn_component_value(f, w, base),
-                        active: idx == tab.dyn_active,
-                        locked: f.locked(),
+                    .map(|(idx, f)| {
+                        let value = match (&f.buffer, live) {
+                            (Some(b), _) => b.clone(),
+                            (None, Some(lv))
+                                if matches!(
+                                    f.component,
+                                    DynComponent::Scalar | DynComponent::Distance
+                                ) =>
+                            {
+                                format!("{lv:.4}")
+                            }
+                            _ => dyn_component_value(f, w, base),
+                        };
+                        overlay::DynBox {
+                            label: dyn_component_label(f.component),
+                            value,
+                            active: idx == tab.dyn_active,
+                            locked: f.locked(),
+                        }
                     })
                     .collect();
-                Some(overlay::dynamic_input_overlay(tab.last_cursor_screen, boxes))
+                let prompt = tab
+                    .active_cmd
+                    .as_ref()
+                    .map(|c| c.prompt())
+                    .unwrap_or_default();
+                Some(overlay::dynamic_input_overlay(
+                    tab.last_cursor_screen,
+                    boxes,
+                    prompt,
+                ))
             } else {
                 None
             };
@@ -1150,8 +1177,13 @@ impl OpenCADStudio {
             && !tab.dyn_fields.is_empty())
             || self.mtext_editor.as_ref().is_some_and(|e| e.show_preview)
             || self.text_inline.is_some();
+        let active_prompt = tab.active_cmd.as_ref().map(|c| c.prompt());
         let command_line_overlay =
-            iced::widget::container(self.command_line.view(allow_autocomplete, dyn_capturing))
+            iced::widget::container(self.command_line.view(
+                allow_autocomplete,
+                dyn_capturing,
+                active_prompt,
+            ))
             .width(Fill)
             .height(Fill)
             .align_x(iced::alignment::Horizontal::Center)
@@ -3496,6 +3528,7 @@ fn dyn_component_label(c: DynComponent) -> String {
         DynComponent::Z => "Z".into(),
         DynComponent::Distance => "d".into(),
         DynComponent::Angle => "<".into(),
+        DynComponent::Scalar => "".into(),
     }
 }
 
@@ -3527,5 +3560,7 @@ fn dyn_component_value(
         DynComponent::Z => format!("{:.4}", b.z),
         DynComponent::Distance => format!("{:.4}", (dx * dx + dy * dy).sqrt()),
         DynComponent::Angle => format!("{:.1}", dy.atan2(dx).to_degrees().rem_euclid(360.0)),
+        // Typed-only scalar — no geometric value to track when empty.
+        DynComponent::Scalar => String::new(),
     }
 }

@@ -226,7 +226,12 @@ impl CommandLine {
         matches
     }
 
-    pub fn view(&self, show_autocomplete: bool, dyn_capturing: bool) -> Element<'_, Message> {
+    pub fn view(
+        &self,
+        show_autocomplete: bool,
+        dyn_capturing: bool,
+        active_prompt: Option<String>,
+    ) -> Element<'_, Message> {
         // Only the most recent entries pushed within the last few
         // seconds show on the overlay. The dropdown button keeps the
         // full backlog reachable when the user actually wants it.
@@ -247,7 +252,12 @@ impl CommandLine {
                 };
                 col.push(container(text(&entry.text).size(11).color(color)).padding([1, 8]))
             });
-        let prompt = container(text("Command:").size(11).color(PROMPT_COLOR)).padding([5, 8]);
+        // While a command is running, the prompt shows what the current
+        // step is asking for and stays put until that step completes — it
+        // does not fade like the history lines. With no active command it
+        // falls back to the generic entry prompt.
+        let prompt_label = active_prompt.unwrap_or_else(|| "Command:".to_string());
+        let prompt = container(text(prompt_label).size(11).color(PROMPT_COLOR)).padding([5, 8]);
         // While dynamic input is capturing keystrokes, the command-line
         // text field is left without an `on_input` handler so it can't
         // grab focus or swallow numeric keys — those flow through the

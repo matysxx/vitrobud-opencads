@@ -1734,10 +1734,7 @@ impl OpenCADStudio {
                         self.tabs[i].scene.document.get_entity(h).cloned()
                     })
                     .collect();
-                let new_cmd = OffsetCommand::new(
-                    crate::modules::home::defaults::get_offset_dist(),
-                    all_entities,
-                );
+                let new_cmd = OffsetCommand::new(all_entities);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }

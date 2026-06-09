@@ -781,6 +781,14 @@ impl CadCommand for CircleTTRCommand {
         matches!(self.step, StepTTR::Radius { .. })
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        if matches!(self.step, StepTTR::Radius { .. }) {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
     fn prompt(&self) -> String {
         match &self.step {
             StepTTR::First => "CIRCLE TTR  Select first tangent object:".into(),

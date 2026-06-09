@@ -1188,10 +1188,15 @@ pub struct DynBox {
     pub locked: bool,
 }
 
-pub fn dynamic_input_overlay<'a>(cursor_screen: Point, boxes: Vec<DynBox>) -> Element<'a, Message> {
+pub fn dynamic_input_overlay<'a>(
+    cursor_screen: Point,
+    boxes: Vec<DynBox>,
+    prompt: String,
+) -> Element<'a, Message> {
     canvas(DynInputCanvas {
         cursor_screen,
         boxes,
+        prompt,
     })
     .width(Length::Fill)
     .height(Length::Fill)
@@ -1201,6 +1206,9 @@ pub fn dynamic_input_overlay<'a>(cursor_screen: Point, boxes: Vec<DynBox>) -> El
 struct DynInputCanvas {
     cursor_screen: Point,
     boxes: Vec<DynBox>,
+    /// The active command's current prompt — tells the user what this step
+    /// is asking for, drawn just above the input boxes.
+    prompt: String,
 }
 
 impl canvas::Program<Message> for DynInputCanvas {
@@ -1256,6 +1264,31 @@ impl canvas::Program<Message> for DynInputCanvas {
         }
         if by + BOX_H > bounds.height {
             by = (self.cursor_screen.y - BOX_H - 4.0).max(0.0);
+        }
+
+        // Prompt line above the boxes — what this step wants right now.
+        // Drawn on an opaque pill so the viewport behind it stays legible.
+        if !self.prompt.is_empty() {
+            let py = (by - BOX_H - 2.0).max(0.0);
+            let pw = (self.prompt.len() as f32 * CHAR_W) + PAD * 2.0;
+            let prect = canvas::Path::rectangle(
+                Point { x: bx, y: py },
+                Size { width: pw, height: BOX_H },
+            );
+            frame.fill(&prect, Color { r: 0.10, g: 0.10, b: 0.12, a: 1.0 });
+            frame.stroke(
+                &prect,
+                canvas::Stroke::default()
+                    .with_color(Color { r: 0.35, g: 0.55, b: 0.90, a: 0.9 })
+                    .with_width(1.0),
+            );
+            frame.fill_text(canvas::Text {
+                content: self.prompt.clone(),
+                position: Point { x: bx + PAD, y: py + PAD },
+                color: Color { r: 0.70, g: 0.85, b: 0.70, a: 1.0 },
+                size: iced::Pixels(FONT_SIZE),
+                ..Default::default()
+            });
         }
 
         let mut x = bx;

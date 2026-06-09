@@ -232,6 +232,10 @@ pub enum DynField {
     Distance,
     /// An angle, shown in degrees, measured from the last point.
     Angle,
+    /// A typed scalar with no geometric meaning at the cursor — a count
+    /// (number of sides / segments) or any value the command reads purely
+    /// from the keyboard. Shown as a single typed box.
+    Scalar,
 }
 
 // ── Trait ─────────────────────────────────────────────────────────────────
@@ -378,6 +382,17 @@ pub trait CadCommand: Send {
     /// `Angle`.
     fn dyn_field(&self) -> DynField {
         DynField::Point
+    }
+
+    /// Live value for the dynamic-input scalar box, derived from the cursor
+    /// world position. Lets a command drive a typed prompt by mouse — e.g.
+    /// OFFSET returns the perpendicular distance from the cursor to the
+    /// object being offset, so moving the cursor fills in the distance.
+    /// Returns `None` when the value can only be typed (a count, or a
+    /// distance with no reference yet). The string the host commits is this
+    /// value formatted; the command's own `on_text_input` parses it back.
+    fn dyn_live_value(&self, _cursor: Vec3) -> Option<f64> {
+        None
     }
 }
 

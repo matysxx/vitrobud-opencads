@@ -122,6 +122,10 @@ impl CadCommand for ArrayRectCommand {
         true
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        crate::command::DynField::Scalar
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         let t = text.trim().replace(',', ".");
         let t = t.as_str();
@@ -277,6 +281,14 @@ impl CadCommand for ArrayPolarCommand {
 
     fn wants_text_input(&self) -> bool {
         matches!(self.step, PolarStep::Count { .. } | PolarStep::Angle { .. })
+    }
+
+    fn dyn_field(&self) -> crate::command::DynField {
+        if matches!(self.step, PolarStep::Count { .. } | PolarStep::Angle { .. }) {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
@@ -601,6 +613,14 @@ impl CadCommand for ArrayPathCommand {
         matches!(self.step, PathStep::Count { .. })
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        if matches!(self.step, PathStep::Count { .. }) {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
     fn on_entity_pick(&mut self, handle: Handle, _pt: Vec3) -> CmdResult {
         if handle.is_null() || self.handles.contains(&handle) {
             return CmdResult::NeedPoint;
@@ -809,6 +829,10 @@ impl CadCommand for Array3DCommand {
 
     fn wants_text_input(&self) -> bool {
         true
+    }
+
+    fn dyn_field(&self) -> crate::command::DynField {
+        crate::command::DynField::Scalar
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {

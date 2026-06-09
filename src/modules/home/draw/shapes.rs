@@ -351,6 +351,14 @@ impl CadCommand for PolyCommand {
         self.step == 0
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        if self.step == 0 {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         if let Ok(n) = text.trim().parse::<u32>() {
             if (3..=1024).contains(&n) {
@@ -441,6 +449,14 @@ impl CadCommand for PolyCCommand {
 
     fn wants_text_input(&self) -> bool {
         self.step == 0
+    }
+
+    fn dyn_field(&self) -> crate::command::DynField {
+        if self.step == 0 {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
@@ -542,6 +558,14 @@ impl CadCommand for PolyECommand {
 
     fn wants_text_input(&self) -> bool {
         self.step == 0
+    }
+
+    fn dyn_field(&self) -> crate::command::DynField {
+        if self.step == 0 {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {

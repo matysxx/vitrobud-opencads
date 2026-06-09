@@ -68,6 +68,14 @@ impl CadCommand for LengthenCommand {
         matches!(self.state, LenState::PickOption { .. })
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        if matches!(self.state, LenState::PickOption { .. }) {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         let (handle, pick_pt) = match &self.state {
             LenState::PickOption { handle, pick_pt } => (*handle, *pick_pt),

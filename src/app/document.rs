@@ -27,6 +27,10 @@ pub(super) enum DynComponent {
     Distance,
     /// Angle from the last point, in degrees.
     Angle,
+    /// A scalar the command reads from the command line (a count, a radius,
+    /// a delta). Typed-only — it has no geometric live value derived from
+    /// the cursor unless the command supplies one via `dyn_live_value`.
+    Scalar,
 }
 
 /// A single editable dynamic-input field. `buffer == None` means the box

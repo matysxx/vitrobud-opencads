@@ -56,6 +56,14 @@ impl CadCommand for DivideCommand {
         self.waiting_for_n
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        if self.waiting_for_n {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         let n: usize = text.trim().parse().ok().filter(|&n| n >= 2)?;
         let handle = self.target?;
@@ -115,6 +123,14 @@ impl CadCommand for MeasureCommand {
 
     fn wants_text_input(&self) -> bool {
         self.waiting_for_dist
+    }
+
+    fn dyn_field(&self) -> crate::command::DynField {
+        if self.waiting_for_dist {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {

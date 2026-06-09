@@ -2850,6 +2850,31 @@ impl OpenCADStudio {
                             None
                         }
                     } else {
+                        // A scalar typed into the dynamic-input box but not
+                        // yet confirmed with Enter is applied before the
+                        // point pick — e.g. an OFFSET distance typed and then
+                        // clicked takes effect rather than being discarded.
+                        let wants_text = self.tabs[i]
+                            .active_cmd
+                            .as_ref()
+                            .map(|c| c.wants_text_input())
+                            .unwrap_or(false);
+                        if wants_text {
+                            if let Some(text) = self.tabs[i]
+                                .dyn_fields
+                                .iter()
+                                .find_map(|f| f.buffer.clone())
+                            {
+                                let text = super::expr_eval::eval_to_string(text.trim());
+                                if let Some(c) = self.tabs[i].active_cmd.as_mut() {
+                                    c.on_text_input(&text);
+                                }
+                                for f in self.tabs[i].dyn_fields.iter_mut() {
+                                    f.buffer = None;
+                                }
+                                self.tabs[i].dyn_active = 0;
+                            }
+                        }
                         self.last_point = Some(world_pt);
                         self.dyn_user_reshaped = false;
                         self.sync_dyn_fields();
@@ -7106,10 +7131,28 @@ impl OpenCADStudio {
             .as_ref()
             .map(|c| c.dyn_field())
             .unwrap_or(crate::command::DynField::Point);
+        // A text-input step reads a single scalar. The overlay shows one box
+        // the user types into (or, when the command supplies a live value,
+        // sets by moving the cursor); on commit the host routes it to
+        // `on_text_input` instead of `on_point`. A distance prompt keeps the
+        // `Distance` box (so a perpendicular-distance live value reads
+        // naturally); everything else uses the typed-only `Scalar` box.
+        let wants_text = self
+            .tabs[i]
+            .active_cmd
+            .as_ref()
+            .map(|c| c.wants_text_input())
+            .unwrap_or(false);
         let has_base = self.last_point.is_some();
         let default: Vec<DynComponent> = match field {
             crate::command::DynField::Distance => vec![DynComponent::Distance],
             crate::command::DynField::Angle => vec![DynComponent::Angle],
+            crate::command::DynField::Scalar => vec![DynComponent::Scalar],
+            // A text prompt with the default `Point` field reads free text /
+            // a name / a keyword (which may itself contain digits) from the
+            // command line — show no scalar box, so digits reach the command
+            // line instead of being captured into a dyn buffer.
+            crate::command::DynField::Point if wants_text => vec![],
             crate::command::DynField::Point if has_base => {
                 vec![DynComponent::Distance, DynComponent::Angle]
             }
@@ -7128,13 +7171,16 @@ impl OpenCADStudio {
         // the command's default so e.g. clicking the first point of LINE
         // flips a stale `[X, Y]` (from before there was a base) over to
         // the polar `[Distance, Angle]` the prompt actually wants.
-        let current_is_acceptable = if self.dyn_user_reshaped {
+        let current_is_acceptable = if self.dyn_user_reshaped && !wants_text {
             match field {
                 crate::command::DynField::Distance => {
                     matches!(current.as_slice(), [DynComponent::Distance])
                 }
                 crate::command::DynField::Angle => {
                     matches!(current.as_slice(), [DynComponent::Angle])
+                }
+                crate::command::DynField::Scalar => {
+                    matches!(current.as_slice(), [DynComponent::Scalar])
                 }
                 crate::command::DynField::Point => matches!(
                     current.as_slice(),
@@ -7446,6 +7492,42 @@ impl OpenCADStudio {
             || !self.tabs[i].dyn_fields.iter().any(|f| f.locked())
         {
             return None;
+        }
+        // A text-input step reads its single box as a string and commits via
+        // `on_text_input` (a count, radius, distance) rather than resolving a
+        // point. Only the typed buffer matters here — a mouse-driven live
+        // value commits through the viewport click, not Enter.
+        let wants_text = self
+            .tabs[i]
+            .active_cmd
+            .as_ref()
+            .map(|c| c.wants_text_input())
+            .unwrap_or(false);
+        if wants_text {
+            let text = self.tabs[i]
+                .dyn_fields
+                .iter()
+                .find_map(|f| f.buffer.clone())
+                .unwrap_or_default();
+            let text = super::expr_eval::eval_to_string(text.trim());
+            let result = self.tabs[i]
+                .active_cmd
+                .as_mut()
+                .and_then(|c| c.on_text_input(&text));
+            for f in self.tabs[i].dyn_fields.iter_mut() {
+                f.buffer = None;
+            }
+            self.tabs[i].dyn_active = 0;
+            self.sync_dyn_fields();
+            let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
+            if let Some(p) = prompt {
+                self.command_line.push_info(&p);
+            }
+            self.refresh_active_cmd_preview(i);
+            return Some(match result {
+                Some(r) => self.apply_cmd_result(r),
+                None => self.focus_cmd_input(),
+            });
         }
         let pt = self.dyn_resolve_point()?;
         self.last_point = Some(pt);

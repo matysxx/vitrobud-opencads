@@ -55,6 +55,14 @@ impl CadCommand for DonutCommand {
         matches!(self.state, DonutState::AskInner | DonutState::AskOuter)
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        if matches!(self.state, DonutState::AskInner | DonutState::AskOuter) {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         let val: f64 = text
             .trim()

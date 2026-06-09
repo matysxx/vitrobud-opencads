@@ -1235,6 +1235,14 @@ impl CadCommand for FilletCommand {
         matches!(self.step, FilletStep::WaitingForRadius)
     }
 
+    fn dyn_field(&self) -> crate::command::DynField {
+        if matches!(self.step, FilletStep::WaitingForRadius) {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         match self.step {
             FilletStep::WaitingForRadius => {
@@ -1572,6 +1580,17 @@ impl CadCommand for ChamferCommand {
             self.step,
             ChamferStep::WaitingForDist1 | ChamferStep::WaitingForDist2
         )
+    }
+
+    fn dyn_field(&self) -> crate::command::DynField {
+        if matches!(
+            self.step,
+            ChamferStep::WaitingForDist1 | ChamferStep::WaitingForDist2
+        ) {
+            crate::command::DynField::Scalar
+        } else {
+            crate::command::DynField::Point
+        }
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
