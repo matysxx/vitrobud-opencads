@@ -1,6 +1,7 @@
 //! Text Style Font Browser window — fills the entire OS window.
 
 use crate::app::Message;
+use crate::app::StyleKind;
 use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Theme};
 
@@ -17,20 +18,12 @@ pub struct TextStyleView<'a> {
     pub backward: bool,
     pub upside_down: bool,
     pub annotative: bool,
+    /// Name of the style being renamed inline (double-clicked), if any.
+    pub rename_active: Option<&'a str>,
+    /// Edit buffer for the inline rename text input.
+    pub rename_buf: &'a str,
 }
 
-const TB: Color = Color {
-    r: 0.13,
-    g: 0.13,
-    b: 0.13,
-    a: 1.0,
-};
-const BG: Color = Color {
-    r: 0.15,
-    g: 0.15,
-    b: 0.15,
-    a: 1.0,
-};
 const BORDER: Color = Color {
     r: 0.35,
     g: 0.35,
@@ -75,60 +68,10 @@ const LIST: Color = Color {
 };
 
 const BUILTIN_FONTS: &[&str] = &[
-    "Standard",
-    "ISO",
-    "Simplex",
-    "RomanS",
-    "RomanD",
-    "RomanC",
-    "RomanT",
-    "ItalicC",
-    "ItalicT",
-    "ScriptS",
-    "ScriptC",
-    "GothGBT",
-    "GothGRT",
-    "GothITT",
-    "Cursive",
-    "GreekC",
-    "Symbol",
-    "ISO",
-    "ISO3098",
-    "Unicode",
+    "Standard", "ISO", "Simplex", "RomanS", "RomanD", "RomanC", "RomanT", "ItalicC", "ItalicT",
+    "ScriptS", "ScriptC", "GothGBT", "GothGRT", "GothITT", "Cursive", "GreekC", "Symbol", "ISO",
+    "ISO3098", "Unicode",
 ];
-
-fn btn_s(accent: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_: &Theme, st| button::Style {
-        background: Some(Background::Color(match (accent, st) {
-            (true, button::Status::Hovered | button::Status::Pressed) => Color {
-                r: 0.20,
-                g: 0.42,
-                b: 0.72,
-                a: 1.0,
-            },
-            (false, button::Status::Hovered | button::Status::Pressed) => Color {
-                r: 0.28,
-                g: 0.28,
-                b: 0.28,
-                a: 1.0,
-            },
-            (true, _) => ACCENT,
-            _ => Color {
-                r: 0.22,
-                g: 0.22,
-                b: 0.22,
-                a: 1.0,
-            },
-        })),
-        text_color: TEXT,
-        border: Border {
-            color: BORDER,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..Default::default()
-    }
-}
 
 fn list_item(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_: &Theme, st| button::Style {
@@ -162,17 +105,6 @@ fn field_style(_: &Theme, _: text_input::Status) -> text_input::Style {
     }
 }
 
-fn hdivider<'a>() -> Element<'a, Message> {
-    container(Space::new().width(Fill).height(1))
-        .width(Fill)
-        .height(1)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(BORDER)),
-            ..Default::default()
-        })
-        .into()
-}
-
 fn vsep<'a>() -> Element<'a, Message> {
     container(Space::new().width(1).height(Fill))
         .width(1)
@@ -197,81 +129,9 @@ pub fn view_window<'a>(v: TextStyleView<'a>) -> Element<'a, Message> {
         backward,
         upside_down,
         annotative,
+        rename_active,
+        rename_buf,
     } = v;
-    // ── Toolbar ───────────────────────────────────────────────────────────
-    let toolbar = container(
-        row![
-            button(text("New").size(11))
-                .on_press(Message::TextStyleDialogNew)
-                .style(btn_s(false))
-                .padding([4, 10]),
-            button(text("Delete").size(11))
-                .on_press(Message::TextStyleDialogDelete)
-                .style(btn_s(false))
-                .padding([4, 10]),
-            Space::new().width(Fill),
-            button(text("Set Current").size(11))
-                .on_press(Message::TextStyleDialogSetCurrent)
-                .style(btn_s(false))
-                .padding([4, 10]),
-            button(text("Apply").size(11))
-                .on_press(Message::TextStyleApply)
-                .style(btn_s(true))
-                .padding([4, 14]),
-        ]
-        .spacing(4)
-        .align_y(iced::Center),
-    )
-    .style(|_: &Theme| container::Style {
-        background: Some(Background::Color(TB)),
-        ..Default::default()
-    })
-    .width(Fill)
-    .padding([5, 8]);
-
-    // ── Left: Style list ──────────────────────────────────────────────────
-    let style_items: Vec<Element<'_, Message>> = styles
-        .iter()
-        .map(|name| {
-            let is_sel = name.as_str() == selected;
-            button(text(name.clone()).size(11))
-                .on_press(Message::TextStyleDialogSelect(name.clone()))
-                .style(list_item(is_sel))
-                .padding([4, 8])
-                .width(Fill)
-                .into()
-        })
-        .collect();
-
-    let style_panel = container(
-        column![
-            text("Styles").size(10).color(DIM),
-            container(scrollable(column(style_items).spacing(1)).height(Fill))
-                .style(|_: &Theme| container::Style {
-                    background: Some(Background::Color(LIST)),
-                    border: Border {
-                        color: BORDER,
-                        width: 1.0,
-                        radius: 3.0.into()
-                    },
-                    ..Default::default()
-                })
-                .width(Fill)
-                .height(Fill)
-                .padding(2),
-        ]
-        .spacing(4)
-        .height(Fill),
-    )
-    .width(170)
-    .height(Fill)
-    .padding(iced::Padding {
-        top: 12.0,
-        right: 8.0,
-        bottom: 12.0,
-        left: 12.0,
-    });
-
     // ── Middle: Font browser ──────────────────────────────────────────────
     let font_items: Vec<Element<'_, Message>> = BUILTIN_FONTS
         .iter()
@@ -319,7 +179,12 @@ pub fn view_window<'a>(v: TextStyleView<'a>) -> Element<'a, Message> {
     .padding([12, 8]);
 
     // Labeled numeric/text field row → TextStyleEdit { field, value }.
-    fn frow<'a>(label: &'a str, ph: &'a str, buf: &'a str, field: &'static str) -> Element<'a, Message> {
+    fn frow<'a>(
+        label: &'a str,
+        ph: &'a str,
+        buf: &'a str,
+        field: &'static str,
+    ) -> Element<'a, Message> {
         row![
             text(label).size(11).color(DIM).width(120),
             text_input(ph, buf)
@@ -387,14 +252,21 @@ pub fn view_window<'a>(v: TextStyleView<'a>) -> Element<'a, Message> {
         left: 8.0,
     });
 
-    let body = row![style_panel, vsep(), font_panel, vsep(), props_panel].height(Fill);
+    let editor = row![font_panel, vsep(), props_panel].height(Fill);
 
-    container(column![toolbar, hdivider(), body].spacing(0))
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(BG)),
-            ..Default::default()
-        })
-        .width(Fill)
-        .height(Fill)
-        .into()
+    crate::ui::style_manager::view(crate::ui::style_manager::Scaffold {
+        kind: StyleKind::Text,
+        styles: &styles,
+        selected,
+        current: None,
+        rename_active,
+        rename_buf,
+        on_new: Message::TextStyleDialogNew,
+        on_copy: Message::TextStyleDialogCopy,
+        on_delete: Message::TextStyleDialogDelete,
+        on_select: Message::TextStyleDialogSelect,
+        on_set_current: Message::TextStyleDialogSetCurrent,
+        on_apply: Message::TextStyleApply,
+        editor: editor.into(),
+    })
 }

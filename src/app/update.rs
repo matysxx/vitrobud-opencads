@@ -161,8 +161,9 @@ impl OpenCADStudio {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".into());
-                let phase =
-                    std::sync::Arc::new(std::sync::atomic::AtomicU8::new(super::OPEN_PHASE_READING));
+                let phase = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                    super::OPEN_PHASE_READING,
+                ));
                 self.opening = Some(super::OpenProgress {
                     name: name.clone(),
                     size_bytes,
@@ -229,8 +230,11 @@ impl OpenCADStudio {
                 // CANNOSCALEVALUE (paper/drawing factor); the multiplier we use
                 // for text/dim sizing is its inverse (1:50 -> 0.02 -> 50.0).
                 let cannoscale_value = self.tabs[i].scene.document.header.annotation_scale_value;
-                self.tabs[i].scene.annotation_scale =
-                    if cannoscale_value > 1e-9 { (1.0 / cannoscale_value) as f32 } else { 1.0 };
+                self.tabs[i].scene.annotation_scale = if cannoscale_value > 1e-9 {
+                    (1.0 / cannoscale_value) as f32
+                } else {
+                    1.0
+                };
 
                 // Auto-resolve XREFs relative to the opened file's directory.
                 let mut xref_ms = 0u32;
@@ -931,8 +935,7 @@ impl OpenCADStudio {
                 // fresh blank drawing (legacy behaviour).
                 if self.tabs.len() == 1 {
                     self.tab_counter += 1;
-                    self.tabs[0] =
-                        super::document::DocumentTab::new_drawing(self.tab_counter);
+                    self.tabs[0] = super::document::DocumentTab::new_drawing(self.tab_counter);
                     self.active_tab = 0;
                 } else {
                     self.tabs.remove(idx);
@@ -955,8 +958,7 @@ impl OpenCADStudio {
                 // prompts) where Space must reach the buffer as a literal
                 // character. `wants_text_with_spaces()` flags those prompts.
                 let i = self.active_tab;
-                let allow_literal_space = self
-                    .tabs[i]
+                let allow_literal_space = self.tabs[i]
                     .active_cmd
                     .as_ref()
                     .map(|c| c.wants_text_input() && c.wants_text_with_spaces())
@@ -990,10 +992,7 @@ impl OpenCADStudio {
                     // reshaping the field set when going polar → cartesian
                     // (Distance → X, Y) or 2-D → 3-D (X, Y → X, Y, Z).
                     // See #35.
-                    if s == ","
-                        && self.dyn_input
-                        && !self.tabs[i].dyn_fields.is_empty()
-                    {
+                    if s == "," && self.dyn_input && !self.tabs[i].dyn_fields.is_empty() {
                         self.dyn_comma_advance();
                         self.command_line.autocomplete_cursor = None;
                         return self.focus_cmd_input();
@@ -1003,11 +1002,14 @@ impl OpenCADStudio {
                     // the command line. Letters still go to the command line
                     // so command-option keywords keep working.
                     let dyn_field_char = !s.is_empty()
-                        && s.chars()
-                            .all(|c| c.is_ascii_digit()
-                                || matches!(c, '.' | '-' | '+' | '*' | '/' | '^' | '%' | '(' | ')'));
+                        && s.chars().all(|c| {
+                            c.is_ascii_digit()
+                                || matches!(c, '.' | '-' | '+' | '*' | '/' | '^' | '%' | '(' | ')')
+                        });
                     if dyn_field_char && self.dyn_input && !self.tabs[i].dyn_fields.is_empty() {
-                        let a = self.tabs[i].dyn_active.min(self.tabs[i].dyn_fields.len() - 1);
+                        let a = self.tabs[i]
+                            .dyn_active
+                            .min(self.tabs[i].dyn_fields.len() - 1);
                         self.tabs[i].dyn_fields[a]
                             .buffer
                             .get_or_insert_with(String::new)
@@ -1029,7 +1031,9 @@ impl OpenCADStudio {
                 // Backspace edits the focused dynamic-input field first;
                 // emptying it unlocks the field (back to cursor tracking).
                 if self.dyn_input && !self.tabs[i].dyn_fields.is_empty() {
-                    let a = self.tabs[i].dyn_active.min(self.tabs[i].dyn_fields.len() - 1);
+                    let a = self.tabs[i]
+                        .dyn_active
+                        .min(self.tabs[i].dyn_fields.len() - 1);
                     if let Some(buf) = self.tabs[i].dyn_fields[a].buffer.as_mut() {
                         buf.pop();
                         if buf.is_empty() {
@@ -1083,9 +1087,7 @@ impl OpenCADStudio {
                 // While autocomplete is showing suggestions, ↑ walks up
                 // that list. Otherwise it falls back to recall history.
                 let i = self.active_tab;
-                if self.tabs[i].active_cmd.is_none()
-                    && self.command_line.autocomplete_prev()
-                {
+                if self.tabs[i].active_cmd.is_none() && self.command_line.autocomplete_prev() {
                     return Task::none();
                 }
                 self.command_line.history_prev();
@@ -1100,9 +1102,7 @@ impl OpenCADStudio {
                     return Task::none();
                 }
                 let i = self.active_tab;
-                if self.tabs[i].active_cmd.is_none()
-                    && self.command_line.autocomplete_next()
-                {
+                if self.tabs[i].active_cmd.is_none() && self.command_line.autocomplete_next() {
                     return Task::none();
                 }
                 self.command_line.history_next();
@@ -1140,17 +1140,9 @@ impl OpenCADStudio {
                     let i = self.active_tab;
                     use crate::entities::traits::EntityTypeOps;
                     self.push_undo_snapshot(i, pending.label);
-                    if let Some(entity) = self
-                        .tabs[i]
-                        .scene
-                        .document
-                        .get_entity_mut(pending.handle)
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(pending.handle)
                     {
-                        entity.apply_grip_menu_value(
-                            pending.grip_id,
-                            pending.action,
-                            v,
-                        );
+                        entity.apply_grip_menu_value(pending.grip_id, pending.action, v);
                     }
                     self.tabs[i].scene.bump_geometry();
                     self.tabs[i].dirty = true;
@@ -1164,7 +1156,11 @@ impl OpenCADStudio {
                     self.awaiting_vports = false;
                     let cfg = self.command_line.input.trim().to_string();
                     self.command_line.input.clear();
-                    let cfg = if cfg.is_empty() { "SINGLE".to_string() } else { cfg };
+                    let cfg = if cfg.is_empty() {
+                        "SINGLE".to_string()
+                    } else {
+                        cfg
+                    };
                     return self.dispatch_command(&format!("VPORTS {cfg}"));
                 }
                 // If the user navigated the autocomplete list with the
@@ -1182,9 +1178,7 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 // With the command line empty, a typed dynamic-input value
                 // commits as a point pick instead of an empty submit.
-                if self.tabs[i].active_cmd.is_some()
-                    && self.command_line.input.trim().is_empty()
-                {
+                if self.tabs[i].active_cmd.is_some() && self.command_line.input.trim().is_empty() {
                     if let Some(task) = self.try_dyn_commit() {
                         return task;
                     }
@@ -1342,11 +1336,7 @@ impl OpenCADStudio {
                 }
                 // Grip popup open → Enter commits the highlighted item.
                 if self.grip_popup.is_some() {
-                    let idx = self
-                        .grip_popup
-                        .as_ref()
-                        .map(|p| p.selected)
-                        .unwrap_or(0);
+                    let idx = self.grip_popup.as_ref().map(|p| p.selected).unwrap_or(0);
                     return Task::done(Message::GripMenuPick(idx));
                 }
                 // A typed dynamic-input value commits as a point pick
@@ -1942,8 +1932,7 @@ impl OpenCADStudio {
                 // viewport's screen rectangle in a paper layout.
                 let i = self.active_tab;
                 let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
-                let (ox, oy) = match self
-                    .tabs[i]
+                let (ox, oy) = match self.tabs[i]
                     .scene
                     .active_viewport
                     .and_then(|h| self.tabs[i].scene.viewport_screen_rect(h, (vw, vh)))
@@ -1971,8 +1960,7 @@ impl OpenCADStudio {
                 // above the shader and can mask it). Map the cursor into
                 // the active viewport's local box and use that box's size,
                 // since that's where the cube is actually drawn.
-                let tile = match self
-                    .tabs[i]
+                let tile = match self.tabs[i]
                     .scene
                     .active_viewport
                     .and_then(|h| self.tabs[i].scene.viewport_screen_rect(h, (vw, vh)))
@@ -2029,8 +2017,7 @@ impl OpenCADStudio {
                 // `hover_id` returns None outside the cube box, which clears
                 // any stale highlight from the previous `CursorMoved`.
                 let (svw, svh) = self.tabs[i].scene.selection.borrow().vp_size;
-                let cube_tile = match self
-                    .tabs[i]
+                let cube_tile = match self.tabs[i]
                     .scene
                     .active_viewport
                     .and_then(|h| self.tabs[i].scene.viewport_screen_rect(h, (svw, svh)))
@@ -2140,8 +2127,7 @@ impl OpenCADStudio {
                         // Pan scale uses the active tile's size (ortho size
                         // is relative to viewport height), so a tiled pane
                         // pans at the correct rate.
-                        let bounds = self
-                            .tabs[i]
+                        let bounds = self.tabs[i]
                             .scene
                             .active_model_tile_bounds(vp_size.0, vp_size.1);
                         // Drop `sel` before calling mutable scene methods.
@@ -2155,11 +2141,11 @@ impl OpenCADStudio {
                         } else {
                             // `bounds` is the active tile; pan by its height so
                             // the point under the cursor tracks correctly.
-                            self.tabs[i]
-                                .scene
-                                .camera
-                                .borrow_mut()
-                                .pan_screen(dx, dy, bounds.height);
+                            self.tabs[i].scene.camera.borrow_mut().pan_screen(
+                                dx,
+                                dy,
+                                bounds.height,
+                            );
                             self.tabs[i].scene.camera_generation += 1;
                         }
                         self.tabs[i].scene.selection.borrow_mut().middle_last_pos = Some(p);
@@ -2177,8 +2163,7 @@ impl OpenCADStudio {
                 // follow the pane the cursor is in. During a drag the active
                 // tile stays put so the operation finishes in its own pane.
                 if !dragging && vp_size.0 > 1.0 && vp_size.1 > 1.0 {
-                    if self
-                        .tabs[i]
+                    if self.tabs[i]
                         .scene
                         .set_active_model_tile_at(p.x / vp_size.0, p.y / vp_size.1)
                     {
@@ -2193,8 +2178,7 @@ impl OpenCADStudio {
                 // the active pane. `p_full` keeps the canvas-space cursor
                 // for screen overlays (cursor marker, snap glyph).
                 let p_full = p;
-                let tile_b = self
-                    .tabs[i]
+                let tile_b = self.tabs[i]
                     .scene
                     .active_model_tile_bounds(vp_size.0, vp_size.1);
                 let p = iced::Point {
@@ -2429,7 +2413,8 @@ impl OpenCADStudio {
                             } else {
                                 None
                             };
-                            self.snapper.otrack_snap(cursor_world, view_proj, bounds, step)
+                            self.snapper
+                                .otrack_snap(cursor_world, view_proj, bounds, step)
                         } else {
                             None
                         }
@@ -2485,8 +2470,7 @@ impl OpenCADStudio {
                             )
                         });
                         if let Some(pick) = pick {
-                            let world =
-                                glam::Vec3::new(pick.x as f32, pick.y as f32, effective.z);
+                            let world = glam::Vec3::new(pick.x as f32, pick.y as f32, effective.z);
                             let ndc = view_proj.project_point3(world);
                             let screen = iced::Point::new(
                                 (ndc.x + 1.0) * 0.5 * bounds.width,
@@ -2541,9 +2525,7 @@ impl OpenCADStudio {
                                 ));
                             }
                             if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
-                                if let Some(hint) =
-                                    cmd.entity_pick_acquire_hint(hover_handle)
-                                {
+                                if let Some(hint) = cmd.entity_pick_acquire_hint(hover_handle) {
                                     cmd.set_acquisition_hint(Some(hint));
                                 }
                             }
@@ -2567,8 +2549,8 @@ impl OpenCADStudio {
                             // floating free near no angle (issue #70).
                             let step = self.polar_increment_deg.to_radians();
                             let angle = dy.atan2(dx);
-                            let snapped = step > 1e-6
-                                && ((angle / step).round() * step - angle).abs() < 1e-3;
+                            let snapped =
+                                step > 1e-6 && ((angle / step).round() * step - angle).abs() < 1e-3;
                             if snapped && (dx * dx + dy * dy).sqrt() > 1e-4 {
                                 let far = 1e5_f32;
                                 let dir = glam::Vec3::new(dx, dy, 0.0).normalize();
@@ -2725,9 +2707,10 @@ impl OpenCADStudio {
                         width: vw,
                         height: vh,
                     };
-                    if let Some(edge) = self.tabs[i]
-                        .scene
-                        .hit_model_tile_edge(p, canvas_bounds, TILE_EDGE_HIT_PX)
+                    if let Some(edge) =
+                        self.tabs[i]
+                            .scene
+                            .hit_model_tile_edge(p, canvas_bounds, TILE_EDGE_HIT_PX)
                     {
                         self.tile_drag = Some(crate::app::TileDrag {
                             orient: edge.orient,
@@ -2740,8 +2723,7 @@ impl OpenCADStudio {
                 // Tiled Model layout: clicking a non-active tile activates
                 // it (swapping in its camera) instead of selecting / drawing.
                 if self.tabs[i].active_cmd.is_none() && vw > 1.0 && vh > 1.0 {
-                    if self
-                        .tabs[i]
+                    if self.tabs[i]
                         .scene
                         .set_active_model_tile_at(p.x / vw, p.y / vh)
                     {
@@ -2832,9 +2814,7 @@ impl OpenCADStudio {
                 if self.tile_drag.take().is_some() {
                     let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
                     let (min_w, min_h) = tile_min_norm(vw, vh);
-                    self.tabs[i]
-                        .scene
-                        .collapse_small_model_tiles(min_w, min_h);
+                    self.tabs[i].scene.collapse_small_model_tiles(min_w, min_h);
                     self.tabs[i].scene.camera_generation += 1;
                     return Task::none();
                 }
@@ -3024,9 +3004,10 @@ impl OpenCADStudio {
                         });
                         if let Some(pick) = pick {
                             let center = glam::Vec3::new(pick.x as f32, pick.y as f32, world_pt.z);
-                            let result = self.tabs[i].active_cmd.as_mut().map(|c| {
-                                c.on_structure_pick(pick.handle, center)
-                            });
+                            let result = self.tabs[i]
+                                .active_cmd
+                                .as_mut()
+                                .map(|c| c.on_structure_pick(pick.handle, center));
                             self.command_line
                                 .push_info(&format!("{} acquired.", pick.label));
                             result
@@ -3342,58 +3323,59 @@ impl OpenCADStudio {
                             }
 
                             if !handled_by_cycling {
-                            let hit = scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
-                                .and_then(|s| Scene::handle_from_wire_name(s))
-                                .or_else(|| {
-                                    scene::hit_test::click_hit_hatch(
-                                        p,
-                                        &self.tabs[i].scene.visible_hatches_for_click(),
-                                        vp_mat,
-                                        bounds,
-                                    )
-                                })
-                                .or_else(|| {
-                                    // Block-internal hatch: resolve to the
-                                    // parent Insert (AutoCAD behaviour).
-                                    scene::hit_test::click_hit_insert_hatch(
-                                        p,
-                                        &self.tabs[i].scene.insert_hatches_for_click(),
-                                        vp_mat,
-                                        bounds,
-                                    )
-                                })
-                                .or_else(|| {
-                                    // 3D solids: click anywhere on the shaded
-                                    // body, not just the thin projected edges.
-                                    self.tabs[i].scene.mesh_click_hit(p, vp_mat, bounds)
-                                });
-                            // Selection filter: drop a pick whose type is excluded.
-                            let hit =
-                                hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
-                            if let Some(handle) = hit {
-                                // Individual picks accumulate (issue #47):
-                                // each plain click adds to the selection,
-                                // Shift+click removes the picked entity.
-                                // Esc / empty-space click clears.
-                                if self.shift_down {
-                                    self.tabs[i].scene.deselect_entity(handle);
+                                let hit =
+                                    scene::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
+                                        .and_then(|s| Scene::handle_from_wire_name(s))
+                                        .or_else(|| {
+                                            scene::hit_test::click_hit_hatch(
+                                                p,
+                                                &self.tabs[i].scene.visible_hatches_for_click(),
+                                                vp_mat,
+                                                bounds,
+                                            )
+                                        })
+                                        .or_else(|| {
+                                            // Block-internal hatch: resolve to the
+                                            // parent Insert (AutoCAD behaviour).
+                                            scene::hit_test::click_hit_insert_hatch(
+                                                p,
+                                                &self.tabs[i].scene.insert_hatches_for_click(),
+                                                vp_mat,
+                                                bounds,
+                                            )
+                                        })
+                                        .or_else(|| {
+                                            // 3D solids: click anywhere on the shaded
+                                            // body, not just the thin projected edges.
+                                            self.tabs[i].scene.mesh_click_hit(p, vp_mat, bounds)
+                                        });
+                                // Selection filter: drop a pick whose type is excluded.
+                                let hit =
+                                    hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
+                                if let Some(handle) = hit {
+                                    // Individual picks accumulate (issue #47):
+                                    // each plain click adds to the selection,
+                                    // Shift+click removes the picked entity.
+                                    // Esc / empty-space click clears.
+                                    if self.shift_down {
+                                        self.tabs[i].scene.deselect_entity(handle);
+                                    } else {
+                                        self.tabs[i].scene.select_entity(handle, false);
+                                        self.tabs[i].scene.expand_selection_for_groups(&[handle]);
+                                    }
+                                    self.refresh_properties();
+                                    selection_just_completed = true;
                                 } else {
-                                    self.tabs[i].scene.select_entity(handle, false);
-                                    self.tabs[i].scene.expand_selection_for_groups(&[handle]);
+                                    self.tabs[i].scene.deselect_all();
+                                    self.refresh_properties();
+                                    let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                                    // Full-canvas space: ViewportMove updates
+                                    // box_current in canvas coords and the overlay
+                                    // draws there; release maps back into the tile.
+                                    sel.box_anchor = Some(p_full);
+                                    sel.box_current = Some(p_full);
+                                    sel.box_crossing = false;
                                 }
-                                self.refresh_properties();
-                                selection_just_completed = true;
-                            } else {
-                                self.tabs[i].scene.deselect_all();
-                                self.refresh_properties();
-                                let mut sel = self.tabs[i].scene.selection.borrow_mut();
-                                // Full-canvas space: ViewportMove updates
-                                // box_current in canvas coords and the overlay
-                                // draws there; release maps back into the tile.
-                                sel.box_anchor = Some(p_full);
-                                sel.box_current = Some(p_full);
-                                sel.box_crossing = false;
-                            }
                             }
                         } else {
                             let a = box_anchor.unwrap();
@@ -3493,8 +3475,7 @@ impl OpenCADStudio {
                             // Any text-bearing entity opens its in-place editor
                             // (plain box or rich MText editor, per type). A
                             // Leader resolves to the entity it annotates.
-                            let is_editable_text = self
-                                .tabs[i]
+                            let is_editable_text = self.tabs[i]
                                 .scene
                                 .document
                                 .get_entity(handle)
@@ -3718,8 +3699,7 @@ impl OpenCADStudio {
                 // viewport's screen rectangle in a paper layout. Map the
                 // cursor into that area before hit-testing so paper-space
                 // picks line up with the gizmo.
-                let (cx, cy, w, h) = match self
-                    .tabs[i]
+                let (cx, cy, w, h) = match self.tabs[i]
                     .scene
                     .active_viewport
                     .and_then(|hndl| self.tabs[i].scene.viewport_screen_rect(hndl, (vw, vh)))
@@ -3843,8 +3823,7 @@ impl OpenCADStudio {
                 // Actions that need a follow-up number stash a pending
                 // state + prompt; the next typed value drives
                 // `apply_grip_menu_value`.
-                let prompt = self
-                    .tabs[i]
+                let prompt = self.tabs[i]
                     .scene
                     .document
                     .get_entity(popup.handle)
@@ -3882,12 +3861,7 @@ impl OpenCADStudio {
                 } else {
                     None
                 };
-                if let Some(entity) = self
-                    .tabs[i]
-                    .scene
-                    .document
-                    .get_entity_mut(popup.handle)
-                {
+                if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(popup.handle) {
                     entity.apply_grip_menu(popup.grip_id, item.action);
                 }
                 self.tabs[i].scene.bump_geometry();
@@ -3897,9 +3871,7 @@ impl OpenCADStudio {
                 // Grab the new arrow so it follows the cursor (click places it,
                 // Esc removes it).
                 if let Some(new_gid) = add_leader_gid {
-                    if let Some(g) =
-                        self.tabs[i].selected_grips.iter().find(|g| g.id == new_gid)
-                    {
+                    if let Some(g) = self.tabs[i].selected_grips.iter().find(|g| g.id == new_gid) {
                         self.tabs[i].active_grip = Some(GripEdit {
                             handle: popup.handle,
                             grip_id: new_gid,
@@ -4202,7 +4174,11 @@ impl OpenCADStudio {
             }
             Message::MTextFont(f) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
-                    ed.font = if f == "[Style default]" { String::new() } else { f };
+                    ed.font = if f == "[Style default]" {
+                        String::new()
+                    } else {
+                        f
+                    };
                 }
                 self.rebuild_mtext_preview();
                 Task::none()
@@ -4810,9 +4786,9 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
                 if !handles.is_empty() {
-                   if let Some(raw_val) = self.tabs[i].properties.edit_buf.remove(field) {
-                         let val = super::expr_eval::eval_to_string(&raw_val);
-                         self.push_undo_snapshot(i, "CHPROP");
+                    if let Some(raw_val) = self.tabs[i].properties.edit_buf.remove(field) {
+                        let val = super::expr_eval::eval_to_string(&raw_val);
+                        self.push_undo_snapshot(i, "CHPROP");
                         if field == "frozen_layers" {
                             // Resolve layer names → handles, then apply to viewports.
                             let layer_handles: Vec<acadrust::Handle> = val
@@ -5659,8 +5635,7 @@ impl OpenCADStudio {
                     } else {
                         // Create a new PlotSettings object and insert it.
                         let mut ps = PlotSettings::new(layout_name.clone());
-                        ps.handle =
-                            self.tabs[i].scene.document.allocate_handle();
+                        ps.handle = self.tabs[i].scene.document.allocate_handle();
                         let h = ps.handle;
                         self.tabs[i]
                             .scene
@@ -6174,52 +6149,39 @@ impl OpenCADStudio {
                     self.push_undo_snapshot(i, "STYLE SET");
                     self.tabs[i].scene.document.header.current_text_style_name = name.clone();
                     self.tabs[i].dirty = true;
+                    self.sync_ribbon_styles();
                     self.command_line
                         .push_output(&format!("Current text style: {}", name));
                 }
                 Task::none()
             }
             Message::TextStyleDialogNew => {
-                let i = self.active_tab;
-                let doc = &self.tabs[i].scene.document;
-                let mut n = 1u32;
-                let new_name = loop {
-                    let candidate = format!("Style{}", n);
-                    if !doc.text_styles.contains(&candidate) {
-                        break candidate;
-                    }
-                    n += 1;
-                };
-                self.push_undo_snapshot(i, "STYLE NEW");
-                let style = acadrust::tables::TextStyle::new(&new_name);
-                let _ = self.tabs[i].scene.document.text_styles.add(style);
-                self.textstyle_selected = new_name.clone();
-                self.textstyle_font = String::new();
-                self.textstyle_width = "1.0".to_string();
-                self.textstyle_oblique = "0.0".to_string();
-                self.tabs[i].dirty = true;
+                self.style_new(crate::app::StyleKind::Text);
+                Task::none()
+            }
+            Message::TextStyleDialogCopy => {
+                self.style_copy(crate::app::StyleKind::Text);
                 Task::none()
             }
             Message::TextStyleDialogDelete => {
-                let i = self.active_tab;
-                let name = self.textstyle_selected.clone();
-                if name.eq_ignore_ascii_case("Standard") {
-                    self.command_line
-                        .push_error("Cannot delete the Standard text style.");
-                    return Task::none();
-                }
-                self.push_undo_snapshot(i, "STYLE DEL");
-                self.tabs[i].scene.document.text_styles.remove(&name);
-                self.textstyle_selected = self.tabs[i]
-                    .scene
-                    .document
-                    .text_styles
-                    .iter()
-                    .next()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_else(|| "Standard".to_string());
-                self.load_textstyle_bufs(i);
-                self.tabs[i].dirty = true;
+                self.style_delete(crate::app::StyleKind::Text);
+                Task::none()
+            }
+            // ── Shared inline rename (all style managers) ─────────────────
+            Message::StyleRenameStart(kind, name) => {
+                self.style_rename_start(kind, name);
+                Task::none()
+            }
+            Message::StyleRenameEdit(s) => {
+                self.style_rename_buf = s;
+                Task::none()
+            }
+            Message::StyleRenameCommit(kind) => {
+                self.style_rename_commit(kind);
+                Task::none()
+            }
+            Message::StyleRenameCancel => {
+                self.style_rename_cancel();
                 Task::none()
             }
             Message::TextStyleEdit { field, value } => {
@@ -6432,7 +6394,8 @@ impl OpenCADStudio {
                 use acadrust::objects::TableBorderType;
                 let i = self.active_tab;
                 if let Some(s) = self.tablestyle_mut(i) {
-                    if let Some(bd) = Self::ts_cell_of(s, cell).and_then(|c| Self::ts_border_of(c, border))
+                    if let Some(bd) =
+                        Self::ts_cell_of(s, cell).and_then(|c| Self::ts_border_of(c, border))
                     {
                         bd.border_type = match value.as_str() {
                             "Double" => TableBorderType::Double,
@@ -6449,7 +6412,8 @@ impl OpenCADStudio {
             Message::TableStyleBorderToggleInvisible { cell, border } => {
                 let i = self.active_tab;
                 if let Some(s) = self.tablestyle_mut(i) {
-                    if let Some(bd) = Self::ts_cell_of(s, cell).and_then(|c| Self::ts_border_of(c, border))
+                    if let Some(bd) =
+                        Self::ts_cell_of(s, cell).and_then(|c| Self::ts_border_of(c, border))
                     {
                         bd.is_invisible = !bd.is_invisible;
                     }
@@ -6519,7 +6483,10 @@ impl OpenCADStudio {
                             self.ts_border_spacing[r][b].trim().parse().ok(),
                         )
                     });
-                if let Some(c) = self.tablestyle_mut(i).and_then(|s| Self::ts_cell_of(s, row)) {
+                if let Some(c) = self
+                    .tablestyle_mut(i)
+                    .and_then(|s| Self::ts_cell_of(s, row))
+                {
                     if !ts.is_empty() {
                         c.text_style_name = ts;
                     }
@@ -6596,76 +6563,26 @@ impl OpenCADStudio {
             }
 
             Message::TableStyleDialogNew => {
-                use acadrust::objects::ObjectType;
-                let i = self.active_tab;
-                let doc = &self.tabs[i].scene.document;
-                let mut n = 1u32;
-                let new_name = loop {
-                    let candidate = format!("TS{}", n);
-                    let taken = doc.objects.values().any(|o| {
-                        matches!(o, ObjectType::TableStyle(s) if s.name.eq_ignore_ascii_case(&candidate))
-                    });
-                    if !taken {
-                        break candidate;
-                    }
-                    n += 1;
-                };
-                self.push_undo_snapshot(i, "TABLESTYLE NEW");
-                let mut style = acadrust::objects::TableStyle::standard();
-                style.name = new_name.clone();
-                let nh = self.tabs[i].scene.document.allocate_handle();
-                style.handle = nh;
-                self.tabs[i]
-                    .scene
-                    .document
-                    .objects
-                    .insert(nh, ObjectType::TableStyle(style));
-                self.tablestyle_selected = new_name;
-                self.tabs[i].dirty = true;
+                self.style_new(crate::app::StyleKind::Table);
+                Task::none()
+            }
+            Message::TableStyleDialogCopy => {
+                self.style_copy(crate::app::StyleKind::Table);
                 Task::none()
             }
             Message::TableStyleDialogDelete => {
-                use acadrust::objects::ObjectType;
-                let i = self.active_tab;
+                self.style_delete(crate::app::StyleKind::Table);
+                Task::none()
+            }
+            Message::TableStyleDialogSetCurrent => {
                 let name = self.tablestyle_selected.clone();
-                if name.eq_ignore_ascii_case("Standard") {
+                if self
+                    .style_names(crate::app::StyleKind::Table)
+                    .contains(&name)
+                {
+                    self.ribbon.active_table_style = name.clone();
                     self.command_line
-                        .push_error("Cannot delete the Standard style.");
-                    return Task::none();
-                }
-                let handle = self.tabs[i]
-                    .scene
-                    .document
-                    .objects
-                    .iter()
-                    .find_map(|(&h, o)| {
-                        if let ObjectType::TableStyle(s) = o {
-                            if s.name == name {
-                                Some(h)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    });
-                if let Some(h) = handle {
-                    self.push_undo_snapshot(i, "TABLESTYLE DEL");
-                    self.tabs[i].scene.document.objects.remove(&h);
-                    self.tablestyle_selected = self.tabs[i]
-                        .scene
-                        .document
-                        .objects
-                        .values()
-                        .find_map(|o| {
-                            if let ObjectType::TableStyle(s) = o {
-                                Some(s.name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| "Standard".to_string());
-                    self.tabs[i].dirty = true;
+                        .push_output(&format!("Current table style: {name}"));
                 }
                 Task::none()
             }
@@ -6740,81 +6657,21 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            // Placeholder so the Multiline manager has the same Set Current +
+            // Apply pair as every other style manager. The editor is currently
+            // read-only, so there is nothing to apply yet — wire this up when
+            // editable MLineStyle properties land.
+            Message::MlStyleApply => Task::none(),
             Message::MlStyleDialogNew => {
-                use acadrust::objects::ObjectType;
-                let i = self.active_tab;
-                // Generate a unique name.
-                let doc = &self.tabs[i].scene.document;
-                let mut n = 1u32;
-                let base = "MLS";
-                let new_name = loop {
-                    let candidate = format!("{}{}", base, n);
-                    let taken = doc.objects.values().any(|o| {
-                        matches!(o, ObjectType::MLineStyle(s) if s.name.eq_ignore_ascii_case(&candidate))
-                    });
-                    if !taken {
-                        break candidate;
-                    }
-                    n += 1;
-                };
-                self.push_undo_snapshot(i, "MLSTYLE NEW");
-                let mut style = acadrust::objects::MLineStyle::standard();
-                style.name = new_name.clone();
-                let nh = self.tabs[i].scene.document.allocate_handle();
-                style.handle = nh;
-                self.tabs[i]
-                    .scene
-                    .document
-                    .objects
-                    .insert(nh, ObjectType::MLineStyle(style));
-                self.mlstyle_selected = new_name;
-                self.tabs[i].dirty = true;
+                self.style_new(crate::app::StyleKind::MLine);
+                Task::none()
+            }
+            Message::MlStyleDialogCopy => {
+                self.style_copy(crate::app::StyleKind::MLine);
                 Task::none()
             }
             Message::MlStyleDialogDelete => {
-                use acadrust::objects::ObjectType;
-                let i = self.active_tab;
-                let name = self.mlstyle_selected.clone();
-                if name.eq_ignore_ascii_case("Standard") {
-                    self.command_line
-                        .push_error("Cannot delete the Standard style.");
-                    return Task::none();
-                }
-                let handle = self.tabs[i]
-                    .scene
-                    .document
-                    .objects
-                    .iter()
-                    .find_map(|(&h, o)| {
-                        if let ObjectType::MLineStyle(s) = o {
-                            if s.name == name {
-                                Some(h)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    });
-                if let Some(h) = handle {
-                    self.push_undo_snapshot(i, "MLSTYLE DEL");
-                    self.tabs[i].scene.document.objects.remove(&h);
-                    // Select first remaining style.
-                    self.mlstyle_selected = self.tabs[i]
-                        .scene
-                        .document
-                        .objects
-                        .values()
-                        .find_map(|o| {
-                            if let ObjectType::MLineStyle(s) = o {
-                                Some(s.name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| "Standard".to_string());
-                    self.tabs[i].dirty = true;
-                }
+                self.style_delete(crate::app::StyleKind::MLine);
                 Task::none()
             }
 
@@ -6891,71 +6748,15 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MLeaderStyleDialogNew => {
-                use acadrust::objects::ObjectType;
-                let i = self.active_tab;
-                let doc = &self.tabs[i].scene.document;
-                let mut n = 1u32;
-                let new_name = loop {
-                    let candidate = format!("MLeader{}", n);
-                    let taken = doc.objects.values().any(|o| {
-                        matches!(o, ObjectType::MultiLeaderStyle(s) if s.name.eq_ignore_ascii_case(&candidate))
-                    });
-                    if !taken {
-                        break candidate;
-                    }
-                    n += 1;
-                };
-                self.push_undo_snapshot(i, "MLEADERSTYLE NEW");
-                let mut style = acadrust::objects::MultiLeaderStyle::new(&new_name);
-                let nh = self.tabs[i].scene.document.allocate_handle();
-                style.handle = nh;
-                self.tabs[i]
-                    .scene
-                    .document
-                    .objects
-                    .insert(nh, ObjectType::MultiLeaderStyle(style));
-                self.mleaderstyle_selected = new_name;
-                self.load_mleaderstyle_bufs(i);
-                self.tabs[i].dirty = true;
+                self.style_new(crate::app::StyleKind::MLeader);
+                Task::none()
+            }
+            Message::MLeaderStyleDialogCopy => {
+                self.style_copy(crate::app::StyleKind::MLeader);
                 Task::none()
             }
             Message::MLeaderStyleDialogDelete => {
-                use acadrust::objects::ObjectType;
-                let i = self.active_tab;
-                let name = self.mleaderstyle_selected.clone();
-                if name.eq_ignore_ascii_case("Standard") {
-                    self.command_line
-                        .push_error("Cannot delete the Standard style.");
-                    return Task::none();
-                }
-                let handle = self.tabs[i]
-                    .scene
-                    .document
-                    .objects
-                    .iter()
-                    .find_map(|(&h, o)| match o {
-                        ObjectType::MultiLeaderStyle(s) if s.name == name => Some(h),
-                        _ => None,
-                    });
-                if let Some(h) = handle {
-                    self.push_undo_snapshot(i, "MLEADERSTYLE DEL");
-                    self.tabs[i].scene.document.objects.remove(&h);
-                    self.mleaderstyle_selected = self.tabs[i]
-                        .scene
-                        .document
-                        .objects
-                        .values()
-                        .find_map(|o| {
-                            if let ObjectType::MultiLeaderStyle(s) = o {
-                                Some(s.name.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| "Standard".to_string());
-                    self.load_mleaderstyle_bufs(i);
-                    self.tabs[i].dirty = true;
-                }
+                self.style_delete(crate::app::StyleKind::MLeader);
                 Task::none()
             }
             Message::MLeaderStyleEdit { field, value } => {
@@ -7144,20 +6945,7 @@ impl OpenCADStudio {
             }
             Message::MLeaderStyleApply => {
                 let i = self.active_tab;
-                let (
-                    ld,
-                    lg,
-                    asz,
-                    th,
-                    sf,
-                    bg,
-                    fsa,
-                    ssa,
-                    mp,
-                    dt,
-                    lc,
-                    tc,
-                ) = (
+                let (ld, lg, asz, th, sf, bg, fsa, ssa, mp, dt, lc, tc) = (
                     self.mls_landing_distance.parse::<f64>().ok(),
                     self.mls_landing_gap.parse::<f64>().ok(),
                     self.mls_arrowhead_size.parse::<f64>().ok(),
@@ -7302,11 +7090,11 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::DimStyleDialogNew => {
-                // Delegate to the DIMSTYLE NEW command via command line prompt.
-                self.command_line.push_info("Enter new DimStyle name:");
-                if let Some(id) = self.dimstyle_window.take() {
-                    return window::close(id);
-                }
+                self.style_new(crate::app::StyleKind::Dim);
+                Task::none()
+            }
+            Message::DimStyleDialogCopy => {
+                self.style_copy(crate::app::StyleKind::Dim);
                 Task::none()
             }
             Message::DimStyleDialogSetCurrent => {
@@ -7315,6 +7103,7 @@ impl OpenCADStudio {
                 self.tabs[i].scene.document.header.current_dimstyle_name =
                     self.dimstyle_selected.clone();
                 self.tabs[i].dirty = true;
+                self.sync_ribbon_styles();
                 self.command_line.push_output(&format!(
                     "Current dim style set to '{}'.",
                     self.dimstyle_selected
@@ -7322,32 +7111,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::DimStyleDialogDelete => {
-                let i = self.active_tab;
-                let name = self.dimstyle_selected.clone();
-                if name == "Standard" {
-                    self.command_line
-                        .push_error("Cannot delete the Standard dim style.");
-                } else if self.tabs[i]
-                    .scene
-                    .document
-                    .dim_styles
-                    .remove(&name)
-                    .is_some()
-                {
-                    self.tabs[i].dirty = true;
-                    // Select first remaining style.
-                    self.dimstyle_selected = self.tabs[i]
-                        .scene
-                        .document
-                        .dim_styles
-                        .iter()
-                        .next()
-                        .map(|s| s.name.clone())
-                        .unwrap_or_else(|| "Standard".to_string());
-                    self.load_dimstyle_bufs(i);
-                    self.command_line
-                        .push_output(&format!("DimStyle '{}' deleted.", name));
-                }
+                self.style_delete(crate::app::StyleKind::Dim);
                 Task::none()
             }
             Message::DsEdit(field, val) => {
@@ -7418,8 +7182,7 @@ impl OpenCADStudio {
             self.tabs[i].dyn_active = 0;
             return;
         }
-        let field = self
-            .tabs[i]
+        let field = self.tabs[i]
             .active_cmd
             .as_ref()
             .map(|c| c.dyn_field())
@@ -7430,8 +7193,7 @@ impl OpenCADStudio {
         // `on_text_input` instead of `on_point`. A distance prompt keeps the
         // `Distance` box (so a perpendicular-distance live value reads
         // naturally); everything else uses the typed-only `Scalar` box.
-        let wants_text = self
-            .tabs[i]
+        let wants_text = self.tabs[i]
             .active_cmd
             .as_ref()
             .map(|c| c.wants_text_input())
@@ -7463,8 +7225,11 @@ impl OpenCADStudio {
         // reshaped via `,` (see #35) the existing set is still a valid
         // Point configuration and must not be reverted on every mouse
         // move.
-        let current: Vec<DynComponent> =
-            self.tabs[i].dyn_fields.iter().map(|f| f.component).collect();
+        let current: Vec<DynComponent> = self.tabs[i]
+            .dyn_fields
+            .iter()
+            .map(|f| f.component)
+            .collect();
         // Only treat a cartesian / polar variant as "good enough to keep"
         // when the user explicitly reshaped via `,`. Otherwise we follow
         // the command's default so e.g. clicking the first point of LINE
@@ -7664,7 +7429,7 @@ impl OpenCADStudio {
         let val = |idx: usize, live: f32| -> f32 {
             fields[idx]
                 .buffer
-     .as_ref()
+                .as_ref()
                 .map(|s| s.trim().replace(',', "."))
                 .and_then(|s| crate::app::expr_eval::eval_number(&s).map(|v| v as f32))
                 .unwrap_or(live)
@@ -7679,9 +7444,11 @@ impl OpenCADStudio {
         // position relative to base; typed values are relative deltas.
         let has_base = self.last_point.is_some();
         match comps.as_slice() {
-            [DynComponent::X, DynComponent::Y] if has_base => {
-                Some(glam::Vec3::new(base.x + val(0, dx), base.y + val(1, dy), base.z))
-            }
+            [DynComponent::X, DynComponent::Y] if has_base => Some(glam::Vec3::new(
+                base.x + val(0, dx),
+                base.y + val(1, dy),
+                base.z,
+            )),
             [DynComponent::X, DynComponent::Y] => {
                 Some(glam::Vec3::new(val(0, w.x), val(1, w.y), base.z))
             }
@@ -7692,15 +7459,17 @@ impl OpenCADStudio {
                     base.z + val(2, 0.0),
                 ))
             }
-            [DynComponent::X, DynComponent::Y, DynComponent::Z] => Some(glam::Vec3::new(
-                val(0, w.x),
-                val(1, w.y),
-                val(2, base.z),
-            )),
+            [DynComponent::X, DynComponent::Y, DynComponent::Z] => {
+                Some(glam::Vec3::new(val(0, w.x), val(1, w.y), val(2, base.z)))
+            }
             [DynComponent::Distance, DynComponent::Angle] => {
                 let d = val(0, live_d);
                 let a = val(1, live_a.to_degrees()).to_radians();
-                Some(glam::Vec3::new(base.x + d * a.cos(), base.y + d * a.sin(), base.z))
+                Some(glam::Vec3::new(
+                    base.x + d * a.cos(),
+                    base.y + d * a.sin(),
+                    base.z,
+                ))
             }
             [DynComponent::Distance] => {
                 // Keep the cursor's direction, override the magnitude.
@@ -7735,12 +7504,10 @@ impl OpenCADStudio {
         // The user picked a shape — `sync_dyn_fields` preserves it until
         // the next commit / command-start clears the flag.
         self.dyn_user_reshaped = true;
-        let active = self
-            .tabs[i]
+        let active = self.tabs[i]
             .dyn_active
             .min(self.tabs[i].dyn_fields.len() - 1);
-        let comps: Vec<DynComponent> = self
-            .tabs[i]
+        let comps: Vec<DynComponent> = self.tabs[i]
             .dyn_fields
             .iter()
             .map(|f| f.component)
@@ -7749,12 +7516,10 @@ impl OpenCADStudio {
         match (comps.as_slice(), active) {
             // First polar field — `,` switches to cartesian, locking the
             // typed value as X.
-            ([DynComponent::Distance, DynComponent::Angle], 0)
-            | ([DynComponent::Distance], 0) => {
+            ([DynComponent::Distance, DynComponent::Angle], 0) | ([DynComponent::Distance], 0) => {
                 let mut x_field = DynFieldEntry::new(DynComponent::X);
                 x_field.buffer = cur_buf;
-                self.tabs[i].dyn_fields =
-                    vec![x_field, DynFieldEntry::new(DynComponent::Y)];
+                self.tabs[i].dyn_fields = vec![x_field, DynFieldEntry::new(DynComponent::Y)];
                 self.tabs[i].dyn_active = 1;
             }
             // Already cartesian X (first field) — just advance to Y.
@@ -7801,7 +7566,11 @@ impl OpenCADStudio {
                 .map(|c| c.wants_text_input())
                 .unwrap_or(false);
             if !wants_text {
-                if let Some(text) = self.tabs[i].dyn_fields.iter().find_map(|f| f.buffer.clone()) {
+                if let Some(text) = self.tabs[i]
+                    .dyn_fields
+                    .iter()
+                    .find_map(|f| f.buffer.clone())
+                {
                     if let Some(dist) = super::expr_eval::eval_number(text.trim()) {
                         let pt = base + dir * dist as f32;
                         self.last_point = Some(pt);
@@ -7823,8 +7592,7 @@ impl OpenCADStudio {
         // `on_text_input` (a count, radius, distance) rather than resolving a
         // point. Only the typed buffer matters here — a mouse-driven live
         // value commits through the viewport click, not Enter.
-        let wants_text = self
-            .tabs[i]
+        let wants_text = self.tabs[i]
             .active_cmd
             .as_ref()
             .map(|c| c.wants_text_input())
@@ -7943,10 +7711,16 @@ impl OpenCADStudio {
         {
             self.ts_cell_textstyle[r] = c.text_style_name.clone();
             self.ts_cell_height[r] = format!("{:.4}", c.text_height);
-            self.ts_cell_textcolor[r] =
-                c.text_color.index().map(|v| v.to_string()).unwrap_or_default();
-            self.ts_cell_fillcolor[r] =
-                c.fill_color.index().map(|v| v.to_string()).unwrap_or_default();
+            self.ts_cell_textcolor[r] = c
+                .text_color
+                .index()
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            self.ts_cell_fillcolor[r] = c
+                .fill_color
+                .index()
+                .map(|v| v.to_string())
+                .unwrap_or_default();
             self.ts_cell_datatype[r] = c.data_type.to_string();
             self.ts_cell_unittype[r] = c.unit_type.to_string();
             self.ts_cell_format[r] = c.format_string.clone();
@@ -7968,10 +7742,7 @@ impl OpenCADStudio {
     }
 
     /// Mutable access to the currently selected multileader style.
-    fn mleaderstyle_mut(
-        &mut self,
-        tab: usize,
-    ) -> Option<&mut acadrust::objects::MultiLeaderStyle> {
+    fn mleaderstyle_mut(&mut self, tab: usize) -> Option<&mut acadrust::objects::MultiLeaderStyle> {
         use acadrust::objects::ObjectType;
         let name = self.mleaderstyle_selected.clone();
         self.tabs[tab]
@@ -7986,7 +7757,7 @@ impl OpenCADStudio {
     }
 
     /// Populate all edit buffers from the currently selected multileader style.
-    fn load_mleaderstyle_bufs(&mut self, tab: usize) {
+    pub(super) fn load_mleaderstyle_bufs(&mut self, tab: usize) {
         use acadrust::objects::ObjectType;
         let name = self.mleaderstyle_selected.clone();
         let Some(s) = self.tabs[tab]
@@ -8036,7 +7807,7 @@ impl OpenCADStudio {
     }
 
     /// Populate all edit buffers from the currently selected dim style.
-    fn load_dimstyle_bufs(&mut self, tab: usize) {
+    pub(super) fn load_dimstyle_bufs(&mut self, tab: usize) {
         let doc = &self.tabs[tab].scene.document;
         let Some(ds) = doc.dim_styles.get(&self.dimstyle_selected) else {
             return;
@@ -8356,7 +8127,7 @@ impl OpenCADStudio {
         }
     }
 
-    fn load_textstyle_bufs(&mut self, tab: usize) {
+    pub(super) fn load_textstyle_bufs(&mut self, tab: usize) {
         let doc = &self.tabs[tab].scene.document;
         if let Some(s) = doc.text_styles.get(&self.textstyle_selected) {
             self.textstyle_font = s.font_file.clone();
@@ -8376,7 +8147,11 @@ impl OpenCADStudio {
 /// through the file (and is read correctly by other CAD applications).
 fn sync_annotation_scale_header(scene: &mut Scene) {
     let anno = scene.annotation_scale;
-    let value = if anno.abs() > 1e-9 { 1.0 / anno as f64 } else { 1.0 };
+    let value = if anno.abs() > 1e-9 {
+        1.0 / anno as f64
+    } else {
+        1.0
+    };
     // Prefer the name of a matching scale already in the drawing's list;
     // fall back to a formatted ratio when none matches.
     let name = scene

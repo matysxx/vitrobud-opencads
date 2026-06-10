@@ -4,11 +4,10 @@ pub const ROW_H: f32 = 26.0;
 
 pub mod about;
 pub mod app_menu;
-pub mod isolate_popup;
-pub mod update_notice;
 pub mod command_line;
 pub mod cycle_popup;
 pub mod dimstyle;
+pub mod isolate_popup;
 pub mod layers;
 pub mod layout_manager;
 pub mod mleaderstyle;
@@ -26,10 +25,13 @@ pub mod snap_popup;
 pub mod statusbar;
 pub mod statusbar_config;
 pub mod statusbar_menu;
+pub mod style_list;
+pub mod style_manager;
 pub mod tablestyle;
 pub mod text_util;
 pub mod textstyle;
 pub mod units_popup;
+pub mod update_notice;
 
 pub use app_menu::AppMenu;
 pub use command_line::CommandLine;

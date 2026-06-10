@@ -1,15 +1,15 @@
 use super::document::DocumentTab;
+use super::document::{DynComponent, DynFieldEntry};
 use super::helpers::grid_plane_from_camera;
 use super::history::history_dropdown_labels;
-use super::document::{DynComponent, DynFieldEntry};
 use super::{Message, OpenCADStudio};
 use crate::scene::grip::{grips_to_screen, grips_to_screen_paper};
 use crate::scene::viewport_pane::ViewportPane;
 use crate::scene::{VIEWCUBE_DRAW_PX, VIEWCUBE_PAD};
 use crate::ui::overlay;
 use iced::widget::{
-    button, column, container, mouse_area, pick_list, row, shader, stack, text, text_input,
-    Row, Space,
+    button, column, container, mouse_area, pick_list, row, shader, stack, text, text_input, Row,
+    Space,
 };
 use iced::window;
 use iced::{keyboard, Background, Border, Color, Element, Fill, Subscription, Task, Theme};
@@ -84,6 +84,8 @@ impl OpenCADStudio {
                 backward,
                 upside_down,
                 annotative,
+                rename_active: self.style_rename.as_deref(),
+                rename_buf: &self.style_rename_buf,
             });
         }
         if Some(window_id) == self.tablestyle_window {
@@ -130,6 +132,8 @@ impl OpenCADStudio {
                 &self.ts_border_lw,
                 &self.ts_border_color,
                 &self.ts_border_spacing,
+                self.style_rename.as_deref(),
+                &self.style_rename_buf,
             );
         }
         if Some(window_id) == self.mlstyle_window {
@@ -164,6 +168,8 @@ impl OpenCADStudio {
                 &self.mlstyle_selected,
                 selected_style,
                 tab.scene.document.header.multiline_style.clone(),
+                self.style_rename.as_deref(),
+                &self.style_rename_buf,
             );
         }
         if Some(window_id) == self.mleaderstyle_window {
@@ -243,39 +249,43 @@ impl OpenCADStudio {
                     ),
                     None => Default::default(),
                 };
-            return crate::ui::mleaderstyle::view_window(crate::ui::mleaderstyle::MLeaderStyleView {
-                styles,
-                selected: &self.mleaderstyle_selected,
-                style: selected_style,
-                current: tab.active_mleader_style.clone(),
-                landing_distance: &self.mls_landing_distance,
-                landing_gap: &self.mls_landing_gap,
-                arrowhead_size: &self.mls_arrowhead_size,
-                text_height: &self.mls_text_height,
-                scale_factor: &self.mls_scale_factor,
-                break_gap: &self.mls_break_gap,
-                first_seg_angle: &self.mls_first_seg_angle,
-                second_seg_angle: &self.mls_second_seg_angle,
-                max_points: &self.mls_max_points,
-                default_text: &self.mls_default_text,
-                line_color: &self.mls_line_color,
-                text_color: &self.mls_text_color,
-                description: &self.mls_description,
-                line_weight: &self.mls_line_weight,
-                align_space: &self.mls_align_space,
-                block_color: &self.mls_block_color,
-                block_rotation: &self.mls_block_rotation,
-                block_scale_x: &self.mls_block_scale_x,
-                block_scale_y: &self.mls_block_scale_y,
-                block_scale_z: &self.mls_block_scale_z,
-                block_opts,
-                lt_opts,
-                textstyle_opts,
-                line_type_name,
-                arrowhead_name,
-                text_style_name,
-                block_content_name,
-            });
+            return crate::ui::mleaderstyle::view_window(
+                crate::ui::mleaderstyle::MLeaderStyleView {
+                    styles,
+                    selected: &self.mleaderstyle_selected,
+                    style: selected_style,
+                    current: tab.active_mleader_style.clone(),
+                    landing_distance: &self.mls_landing_distance,
+                    landing_gap: &self.mls_landing_gap,
+                    arrowhead_size: &self.mls_arrowhead_size,
+                    text_height: &self.mls_text_height,
+                    scale_factor: &self.mls_scale_factor,
+                    break_gap: &self.mls_break_gap,
+                    first_seg_angle: &self.mls_first_seg_angle,
+                    second_seg_angle: &self.mls_second_seg_angle,
+                    max_points: &self.mls_max_points,
+                    default_text: &self.mls_default_text,
+                    line_color: &self.mls_line_color,
+                    text_color: &self.mls_text_color,
+                    description: &self.mls_description,
+                    line_weight: &self.mls_line_weight,
+                    align_space: &self.mls_align_space,
+                    block_color: &self.mls_block_color,
+                    block_rotation: &self.mls_block_rotation,
+                    block_scale_x: &self.mls_block_scale_x,
+                    block_scale_y: &self.mls_block_scale_y,
+                    block_scale_z: &self.mls_block_scale_z,
+                    block_opts,
+                    lt_opts,
+                    textstyle_opts,
+                    line_type_name,
+                    arrowhead_name,
+                    text_style_name,
+                    block_content_name,
+                    rename_active: self.style_rename.as_deref(),
+                    rename_buf: &self.style_rename_buf,
+                },
+            );
         }
         if Some(window_id) == self.layout_manager_window {
             let i = self.active_tab;
@@ -441,6 +451,8 @@ impl OpenCADStudio {
                     block_opts,
                     lt_opts,
                 },
+                self.style_rename.as_deref(),
+                &self.style_rename_buf,
             );
         }
         if Some(window_id) == self.shortcuts_window {
@@ -450,10 +462,7 @@ impl OpenCADStudio {
             return crate::ui::about::view_window();
         }
         if Some(window_id) == self.update_notice_window {
-            let latest = self
-                .update_notice_version
-                .as_deref()
-                .unwrap_or("?");
+            let latest = self.update_notice_version.as_deref().unwrap_or("?");
             let body = self.update_notice_body.as_deref().unwrap_or("");
             return crate::ui::update_notice::view_window(latest, body);
         }
@@ -502,9 +511,9 @@ impl OpenCADStudio {
                 self.show_viewcube,
                 tab.render_mode,
             ))
-                .width(Fill)
-                .height(Fill)
-                .into()
+            .width(Fill)
+            .height(Fill)
+            .into()
         };
 
         let selection_overlay = {
@@ -737,7 +746,12 @@ impl OpenCADStudio {
             // container background, the white sheet + paper entities + borders
             // come from the full-canvas top-locked "sheet" viewport, and the
             // floating content viewports overlay it (same path as model space).
-            const DESK: Color = Color { r: 0.22, g: 0.24, b: 0.28, a: 1.0 };
+            const DESK: Color = Color {
+                r: 0.22,
+                g: 0.24,
+                b: 0.28,
+                a: 1.0,
+            };
             stack![
                 container(viewport_3d)
                     .style(move |_: &Theme| container::Style {
@@ -967,9 +981,7 @@ impl OpenCADStudio {
                     .max()
                     .unwrap_or(8) as f32;
                 let row_w = max_len * 7.0 + 24.0;
-                let mut col = column![]
-                    .spacing(0)
-                    .width(iced::Length::Fixed(row_w));
+                let mut col = column![].spacing(0).width(iced::Length::Fixed(row_w));
                 for (idx, item) in popup.items.iter().enumerate() {
                     let is_sel = idx == popup.selected;
                     let label = item.label;
@@ -1028,7 +1040,8 @@ impl OpenCADStudio {
                 // the first item immediately, matching the right-click
                 // context menu's "panel below the click point" feel.
                 let anchor = iced::Point::new(popup.anchor.x + 12.0, popup.anchor.y + 12.0);
-                viewport_stack = viewport_stack.push(position_canvas_overlay(anchor, menu_panel.into()));
+                viewport_stack =
+                    viewport_stack.push(position_canvas_overlay(anchor, menu_panel.into()));
             }
         }
 
@@ -1079,8 +1092,10 @@ impl OpenCADStudio {
                 },
                 ..Default::default()
             });
-            viewport_stack = viewport_stack
-                .push(position_canvas_overlay(iced::Point::new(12.0, 40.0), panel.into()));
+            viewport_stack = viewport_stack.push(position_canvas_overlay(
+                iced::Point::new(12.0, 40.0),
+                panel.into(),
+            ));
         }
 
         // Selection-cycling list box: pick among overlapping objects.
@@ -1089,9 +1104,10 @@ impl OpenCADStudio {
                 let items: Vec<(acadrust::Handle, String)> = cands
                     .iter()
                     .filter_map(|&h| {
-                        tab.scene.document.get_entity(h).map(|e| {
-                            (h, crate::entities::traits::entity_type_name(e).to_string())
-                        })
+                        tab.scene
+                            .document
+                            .get_entity(h)
+                            .map(|e| (h, crate::entities::traits::entity_type_name(e).to_string()))
                     })
                     .collect();
                 if !items.is_empty() {
@@ -1172,23 +1188,22 @@ impl OpenCADStudio {
         // so the command-line field must release focus / its on_input.
         // The MText preview also captures keystrokes (typing edits it), so the
         // command line must likewise release its on_input there.
-        let dyn_capturing = (self.dyn_input
-            && tab.active_cmd.is_some()
-            && !tab.dyn_fields.is_empty())
-            || self.mtext_editor.as_ref().is_some_and(|e| e.show_preview)
-            || self.text_inline.is_some();
+        let dyn_capturing =
+            (self.dyn_input && tab.active_cmd.is_some() && !tab.dyn_fields.is_empty())
+                || self.mtext_editor.as_ref().is_some_and(|e| e.show_preview)
+                || self.text_inline.is_some();
         let command_line_overlay =
             iced::widget::container(self.command_line.view(allow_autocomplete, dyn_capturing))
-            .width(Fill)
-            .height(Fill)
-            .align_x(iced::alignment::Horizontal::Center)
-            .align_y(iced::alignment::Vertical::Bottom)
-            .padding(iced::Padding {
-                top: 0.0,
-                right: 0.0,
-                bottom: 2.0,
-                left: 0.0,
-            });
+                .width(Fill)
+                .height(Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Bottom)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 2.0,
+                    left: 0.0,
+                });
 
         let center_stack = iced::widget::stack![
             row![properties_el, viewport_stack].width(Fill).height(Fill),
@@ -1305,9 +1320,7 @@ impl OpenCADStudio {
         };
 
         let units_layer: Element<'_, Message> = if self.units_popup_open {
-            crate::ui::units_popup::units_popup_overlay(
-                tab.scene.document.header.insertion_units,
-            )
+            crate::ui::units_popup::units_popup_overlay(tab.scene.document.header.insertion_units)
         } else {
             iced::widget::Space::new().width(0).height(0).into()
         };
@@ -1352,9 +1365,7 @@ impl OpenCADStudio {
 
         let qselect_layer: Element<'_, Message> = if let Some(state) = &self.qselect {
             let types = tab.scene.entity_type_names_in_layout();
-            let properties = tab
-                .scene
-                .qselect_properties(state.type_filter.as_deref());
+            let properties = tab.scene.qselect_properties(state.type_filter.as_deref());
             qselect_overlay(state, &types, &properties)
         } else {
             iced::widget::Space::new().width(0).height(0).into()
@@ -1443,7 +1454,10 @@ impl OpenCADStudio {
                         Some(Message::SetShiftDown(m.shift()))
                     }
                     iced::Event::Keyboard(keyboard::Event::KeyPressed {
-                        key, modifiers, text, ..
+                        key,
+                        modifiers,
+                        text,
+                        ..
                     }) => {
                         let ctrl = modifiers.control();
                         let shift = modifiers.shift();
@@ -1695,7 +1709,11 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
         bar = bar.push(
             container(row_inner).style(move |_: &Theme| container::Style {
                 border: Border {
-                    color: if is_active { BORDER_COLOR } else { Color::TRANSPARENT },
+                    color: if is_active {
+                        BORDER_COLOR
+                    } else {
+                        Color::TRANSPARENT
+                    },
                     width: if is_active { 1.0 } else { 0.0 },
                     radius: 0.0.into(),
                 },
@@ -1787,8 +1805,18 @@ fn text_inline_overlay(
     ed: &super::text_inline::TextInlineState,
     canvas: (f32, f32),
 ) -> Element<'_, Message> {
-    const PANEL_BG: Color = Color { r: 0.16, g: 0.16, b: 0.16, a: 0.98 };
-    const BORDER: Color = Color { r: 0.40, g: 0.40, b: 0.40, a: 1.0 };
+    const PANEL_BG: Color = Color {
+        r: 0.16,
+        g: 0.16,
+        b: 0.16,
+        a: 0.98,
+    };
+    const BORDER: Color = Color {
+        r: 0.40,
+        g: 0.40,
+        b: 0.40,
+        a: 1.0,
+    };
 
     let field = text_input("Text", &ed.value)
         .id(iced::widget::Id::new(TEXT_INLINE_ID))
@@ -1801,7 +1829,11 @@ fn text_inline_overlay(
     let panel = container(field)
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Color(PANEL_BG)),
-            border: Border { color: BORDER, width: 1.0, radius: 5.0.into() },
+            border: Border {
+                color: BORDER,
+                width: 1.0,
+                radius: 5.0.into(),
+            },
             ..Default::default()
         })
         .padding(4);
@@ -1977,7 +2009,15 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
                         iced::Point::new(p0.x.min(p1.x), p0.y.min(p1.y)),
                         iced::Size::new((p1.x - p0.x).abs(), (p1.y - p0.y).abs()),
                     );
-                    frame.fill(&rect, Color { r: 0.20, g: 0.42, b: 0.72, a: 0.45 });
+                    frame.fill(
+                        &rect,
+                        Color {
+                            r: 0.20,
+                            g: 0.42,
+                            b: 0.72,
+                            a: 0.45,
+                        },
+                    );
                 }
             }
         }
@@ -2010,7 +2050,12 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
             frame.stroke(
                 &path,
                 Stroke::default()
-                    .with_color(Color { r: 0.95, g: 0.95, b: 0.55, a: 1.0 })
+                    .with_color(Color {
+                        r: 0.95,
+                        g: 0.95,
+                        b: 0.55,
+                        a: 1.0,
+                    })
                     .with_width(1.5),
             );
         } else if collapsed {
@@ -2034,7 +2079,12 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
                 frame.stroke(
                     &path,
                     Stroke::default()
-                        .with_color(Color { r: 0.95, g: 0.95, b: 0.55, a: 1.0 })
+                        .with_color(Color {
+                            r: 0.95,
+                            g: 0.95,
+                            b: 0.55,
+                            a: 1.0,
+                        })
                         .with_width(1.5),
                 );
             }
@@ -2079,20 +2129,52 @@ fn mtext_editor_overlay<'a>(
     use super::mtext_editor::{JustifyChoice, MTextFmt, ParaAlign};
     use iced::widget::{canvas, svg, text_editor};
 
-    const PANEL_BG: Color = Color { r: 0.16, g: 0.16, b: 0.16, a: 0.98 };
-    const BORDER: Color = Color { r: 0.40, g: 0.40, b: 0.40, a: 1.0 };
-    const TEXT_COL: Color = Color { r: 0.88, g: 0.88, b: 0.88, a: 1.0 };
-    const FIELD_BG: Color = Color { r: 0.12, g: 0.12, b: 0.12, a: 1.0 };
+    const PANEL_BG: Color = Color {
+        r: 0.16,
+        g: 0.16,
+        b: 0.16,
+        a: 0.98,
+    };
+    const BORDER: Color = Color {
+        r: 0.40,
+        g: 0.40,
+        b: 0.40,
+        a: 1.0,
+    };
+    const TEXT_COL: Color = Color {
+        r: 0.88,
+        g: 0.88,
+        b: 0.88,
+        a: 1.0,
+    };
+    const FIELD_BG: Color = Color {
+        r: 0.12,
+        g: 0.12,
+        b: 0.12,
+        a: 1.0,
+    };
 
     let btn_style = |_: &Theme, status: button::Status| button::Style {
         background: Some(Background::Color(match status {
-            button::Status::Hovered | button::Status::Pressed => {
-                Color { r: 0.28, g: 0.40, b: 0.55, a: 1.0 }
-            }
-            _ => Color { r: 0.22, g: 0.22, b: 0.22, a: 1.0 },
+            button::Status::Hovered | button::Status::Pressed => Color {
+                r: 0.28,
+                g: 0.40,
+                b: 0.55,
+                a: 1.0,
+            },
+            _ => Color {
+                r: 0.22,
+                g: 0.22,
+                b: 0.22,
+                a: 1.0,
+            },
         })),
         text_color: TEXT_COL,
-        border: Border { color: BORDER, width: 1.0, radius: 3.0.into() },
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: 3.0.into(),
+        },
         shadow: iced::Shadow::default(),
         snap: false,
     };
@@ -2132,7 +2214,10 @@ fn mtext_editor_overlay<'a>(
         ed.font.clone()
     };
     let font_pl = pick_list(
-        MTEXT_FONTS.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        MTEXT_FONTS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
         Some(font_sel),
         Message::MTextFont,
     )
@@ -2144,7 +2229,10 @@ fn mtext_editor_overlay<'a>(
         .map(|(n, _)| n.to_string())
         .unwrap_or_else(|| "ByLayer".to_string());
     let color_pl = pick_list(
-        MTEXT_COLORS.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>(),
+        MTEXT_COLORS
+            .iter()
+            .map(|(n, _)| n.to_string())
+            .collect::<Vec<_>>(),
         Some(color_sel),
         |name: String| {
             let aci = MTEXT_COLORS
@@ -2163,13 +2251,34 @@ fn mtext_editor_overlay<'a>(
         font_pl,
         small_input("2.5", &ed.height, Message::MTextHeight, 64.0),
         iced::widget::Space::new().width(6),
-        icon_btn(include_bytes!("../../assets/icons/mt_bold.svg"), Message::MTextFmt(MTextFmt::Bold)),
-        icon_btn(include_bytes!("../../assets/icons/mt_italic.svg"), Message::MTextFmt(MTextFmt::Italic)),
-        icon_btn(include_bytes!("../../assets/icons/mt_underline.svg"), Message::MTextFmt(MTextFmt::Underline)),
-        icon_btn(include_bytes!("../../assets/icons/mt_overline.svg"), Message::MTextFmt(MTextFmt::Overline)),
-        icon_btn(include_bytes!("../../assets/icons/mt_strike.svg"), Message::MTextFmt(MTextFmt::Strike)),
-        icon_btn(include_bytes!("../../assets/icons/mt_upper.svg"), Message::MTextFmt(MTextFmt::Uppercase)),
-        icon_btn(include_bytes!("../../assets/icons/mt_lower.svg"), Message::MTextFmt(MTextFmt::Lowercase)),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_bold.svg"),
+            Message::MTextFmt(MTextFmt::Bold)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_italic.svg"),
+            Message::MTextFmt(MTextFmt::Italic)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_underline.svg"),
+            Message::MTextFmt(MTextFmt::Underline)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_overline.svg"),
+            Message::MTextFmt(MTextFmt::Overline)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_strike.svg"),
+            Message::MTextFmt(MTextFmt::Strike)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_upper.svg"),
+            Message::MTextFmt(MTextFmt::Uppercase)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_lower.svg"),
+            Message::MTextFmt(MTextFmt::Lowercase)
+        ),
         iced::widget::Space::new().width(Fill),
         color_pl,
     ]
@@ -2192,45 +2301,92 @@ fn mtext_editor_overlay<'a>(
         lbl("◊"),
         small_input("0", &ed.char_space, Message::MTextCharSpace, 48.0),
         iced::widget::Space::new().width(6),
-        icon_btn(include_bytes!("../../assets/icons/mt_align_left.svg"), Message::MTextAlign(ParaAlign::Left)),
-        icon_btn(include_bytes!("../../assets/icons/mt_align_center.svg"), Message::MTextAlign(ParaAlign::Center)),
-        icon_btn(include_bytes!("../../assets/icons/mt_align_right.svg"), Message::MTextAlign(ParaAlign::Right)),
-        icon_btn(include_bytes!("../../assets/icons/mt_align_justify.svg"), Message::MTextAlign(ParaAlign::Justify)),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_align_left.svg"),
+            Message::MTextAlign(ParaAlign::Left)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_align_center.svg"),
+            Message::MTextAlign(ParaAlign::Center)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_align_right.svg"),
+            Message::MTextAlign(ParaAlign::Right)
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_align_justify.svg"),
+            Message::MTextAlign(ParaAlign::Justify)
+        ),
         iced::widget::Space::new().width(6),
         justify,
         lbl("LS"),
-        button(lbl("1")).on_press(Message::MTextLineSpacing(1.0)).padding(3).style(btn_style),
-        button(lbl("1.5")).on_press(Message::MTextLineSpacing(1.5)).padding(3).style(btn_style),
-        button(lbl("2")).on_press(Message::MTextLineSpacing(2.0)).padding(3).style(btn_style),
+        button(lbl("1"))
+            .on_press(Message::MTextLineSpacing(1.0))
+            .padding(3)
+            .style(btn_style),
+        button(lbl("1.5"))
+            .on_press(Message::MTextLineSpacing(1.5))
+            .padding(3)
+            .style(btn_style),
+        button(lbl("2"))
+            .on_press(Message::MTextLineSpacing(2.0))
+            .padding(3)
+            .style(btn_style),
         iced::widget::Space::new().width(Fill),
-        icon_btn(include_bytes!("../../assets/icons/mt_ok.svg"), Message::MTextOk),
-        icon_btn(include_bytes!("../../assets/icons/mt_cancel.svg"), Message::MTextCancel),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_ok.svg"),
+            Message::MTextOk
+        ),
+        icon_btn(
+            include_bytes!("../../assets/icons/mt_cancel.svg"),
+            Message::MTextCancel
+        ),
     ]
     .spacing(4)
     .align_y(iced::Alignment::Center);
 
     // ── Segmented Edit | Preview toggle (between toolbar and body) ────────
-    let seg_btn = move |label: &'static str, active: bool, on: Message| -> Element<'static, Message> {
-        button(text(label).size(12).color(if active {
-            Color::WHITE
-        } else {
-            Color { r: 0.80, g: 0.80, b: 0.80, a: 1.0 }
-        }))
-        .on_press(on)
-        .padding([4, 14])
-        .style(move |_: &Theme, _| button::Style {
-            background: Some(Background::Color(if active {
-                Color { r: 0.20, g: 0.42, b: 0.72, a: 1.0 }
+    let seg_btn =
+        move |label: &'static str, active: bool, on: Message| -> Element<'static, Message> {
+            button(text(label).size(12).color(if active {
+                Color::WHITE
             } else {
-                Color { r: 0.20, g: 0.20, b: 0.20, a: 1.0 }
-            })),
-            text_color: TEXT_COL,
-            border: Border { color: BORDER, width: 1.0, radius: 4.0.into() },
-            shadow: iced::Shadow::default(),
-            snap: false,
-        })
-        .into()
-    };
+                Color {
+                    r: 0.80,
+                    g: 0.80,
+                    b: 0.80,
+                    a: 1.0,
+                }
+            }))
+            .on_press(on)
+            .padding([4, 14])
+            .style(move |_: &Theme, _| button::Style {
+                background: Some(Background::Color(if active {
+                    Color {
+                        r: 0.20,
+                        g: 0.42,
+                        b: 0.72,
+                        a: 1.0,
+                    }
+                } else {
+                    Color {
+                        r: 0.20,
+                        g: 0.20,
+                        b: 0.20,
+                        a: 1.0,
+                    }
+                })),
+                text_color: TEXT_COL,
+                border: Border {
+                    color: BORDER,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                shadow: iced::Shadow::default(),
+                snap: false,
+            })
+            .into()
+        };
     let toggle = container(
         row![
             seg_btn("Edit", !ed.show_preview, Message::MTextShowPreview(false)),
@@ -2281,11 +2437,17 @@ fn mtext_editor_overlay<'a>(
             scale,
             content_h,
         };
-        let cv = canvas(prog).width(Fill).height(iced::Length::Fixed(content_h));
+        let cv = canvas(prog)
+            .width(Fill)
+            .height(iced::Length::Fixed(content_h));
         container(iced::widget::scrollable(cv).height(iced::Length::Fixed(VIEW_H)))
             .style(move |_: &Theme| container::Style {
                 background: Some(Background::Color(FIELD_BG)),
-                border: Border { color: BORDER, width: 1.0, radius: 3.0.into() },
+                border: Border {
+                    color: BORDER,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
                 ..Default::default()
             })
             .padding(2)
@@ -2304,7 +2466,11 @@ fn mtext_editor_overlay<'a>(
     let panel = container(column![row1, row2, toggle, body].spacing(5))
         .style(move |_: &Theme| container::Style {
             background: Some(Background::Color(PANEL_BG)),
-            border: Border { color: BORDER, width: 1.0, radius: 5.0.into() },
+            border: Border {
+                color: BORDER,
+                width: 1.0,
+                radius: 5.0.into(),
+            },
             ..Default::default()
         })
         .padding(6)
@@ -2449,7 +2615,11 @@ fn viewport_context_menu_overlay(
                 Message::Command("COPY".to_string()),
             ));
             items.push(sep());
-            let arrow = if draworder_open { "Draw Order  \u{25be}" } else { "Draw Order  \u{25b8}" };
+            let arrow = if draworder_open {
+                "Draw Order  \u{25be}"
+            } else {
+                "Draw Order  \u{25b8}"
+            };
             items.push(item(arrow.to_string(), Message::DrawOrderSubmenuToggle));
             if draworder_open {
                 items.push(subitem(
@@ -2623,13 +2793,48 @@ fn qselect_overlay<'a>(
     properties: &[(String, String)],
 ) -> Element<'a, Message> {
     use iced::widget::{checkbox, pick_list};
-    const BG: Color = Color { r: 0.12, g: 0.12, b: 0.12, a: 0.98 };
-    const BORDER: Color = Color { r: 0.35, g: 0.35, b: 0.35, a: 1.0 };
-    const TEXT: Color = Color { r: 0.88, g: 0.88, b: 0.88, a: 1.0 };
-    const BTN_OK: Color = Color { r: 0.22, g: 0.42, b: 0.68, a: 1.0 };
-    const BTN_OK_HOV: Color = Color { r: 0.30, g: 0.52, b: 0.80, a: 1.0 };
-    const BTN_BG: Color = Color { r: 0.22, g: 0.22, b: 0.22, a: 1.0 };
-    const BTN_HOV: Color = Color { r: 0.30, g: 0.30, b: 0.30, a: 1.0 };
+    const BG: Color = Color {
+        r: 0.12,
+        g: 0.12,
+        b: 0.12,
+        a: 0.98,
+    };
+    const BORDER: Color = Color {
+        r: 0.35,
+        g: 0.35,
+        b: 0.35,
+        a: 1.0,
+    };
+    const TEXT: Color = Color {
+        r: 0.88,
+        g: 0.88,
+        b: 0.88,
+        a: 1.0,
+    };
+    const BTN_OK: Color = Color {
+        r: 0.22,
+        g: 0.42,
+        b: 0.68,
+        a: 1.0,
+    };
+    const BTN_OK_HOV: Color = Color {
+        r: 0.30,
+        g: 0.52,
+        b: 0.80,
+        a: 1.0,
+    };
+    const BTN_BG: Color = Color {
+        r: 0.22,
+        g: 0.22,
+        b: 0.22,
+        a: 1.0,
+    };
+    const BTN_HOV: Color = Color {
+        r: 0.30,
+        g: 0.30,
+        b: 0.30,
+        a: 1.0,
+    };
 
     let mut type_options: Vec<String> = vec![QSELECT_ANY_TYPE.to_string()];
     type_options.extend(types.iter().map(|s| (*s).to_string()));
@@ -2658,18 +2863,26 @@ fn qselect_overlay<'a>(
         .type_filter
         .clone()
         .unwrap_or_else(|| QSELECT_ANY_TYPE.to_string());
-    let prop_sel = state.property.clone().unwrap_or(crate::app::QSelectPropertyChoice {
-        field: String::new(),
-        label: QSELECT_ANY_PROP.to_string(),
-    });
+    let prop_sel = state
+        .property
+        .clone()
+        .unwrap_or(crate::app::QSelectPropertyChoice {
+            field: String::new(),
+            label: QSELECT_ANY_PROP.to_string(),
+        });
 
     // The value field is disabled (visually de-emphasised; we still
     // render the same widget) when no property is picked or the
     // operator is "*Any value" — both of those skip the value test.
-    let value_enabled = state.property.is_some()
-        && !matches!(state.operator, crate::app::QSelectOp::Any);
+    let value_enabled =
+        state.property.is_some() && !matches!(state.operator, crate::app::QSelectOp::Any);
 
-    let label = |s: &'static str| text(s).size(12).color(TEXT).width(iced::Length::Fixed(90.0));
+    let label = |s: &'static str| {
+        text(s)
+            .size(12)
+            .color(TEXT)
+            .width(iced::Length::Fixed(90.0))
+    };
 
     let btn = |lbl: &'static str, msg: Message, base: Color, hov: Color| {
         button(text(lbl).size(12).color(TEXT))
@@ -2717,13 +2930,17 @@ fn qselect_overlay<'a>(
         Space::new().height(6),
         row![
             label("Property:"),
-            pick_list(prop_options, Some(prop_sel), |p: crate::app::QSelectPropertyChoice| {
-                if p.field.is_empty() {
-                    Message::QSelectSetProperty(None)
-                } else {
-                    Message::QSelectSetProperty(Some(p))
+            pick_list(
+                prop_options,
+                Some(prop_sel),
+                |p: crate::app::QSelectPropertyChoice| {
+                    if p.field.is_empty() {
+                        Message::QSelectSetProperty(None)
+                    } else {
+                        Message::QSelectSetProperty(Some(p))
+                    }
                 }
-            })
+            )
             .width(Fill),
         ]
         .align_y(iced::Alignment::Center)
@@ -2731,8 +2948,12 @@ fn qselect_overlay<'a>(
         Space::new().height(6),
         row![
             label("Operator:"),
-            pick_list(op_options, Some(state.operator), Message::QSelectSetOperator)
-                .width(Fill),
+            pick_list(
+                op_options,
+                Some(state.operator),
+                Message::QSelectSetOperator
+            )
+            .width(Fill),
         ]
         .align_y(iced::Alignment::Center)
         .spacing(8),
@@ -2784,8 +3005,7 @@ fn qselect_overlay<'a>(
     .on_press(Message::QSelectClose)
     .on_right_press(Message::QSelectClose);
 
-    let centered = container(iced::widget::opaque(panel))
-        .center(Fill);
+    let centered = container(iced::widget::opaque(panel)).center(Fill);
 
     stack![catcher, centered].into()
 }
@@ -2977,7 +3197,9 @@ fn save_as_dialog_window<'a>(
                         row![
                             text(icon).size(13),
                             Space::new().width(6),
-                            text(crate::ui::text_util::elide(name.as_str(), 48)).size(13).color(color),
+                            text(crate::ui::text_util::elide(name.as_str(), 48))
+                                .size(13)
+                                .color(color),
                         ]
                         .align_y(iced::Alignment::Center),
                     )
@@ -3164,14 +3386,44 @@ fn unsaved_changes_dialog_window(name: &str) -> Element<'static, Message> {
 // The page picks up the application icon's red-brown (#B03020) as a tint so
 // it visually belongs to OpenCADStudio without overpowering the dark workspace.
 
-const BRAND: Color = Color { r: 0.690, g: 0.188, b: 0.125, a: 1.0 }; // #B03020
-const BRAND_DARK: Color = Color { r: 0.45, g: 0.12, b: 0.08, a: 1.0 };
+const BRAND: Color = Color {
+    r: 0.690,
+    g: 0.188,
+    b: 0.125,
+    a: 1.0,
+}; // #B03020
+const BRAND_DARK: Color = Color {
+    r: 0.45,
+    g: 0.12,
+    b: 0.08,
+    a: 1.0,
+};
 
 pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
-    const TEXT: Color = Color { r: 0.94, g: 0.93, b: 0.92, a: 1.0 };
-    const MUTED: Color = Color { r: 0.62, g: 0.62, b: 0.62, a: 1.0 };
-    const CARD_BG: Color = Color { r: 0.12, g: 0.12, b: 0.13, a: 1.0 };
-    const CARD_BORDER: Color = Color { r: 0.20, g: 0.20, b: 0.22, a: 1.0 };
+    const TEXT: Color = Color {
+        r: 0.94,
+        g: 0.93,
+        b: 0.92,
+        a: 1.0,
+    };
+    const MUTED: Color = Color {
+        r: 0.62,
+        g: 0.62,
+        b: 0.62,
+        a: 1.0,
+    };
+    const CARD_BG: Color = Color {
+        r: 0.12,
+        g: 0.12,
+        b: 0.13,
+        a: 1.0,
+    };
+    const CARD_BORDER: Color = Color {
+        r: 0.20,
+        g: 0.20,
+        b: 0.22,
+        a: 1.0,
+    };
 
     // Brand-tinted "Welcome to" — the "OpenCADStudio" word takes the accent colour
     // (Thunderbird-style coloured headline split).
@@ -3195,12 +3447,27 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
             .padding([10, 22])
             .style(move |_: &Theme, status| button::Style {
                 background: Some(Background::Color(match status {
-                    button::Status::Hovered => Color { r: 0.18, g: 0.18, b: 0.20, a: 1.0 },
-                    _ => Color { r: 0.13, g: 0.13, b: 0.15, a: 1.0 },
+                    button::Status::Hovered => Color {
+                        r: 0.18,
+                        g: 0.18,
+                        b: 0.20,
+                        a: 1.0,
+                    },
+                    _ => Color {
+                        r: 0.13,
+                        g: 0.13,
+                        b: 0.15,
+                        a: 1.0,
+                    },
                 })),
                 text_color: TEXT,
                 border: Border {
-                    color: Color { r: 0.30, g: 0.30, b: 0.33, a: 1.0 },
+                    color: Color {
+                        r: 0.30,
+                        g: 0.30,
+                        b: 0.33,
+                        a: 1.0,
+                    },
                     width: 1.0,
                     radius: 6.0.into(),
                 },
@@ -3234,7 +3501,12 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
                 radius: 6.0.into(),
             },
             shadow: iced::Shadow {
-                color: Color { r: 0.0, g: 0.0, b: 0.0, a: 0.4 },
+                color: Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.4,
+                },
                 offset: iced::Vector::new(0.0, 2.0),
                 blur_radius: 6.0,
             },
@@ -3314,11 +3586,21 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
     // the action row, matching the Thunderbird coloured-glow look against
     // the dark page.
     let primary_glow = container(primary_row)
-        .padding(iced::Padding { top: 4.0, right: 8.0, bottom: 4.0, left: 8.0 })
+        .padding(iced::Padding {
+            top: 4.0,
+            right: 8.0,
+            bottom: 4.0,
+            left: 8.0,
+        })
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(Color::TRANSPARENT)),
             shadow: iced::Shadow {
-                color: Color { r: BRAND.r, g: BRAND.g, b: BRAND.b, a: 0.45 },
+                color: Color {
+                    r: BRAND.r,
+                    g: BRAND.g,
+                    b: BRAND.b,
+                    a: 0.45,
+                },
                 offset: iced::Vector::ZERO,
                 blur_radius: 80.0,
             },
@@ -3344,13 +3626,23 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
     // Page background reverts to plain dark — the glow alone provides the
     // brand colour cue, the rest of the page stays neutral so it reads as
     // "workspace area" not "advertising banner".
-    const PAGE_BG: Color = Color { r: 0.08, g: 0.08, b: 0.085, a: 1.0 };
+    const PAGE_BG: Color = Color {
+        r: 0.08,
+        g: 0.08,
+        b: 0.085,
+        a: 1.0,
+    };
     container(content)
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(PAGE_BG)),
             ..Default::default()
         })
-        .padding(iced::Padding { top: 40.0, right: 60.0, bottom: 40.0, left: 60.0 })
+        .padding(iced::Padding {
+            top: 40.0,
+            right: 60.0,
+            bottom: 40.0,
+            left: 60.0,
+        })
         .width(Fill)
         .height(Fill)
         .into()
@@ -3363,14 +3655,43 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
 // Start tab. The list is restored from disk at boot and re-saved on every
 // open — entries persist across sessions.
 pub(super) fn recent_files_panel<'a>(recents: &'a [std::path::PathBuf]) -> Element<'a, Message> {
-    const PANEL_BG: Color = Color { r: 0.10, g: 0.10, b: 0.11, a: 1.0 };
-    const PANEL_BORDER: Color = Color { r: 0.18, g: 0.18, b: 0.20, a: 1.0 };
-    const ITEM_HOVER: Color = Color { r: 0.16, g: 0.16, b: 0.18, a: 1.0 };
-    const TEXT: Color = Color { r: 0.92, g: 0.91, b: 0.90, a: 1.0 };
-    const MUTED: Color = Color { r: 0.60, g: 0.60, b: 0.62, a: 1.0 };
+    const PANEL_BG: Color = Color {
+        r: 0.10,
+        g: 0.10,
+        b: 0.11,
+        a: 1.0,
+    };
+    const PANEL_BORDER: Color = Color {
+        r: 0.18,
+        g: 0.18,
+        b: 0.20,
+        a: 1.0,
+    };
+    const ITEM_HOVER: Color = Color {
+        r: 0.16,
+        g: 0.16,
+        b: 0.18,
+        a: 1.0,
+    };
+    const TEXT: Color = Color {
+        r: 0.92,
+        g: 0.91,
+        b: 0.90,
+        a: 1.0,
+    };
+    const MUTED: Color = Color {
+        r: 0.60,
+        g: 0.60,
+        b: 0.62,
+        a: 1.0,
+    };
 
-    let header = container(text("Recent Documents").size(11).color(MUTED))
-        .padding(iced::Padding { top: 12.0, right: 14.0, bottom: 8.0, left: 14.0 });
+    let header = container(text("Recent Documents").size(11).color(MUTED)).padding(iced::Padding {
+        top: 12.0,
+        right: 14.0,
+        bottom: 8.0,
+        left: 14.0,
+    });
 
     let body: Element<'a, Message> = if recents.is_empty() {
         container(
@@ -3395,8 +3716,12 @@ pub(super) fn recent_files_panel<'a>(recents: &'a [std::path::PathBuf]) -> Eleme
             let path_for_open = path.clone();
             let open_btn = button(
                 column![
-                    text(crate::ui::text_util::elide(&name, 32)).size(12).color(TEXT),
-                    text(crate::ui::text_util::elide(&dir, 42)).size(10).color(MUTED),
+                    text(crate::ui::text_util::elide(&name, 32))
+                        .size(12)
+                        .color(TEXT),
+                    text(crate::ui::text_util::elide(&dir, 42))
+                        .size(10)
+                        .color(MUTED),
                 ]
                 .spacing(2),
             )
@@ -3423,7 +3748,12 @@ pub(super) fn recent_files_panel<'a>(recents: &'a [std::path::PathBuf]) -> Eleme
                 .padding([4, 8])
                 .style(|_: &Theme, status| button::Style {
                     background: Some(Background::Color(match status {
-                        button::Status::Hovered => Color { r: 0.45, g: 0.15, b: 0.15, a: 1.0 },
+                        button::Status::Hovered => Color {
+                            r: 0.45,
+                            g: 0.15,
+                            b: 0.15,
+                            a: 1.0,
+                        },
                         _ => Color::TRANSPARENT,
                     })),
                     text_color: MUTED,
@@ -3435,11 +3765,7 @@ pub(super) fn recent_files_panel<'a>(recents: &'a [std::path::PathBuf]) -> Eleme
                     ..Default::default()
                 });
 
-            col = col.push(
-                row![open_btn, remove_btn]
-                    .spacing(0)
-                    .align_y(iced::Center),
-            );
+            col = col.push(row![open_btn, remove_btn].spacing(0).align_y(iced::Center));
         }
         iced::widget::scrollable(col).into()
     };
@@ -3465,9 +3791,7 @@ pub(super) fn recent_files_panel<'a>(recents: &'a [std::path::PathBuf]) -> Eleme
 /// Shared by the model-space viewport (top-left) and each active
 /// paper-space viewport. Emits `SetRenderMode`, which the update loop
 /// routes to the active viewport entity or the model-layout tab.
-fn render_mode_picker<'a>(
-    current: acadrust::entities::ViewportRenderMode,
-) -> Element<'a, Message> {
+fn render_mode_picker<'a>(current: acadrust::entities::ViewportRenderMode) -> Element<'a, Message> {
     use acadrust::entities::ViewportRenderMode as M;
     let render_modes: Vec<RenderModeChoice> = vec![
         RenderModeChoice(M::Wireframe2D),
@@ -3530,11 +3854,7 @@ fn dyn_component_label(c: DynComponent) -> String {
 /// The string shown inside a dynamic-input box: the typed buffer when the
 /// field is locked, otherwise the live value derived from the cursor
 /// world position (and the base point for polar quantities).
-fn dyn_component_value(
-    f: &DynFieldEntry,
-    w: glam::Vec3,
-    base: Option<glam::Vec3>,
-) -> String {
+fn dyn_component_value(f: &DynFieldEntry, w: glam::Vec3, base: Option<glam::Vec3>) -> String {
     if let Some(b) = &f.buffer {
         return b.clone();
     }

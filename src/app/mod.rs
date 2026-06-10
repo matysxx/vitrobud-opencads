@@ -1,18 +1,21 @@
 mod cmd_result;
 mod commands;
-pub mod plugin_host;
 mod document;
 mod expr_eval;
 mod helpers;
 mod history;
 mod layers;
-mod mtext_editor;
 mod model_ops;
+mod mtext_editor;
+pub mod plugin_host;
 mod properties;
 mod settings;
+mod style_ops;
 mod text_inline;
 mod update;
 mod view;
+
+pub use style_ops::StyleKind;
 
 use document::DocumentTab;
 
@@ -381,6 +384,13 @@ pub(super) struct OpenCADStudio {
     ts_border_lw: [[String; 6]; 3],
     ts_border_color: [[String; 6]; 3],
     ts_border_spacing: [[String; 6]; 3],
+
+    // ── Shared style-manager inline rename ────────────────────────────────
+    /// Original name of the style currently being renamed inline (double-click
+    /// a style name in any style manager). `None` when not renaming.
+    style_rename: Option<String>,
+    /// Edit buffer for the inline rename text input.
+    style_rename_buf: String,
 
     // ── TextStyle Font Browser ────────────────────────────────────────────
     textstyle_selected: String,
@@ -1091,6 +1101,13 @@ pub enum Message {
     TextStyleDialogSelect(String),
     TextStyleDialogSetCurrent,
     TextStyleDialogNew,
+    TextStyleDialogCopy,
+    // Shared inline-rename messages for every style manager. `StyleKind`
+    // routes the commit to the right backing store.
+    StyleRenameStart(StyleKind, String),
+    StyleRenameEdit(String),
+    StyleRenameCommit(StyleKind),
+    StyleRenameCancel,
     TextStyleDialogDelete,
     /// Edit a string field (FontFile / Width / Oblique).
     TextStyleEdit {
@@ -1110,14 +1127,19 @@ pub enum Message {
     TableStyleDialogClose,
     TableStyleDialogSelect(String),
     TableStyleDialogNew,
+    TableStyleDialogCopy,
     TableStyleDialogDelete,
+    TableStyleDialogSetCurrent,
     /// Toggle the Annotative flag on the selected table style.
     TableStyleToggleAnnotative,
     /// Toggle a boolean flag (title_suppressed / header_suppressed / flow) on
     /// the selected table style.
     TableStyleToggle(&'static str),
     /// Update a general edit buffer (hmargin / vmargin).
-    TableStyleEdit { field: &'static str, value: String },
+    TableStyleEdit {
+        field: &'static str,
+        value: String,
+    },
     /// Write the general edit buffers back into the selected table style.
     TableStyleApply,
     /// Update a per-cell edit buffer (row 0=Data,1=Header,2=Title).
@@ -1161,7 +1183,9 @@ pub enum Message {
     MlStyleDialogClose,
     MlStyleDialogSelect(String),
     MlStyleDialogSetCurrent,
+    MlStyleApply,
     MlStyleDialogNew,
+    MlStyleDialogCopy,
     MlStyleDialogDelete,
     // ── MLeaderStyle Dialog ───────────────────────────────────────────────
     MLeaderStyleDialogOpen,
@@ -1170,6 +1194,7 @@ pub enum Message {
     MLeaderStyleDialogSelect(String),
     MLeaderStyleDialogSetCurrent,
     MLeaderStyleDialogNew,
+    MLeaderStyleDialogCopy,
     MLeaderStyleDialogDelete,
     MLeaderStyleEdit {
         field: &'static str,
@@ -1198,6 +1223,7 @@ pub enum Message {
     DimStyleDialogTab(u8),
     /// Create a new empty style (prompts via command line).
     DimStyleDialogNew,
+    DimStyleDialogCopy,
     /// Set the selected style as the document's current dim style.
     DimStyleDialogSetCurrent,
     /// Delete the selected style.
@@ -1362,6 +1388,8 @@ impl OpenCADStudio {
             ps_lineweight_buf: "255".to_string(),
             ps_screening_buf: "100".to_string(),
             // TextStyle font browser
+            style_rename: None,
+            style_rename_buf: String::new(),
             textstyle_selected: "Standard".to_string(),
             textstyle_font: String::new(),
             textstyle_width: "1.0".to_string(),
@@ -1551,59 +1579,63 @@ impl OpenCADStudio {
 use std::path::PathBuf;
 
 pub fn run() -> iced::Result {
-    iced::daemon(OpenCADStudio::boot, OpenCADStudio::update, OpenCADStudio::view)
-        .subscription(OpenCADStudio::subscription)
-        .title(|state: &OpenCADStudio, window_id: window::Id| {
-            if Some(window_id) == state.layer_window {
-                return "Layer Properties Manager".into();
-            }
-            if Some(window_id) == state.page_setup_window {
-                return "Page Setup".into();
-            }
-            if Some(window_id) == state.textstyle_window {
-                return "Text Style".into();
-            }
-            if Some(window_id) == state.tablestyle_window {
-                return "Table Style".into();
-            }
-            if Some(window_id) == state.mlstyle_window {
-                return "Multiline Style".into();
-            }
-            if Some(window_id) == state.mleaderstyle_window {
-                return "Multileader Style".into();
-            }
-            if Some(window_id) == state.layout_manager_window {
-                return "Layout Manager".into();
-            }
-            if Some(window_id) == state.plotstyle_window {
-                return "Plot Style Table Editor".into();
-            }
-            if Some(window_id) == state.dimstyle_window {
-                return "Dimension Style Manager".into();
-            }
-            if Some(window_id) == state.shortcuts_window {
-                return "Keyboard Shortcuts".into();
-            }
-            if Some(window_id) == state.about_window {
-                return "About Open CAD Studio".into();
-            }
-            if Some(window_id) == state.update_notice_window {
-                return "Update Available".into();
-            }
-            if Some(window_id) == state.unsaved_dialog_window {
-                return "Unsaved Changes".into();
-            }
-            if Some(window_id) == state.save_dialog_window {
-                return "Save As".into();
-            }
-            if let Some(tab) = state.tabs.get(state.active_tab) {
-                let dot = if tab.dirty { "● " } else { "" };
-                let name = tab.tab_display_name();
-                format!("{}Open CAD Studio — {}", dot, name)
-            } else {
-                "Open CAD Studio".to_string()
-            }
-        })
-        .theme(|state: &OpenCADStudio, _| state.active_theme.clone())
-        .run()
+    iced::daemon(
+        OpenCADStudio::boot,
+        OpenCADStudio::update,
+        OpenCADStudio::view,
+    )
+    .subscription(OpenCADStudio::subscription)
+    .title(|state: &OpenCADStudio, window_id: window::Id| {
+        if Some(window_id) == state.layer_window {
+            return "Layer Properties Manager".into();
+        }
+        if Some(window_id) == state.page_setup_window {
+            return "Page Setup".into();
+        }
+        if Some(window_id) == state.textstyle_window {
+            return "Text Style".into();
+        }
+        if Some(window_id) == state.tablestyle_window {
+            return "Table Style".into();
+        }
+        if Some(window_id) == state.mlstyle_window {
+            return "Multiline Style".into();
+        }
+        if Some(window_id) == state.mleaderstyle_window {
+            return "Multileader Style".into();
+        }
+        if Some(window_id) == state.layout_manager_window {
+            return "Layout Manager".into();
+        }
+        if Some(window_id) == state.plotstyle_window {
+            return "Plot Style Table Editor".into();
+        }
+        if Some(window_id) == state.dimstyle_window {
+            return "Dimension Style Manager".into();
+        }
+        if Some(window_id) == state.shortcuts_window {
+            return "Keyboard Shortcuts".into();
+        }
+        if Some(window_id) == state.about_window {
+            return "About Open CAD Studio".into();
+        }
+        if Some(window_id) == state.update_notice_window {
+            return "Update Available".into();
+        }
+        if Some(window_id) == state.unsaved_dialog_window {
+            return "Unsaved Changes".into();
+        }
+        if Some(window_id) == state.save_dialog_window {
+            return "Save As".into();
+        }
+        if let Some(tab) = state.tabs.get(state.active_tab) {
+            let dot = if tab.dirty { "● " } else { "" };
+            let name = tab.tab_display_name();
+            format!("{}Open CAD Studio — {}", dot, name)
+        } else {
+            "Open CAD Studio".to_string()
+        }
+    })
+    .theme(|state: &OpenCADStudio, _| state.active_theme.clone())
+    .run()
 }
