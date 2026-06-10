@@ -31,6 +31,15 @@ pub type FallbackGeometry = (
 /// semantics are preserved on real files. (Wrap-through-2π is a known
 /// edge case in that convention; do not "fix" it without a wider audit
 /// of how upstream writers emit CW boundary arcs.)
+///
+/// VERIFIED against real AutoCAD output (KSR-039 DWG, CW arc edges with
+/// line neighbours): the stored angles of a `ccw = false` arc edge are
+/// MIRRORED — the true point is `center + r·(cos(TAU-θ), sin(TAU-θ))`.
+/// Sampling the mirrored parameter directly (this function's flip) gives
+/// exact endpoint continuity with the adjacent edges (Δ = 0.000000),
+/// while interpreting them as true angles lands tens of units away. Any
+/// code that *produces* CW boundary arcs (mirror transforms, explode)
+/// must therefore store mirrored angles, not geometric ones.
 pub fn arc_signed_span(start: f64, end: f64, ccw: bool) -> (f64, f64) {
     const TAU: f64 = std::f64::consts::TAU;
     let (sa, ea) = if ccw { (start, end) } else { (TAU - start, TAU - end) };
