@@ -1,5 +1,4 @@
 use acadrust::entities::{Polyline, Polyline2D, Polyline3D};
-use glam::Vec3;
 use truck_modeling::{builder, Edge, Point3, Wire};
 
 use crate::command::EntityTransform;
@@ -47,11 +46,7 @@ impl Grippable for Polyline {
             .map(|(i, v)| {
                 square_grip(
                     i,
-                    Vec3::new(
-                        v.location.x as f32,
-                        v.location.y as f32,
-                        v.location.z as f32,
-                    ),
+                    glam::DVec3::new(v.location.x, v.location.y, v.location.z),
                 )
             })
             .collect()
@@ -74,23 +69,25 @@ impl Grippable for Polyline {
         }
     }
 
-    fn grip_menu(
-        &self,
-        _grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, _grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
-            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Add Vertex",
+                action: GripMenuAction::AddVertex,
+            },
+            GripMenuItem {
+                label: "Remove Vertex",
+                action: GripMenuAction::RemoveVertex,
+            },
         ]
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let n = self.vertices.len();
         match action {
@@ -197,12 +194,8 @@ fn tessellate_polyline2d(pl: &Polyline2D) -> TruckEntity {
     if pl.thickness.abs() > 1e-10 {
         let (nx, ny, nz) = normal;
         let t = pl.thickness;
-        let off = |p: [f64; 3]| -> [f64; 3] {
-            [p[0] + t * nx, p[1] + t * ny, p[2] + t * nz]
-        };
-        let to_f32 = |p: [f64; 3]| -> [f32; 3] {
-            [p[0] as f32, p[1] as f32, p[2] as f32]
-        };
+        let off = |p: [f64; 3]| -> [f64; 3] { [p[0] + t * nx, p[1] + t * ny, p[2] + t * nz] };
+        let to_f32 = |p: [f64; 3]| -> [f32; 3] { [p[0] as f32, p[1] as f32, p[2] as f32] };
         let mut path: Vec<[f64; 3]> = Vec::new();
         let mut kv: Vec<[f64; 3]> = Vec::new();
         let mut tgs: Vec<TangentGeom> = Vec::new();
@@ -322,11 +315,11 @@ impl TruckConvertible for Polyline2D {
 
 impl Grippable for Polyline2D {
     fn grips(&self) -> Vec<GripDef> {
-        let elev = self.elevation as f32;
+        let elev = self.elevation;
         self.vertices
             .iter()
             .enumerate()
-            .map(|(i, v)| square_grip(i, Vec3::new(v.location.x as f32, v.location.y as f32, elev)))
+            .map(|(i, v)| square_grip(i, glam::DVec3::new(v.location.x, v.location.y, elev)))
             .collect()
     }
 
@@ -345,23 +338,25 @@ impl Grippable for Polyline2D {
         }
     }
 
-    fn grip_menu(
-        &self,
-        _grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, _grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
-            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Add Vertex",
+                action: GripMenuAction::AddVertex,
+            },
+            GripMenuItem {
+                label: "Remove Vertex",
+                action: GripMenuAction::RemoveVertex,
+            },
         ]
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let n = self.vertices.len();
         let elev = self.elevation;
@@ -535,11 +530,7 @@ impl Grippable for Polyline3D {
             .map(|(i, v)| {
                 square_grip(
                     i,
-                    Vec3::new(
-                        v.position.x as f32,
-                        v.position.y as f32,
-                        v.position.z as f32,
-                    ),
+                    glam::DVec3::new(v.position.x, v.position.y, v.position.z),
                 )
             })
             .collect()
@@ -562,23 +553,25 @@ impl Grippable for Polyline3D {
         }
     }
 
-    fn grip_menu(
-        &self,
-        _grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, _grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
-            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Add Vertex",
+                action: GripMenuAction::AddVertex,
+            },
+            GripMenuItem {
+                label: "Remove Vertex",
+                action: GripMenuAction::RemoveVertex,
+            },
         ]
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let n = self.vertices.len();
         match action {
@@ -713,7 +706,9 @@ pub(crate) fn wide_fills(pl: &acadrust::entities::Polyline2D) -> Vec<Vec<[f32; 2
         }
         let p0 = [v0.location.x as f32, v0.location.y as f32];
         let p1 = [v1.location.x as f32, v1.location.y as f32];
-        if let Some(poly) = crate::entities::common::polyline_segment_fill(p0, p1, hw0, hw1, v0.bulge as f32) {
+        if let Some(poly) =
+            crate::entities::common::polyline_segment_fill(p0, p1, hw0, hw1, v0.bulge as f32)
+        {
             out.push(poly);
         }
     }

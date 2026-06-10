@@ -1,12 +1,11 @@
 use acadrust::entities::{LwPolyline, LwVertex};
-use glam::Vec3;
 use truck_modeling::{builder, Edge, Point3, Wire};
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
     edit_prop as edit, parse_f64, rectangle_grip, ro_prop as ro, square_grip,
 };
-use crate::entities::traits::{TruckConvertible};
+use crate::entities::traits::TruckConvertible;
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
 use crate::scene::wire_model::TangentGeom;
@@ -62,9 +61,7 @@ fn thick_segments(
 ) -> TruckEntity {
     let (nx, ny, nz) = normal;
     let t = thickness;
-    let off = |p: [f64; 3]| -> [f64; 3] {
-        [p[0] + t * nx, p[1] + t * ny, p[2] + t * nz]
-    };
+    let off = |p: [f64; 3]| -> [f64; 3] { [p[0] + t * nx, p[1] + t * ny, p[2] + t * nz] };
     let mut pts: Vec<[f64; 3]> = Vec::with_capacity(path_pts.len() * 2 + seg_data.len() * 3 + 4);
     // Bottom path
     pts.extend_from_slice(path_pts);
@@ -280,7 +277,7 @@ fn to_truck(pline: &LwPolyline) -> TruckEntity {
 }
 
 fn grips(pline: &LwPolyline) -> Vec<GripDef> {
-    let elev = pline.elevation as f32;
+    let elev = pline.elevation;
     let n = pline.vertices.len();
     let seg_count = if pline.is_closed {
         n
@@ -292,7 +289,7 @@ fn grips(pline: &LwPolyline) -> Vec<GripDef> {
         .vertices
         .iter()
         .enumerate()
-        .map(|(i, v)| square_grip(i, Vec3::new(v.location.x as f32, v.location.y as f32, elev)))
+        .map(|(i, v)| square_grip(i, glam::DVec3::new(v.location.x, v.location.y, elev)))
         .collect();
 
     // One mid-segment stretch grip per segment (straight or arc). The
@@ -318,7 +315,7 @@ fn grips(pline: &LwPolyline) -> Vec<GripDef> {
         let dy = (v1.location.y - v0.location.y) as f32;
         out.push(rectangle_grip(
             n + i,
-            Vec3::new(mx as f32, my as f32, elev),
+            glam::DVec3::new(mx, my, elev),
             [dx, dy],
         ));
     }
@@ -412,14 +409,8 @@ fn apply_grip(pline: &mut LwPolyline, grip_id: usize, apply: GripApply) {
                 [old[0] + d.x as f64, old[1] + d.y as f64]
             }
         };
-        let p0 = [
-            pline.vertices[i0].location.x,
-            pline.vertices[i0].location.y,
-        ];
-        let p1 = [
-            pline.vertices[i1].location.x,
-            pline.vertices[i1].location.y,
-        ];
+        let p0 = [pline.vertices[i0].location.x, pline.vertices[i0].location.y];
+        let p1 = [pline.vertices[i1].location.x, pline.vertices[i1].location.y];
         if let Some(new_bulge) = bulge_from_midpoint(p0, p1, new_mid) {
             pline.vertices[i0].bulge = new_bulge.clamp(-1e6, 1e6);
         }
@@ -444,25 +435,27 @@ impl crate::entities::traits::Grippable for LwPolyline {
     fn grips(&self) -> Vec<crate::scene::object::GripDef> {
         grips(self)
     }
-    fn apply_grip(
-        &mut self,
-        grip_id: usize,
-        apply: crate::scene::object::GripApply,
-    ) {
+    fn apply_grip(&mut self, grip_id: usize, apply: crate::scene::object::GripApply) {
         apply_grip(self, grip_id, apply);
     }
-    fn grip_menu(
-        &self,
-        grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         let n = self.vertices.len();
         if grip_id < n {
             // Vertex grip.
             return vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
-                GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Add Vertex",
+                    action: GripMenuAction::AddVertex,
+                },
+                GripMenuItem {
+                    label: "Remove Vertex",
+                    action: GripMenuAction::RemoveVertex,
+                },
             ];
         }
         // Segment midpoint grip.
@@ -472,21 +465,29 @@ impl crate::entities::traits::Grippable for LwPolyline {
             .get(seg)
             .map_or(false, |v| v.bulge.abs() >= 1e-9);
         let convert = if is_arc {
-            GripMenuItem { label: "Convert to Line", action: GripMenuAction::ConvertToLine }
+            GripMenuItem {
+                label: "Convert to Line",
+                action: GripMenuAction::ConvertToLine,
+            }
         } else {
-            GripMenuItem { label: "Convert to Arc", action: GripMenuAction::ConvertToArc }
+            GripMenuItem {
+                label: "Convert to Arc",
+                action: GripMenuAction::ConvertToArc,
+            }
         };
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Add Vertex",
+                action: GripMenuAction::AddVertex,
+            },
             convert,
         ]
     }
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let n = self.vertices.len();
         match action {
@@ -583,7 +584,9 @@ pub(crate) fn wide_fills(pl: &acadrust::entities::LwPolyline) -> Vec<Vec<[f32; 2
         }
         let p0 = [v0.location.x as f32, v0.location.y as f32];
         let p1 = [v1.location.x as f32, v1.location.y as f32];
-        if let Some(poly) = crate::entities::common::polyline_segment_fill(p0, p1, hw0, hw1, v0.bulge as f32) {
+        if let Some(poly) =
+            crate::entities::common::polyline_segment_fill(p0, p1, hw0, hw1, v0.bulge as f32)
+        {
             out.push(poly);
         }
     }

@@ -1,5 +1,4 @@
 use acadrust::entities::{RasterImage, Wipeout};
-use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
@@ -40,10 +39,6 @@ fn image_corners(
         [ox + ux + vx, oy + uy + vy, oz + uz + vz],
         [ox + vx, oy + vy, oz + vz],
     ]
-}
-
-fn to_f32_3(p: [f64; 3]) -> [f32; 3] {
-    [p[0] as f32, p[1] as f32, p[2] as f32]
 }
 
 /// Rectangle border + X diagonals — used as a placeholder for images.
@@ -139,10 +134,10 @@ impl Grippable for RasterImage {
             self.size.y,
         );
         vec![
-            square_grip(0, Vec3::from(to_f32_3(corners[0]))),
-            center_grip(1, Vec3::from(to_f32_3(corners[1]))),
-            center_grip(2, Vec3::from(to_f32_3(corners[2]))),
-            center_grip(3, Vec3::from(to_f32_3(corners[3]))),
+            square_grip(0, glam::DVec3::from(corners[0])),
+            center_grip(1, glam::DVec3::from(corners[1])),
+            center_grip(2, glam::DVec3::from(corners[2])),
+            center_grip(3, glam::DVec3::from(corners[3])),
         ]
     }
 
@@ -329,9 +324,9 @@ impl Grippable for Wipeout {
             );
 
         if is_polygon {
-            let ox = self.insertion_point.x as f32;
-            let oy = self.insertion_point.y as f32;
-            let oz = self.insertion_point.z as f32;
+            let ox = self.insertion_point.x;
+            let oy = self.insertion_point.y;
+            let oz = self.insertion_point.z;
             // Same image-pixel-space → WCS mapping as `to_truck` so grips
             // sit exactly on the rendered polygon vertices.
             self.clip_boundary_vertices
@@ -340,13 +335,13 @@ impl Grippable for Wipeout {
                 .map(|(i, v)| {
                     let cx = v.x + self.size.x * 0.5;
                     let cy = self.size.y * 0.5 - v.y;
-                    let wx = (self.u_vector.x * cx + self.v_vector.x * cy) as f32;
-                    let wy = (self.u_vector.y * cx + self.v_vector.y * cy) as f32;
-                    let wz = (self.u_vector.z * cx + self.v_vector.z * cy) as f32;
+                    let wx = self.u_vector.x * cx + self.v_vector.x * cy;
+                    let wy = self.u_vector.y * cx + self.v_vector.y * cy;
+                    let wz = self.u_vector.z * cx + self.v_vector.z * cy;
                     if i == 0 {
-                        square_grip(i, Vec3::new(ox + wx, oy + wy, oz + wz))
+                        square_grip(i, glam::DVec3::new(ox + wx, oy + wy, oz + wz))
                     } else {
-                        center_grip(i, Vec3::new(ox + wx, oy + wy, oz + wz))
+                        center_grip(i, glam::DVec3::new(ox + wx, oy + wy, oz + wz))
                     }
                 })
                 .collect()
@@ -359,10 +354,10 @@ impl Grippable for Wipeout {
                 self.size.y,
             );
             vec![
-                square_grip(0, Vec3::from(to_f32_3(corners[0]))),
-                center_grip(1, Vec3::from(to_f32_3(corners[1]))),
-                center_grip(2, Vec3::from(to_f32_3(corners[2]))),
-                center_grip(3, Vec3::from(to_f32_3(corners[3]))),
+                square_grip(0, glam::DVec3::from(corners[0])),
+                center_grip(1, glam::DVec3::from(corners[1])),
+                center_grip(2, glam::DVec3::from(corners[2])),
+                center_grip(3, glam::DVec3::from(corners[3])),
             ]
         }
     }
@@ -451,11 +446,7 @@ impl PropertyEditable for Wipeout {
                     "wo_class_version",
                     self.class_version.to_string(),
                 ),
-                ro(
-                    "Clip Mode",
-                    "wo_clip_mode",
-                    format!("{:?}", self.clip_mode),
-                ),
+                ro("Clip Mode", "wo_clip_mode", format!("{:?}", self.clip_mode)),
                 ro(
                     "Definition",
                     "wo_def_handle",

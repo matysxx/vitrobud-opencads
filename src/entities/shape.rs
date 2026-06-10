@@ -31,7 +31,11 @@ fn shape_marker(
     oblique_angle: f64,
 ) -> Vec<[f64; 3]> {
     let s = size.abs().max(0.001) * 0.5;
-    let rx = s * if rel_x_scale.abs() < 1e-9 { 1.0 } else { rel_x_scale };
+    let rx = s * if rel_x_scale.abs() < 1e-9 {
+        1.0
+    } else {
+        rel_x_scale
+    };
     let ry = s;
     let local = [(0.0, ry), (rx, 0.0), (0.0, -ry), (-rx, 0.0)];
     let (sin_r, cos_r) = (rotation.sin(), rotation.cos());
@@ -86,10 +90,10 @@ impl Grippable for Shape {
     fn grips(&self) -> Vec<GripDef> {
         vec![square_grip(
             0,
-            Vec3::new(
-                self.insertion_point.x as f32,
-                self.insertion_point.y as f32,
-                self.insertion_point.z as f32,
+            glam::DVec3::new(
+                self.insertion_point.x,
+                self.insertion_point.y,
+                self.insertion_point.z,
             ),
         )]
     }

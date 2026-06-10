@@ -108,20 +108,17 @@ fn angle_span(start: f32, end: f32) -> f32 {
 }
 
 fn grips(arc: &Arc) -> Vec<GripDef> {
-    let ctr = Vec3::new(
-        arc.center.x as f32,
-        arc.center.y as f32,
-        arc.center.z as f32,
-    );
-    let r = arc.radius as f32;
+    let ctr = glam::DVec3::new(arc.center.x, arc.center.y, arc.center.z);
+    let r = arc.radius;
     let sa = arc.start_angle as f32;
     let ea = arc.end_angle as f32;
-    let ma = sa + angle_span(sa, ea) * 0.5;
+    let ma = (sa + angle_span(sa, ea) * 0.5) as f64;
+    let (sa, ea) = (arc.start_angle, arc.end_angle);
     vec![
         center_grip(0, ctr),
-        square_grip(1, ctr + Vec3::new(r * sa.cos(), r * sa.sin(), 0.0)),
-        square_grip(2, ctr + Vec3::new(r * ea.cos(), r * ea.sin(), 0.0)),
-        center_grip(3, ctr + Vec3::new(r * ma.cos(), r * ma.sin(), 0.0)),
+        square_grip(1, ctr + glam::DVec3::new(r * sa.cos(), r * sa.sin(), 0.0)),
+        square_grip(2, ctr + glam::DVec3::new(r * ea.cos(), r * ea.sin(), 0.0)),
+        center_grip(3, ctr + glam::DVec3::new(r * ma.cos(), r * ma.sin(), 0.0)),
     ]
 }
 
@@ -230,29 +227,40 @@ impl crate::entities::traits::Grippable for Arc {
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
         apply_grip(self, grip_id, apply);
     }
-    fn grip_menu(
-        &self,
-        grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         match grip_id {
-            0 => vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }],
+            0 => vec![GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            }],
             3 => vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Radius", action: GripMenuAction::Radius },
-                GripMenuItem { label: "Arc Length", action: GripMenuAction::ArcLength },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Radius",
+                    action: GripMenuAction::Radius,
+                },
+                GripMenuItem {
+                    label: "Arc Length",
+                    action: GripMenuAction::ArcLength,
+                },
             ],
             _ => vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Lengthen", action: GripMenuAction::Lengthen },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Lengthen",
+                    action: GripMenuAction::Lengthen,
+                },
             ],
         }
     }
-    fn apply_grip_menu(
-        &mut self,
-        _grip_id: usize,
-        _action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, _grip_id: usize, _action: crate::scene::object::GripMenuAction) {
         // Radius / Arc Length / Lengthen all need a follow-up prompt;
         // the actual edit happens in `apply_grip_menu_value`.
     }
@@ -306,10 +314,7 @@ impl crate::entities::traits::Grippable for Arc {
 }
 
 impl crate::entities::traits::PropertyEditable for Arc {
-    fn geometry_properties(
-        &self,
-        _text_style_names: &[String],
-    ) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

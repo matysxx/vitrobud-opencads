@@ -140,15 +140,11 @@ fn to_truck(ell: &Ellipse) -> TruckEntity {
 }
 
 fn grips(ell: &Ellipse) -> Vec<GripDef> {
-    let ctr = Vec3::new(
-        ell.center.x as f32,
-        ell.center.y as f32,
-        ell.center.z as f32,
-    );
-    let maj = Vec3::new(
-        (ell.center.x + ell.major_axis.x) as f32,
-        (ell.center.y + ell.major_axis.y) as f32,
-        (ell.center.z + ell.major_axis.z) as f32,
+    let ctr = glam::DVec3::new(ell.center.x, ell.center.y, ell.center.z);
+    let maj = glam::DVec3::new(
+        ell.center.x + ell.major_axis.x,
+        ell.center.y + ell.major_axis.y,
+        ell.center.z + ell.major_axis.z,
     );
     let major_xy =
         ((ell.major_axis.x * ell.major_axis.x + ell.major_axis.y * ell.major_axis.y) as f64).sqrt();
@@ -158,11 +154,7 @@ fn grips(ell: &Ellipse) -> Vec<GripDef> {
     } else {
         (0.0, ell.major_axis_length() * ell.minor_axis_ratio)
     };
-    let min = Vec3::new(
-        (ell.center.x + px) as f32,
-        (ell.center.y + py) as f32,
-        ell.center.z as f32,
-    );
+    let min = glam::DVec3::new(ell.center.x + px, ell.center.y + py, ell.center.z);
     vec![
         center_grip(0, ctr),
         square_grip(1, maj),

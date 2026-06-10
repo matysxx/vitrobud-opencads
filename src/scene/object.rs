@@ -75,8 +75,12 @@ pub enum GripShape {
 pub struct GripDef {
     /// Object-local identifier (stable index, unique per object instance).
     pub id: usize,
-    /// World-space position of the grip.
-    pub world: Vec3,
+    /// World-space position of the grip, in f64. Entity coordinates can sit at
+    /// UTM magnitudes (1e7); casting to f32 before the world-offset subtraction
+    /// loses ~1 drawing unit and draws the grip visibly off the wire. Producers
+    /// fill this straight from the f64 entity data; the offset is subtracted in
+    /// f64 and only then cast for screen-space math.
+    pub world: glam::DVec3,
     /// `true` → midpoint / centre grip (drags the whole shape).
     /// `false` → endpoint / vertex grip (moves a single point).
     pub is_midpoint: bool,

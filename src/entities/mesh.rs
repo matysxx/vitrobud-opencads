@@ -14,6 +14,10 @@ fn v3(v: &acadrust::types::Vector3) -> [f64; 3] {
     [v.x, v.y, v.z]
 }
 
+fn dvec3(v: &acadrust::types::Vector3) -> glam::DVec3 {
+    glam::DVec3::new(v.x, v.y, v.z)
+}
+
 fn v3f32(v: &acadrust::types::Vector3) -> [f32; 3] {
     [v.x as f32, v.y as f32, v.z as f32]
 }
@@ -80,10 +84,10 @@ impl TruckConvertible for Face3D {
 impl Grippable for Face3D {
     fn grips(&self) -> Vec<GripDef> {
         vec![
-            square_grip(0, Vec3::from(v3f32(&self.first_corner))),
-            square_grip(1, Vec3::from(v3f32(&self.second_corner))),
-            square_grip(2, Vec3::from(v3f32(&self.third_corner))),
-            square_grip(3, Vec3::from(v3f32(&self.fourth_corner))),
+            square_grip(0, dvec3(&self.first_corner)),
+            square_grip(1, dvec3(&self.second_corner)),
+            square_grip(2, dvec3(&self.third_corner)),
+            square_grip(3, dvec3(&self.fourth_corner)),
         ]
     }
 
@@ -247,11 +251,7 @@ impl Grippable for PolygonMesh {
             .map(|(i, v)| {
                 square_grip(
                     i,
-                    Vec3::new(
-                        v.location.x as f32,
-                        v.location.y as f32,
-                        v.location.z as f32,
-                    ),
+                    glam::DVec3::new(v.location.x, v.location.y, v.location.z),
                 )
             })
             .collect()
@@ -300,7 +300,11 @@ impl PropertyEditable for PolygonMesh {
                     "pm_smooth_n",
                     self.n_smooth_density.to_string(),
                 ),
-                ro("Elevation", "pm_elevation", format!("{:.4}", self.elevation)),
+                ro(
+                    "Elevation",
+                    "pm_elevation",
+                    format!("{:.4}", self.elevation),
+                ),
                 ro(
                     "Normal",
                     "pm_normal",
@@ -395,11 +399,7 @@ impl Grippable for PolyfaceMesh {
             .map(|(i, v)| {
                 square_grip(
                     i,
-                    Vec3::new(
-                        v.location.x as f32,
-                        v.location.y as f32,
-                        v.location.z as f32,
-                    ),
+                    glam::DVec3::new(v.location.x, v.location.y, v.location.z),
                 )
             })
             .collect()
@@ -445,7 +445,11 @@ impl PropertyEditable for PolyfaceMesh {
                         _ => "(none)".to_string(),
                     },
                 ),
-                ro("Elevation", "pfm_elevation", format!("{:.4}", self.elevation)),
+                ro(
+                    "Elevation",
+                    "pfm_elevation",
+                    format!("{:.4}", self.elevation),
+                ),
                 ro(
                     "Normal",
                     "pfm_normal",
@@ -454,7 +458,11 @@ impl PropertyEditable for PolyfaceMesh {
                         self.normal.x, self.normal.y, self.normal.z
                     ),
                 ),
-                ro("Thickness", "pfm_thickness", format!("{:.4}", self.thickness)),
+                ro(
+                    "Thickness",
+                    "pfm_thickness",
+                    format!("{:.4}", self.thickness),
+                ),
             ],
         }
     }
@@ -490,9 +498,7 @@ impl TruckConvertible for Mesh {
         if self.vertices.is_empty() {
             return None;
         }
-        let get = |i: usize| -> Option<[f64; 3]> {
-            self.vertices.get(i).map(|v| [v.x, v.y, v.z])
-        };
+        let get = |i: usize| -> Option<[f64; 3]> { self.vertices.get(i).map(|v| [v.x, v.y, v.z]) };
 
         let mut pts: Vec<[f64; 3]> = Vec::new();
         if !self.edges.is_empty() {
@@ -549,7 +555,12 @@ impl TruckConvertible for Mesh {
         let snap_pts: Vec<(Vec3, SnapHint)> = self
             .vertices
             .iter()
-            .map(|v| (Vec3::new(v.x as f32, v.y as f32, v.z as f32), SnapHint::Node))
+            .map(|v| {
+                (
+                    Vec3::new(v.x as f32, v.y as f32, v.z as f32),
+                    SnapHint::Node,
+                )
+            })
             .collect();
         let key_vertices: Vec<[f64; 3]> = self.vertices.iter().map(|v| [v.x, v.y, v.z]).collect();
 
@@ -568,9 +579,7 @@ impl Grippable for Mesh {
         self.vertices
             .iter()
             .enumerate()
-            .map(|(i, v)| {
-                square_grip(i, Vec3::new(v.x as f32, v.y as f32, v.z as f32))
-            })
+            .map(|(i, v)| square_grip(i, glam::DVec3::new(v.x, v.y, v.z)))
             .collect()
     }
 

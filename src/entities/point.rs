@@ -132,11 +132,7 @@ fn to_truck(pt: &Point, document: &acadrust::CadDocument) -> TruckEntity {
 }
 
 fn grips(pt: &Point) -> Vec<GripDef> {
-    let p = Vec3::new(
-        pt.location.x as f32,
-        pt.location.y as f32,
-        pt.location.z as f32,
-    );
+    let p = glam::DVec3::new(pt.location.x, pt.location.y, pt.location.z);
     vec![square_grip(0, p)]
 }
 
@@ -196,4 +192,3 @@ impl TruckConvertible for Point {
 }
 
 crate::impl_entity_basics!(Point);
-

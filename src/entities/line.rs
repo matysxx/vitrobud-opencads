@@ -1,5 +1,4 @@
 use acadrust::{entities::Line, Entity};
-use glam::Vec3;
 use truck_modeling::{builder, Point3};
 
 use crate::command::EntityTransform;
@@ -67,12 +66,8 @@ fn to_truck(line: &Line) -> TruckEntity {
 }
 
 fn grips(line: &Line) -> Vec<GripDef> {
-    let s = Vec3::new(
-        line.start.x as f32,
-        line.start.y as f32,
-        line.start.z as f32,
-    );
-    let e = Vec3::new(line.end.x as f32, line.end.y as f32, line.end.z as f32);
+    let s = glam::DVec3::new(line.start.x, line.start.y, line.start.z);
+    let e = glam::DVec3::new(line.end.x, line.end.y, line.end.z);
     let m = (s + e) * 0.5;
     vec![square_grip(0, s), square_grip(1, e), center_grip(2, m)]
 }
@@ -163,25 +158,27 @@ impl crate::entities::traits::Grippable for Line {
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
         apply_grip(self, grip_id, apply);
     }
-    fn grip_menu(
-        &self,
-        grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         if grip_id == 2 {
-            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+            vec![GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            }]
         } else {
             vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Lengthen", action: GripMenuAction::Lengthen },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Lengthen",
+                    action: GripMenuAction::Lengthen,
+                },
             ]
         }
     }
-    fn apply_grip_menu(
-        &mut self,
-        _grip_id: usize,
-        _action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, _grip_id: usize, _action: crate::scene::object::GripMenuAction) {
         // Lengthen needs a follow-up distance — handled by
         // `apply_grip_menu_value`.
     }
@@ -235,10 +232,7 @@ impl crate::entities::traits::Grippable for Line {
 }
 
 impl crate::entities::traits::PropertyEditable for Line {
-    fn geometry_properties(
-        &self,
-        _text_style_names: &[String],
-    ) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

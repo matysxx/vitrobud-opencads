@@ -112,18 +112,14 @@ fn to_truck(circle: &Circle) -> TruckEntity {
 }
 
 fn grips(circle: &Circle) -> Vec<GripDef> {
-    let ctr = Vec3::new(
-        circle.center.x as f32,
-        circle.center.y as f32,
-        circle.center.z as f32,
-    );
-    let r = circle.radius as f32;
+    let ctr = glam::DVec3::new(circle.center.x, circle.center.y, circle.center.z);
+    let r = circle.radius;
     vec![
         center_grip(0, ctr),
-        square_grip(1, ctr + Vec3::new(r, 0.0, 0.0)),
-        square_grip(2, ctr + Vec3::new(0.0, r, 0.0)),
-        square_grip(3, ctr - Vec3::new(r, 0.0, 0.0)),
-        square_grip(4, ctr - Vec3::new(0.0, r, 0.0)),
+        square_grip(1, ctr + glam::DVec3::new(r, 0.0, 0.0)),
+        square_grip(2, ctr + glam::DVec3::new(0.0, r, 0.0)),
+        square_grip(3, ctr - glam::DVec3::new(r, 0.0, 0.0)),
+        square_grip(4, ctr - glam::DVec3::new(0.0, r, 0.0)),
     ]
 }
 

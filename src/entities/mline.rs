@@ -126,11 +126,7 @@ impl Grippable for MLine {
             .map(|(i, v)| {
                 square_grip(
                     i,
-                    Vec3::new(
-                        v.position.x as f32,
-                        v.position.y as f32,
-                        v.position.z as f32,
-                    ),
+                    glam::DVec3::new(v.position.x, v.position.y, v.position.z),
                 )
             })
             .collect()
@@ -153,23 +149,25 @@ impl Grippable for MLine {
         }
     }
 
-    fn grip_menu(
-        &self,
-        _grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, _grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
-            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Add Vertex",
+                action: GripMenuAction::AddVertex,
+            },
+            GripMenuItem {
+                label: "Remove Vertex",
+                action: GripMenuAction::RemoveVertex,
+            },
         ]
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let n = self.vertices.len();
         match action {

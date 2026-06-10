@@ -1,5 +1,4 @@
 use acadrust::entities::Spline;
-use glam::Vec3;
 use truck_modeling::{
     base::{BoundedCurve, ParametricCurve, Vector4},
     builder, BSplineCurve, Curve, Edge, KnotVec, NurbsCurve, Point3, Wire,
@@ -64,10 +63,7 @@ fn to_truck(spl: &Spline) -> TruckEntity {
     } else {
         &spl.control_points
     };
-    let key_vertices: Vec<[f64; 3]> = snap_source
-        .iter()
-        .map(|p| [p.x, p.y, p.z])
-        .collect();
+    let key_vertices: Vec<[f64; 3]> = snap_source.iter().map(|p| [p.x, p.y, p.z]).collect();
 
     let is_closed = spl.flags.closed || spl.flags.periodic;
     let gap = {
@@ -106,7 +102,7 @@ fn grips(spline: &Spline) -> Vec<GripDef> {
         .control_points
         .iter()
         .enumerate()
-        .map(|(i, p)| square_grip(i, Vec3::new(p.x as f32, p.y as f32, p.z as f32)))
+        .map(|(i, p)| square_grip(i, glam::DVec3::new(p.x, p.y, p.z)))
         .collect()
 }
 
@@ -168,23 +164,28 @@ impl crate::entities::traits::Grippable for Spline {
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
         apply_grip(self, grip_id, apply);
     }
-    fn grip_menu(
-        &self,
-        _grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, _grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
-            GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
-            GripMenuItem { label: "Refine Vertices", action: GripMenuAction::RefineVertices },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Add Vertex",
+                action: GripMenuAction::AddVertex,
+            },
+            GripMenuItem {
+                label: "Remove Vertex",
+                action: GripMenuAction::RemoveVertex,
+            },
+            GripMenuItem {
+                label: "Refine Vertices",
+                action: GripMenuAction::RefineVertices,
+            },
         ]
     }
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let n = self.control_points.len();
         let min_cv = (self.degree as usize).saturating_add(1).max(2);
@@ -203,7 +204,8 @@ impl crate::entities::traits::Grippable for Spline {
                 );
                 self.control_points.insert(i1, mid);
                 if !self.weights.is_empty() && self.weights.len() == n {
-                    let w = (self.weights[grip_id] + self.weights[i1.min(self.weights.len() - 1)]) * 0.5;
+                    let w = (self.weights[grip_id] + self.weights[i1.min(self.weights.len() - 1)])
+                        * 0.5;
                     self.weights.insert(i1, w);
                 }
                 // Clear knots so to_truck rebuilds a uniform knot vector
@@ -255,10 +257,7 @@ impl crate::entities::traits::Grippable for Spline {
 }
 
 impl crate::entities::traits::PropertyEditable for Spline {
-    fn geometry_properties(
-        &self,
-        _text_style_names: &[String],
-    ) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -271,4 +270,3 @@ impl crate::entities::traits::Transformable for Spline {
         apply_transform(self, t);
     }
 }
-

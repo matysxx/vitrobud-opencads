@@ -141,7 +141,11 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
         &t.value,
     );
     TruckEntity {
-        object: TruckObject::Text(vec![TextStroke { strokes, origin, color: None }]),
+        object: TruckObject::Text(vec![TextStroke {
+            strokes,
+            origin,
+            color: None,
+        }]),
         snap_pts: vec![(snap_pt, SnapHint::Insertion)],
         tangent_geoms: vec![],
         key_vertices: vec![],
@@ -150,10 +154,10 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
 }
 
 fn grips(t: &Text) -> Vec<GripDef> {
-    let p = Vec3::new(
-        t.insertion_point.x as f32,
-        t.insertion_point.y as f32,
-        t.insertion_point.z as f32,
+    let p = glam::DVec3::new(
+        t.insertion_point.x,
+        t.insertion_point.y,
+        t.insertion_point.z,
     );
     vec![square_grip(0, p)]
 }
@@ -316,23 +320,25 @@ impl Grippable for Text {
         apply_grip(self, grip_id, apply);
     }
 
-    fn grip_menu(
-        &self,
-        _grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, _grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Move with Text", action: GripMenuAction::MoveWithText },
-            GripMenuItem { label: "Rotate", action: GripMenuAction::RotateText },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Move with Text",
+                action: GripMenuAction::MoveWithText,
+            },
+            GripMenuItem {
+                label: "Rotate",
+                action: GripMenuAction::RotateText,
+            },
         ]
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        _grip_id: usize,
-        _action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, _grip_id: usize, _action: crate::scene::object::GripMenuAction) {
         // Move-with-Text falls through to Stretch (single grip moves
         // the whole text); Rotate needs a follow-up angle handled by
         // `apply_grip_menu_value`.

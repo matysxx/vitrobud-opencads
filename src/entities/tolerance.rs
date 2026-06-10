@@ -244,7 +244,11 @@ impl TruckConvertible for Tolerance {
         let origin = [self.insertion_point.x, self.insertion_point.y];
 
         Some(TruckEntity {
-            object: TruckObject::Text(vec![TextStroke { strokes, origin, color: None }]),
+            object: TruckObject::Text(vec![TextStroke {
+                strokes,
+                origin,
+                color: None,
+            }]),
             snap_pts: vec![(snap_pt, SnapHint::Insertion)],
             tangent_geoms: vec![],
             key_vertices: vec![],
@@ -259,10 +263,10 @@ impl Grippable for Tolerance {
     fn grips(&self) -> Vec<GripDef> {
         vec![square_grip(
             0,
-            Vec3::new(
-                self.insertion_point.x as f32,
-                self.insertion_point.y as f32,
-                self.insertion_point.z as f32,
+            glam::DVec3::new(
+                self.insertion_point.x,
+                self.insertion_point.y,
+                self.insertion_point.z,
             ),
         )]
     }

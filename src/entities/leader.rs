@@ -4,7 +4,7 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
-use crate::entities::traits::{TruckConvertible};
+use crate::entities::traits::TruckConvertible;
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::wire_model::TangentGeom;
@@ -15,9 +15,7 @@ fn to_truck(leader: &Leader) -> TruckEntity {
     let verts = &leader.vertices;
     let nan = [f64::NAN; 3];
     let p3 = |v: &acadrust::types::Vector3| -> [f64; 3] { [v.x, v.y, v.z] };
-    let p3f = |v: &acadrust::types::Vector3| -> [f32; 3] {
-        [v.x as f32, v.y as f32, v.z as f32]
-    };
+    let p3f = |v: &acadrust::types::Vector3| -> [f32; 3] { [v.x as f32, v.y as f32, v.z as f32] };
 
     let mut points: Vec<[f64; 3]> = Vec::new();
     let mut tangents: Vec<TangentGeom> = Vec::new();
@@ -67,7 +65,11 @@ fn to_truck(leader: &Leader) -> TruckEntity {
     if leader.hookline_enabled && verts.len() >= 2 {
         let last = verts.last().unwrap();
         let prev = &verts[verts.len() - 2];
-        let sign = if (last.x - prev.x) >= 0.0 { 1.0_f64 } else { -1.0_f64 };
+        let sign = if (last.x - prev.x) >= 0.0 {
+            1.0_f64
+        } else {
+            -1.0_f64
+        };
         let len = leader.text_height * 1.5;
         let last_f = p3(last);
         points.push(nan);
@@ -92,14 +94,14 @@ fn grips(leader: &Leader) -> Vec<GripDef> {
         .vertices
         .iter()
         .enumerate()
-        .map(|(i, v)| square_grip(i, Vec3::new(v.x as f32, v.y as f32, v.z as f32)))
+        .map(|(i, v)| square_grip(i, glam::DVec3::new(v.x, v.y, v.z)))
         .collect();
 
     if n >= 2 {
-        let sum = leader.vertices.iter().fold(Vec3::ZERO, |acc, v| {
-            acc + Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+        let sum = leader.vertices.iter().fold(glam::DVec3::ZERO, |acc, v| {
+            acc + glam::DVec3::new(v.x, v.y, v.z)
         });
-        grips.push(center_grip(n, sum / n as f32));
+        grips.push(center_grip(n, sum / n as f64));
     }
 
     grips
@@ -463,31 +465,39 @@ impl crate::entities::traits::Grippable for Leader {
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
         apply_grip(self, grip_id, apply);
     }
-    fn grip_menu(
-        &self,
-        grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         let n = self.vertices.len();
         if grip_id == 0 {
             // Arrow head — stretch only.
-            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+            vec![GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            }]
         } else if grip_id < n {
             vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Add Vertex", action: GripMenuAction::AddVertex },
-                GripMenuItem { label: "Remove Vertex", action: GripMenuAction::RemoveVertex },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Add Vertex",
+                    action: GripMenuAction::AddVertex,
+                },
+                GripMenuItem {
+                    label: "Remove Vertex",
+                    action: GripMenuAction::RemoveVertex,
+                },
             ]
         } else {
             // Centroid grip — move whole leader.
-            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+            vec![GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            }]
         }
     }
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let n = self.vertices.len();
         match action {
@@ -514,10 +524,7 @@ impl crate::entities::traits::Grippable for Leader {
 }
 
 impl crate::entities::traits::PropertyEditable for Leader {
-    fn geometry_properties(
-        &self,
-        _text_style_names: &[String],
-    ) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

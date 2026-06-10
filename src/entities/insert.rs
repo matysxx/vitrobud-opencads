@@ -7,15 +7,11 @@ use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
 
 use crate::scene::object::{GripApply, GripDef, PropSection};
-use crate::scene::{block_cache, render, tessellate};
 use crate::scene::wire_model::WireModel;
+use crate::scene::{block_cache, render, tessellate};
 
 fn grips(ins: &Insert) -> Vec<GripDef> {
-    let p = Vec3::new(
-        ins.insert_point.x as f32,
-        ins.insert_point.y as f32,
-        ins.insert_point.z as f32,
-    );
+    let p = glam::DVec3::new(ins.insert_point.x, ins.insert_point.y, ins.insert_point.z);
     vec![square_grip(0, p)]
 }
 
@@ -99,7 +95,10 @@ fn apply_transform(ins: &mut Insert, t: &EntityTransform) {
 crate::impl_entity_basics!(Insert);
 
 impl crate::entities::traits::FallbackTess for Insert {
-    fn fallback_geometry(&self, world_offset: [f64; 3]) -> crate::scene::tess_util::FallbackGeometry {
+    fn fallback_geometry(
+        &self,
+        world_offset: [f64; 3],
+    ) -> crate::scene::tess_util::FallbackGeometry {
         let [ox, oy, oz] = world_offset;
         let ip = Vec3::new(
             (self.insert_point.x - ox) as f32,
@@ -154,15 +153,14 @@ pub(crate) fn append_insert_attribute_wires(
             continue;
         }
         let attr_entity = EntityType::AttributeEntity(attr.clone());
-        let (sub_color, sub_plen, sub_pat, sub_lw_px, sub_aci) =
-            render::render_style_for_block_sub(
-                document,
-                &attr_entity,
-                ins_color,
-                ins_pat_len,
-                ins_pat,
-                ins_lw_px,
-            );
+        let (sub_color, sub_plen, sub_pat, sub_lw_px, sub_aci) = render::render_style_for_block_sub(
+            document,
+            &attr_entity,
+            ins_color,
+            ins_pat_len,
+            ins_pat,
+            ins_lw_px,
+        );
         let sub_color = render::adapt_to_bg(sub_color, bg_color);
         let sub_color = if is_xref && !sel {
             block_cache::fade_toward_bg(sub_color, bg_color)
@@ -192,4 +190,3 @@ pub(crate) fn append_insert_attribute_wires(
         wires.extend(attr_wires);
     }
 }
-

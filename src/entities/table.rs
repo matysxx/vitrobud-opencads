@@ -3,12 +3,14 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{ro_prop as ro, square_grip};
-use crate::entities::text_support::{layout_mtext, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle};
+use crate::entities::text_support::{
+    layout_mtext, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle,
+};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
-use crate::scene::wire_model::SnapHint;
 use crate::scene::transform;
+use crate::scene::wire_model::SnapHint;
 
 fn v3(v: &acadrust::types::Vector3) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
@@ -61,7 +63,11 @@ impl TruckConvertible for Table {
         // twice we coalesce the segments by their (start, end) coordinates.
         use rustc_hash::FxHashSet as HashSet;
         let mut emitted: HashSet<(i32, i32, i32, i32)> = HashSet::default();
-        let try_add = |a: Vec3, b: Vec3, vis: bool, emitted: &mut HashSet<(i32, i32, i32, i32)>, pts: &mut Vec<[f32; 3]>| {
+        let try_add = |a: Vec3,
+                       b: Vec3,
+                       vis: bool,
+                       emitted: &mut HashSet<(i32, i32, i32, i32)>,
+                       pts: &mut Vec<[f32; 3]>| {
             if !vis {
                 return;
             }
@@ -90,11 +96,9 @@ impl TruckConvertible for Table {
                 .unwrap_or(row_top + row.height as f32);
             for (ci, cell) in row.cells.iter().enumerate() {
                 let col_left = col_offsets[ci];
-                let col_right = col_offsets
-                    .get(ci + 1)
-                    .copied()
-                    .unwrap_or(col_left
-                        + self.columns.get(ci).map(|c| c.width as f32).unwrap_or(1.0));
+                let col_right = col_offsets.get(ci + 1).copied().unwrap_or(
+                    col_left + self.columns.get(ci).map(|c| c.width as f32).unwrap_or(1.0),
+                );
                 // Default to visible when no style override is present.
                 let (top_vis, right_vis, bottom_vis, left_vis) = cell
                     .style
@@ -160,18 +164,17 @@ impl TruckConvertible for Table {
         };
         // Build a ResolvedTextStyle for the cell — needed by the shared MText
         // pipeline so inline `\W`, `\Q`, etc. compose with the style baseline.
-        let resolved_style_for_handle = |handle: Option<acadrust::Handle>,
-                                         font_name: String|
-         -> ResolvedTextStyle {
-            let style = handle.and_then(|h| lookup_style(h));
-            ResolvedTextStyle {
-                font_name,
-                width_factor: style.map(|s| s.width_factor as f32).unwrap_or(1.0),
-                oblique_angle: style.map(|s| s.oblique_angle as f32).unwrap_or(0.0),
-                is_backward: style.map(|s| s.is_backward()).unwrap_or(false),
-                is_upside_down: style.map(|s| s.is_upside_down()).unwrap_or(false),
-            }
-        };
+        let resolved_style_for_handle =
+            |handle: Option<acadrust::Handle>, font_name: String| -> ResolvedTextStyle {
+                let style = handle.and_then(|h| lookup_style(h));
+                ResolvedTextStyle {
+                    font_name,
+                    width_factor: style.map(|s| s.width_factor as f32).unwrap_or(1.0),
+                    oblique_angle: style.map(|s| s.oblique_angle as f32).unwrap_or(0.0),
+                    is_backward: style.map(|s| s.is_backward()).unwrap_or(false),
+                    is_upside_down: style.map(|s| s.is_upside_down()).unwrap_or(false),
+                }
+            };
 
         for (ri, row) in self.rows.iter().enumerate() {
             let row_top = row_offsets[ri];
@@ -182,20 +185,19 @@ impl TruckConvertible for Table {
             let row_mid = (row_top + row_bot) * 0.5;
 
             // Pick the appropriate row_style from TableStyle for this row's role.
-            let row_style: Option<&acadrust::objects::RowCellStyle> = table_style
-                .map(|ts| {
-                    let kind = match (title_suppressed, header_suppressed, ri) {
-                        (false, _, 0) => 0,            // title
-                        (false, false, 1) => 1,        // header
-                        (true, false, 0) => 1,        // header pulled up
-                        _ => 2,                       // data
-                    };
-                    match kind {
-                        0 => &ts.title_row_style,
-                        1 => &ts.header_row_style,
-                        _ => &ts.data_row_style,
-                    }
-                });
+            let row_style: Option<&acadrust::objects::RowCellStyle> = table_style.map(|ts| {
+                let kind = match (title_suppressed, header_suppressed, ri) {
+                    (false, _, 0) => 0,     // title
+                    (false, false, 1) => 1, // header
+                    (true, false, 0) => 1,  // header pulled up
+                    _ => 2,                 // data
+                };
+                match kind {
+                    0 => &ts.title_row_style,
+                    1 => &ts.header_row_style,
+                    _ => &ts.data_row_style,
+                }
+            });
 
             for (ci, cell) in row.cells.iter().enumerate() {
                 let text = cell.text_value();
@@ -212,7 +214,12 @@ impl TruckConvertible for Table {
                 let cell_h = content
                     .map(|c| c.text_height)
                     .filter(|h| *h > 1e-6)
-                    .or_else(|| cell.style.as_ref().map(|s| s.text_height).filter(|h| *h > 1e-6))
+                    .or_else(|| {
+                        cell.style
+                            .as_ref()
+                            .map(|s| s.text_height)
+                            .filter(|h| *h > 1e-6)
+                    })
                     .or_else(|| row_style.map(|s| s.text_height).filter(|h| *h > 1e-6))
                     .map(|h| h as f32)
                     .unwrap_or(0.18);
@@ -223,8 +230,7 @@ impl TruckConvertible for Table {
                     .and_then(|c| c.text_style_handle)
                     .or_else(|| cell.style.as_ref().and_then(|s| s.text_style_handle))
                     .or_else(|| row_style.and_then(|s| s.text_style_handle));
-                let font_owned =
-                    font_for_handle(style_handle).unwrap_or_else(|| "txt".to_string());
+                let font_owned = font_for_handle(style_handle).unwrap_or_else(|| "txt".to_string());
                 let resolved = resolved_style_for_handle(style_handle, font_owned);
 
                 // Alignment resolution: cell.style.alignment (1-9) overrides;
@@ -254,8 +260,7 @@ impl TruckConvertible for Table {
                 let text_origin = origin + h * x_offset + v_down * y_offset;
 
                 // Content rotation (radians) on top of table cell rotation.
-                let rot = content.map(|c| c.rotation as f32).unwrap_or(0.0)
-                    + cell.rotation as f32;
+                let rot = content.map(|c| c.rotation as f32).unwrap_or(0.0) + cell.rotation as f32;
                 let layout = layout_mtext(&MTextRenderOpts {
                     value: text,
                     insertion: [text_origin.x as f64, text_origin.y as f64, origin.z as f64],
@@ -378,12 +383,13 @@ pub fn tessellate_table(
     };
     let v_down = Vec3::new(h.y, -h.x, 0.0);
     // Flow direction: `Up` stacks rows upward instead of downward.
-    let table_style: Option<&acadrust::objects::TableStyle> = tab.table_style_handle.and_then(|h| {
-        document.objects.get(&h).and_then(|obj| match obj {
-            acadrust::objects::ObjectType::TableStyle(ts) => Some(ts),
-            _ => None,
-        })
-    });
+    let table_style: Option<&acadrust::objects::TableStyle> =
+        tab.table_style_handle.and_then(|h| {
+            document.objects.get(&h).and_then(|obj| match obj {
+                acadrust::objects::ObjectType::TableStyle(ts) => Some(ts),
+                _ => None,
+            })
+        });
     let flow_up = matches!(
         table_style.map(|t| t.flow_direction),
         Some(acadrust::objects::TableFlowDirection::Up)
@@ -411,7 +417,9 @@ pub fn tessellate_table(
 
     let title_suppressed = table_style.map(|t| t.title_suppressed).unwrap_or(false);
     let header_suppressed = table_style.map(|t| t.header_suppressed).unwrap_or(false);
-    let h_margin = table_style.map(|t| t.horizontal_margin as f32).unwrap_or(0.0);
+    let h_margin = table_style
+        .map(|t| t.horizontal_margin as f32)
+        .unwrap_or(0.0);
     let v_margin = table_style.map(|t| t.vertical_margin as f32).unwrap_or(0.0);
 
     let lookup_style = |hh: acadrust::Handle| -> Option<&acadrust::tables::TextStyle> {
@@ -444,28 +452,27 @@ pub fn tessellate_table(
     let mut emitted: rustc_hash::FxHashSet<(i32, i32, i32, i32)> = rustc_hash::FxHashSet::default();
     let sel_col = WireModel::SELECTED;
 
-    let mut add_edge =
-        |a: Vec3, b: Vec3, col: [f32; 4], lw: f32| {
-            let k = (
-                (a.x * 1000.0) as i32,
-                (a.y * 1000.0) as i32,
-                (b.x * 1000.0) as i32,
-                (b.y * 1000.0) as i32,
-            );
-            let kr = (k.2, k.3, k.0, k.1);
-            if emitted.contains(&k) || emitted.contains(&kr) {
-                return;
-            }
-            emitted.insert(k);
-            let entry = borders
-                .entry((key4(col), (lw * 100.0) as u32))
-                .or_insert_with(|| (col, lw, Vec::new()));
-            if !entry.2.is_empty() {
-                entry.2.push([f32::NAN; 3]);
-            }
-            entry.2.push(rel(a));
-            entry.2.push(rel(b));
-        };
+    let mut add_edge = |a: Vec3, b: Vec3, col: [f32; 4], lw: f32| {
+        let k = (
+            (a.x * 1000.0) as i32,
+            (a.y * 1000.0) as i32,
+            (b.x * 1000.0) as i32,
+            (b.y * 1000.0) as i32,
+        );
+        let kr = (k.2, k.3, k.0, k.1);
+        if emitted.contains(&k) || emitted.contains(&kr) {
+            return;
+        }
+        emitted.insert(k);
+        let entry = borders
+            .entry((key4(col), (lw * 100.0) as u32))
+            .or_insert_with(|| (col, lw, Vec::new()));
+        if !entry.2.is_empty() {
+            entry.2.push([f32::NAN; 3]);
+        }
+        entry.2.push(rel(a));
+        entry.2.push(rel(b));
+    };
 
     for (ri, row) in tab.rows.iter().enumerate() {
         let row_top = row_offsets[ri];
@@ -507,7 +514,10 @@ pub fn tessellate_table(
             };
             if fill_on {
                 let col = resolve_col(&fill_color, entity_color);
-                let buf = &mut fills.entry(key4(col)).or_insert_with(|| (col, Vec::new())).1;
+                let buf = &mut fills
+                    .entry(key4(col))
+                    .or_insert_with(|| (col, Vec::new()))
+                    .1;
                 for v in [bl, br_, tr, bl, tr, tl] {
                     buf.push(rel(v));
                 }
@@ -526,7 +536,11 @@ pub fn tessellate_table(
                     };
                     (
                         !b.invisible,
-                        if selected { sel_col } else { resolve_col(&b.color, entity_color) },
+                        if selected {
+                            sel_col
+                        } else {
+                            resolve_col(&b.color, entity_color)
+                        },
                         lw_px(&b.line_weight),
                     )
                 } else if let Some(rs) = row_style {
@@ -538,21 +552,37 @@ pub fn tessellate_table(
                     };
                     (
                         !b.is_invisible,
-                        if selected { sel_col } else { resolve_col(&b.color, entity_color) },
+                        if selected {
+                            sel_col
+                        } else {
+                            resolve_col(&b.color, entity_color)
+                        },
                         lw_px(&b.line_weight),
                     )
                 } else {
-                    (true, if selected { sel_col } else { entity_color }, line_weight_px)
+                    (
+                        true,
+                        if selected { sel_col } else { entity_color },
+                        line_weight_px,
+                    )
                 }
             };
             let (tv, tc, tw) = edge(0);
-            if tv { add_edge(tl, tr, tc, tw); }
+            if tv {
+                add_edge(tl, tr, tc, tw);
+            }
             let (rv, rc, rw) = edge(1);
-            if rv { add_edge(tr, br_, rc, rw); }
+            if rv {
+                add_edge(tr, br_, rc, rw);
+            }
             let (bv, bc, bw) = edge(2);
-            if bv { add_edge(bl, br_, bc, bw); }
+            if bv {
+                add_edge(bl, br_, bc, bw);
+            }
             let (lv, lc, lw) = edge(3);
-            if lv { add_edge(tl, bl, lc, lw); }
+            if lv {
+                add_edge(tl, bl, lc, lw);
+            }
 
             // ── Text ──────────────────────────────────────────────────────
             let text = cell.text_value();
@@ -563,12 +593,25 @@ pub fn tessellate_table(
             let cell_h = content
                 .map(|c| c.text_height)
                 .filter(|h| *h > 1e-6)
-                .or_else(|| cell.style.as_ref().map(|s| s.text_height).filter(|h| *h > 1e-6))
+                .or_else(|| {
+                    cell.style
+                        .as_ref()
+                        .map(|s| s.text_height)
+                        .filter(|h| *h > 1e-6)
+                })
                 .or_else(|| row_style.map(|s| s.text_height).filter(|h| *h > 1e-6))
                 .map(|h| h as f32)
                 .unwrap_or(0.18);
-            let m_h = if h_margin > 1e-6 { h_margin } else { cell_h * 0.5 };
-            let m_v = if v_margin > 1e-6 { v_margin } else { cell_h * 0.5 };
+            let m_h = if h_margin > 1e-6 {
+                h_margin
+            } else {
+                cell_h * 0.5
+            };
+            let m_v = if v_margin > 1e-6 {
+                v_margin
+            } else {
+                cell_h * 0.5
+            };
 
             let style_handle = content
                 .and_then(|c| c.text_style_handle)
@@ -621,7 +664,10 @@ pub fn tessellate_table(
             } else {
                 entity_color
             };
-            let buf = &mut texts.entry(key4(tcol)).or_insert_with(|| (tcol, Vec::new())).1;
+            let buf = &mut texts
+                .entry(key4(tcol))
+                .or_insert_with(|| (tcol, Vec::new()))
+                .1;
             for ts in &layout.strokes {
                 let sx = ts.origin[0] as f32;
                 let sy = ts.origin[1] as f32;
@@ -641,25 +687,26 @@ pub fn tessellate_table(
     }
 
     let name = tab.common.handle.value().to_string();
-    let mk = |color: [f32; 4], points: Vec<[f32; 3]>, fill_tris: Vec<[f32; 3]>, lw: f32| -> WireModel {
-        WireModel {
-            name: name.clone(),
-            points,
-            color,
-            selected,
-            pattern_length: 0.0,
-            pattern: [0.0; 8],
-            line_weight_px: lw,
-            aci: 0,
-            snap_pts: vec![],
-            tangent_geoms: vec![],
-            key_vertices: vec![],
-            aabb: WireModel::UNBOUNDED_AABB,
-            plinegen: true,
-            vp_scissor: None,
-            fill_tris,
-        }
-    };
+    let mk =
+        |color: [f32; 4], points: Vec<[f32; 3]>, fill_tris: Vec<[f32; 3]>, lw: f32| -> WireModel {
+            WireModel {
+                name: name.clone(),
+                points,
+                color,
+                selected,
+                pattern_length: 0.0,
+                pattern: [0.0; 8],
+                line_weight_px: lw,
+                aci: 0,
+                snap_pts: vec![],
+                tangent_geoms: vec![],
+                key_vertices: vec![],
+                aabb: WireModel::UNBOUNDED_AABB,
+                plinegen: true,
+                vp_scissor: None,
+                fill_tris,
+            }
+        };
 
     let mut out: Vec<WireModel> = Vec::new();
     // Fills first (drawn under borders/text).
@@ -683,7 +730,14 @@ pub fn tessellate_table(
 
 impl Grippable for Table {
     fn grips(&self) -> Vec<GripDef> {
-        vec![square_grip(0, v3(&self.insertion_point))]
+        vec![square_grip(
+            0,
+            glam::DVec3::new(
+                self.insertion_point.x,
+                self.insertion_point.y,
+                self.insertion_point.z,
+            ),
+        )]
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
@@ -742,7 +796,11 @@ impl PropertyEditable for Table {
                     "tbl_block_rec_handle",
                     fmt_h(&self.block_record_handle),
                 ),
-                ro("Data Version", "tbl_data_version", self.data_version.to_string()),
+                ro(
+                    "Data Version",
+                    "tbl_data_version",
+                    self.data_version.to_string(),
+                ),
                 ro(
                     "Value Flags",
                     "tbl_value_flags",
@@ -756,7 +814,11 @@ impl PropertyEditable for Table {
                 ro(
                     "Override Border Color",
                     "tbl_override_border_color",
-                    if self.override_border_color { "Yes" } else { "No" },
+                    if self.override_border_color {
+                        "Yes"
+                    } else {
+                        "No"
+                    },
                 ),
                 ro(
                     "Override Border LW",

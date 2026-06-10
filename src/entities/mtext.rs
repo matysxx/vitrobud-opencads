@@ -106,7 +106,11 @@ pub fn glyph_boxes(t: &MText, document: &acadrust::CadDocument) -> Vec<GlyphBox>
     };
     let layout = layout_mtext(&MTextRenderOpts {
         value: &t.value,
-        insertion: [t.insertion_point.x, t.insertion_point.y, t.insertion_point.z],
+        insertion: [
+            t.insertion_point.x,
+            t.insertion_point.y,
+            t.insertion_point.z,
+        ],
         height: t.height as f32,
         rect_w: t.rectangle_width as f32,
         rotation,
@@ -149,7 +153,11 @@ fn to_truck(t: &MText, document: &acadrust::CadDocument) -> TruckEntity {
     };
     let layout = layout_mtext(&MTextRenderOpts {
         value: &t.value,
-        insertion: [t.insertion_point.x, t.insertion_point.y, t.insertion_point.z],
+        insertion: [
+            t.insertion_point.x,
+            t.insertion_point.y,
+            t.insertion_point.z,
+        ],
         height: t.height as f32,
         rect_w: t.rectangle_width as f32,
         rotation,
@@ -175,13 +183,13 @@ fn to_truck(t: &MText, document: &acadrust::CadDocument) -> TruckEntity {
 }
 
 fn grips(t: &MText) -> Vec<GripDef> {
-    let p = Vec3::new(
-        t.insertion_point.x as f32,
-        t.insertion_point.y as f32,
-        t.insertion_point.z as f32,
+    let p = glam::DVec3::new(
+        t.insertion_point.x,
+        t.insertion_point.y,
+        t.insertion_point.z,
     );
-    let dir = Vec3::new((t.rotation as f32).cos(), (t.rotation as f32).sin(), 0.0);
-    let width_grip = p + dir * t.rectangle_width.max(0.0) as f32;
+    let dir = glam::DVec3::new(t.rotation.cos(), t.rotation.sin(), 0.0);
+    let width_grip = p + dir * t.rectangle_width.max(0.0);
     vec![square_grip(0, p), triangle_grip(1, width_grip)]
 }
 
@@ -348,29 +356,34 @@ impl Grippable for MText {
         apply_grip(self, grip_id, apply);
     }
 
-    fn grip_menu(
-        &self,
-        grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         if grip_id == 0 {
             // Insertion point
             vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Move with Text", action: GripMenuAction::MoveWithText },
-                GripMenuItem { label: "Rotate", action: GripMenuAction::RotateText },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Move with Text",
+                    action: GripMenuAction::MoveWithText,
+                },
+                GripMenuItem {
+                    label: "Rotate",
+                    action: GripMenuAction::RotateText,
+                },
             ]
         } else {
             // Width grip
-            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+            vec![GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            }]
         }
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        _grip_id: usize,
-        _action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, _grip_id: usize, _action: crate::scene::object::GripMenuAction) {
         // Rotate needs a follow-up angle handled by
         // `apply_grip_menu_value`; Move-with-Text is the default drag.
     }

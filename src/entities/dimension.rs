@@ -565,8 +565,10 @@ impl Transformable for Dimension {
 
 // ── Grippable ─────────────────────────────────────────────────────────────────
 
-fn v3(v: &acadrust::types::Vector3) -> Vec3 {
-    Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+/// f64 variant for grip positions — grips must not round UTM-scale
+/// coordinates through f32 before the world-offset subtraction.
+fn dv3(v: &acadrust::types::Vector3) -> glam::DVec3 {
+    glam::DVec3::new(v.x, v.y, v.z)
 }
 
 fn set_v3(target: &mut acadrust::types::Vector3, p: Vec3) {
@@ -590,48 +592,48 @@ fn apply_to_v3(target: &mut acadrust::types::Vector3, apply: &GripApply) {
 
 impl Grippable for Dimension {
     fn grips(&self) -> Vec<GripDef> {
-        let text = v3(&self.base().text_middle_point);
+        let text = dv3(&self.base().text_middle_point);
         match self {
             Dimension::Linear(d) => vec![
-                square_grip(0, v3(&d.first_point)),
-                center_grip(1, v3(&d.second_point)),
-                center_grip(2, v3(&d.definition_point)),
+                square_grip(0, dv3(&d.first_point)),
+                center_grip(1, dv3(&d.second_point)),
+                center_grip(2, dv3(&d.definition_point)),
                 center_grip(3, text),
             ],
             Dimension::Aligned(d) => vec![
-                square_grip(0, v3(&d.first_point)),
-                center_grip(1, v3(&d.second_point)),
-                center_grip(2, v3(&d.definition_point)),
+                square_grip(0, dv3(&d.first_point)),
+                center_grip(1, dv3(&d.second_point)),
+                center_grip(2, dv3(&d.definition_point)),
                 center_grip(3, text),
             ],
             Dimension::Radius(d) => vec![
-                square_grip(0, v3(&d.angle_vertex)),
-                center_grip(1, v3(&d.definition_point)),
+                square_grip(0, dv3(&d.angle_vertex)),
+                center_grip(1, dv3(&d.definition_point)),
                 center_grip(2, text),
             ],
             Dimension::Diameter(d) => vec![
-                square_grip(0, v3(&d.angle_vertex)),
-                center_grip(1, v3(&d.definition_point)),
+                square_grip(0, dv3(&d.angle_vertex)),
+                center_grip(1, dv3(&d.definition_point)),
                 center_grip(2, text),
             ],
             Dimension::Angular2Ln(d) => vec![
-                square_grip(0, v3(&d.angle_vertex)),
-                center_grip(1, v3(&d.first_point)),
-                center_grip(2, v3(&d.second_point)),
-                center_grip(3, v3(&d.definition_point)),
+                square_grip(0, dv3(&d.angle_vertex)),
+                center_grip(1, dv3(&d.first_point)),
+                center_grip(2, dv3(&d.second_point)),
+                center_grip(3, dv3(&d.definition_point)),
                 center_grip(4, text),
             ],
             Dimension::Angular3Pt(d) => vec![
-                square_grip(0, v3(&d.angle_vertex)),
-                center_grip(1, v3(&d.first_point)),
-                center_grip(2, v3(&d.second_point)),
-                center_grip(3, v3(&d.definition_point)),
+                square_grip(0, dv3(&d.angle_vertex)),
+                center_grip(1, dv3(&d.first_point)),
+                center_grip(2, dv3(&d.second_point)),
+                center_grip(3, dv3(&d.definition_point)),
                 center_grip(4, text),
             ],
             Dimension::Ordinate(d) => vec![
-                square_grip(0, v3(&d.definition_point)),
-                center_grip(1, v3(&d.feature_location)),
-                center_grip(2, v3(&d.leader_endpoint)),
+                square_grip(0, dv3(&d.definition_point)),
+                center_grip(1, dv3(&d.feature_location)),
+                center_grip(2, dv3(&d.leader_endpoint)),
                 center_grip(3, text),
             ],
         }
@@ -697,10 +699,7 @@ impl Grippable for Dimension {
         self.base_mut().actual_measurement = self.measurement();
     }
 
-    fn grip_menu(
-        &self,
-        grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         let (dim_line_grip, text_grip) = match self {
             Dimension::Linear(_) | Dimension::Aligned(_) => (2, 3),
@@ -710,30 +709,59 @@ impl Grippable for Dimension {
         };
         if grip_id == text_grip {
             vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Move with Dim Line", action: GripMenuAction::MoveWithDimLine },
-                GripMenuItem { label: "Move with Leader", action: GripMenuAction::MoveWithLeader },
-                GripMenuItem { label: "Move Independent", action: GripMenuAction::MoveIndependent },
-                GripMenuItem { label: "Reset Text", action: GripMenuAction::ResetText },
-                GripMenuItem { label: "Rotate Text", action: GripMenuAction::RotateText },
-                GripMenuItem { label: "Above Dim Line", action: GripMenuAction::AboveDimLine },
-                GripMenuItem { label: "Center", action: GripMenuAction::Center },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Move with Dim Line",
+                    action: GripMenuAction::MoveWithDimLine,
+                },
+                GripMenuItem {
+                    label: "Move with Leader",
+                    action: GripMenuAction::MoveWithLeader,
+                },
+                GripMenuItem {
+                    label: "Move Independent",
+                    action: GripMenuAction::MoveIndependent,
+                },
+                GripMenuItem {
+                    label: "Reset Text",
+                    action: GripMenuAction::ResetText,
+                },
+                GripMenuItem {
+                    label: "Rotate Text",
+                    action: GripMenuAction::RotateText,
+                },
+                GripMenuItem {
+                    label: "Above Dim Line",
+                    action: GripMenuAction::AboveDimLine,
+                },
+                GripMenuItem {
+                    label: "Center",
+                    action: GripMenuAction::Center,
+                },
             ]
         } else if grip_id == dim_line_grip {
             vec![
-                GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-                GripMenuItem { label: "Reverse Arrows", action: GripMenuAction::ReverseArrows },
+                GripMenuItem {
+                    label: "Stretch",
+                    action: GripMenuAction::Stretch,
+                },
+                GripMenuItem {
+                    label: "Reverse Arrows",
+                    action: GripMenuAction::ReverseArrows,
+                },
             ]
         } else {
-            vec![GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch }]
+            vec![GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            }]
         }
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        grip_id: usize,
-        action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::object::GripMenuAction) {
         use crate::scene::object::GripMenuAction as A;
         let (_dim_line_grip, text_grip) = match self {
             Dimension::Linear(_) | Dimension::Aligned(_) => (2, 3),
@@ -1056,14 +1084,8 @@ fn tessellate_dimension_inner(
 
     // DIMLWD (dim line + arrows) and DIMLWE (extension lines). Negative
     // codes fall through to the entity's own resolved weight.
-    let lw_dim = resolve_dim_lineweight_px(
-        style.map(|s| s.dimlwd).unwrap_or(-2),
-        line_weight_px,
-    );
-    let lw_ext = resolve_dim_lineweight_px(
-        style.map(|s| s.dimlwe).unwrap_or(-2),
-        line_weight_px,
-    );
+    let lw_dim = resolve_dim_lineweight_px(style.map(|s| s.dimlwd).unwrap_or(-2), line_weight_px);
+    let lw_ext = resolve_dim_lineweight_px(style.map(|s| s.dimlwe).unwrap_or(-2), line_weight_px);
 
     // DIMLTEX (dim line) / DIMLTEX1 (ext1) / DIMLTEX2 (ext2) — linetype
     // handles → pattern. Looked up in document.line_types by handle.
@@ -1311,10 +1333,7 @@ fn split_ext_lines(points: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
 /// text_middle_point). Returns None when the dim has no saved text position
 /// or has no well-defined dim-line midpoint (radius/diameter handled by
 /// their own leg).
-fn dimtmove_leader_endpoints(
-    dim: &Dimension,
-    world_offset: [f64; 3],
-) -> Option<(Vec3, Vec3)> {
+fn dimtmove_leader_endpoints(dim: &Dimension, world_offset: [f64; 3]) -> Option<(Vec3, Vec3)> {
     let base = dim.base();
     let txt = base.text_middle_point;
     if txt.x * txt.x + txt.y * txt.y + txt.z * txt.z <= 1e-16 {
@@ -1366,8 +1385,7 @@ fn text_fill_rect(
     let dimgap = style.map(|s| s.dimgap).unwrap_or(0.0).max(0.0);
     // ~0.6 × text_height per character; matches average glyph aspect for
     // the bundled stick fonts. Inflate by 1 DIMGAP on each side.
-    let approx_w =
-        value.chars().count() as f64 * text_height * 0.6 + dimgap * 2.0;
+    let approx_w = value.chars().count() as f64 * text_height * 0.6 + dimgap * 2.0;
     let approx_h = text_height + dimgap * 2.0;
     let rot = if dim.base().text_rotation.abs() > 1e-9 {
         dim.base().text_rotation
@@ -1471,7 +1489,12 @@ fn dimension_geometry(
                 text
             };
             add_segment(&mut g.dim_lines, point, leader);
-            append_arrow(&mut g, point, normalized_or(center - point, Vec3::X), arrow1);
+            append_arrow(
+                &mut g,
+                point,
+                normalized_or(center - point, Vec3::X),
+                arrow1,
+            );
             let radius = (point - center).length();
             append_center_mark(&mut g, center, params.dimcen, radius);
         }
@@ -2040,7 +2063,13 @@ fn build_tolerance_suffix(
             return Some(format!("±{}{}", fmt(s.dimtp), unit));
         }
         if s.dimtp.abs() > 1e-12 || s.dimtm.abs() > 1e-12 {
-            return Some(format!("+{}{} / -{}{}", fmt(s.dimtp), unit, fmt(s.dimtm), unit));
+            return Some(format!(
+                "+{}{} / -{}{}",
+                fmt(s.dimtp),
+                unit,
+                fmt(s.dimtm),
+                unit
+            ));
         }
     }
     None
@@ -2084,7 +2113,11 @@ fn alternate_units_text(measurement: f64, style: Option<&DimStyle>) -> Option<St
             let raw = format!("{:.*}", alttdec, x * s.dimaltf);
             swap_decimal_sep(&apply_linear_zero_suppression(&raw, alttzin), s.dimdsep)
         };
-        format!("{}/{}", fmt(measurement + s.dimtp), fmt(measurement - s.dimtm))
+        format!(
+            "{}/{}",
+            fmt(measurement + s.dimtp),
+            fmt(measurement - s.dimtm)
+        )
     } else {
         sep_swapped
     };
@@ -2149,7 +2182,7 @@ fn dimension_tolerance_entity(
     let dy_local = match s.dimtolj {
         0 => -primary_height * 0.5 + tol_height * 0.5, // bottom-aligned with primary baseline
         2 => primary_height * 0.5 - tol_height * 0.5,  // top-aligned with primary top
-        _ => 0.0,                                       // centred (default for ±)
+        _ => 0.0,                                      // centred (default for ±)
     };
     let rot = primary_rotation;
     let (sr, cr) = rot.sin_cos();
@@ -2422,11 +2455,7 @@ fn vec3_local(v: Vector3, off: [f64; 3]) -> Vec3 {
     )
 }
 
-fn dimension_text_pos_f64(
-    dim: &Dimension,
-    style: Option<&DimStyle>,
-    text_height: f64,
-) -> Vector3 {
+fn dimension_text_pos_f64(dim: &Dimension, style: Option<&DimStyle>, text_height: f64) -> Vector3 {
     let base = dim.base();
     let p = base.text_middle_point;
     if p.x * p.x + p.y * p.y + p.z * p.z > 1e-16 {
@@ -2545,4 +2574,3 @@ fn dimension_text_pos_f64(
 fn perp_sign_default() -> f64 {
     1.0
 }
-

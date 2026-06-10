@@ -1,5 +1,4 @@
 use acadrust::entities::{Ray, XLine};
-use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, square_grip};
@@ -47,13 +46,13 @@ impl Grippable for Ray {
         // Grip 1: a point along the direction (changes direction)
         let guide_dist = 10.0_f64;
         vec![
-            square_grip(0, Vec3::new(bp.x as f32, bp.y as f32, bp.z as f32)),
+            square_grip(0, glam::DVec3::new(bp.x, bp.y, bp.z)),
             center_grip(
                 1,
-                Vec3::new(
-                    (bp.x + dir.x * guide_dist) as f32,
-                    (bp.y + dir.y * guide_dist) as f32,
-                    (bp.z + dir.z * guide_dist) as f32,
+                glam::DVec3::new(
+                    bp.x + dir.x * guide_dist,
+                    bp.y + dir.y * guide_dist,
+                    bp.z + dir.z * guide_dist,
                 ),
             ),
         ]
@@ -185,13 +184,13 @@ impl Grippable for XLine {
         let dir = &self.direction;
         let guide_dist = 10.0_f64;
         vec![
-            square_grip(0, Vec3::new(bp.x as f32, bp.y as f32, bp.z as f32)),
+            square_grip(0, glam::DVec3::new(bp.x, bp.y, bp.z)),
             center_grip(
                 1,
-                Vec3::new(
-                    (bp.x + dir.x * guide_dist) as f32,
-                    (bp.y + dir.y * guide_dist) as f32,
-                    (bp.z + dir.z * guide_dist) as f32,
+                glam::DVec3::new(
+                    bp.x + dir.x * guide_dist,
+                    bp.y + dir.y * guide_dist,
+                    bp.z + dir.z * guide_dist,
                 ),
             ),
         ]

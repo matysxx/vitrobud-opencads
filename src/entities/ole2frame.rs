@@ -3,7 +3,7 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
-use crate::entities::traits::{TruckConvertible};
+use crate::entities::traits::TruckConvertible;
 use crate::scene::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::object::{GripApply, GripDef, PropSection};
 use crate::scene::wire_model::SnapHint;
@@ -56,15 +56,15 @@ fn to_truck(ole: &Ole2Frame) -> TruckEntity {
 }
 
 fn grips(ole: &Ole2Frame) -> Vec<GripDef> {
-    let ul = Vec3::new(
-        ole.upper_left_corner.x as f32,
-        ole.upper_left_corner.y as f32,
-        ole.upper_left_corner.z as f32,
+    let ul = glam::DVec3::new(
+        ole.upper_left_corner.x,
+        ole.upper_left_corner.y,
+        ole.upper_left_corner.z,
     );
-    let lr = Vec3::new(
-        ole.lower_right_corner.x as f32,
-        ole.lower_right_corner.y as f32,
-        ole.lower_right_corner.z as f32,
+    let lr = glam::DVec3::new(
+        ole.lower_right_corner.x,
+        ole.lower_right_corner.y,
+        ole.lower_right_corner.z,
     );
     let center = (ul + lr) * 0.5;
     vec![
@@ -181,7 +181,10 @@ impl TruckConvertible for Ole2Frame {
 crate::impl_entity_basics!(Ole2Frame);
 
 impl crate::entities::traits::FallbackTess for Ole2Frame {
-    fn fallback_geometry(&self, world_offset: [f64; 3]) -> crate::scene::tess_util::FallbackGeometry {
+    fn fallback_geometry(
+        &self,
+        world_offset: [f64; 3],
+    ) -> crate::scene::tess_util::FallbackGeometry {
         // OLE objects carry a bounding rectangle in model space.
         // Render a simple X-through-rectangle placeholder.
         let [ox, oy, oz] = world_offset;
@@ -193,12 +196,7 @@ impl crate::entities::traits::FallbackTess for Ole2Frame {
         if (x1 - x0).abs() < 1e-6 && (y1 - y0).abs() < 1e-6 {
             // Degenerate / unknown size — show a small cross.
             let s = 0.5_f32;
-            return (
-                vec![[-s, 0.0, 0.0], [s, 0.0, 0.0]],
-                vec![],
-                vec![],
-                vec![],
-            );
+            return (vec![[-s, 0.0, 0.0], [s, 0.0, 0.0]], vec![], vec![], vec![]);
         }
         let pts = vec![
             // Outer rectangle

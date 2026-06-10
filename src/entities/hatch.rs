@@ -3,7 +3,7 @@ use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, parse_f64, ro_prop as ro};
-use crate::entities::traits::{Grippable, FallbackTess, PropertyEditable, Transformable};
+use crate::entities::traits::{FallbackTess, Grippable, PropertyEditable, Transformable};
 use crate::scene::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::tess_util::{arc_segments, arc_signed_span, wire_chord_tol, FallbackGeometry};
 use crate::scene::wire_model::SnapHint;
@@ -66,11 +66,7 @@ fn properties(h: &Hatch) -> PropSection {
             ),
             edit("Elevation", "elevation", h.elevation),
             ro("Seed Points", "seed_count", h.seed_points.len().to_string()),
-            ro(
-                "Pixel Size",
-                "pixel_size",
-                format!("{:.6}", h.pixel_size),
-            ),
+            ro("Pixel Size", "pixel_size", format!("{:.6}", h.pixel_size)),
             ro(
                 "Normal",
                 "normal",
@@ -174,7 +170,7 @@ impl Transformable for Hatch {
 ///   Spline         → fit points if present, else control points (x, y)
 impl Grippable for Hatch {
     fn grips(&self) -> Vec<GripDef> {
-        let elev = self.elevation as f32;
+        let elev = self.elevation;
         let mut out = Vec::new();
         let mut id = 0usize;
         for path in &self.paths {
@@ -182,33 +178,30 @@ impl Grippable for Hatch {
                 match edge {
                     BoundaryEdge::Polyline(p) => {
                         for v in &p.vertices {
-                            out.push(center_grip(id, Vec3::new(v.x as f32, v.y as f32, elev)));
+                            out.push(center_grip(id, glam::DVec3::new(v.x, v.y, elev)));
                             id += 1;
                         }
                     }
                     BoundaryEdge::Line(l) => {
                         out.push(center_grip(
                             id,
-                            Vec3::new(l.start.x as f32, l.start.y as f32, elev),
+                            glam::DVec3::new(l.start.x, l.start.y, elev),
                         ));
                         id += 1;
-                        out.push(center_grip(
-                            id,
-                            Vec3::new(l.end.x as f32, l.end.y as f32, elev),
-                        ));
+                        out.push(center_grip(id, glam::DVec3::new(l.end.x, l.end.y, elev)));
                         id += 1;
                     }
                     BoundaryEdge::CircularArc(a) => {
                         out.push(center_grip(
                             id,
-                            Vec3::new(a.center.x as f32, a.center.y as f32, elev),
+                            glam::DVec3::new(a.center.x, a.center.y, elev),
                         ));
                         id += 1;
                     }
                     BoundaryEdge::EllipticArc(e) => {
                         out.push(center_grip(
                             id,
-                            Vec3::new(e.center.x as f32, e.center.y as f32, elev),
+                            glam::DVec3::new(e.center.x, e.center.y, elev),
                         ));
                         id += 1;
                     }
@@ -219,7 +212,7 @@ impl Grippable for Hatch {
                             s.control_points.iter().map(|p| [p.x, p.y]).collect()
                         };
                         for [x, y] in pts {
-                            out.push(center_grip(id, Vec3::new(x as f32, y as f32, elev)));
+                            out.push(center_grip(id, glam::DVec3::new(x, y, elev)));
                             id += 1;
                         }
                     }
@@ -330,24 +323,29 @@ impl Grippable for Hatch {
         }
     }
 
-    fn grip_menu(
-        &self,
-        _grip_id: usize,
-    ) -> Vec<crate::scene::object::GripMenuItem> {
+    fn grip_menu(&self, _grip_id: usize) -> Vec<crate::scene::object::GripMenuItem> {
         use crate::scene::object::{GripMenuAction, GripMenuItem};
         vec![
-            GripMenuItem { label: "Stretch", action: GripMenuAction::Stretch },
-            GripMenuItem { label: "Origin Point", action: GripMenuAction::OriginPoint },
-            GripMenuItem { label: "Hatch Angle", action: GripMenuAction::HatchAngle },
-            GripMenuItem { label: "Hatch Scale", action: GripMenuAction::HatchScale },
+            GripMenuItem {
+                label: "Stretch",
+                action: GripMenuAction::Stretch,
+            },
+            GripMenuItem {
+                label: "Origin Point",
+                action: GripMenuAction::OriginPoint,
+            },
+            GripMenuItem {
+                label: "Hatch Angle",
+                action: GripMenuAction::HatchAngle,
+            },
+            GripMenuItem {
+                label: "Hatch Scale",
+                action: GripMenuAction::HatchScale,
+            },
         ]
     }
 
-    fn apply_grip_menu(
-        &mut self,
-        _grip_id: usize,
-        _action: crate::scene::object::GripMenuAction,
-    ) {
+    fn apply_grip_menu(&mut self, _grip_id: usize, _action: crate::scene::object::GripMenuAction) {
         // Origin / Angle / Scale need a follow-up value — handled by
         // `apply_grip_menu_value`.
     }
@@ -446,7 +444,11 @@ impl FallbackTess for Hatch {
                                 key_verts.push(p);
                                 continue;
                             };
-                            let segs = arc_segments(arc.radius, arc.sweep.abs(), wire_chord_tol(arc.radius));
+                            let segs = arc_segments(
+                                arc.radius,
+                                arc.sweep.abs(),
+                                wire_chord_tol(arc.radius),
+                            );
                             for j in 0..segs {
                                 let s = arc.sample(j as f64 / segs as f64);
                                 let p = to_wcs(s[0], s[1]);
@@ -509,10 +511,7 @@ impl FallbackTess for Hatch {
                             + ell.major_axis_endpoint.y * ell.major_axis_endpoint.y)
                             .sqrt();
                         let r_min = r_maj * ell.minor_axis_ratio;
-                        let rot = ell
-                            .major_axis_endpoint
-                            .y
-                            .atan2(ell.major_axis_endpoint.x);
+                        let rot = ell.major_axis_endpoint.y.atan2(ell.major_axis_endpoint.x);
                         let (sa, span) =
                             arc_signed_span(ell.start_angle, ell.end_angle, ell.counter_clockwise);
                         let segs = arc_segments(r_maj, span.abs(), wire_chord_tol(r_maj));

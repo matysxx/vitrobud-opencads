@@ -304,10 +304,13 @@ impl OpenCADStudio {
                 // header so the ✓ marks the right one (text/dim/mline come from
                 // the document header directly). DXF provides these via
                 // $CTABLESTYLE / $CMLEADERSTYLE; DWG leaves them at "Standard".
-                self.ribbon.active_table_style =
-                    self.tabs[i].scene.document.header.current_table_style_name.clone();
-                self.tabs[i].active_mleader_style = self
-                    .tabs[i]
+                self.ribbon.active_table_style = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .current_table_style_name
+                    .clone();
+                self.tabs[i].active_mleader_style = self.tabs[i]
                     .scene
                     .document
                     .header
@@ -3838,8 +3841,8 @@ impl OpenCADStudio {
                             handle: popup.handle,
                             grip_id,
                             is_translate,
-                            origin_world: g.world,
-                            last_world: g.world,
+                            origin_world: g.world.as_vec3(),
+                            last_world: g.world.as_vec3(),
                         });
                     }
                     return Task::none();
@@ -3900,8 +3903,8 @@ impl OpenCADStudio {
                             handle: popup.handle,
                             grip_id: new_gid,
                             is_translate: false,
-                            origin_world: g.world,
-                            last_world: g.world,
+                            origin_world: g.world.as_vec3(),
+                            last_world: g.world.as_vec3(),
                         });
                         self.grip_add_provisional = Some((popup.handle, new_gid));
                     }
@@ -6746,7 +6749,11 @@ impl OpenCADStudio {
                 if exists {
                     // Staged: header field is the round-trip source of truth
                     // ($CMLEADERSTYLE); the ribbon/tab mirror it.
-                    self.tabs[i].scene.document.header.current_mleader_style_name = name.clone();
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .current_mleader_style_name = name.clone();
                     self.tabs[i].active_mleader_style = name.clone();
                     self.ribbon.active_mleader_style = name.clone();
                     self.command_line

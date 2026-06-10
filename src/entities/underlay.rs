@@ -46,10 +46,7 @@ impl TruckConvertible for Underlay {
         if !self.clip_boundary_vertices.is_empty() {
             // Draw clip boundary polygon + close it.
             let world_verts = self.world_clip_boundary();
-            let mut pts: Vec<[f64; 3]> = world_verts
-                .iter()
-                .map(|v| [v.x, v.y, v.z])
-                .collect();
+            let mut pts: Vec<[f64; 3]> = world_verts.iter().map(|v| [v.x, v.y, v.z]).collect();
             // Close polygon.
             if let Some(&first) = pts.first() {
                 pts.push(first);
@@ -81,16 +78,17 @@ impl TruckConvertible for Underlay {
 
 impl Grippable for Underlay {
     fn grips(&self) -> Vec<GripDef> {
-        let origin = Vec3::from(v3f32(&self.insertion_point));
+        let origin = glam::DVec3::new(
+            self.insertion_point.x,
+            self.insertion_point.y,
+            self.insertion_point.z,
+        );
         let mut grips = vec![square_grip(0, origin)];
 
         if !self.clip_boundary_vertices.is_empty() {
             let world_verts = self.world_clip_boundary();
             for (i, v) in world_verts.iter().enumerate() {
-                grips.push(center_grip(
-                    i + 1,
-                    Vec3::new(v.x as f32, v.y as f32, v.z as f32),
-                ));
+                grips.push(center_grip(i + 1, glam::DVec3::new(v.x, v.y, v.z)));
             }
         }
 

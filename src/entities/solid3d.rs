@@ -15,8 +15,8 @@ use crate::scene::object::{GripApply, GripDef, PropSection};
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 
-fn por_to_vec3(v: &acadrust::types::Vector3) -> Vec3 {
-    Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+fn dvec3(v: &acadrust::types::Vector3) -> glam::DVec3 {
+    glam::DVec3::new(v.x, v.y, v.z)
 }
 
 fn translate_wires(wires: &mut Vec<acadrust::entities::Wire>, d: Vec3) {
@@ -44,7 +44,7 @@ fn acis_size_str(has_data: bool, sat_len: usize, sab_len: usize, is_binary: bool
 
 impl Grippable for Solid3D {
     fn grips(&self) -> Vec<GripDef> {
-        vec![center_grip(0, por_to_vec3(&self.point_of_reference))]
+        vec![center_grip(0, dvec3(&self.point_of_reference))]
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
@@ -120,7 +120,7 @@ impl PropertyEditable for Solid3D {
 
 impl Grippable for Region {
     fn grips(&self) -> Vec<GripDef> {
-        vec![center_grip(0, por_to_vec3(&self.point_of_reference))]
+        vec![center_grip(0, dvec3(&self.point_of_reference))]
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
@@ -188,7 +188,7 @@ impl PropertyEditable for Region {
 
 impl Grippable for Body {
     fn grips(&self) -> Vec<GripDef> {
-        vec![center_grip(0, por_to_vec3(&self.point_of_reference))]
+        vec![center_grip(0, dvec3(&self.point_of_reference))]
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
@@ -260,9 +260,9 @@ impl PropertyEditable for Body {
 // to repeat a three-arm `match entity` block at every callsite — the
 // helpers below collapse those to a single call.
 
-use acadrust::{types::Vector3, EntityType};
 use crate::scene::mesh_model::MeshLodSet;
 use crate::scene::solid3d_tess;
+use acadrust::{types::Vector3, EntityType};
 
 /// `point_of_reference` of an ACIS-backed volume entity, if applicable.
 pub fn point_of_reference(e: &EntityType) -> Option<&Vector3> {
@@ -288,11 +288,7 @@ pub fn fallback_wires(e: &EntityType) -> Option<&[acadrust::entities::Wire]> {
 
 /// Run the appropriate `solid3d_tess::tessellate_*` for the entity,
 /// returning `None` for non-volume entities or when the kernel fails.
-pub fn tessellate_volume(
-    e: &EntityType,
-    color: [f32; 4],
-    facet_res: f64,
-) -> Option<MeshLodSet> {
+pub fn tessellate_volume(e: &EntityType, color: [f32; 4], facet_res: f64) -> Option<MeshLodSet> {
     match e {
         EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color, facet_res),
         EntityType::Region(r) => solid3d_tess::tessellate_region(r, color, facet_res),

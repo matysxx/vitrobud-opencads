@@ -18,6 +18,10 @@ fn v3(v: &acadrust::types::Vector3) -> [f64; 3] {
     [v.x, v.y, v.z]
 }
 
+fn dvec3(v: &acadrust::types::Vector3) -> glam::DVec3 {
+    glam::DVec3::new(v.x, v.y, v.z)
+}
+
 fn v3f32(v: &acadrust::types::Vector3) -> [f32; 3] {
     [v.x as f32, v.y as f32, v.z as f32]
 }
@@ -66,10 +70,10 @@ impl TruckConvertible for Solid {
 impl Grippable for Solid {
     fn grips(&self) -> Vec<GripDef> {
         vec![
-            square_grip(0, Vec3::from(v3f32(&self.first_corner))),
-            square_grip(1, Vec3::from(v3f32(&self.second_corner))),
-            square_grip(2, Vec3::from(v3f32(&self.third_corner))),
-            square_grip(3, Vec3::from(v3f32(&self.fourth_corner))),
+            square_grip(0, dvec3(&self.first_corner)),
+            square_grip(1, dvec3(&self.second_corner)),
+            square_grip(2, dvec3(&self.third_corner)),
+            square_grip(3, dvec3(&self.fourth_corner)),
         ]
     }
 

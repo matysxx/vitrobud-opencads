@@ -437,9 +437,12 @@ impl OpenCADStudio {
                 let grips = dispatch::grips(entity)
                     .into_iter()
                     .map(|mut g| {
-                        g.world.x -= wo[0] as f32;
-                        g.world.y -= wo[1] as f32;
-                        g.world.z -= wo[2] as f32;
+                        // Subtract in f64: at UTM magnitudes an f32 cast before
+                        // the offset costs ~1 unit and draws the grip off the
+                        // wire.
+                        g.world.x -= wo[0];
+                        g.world.y -= wo[1];
+                        g.world.z -= wo[2];
                         g
                     })
                     .collect();

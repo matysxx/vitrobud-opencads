@@ -1,5 +1,4 @@
 use acadrust::entities::{Viewport, ViewportRenderMode};
-use glam::Vec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
@@ -105,27 +104,22 @@ const STD_VIEWS: &[&str] = &[
 ];
 
 fn grips(vp: &Viewport) -> Vec<GripDef> {
-    let cx = vp.center.x as f32;
-    let cy = vp.center.y as f32;
-    let cz = vp.center.z as f32;
-    let hw = (vp.width / 2.0) as f32;
-    let hh = (vp.height / 2.0) as f32;
+    let (cx, cy, cz) = (vp.center.x, vp.center.y, vp.center.z);
+    let hw = vp.width / 2.0;
+    let hh = vp.height / 2.0;
     vec![
-        center_grip(0, Vec3::new(cx, cy, cz)),
-        square_grip(1, Vec3::new(cx + hw, cy + hh, cz)),
-        square_grip(2, Vec3::new(cx - hw, cy + hh, cz)),
-        square_grip(3, Vec3::new(cx - hw, cy - hh, cz)),
-        square_grip(4, Vec3::new(cx + hw, cy - hh, cz)),
+        center_grip(0, glam::DVec3::new(cx, cy, cz)),
+        square_grip(1, glam::DVec3::new(cx + hw, cy + hh, cz)),
+        square_grip(2, glam::DVec3::new(cx - hw, cy + hh, cz)),
+        square_grip(3, glam::DVec3::new(cx - hw, cy - hh, cz)),
+        square_grip(4, glam::DVec3::new(cx + hw, cy - hh, cz)),
     ]
 }
 
 fn properties(vp: &Viewport) -> PropSection {
     let scale_opts: Vec<String> = STANDARD_SCALES.iter().map(|(s, _)| s.to_string()).collect();
-    let effective_scale = crate::scene::vp_effective_scale(
-        vp.custom_scale,
-        vp.view_height,
-        vp.height,
-    );
+    let effective_scale =
+        crate::scene::vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
     let current_scale_label = scale_label(effective_scale);
 
     let view_opts: Vec<String> = STD_VIEWS.iter().map(|s| s.to_string()).collect();
@@ -256,11 +250,7 @@ fn properties(vp: &Viewport) -> PropSection {
             edit("Twist Angle", "vp_twist", vp.twist_angle.to_degrees()),
             edit("Front Clip Z", "vp_front_clip", vp.front_clip_z),
             edit("Back Clip Z", "vp_back_clip", vp.back_clip_z),
-            edit(
-                "Circle Sides",
-                "vp_circle_sides",
-                vp.circle_sides as f64,
-            ),
+            edit("Circle Sides", "vp_circle_sides", vp.circle_sides as f64),
             ro(
                 "Grid Flags",
                 "vp_grid_flags",
@@ -276,11 +266,7 @@ fn properties(vp: &Viewport) -> PropSection {
                     format!("{:X}", vp.base_ucs_handle.value())
                 },
             ),
-            ro(
-                "UCS Ortho",
-                "vp_ucs_ortho",
-                vp.ucs_ortho_type.to_string(),
-            ),
+            ro("UCS Ortho", "vp_ucs_ortho", vp.ucs_ortho_type.to_string()),
             ro(
                 "Background",
                 "vp_background_handle",
@@ -560,7 +546,10 @@ fn apply_transform(vp: &mut Viewport, t: &EntityTransform) {
 crate::impl_entity_basics!(Viewport);
 
 impl crate::entities::traits::FallbackTess for Viewport {
-    fn fallback_geometry(&self, world_offset: [f64; 3]) -> crate::scene::tess_util::FallbackGeometry {
+    fn fallback_geometry(
+        &self,
+        world_offset: [f64; 3],
+    ) -> crate::scene::tess_util::FallbackGeometry {
         let [ox, oy, oz] = world_offset;
         let cx = (self.center.x - ox) as f32;
         let cy = (self.center.y - oy) as f32;

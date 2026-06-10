@@ -1,7 +1,5 @@
 use std::cell::Cell;
 
-use glam::Vec3;
-
 use crate::scene::object::{GripDef, GripShape, PropValue, Property};
 
 /// Linear / angular unit format pulled from the document header so the
@@ -121,7 +119,7 @@ pub fn format_angle(value_rad: f64) -> String {
     }
 }
 
-pub fn square_grip(id: usize, world: Vec3) -> GripDef {
+pub fn square_grip(id: usize, world: glam::DVec3) -> GripDef {
     GripDef {
         id,
         world,
@@ -133,7 +131,7 @@ pub fn square_grip(id: usize, world: Vec3) -> GripDef {
 
 /// Centre / translate grip — same square marker as a vertex grip but
 /// flagged as a "whole-object move" handle for the grip-edit code.
-pub fn center_grip(id: usize, world: Vec3) -> GripDef {
+pub fn center_grip(id: usize, world: glam::DVec3) -> GripDef {
     GripDef {
         id,
         world,
@@ -146,7 +144,7 @@ pub fn center_grip(id: usize, world: Vec3) -> GripDef {
 /// Mid-segment stretch grip oriented along `dir` (the segment's in-plane
 /// world-XY direction). Drawn as a small rectangle elongated along the
 /// segment so the affordance reads as "stretch perpendicular".
-pub fn rectangle_grip(id: usize, world: Vec3, dir: [f32; 2]) -> GripDef {
+pub fn rectangle_grip(id: usize, world: glam::DVec3, dir: [f32; 2]) -> GripDef {
     GripDef {
         id,
         world,
@@ -157,7 +155,7 @@ pub fn rectangle_grip(id: usize, world: Vec3, dir: [f32; 2]) -> GripDef {
 }
 
 #[allow(dead_code)]
-pub fn triangle_grip(id: usize, world: Vec3) -> GripDef {
+pub fn triangle_grip(id: usize, world: glam::DVec3) -> GripDef {
     GripDef {
         id,
         world,

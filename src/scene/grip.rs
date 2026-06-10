@@ -40,7 +40,7 @@ pub fn grips_to_screen(
     grips
         .iter()
         .map(|g| {
-            let ndc = view_proj.project_point3(g.world);
+            let ndc = view_proj.project_point3(g.world.as_vec3());
             let screen = Point::new(
                 bounds.x + (ndc.x + 1.0) * 0.5 * bounds.width,
                 bounds.y + (1.0 - ndc.y) * 0.5 * bounds.height,
@@ -64,8 +64,8 @@ pub fn grips_to_screen_paper(
         .iter()
         .map(|g| {
             let screen = Point::new(
-                (g.world.x - tx + half_w) / (2.0 * half_w) * bounds.width,
-                (ty + half_h - g.world.y) / (2.0 * half_h) * bounds.height,
+                (g.world.x as f32 - tx + half_w) / (2.0 * half_w) * bounds.width,
+                (ty + half_h - g.world.y as f32) / (2.0 * half_h) * bounds.height,
             );
             (g.id, screen, g.is_midpoint, g.shape, g.dir)
         })
@@ -87,15 +87,15 @@ pub fn find_hit_grip_paper(
 
     for g in grips {
         let screen = Point::new(
-            (g.world.x - tx + half_w) / (2.0 * half_w) * bounds.width,
-            (ty + half_h - g.world.y) / (2.0 * half_h) * bounds.height,
+            (g.world.x as f32 - tx + half_w) / (2.0 * half_w) * bounds.width,
+            (ty + half_h - g.world.y as f32) / (2.0 * half_h) * bounds.height,
         );
         let dx = screen.x - cursor.x;
         let dy = screen.y - cursor.y;
         let d = (dx * dx + dy * dy).sqrt();
         if d < best_dist {
             best_dist = d;
-            best = Some((g.id, g.is_midpoint, g.world));
+            best = Some((g.id, g.is_midpoint, g.world.as_vec3()));
         }
     }
     best
@@ -113,7 +113,7 @@ pub fn find_hit_grip(
     let mut best: Option<(usize, bool, Vec3)> = None;
 
     for g in grips {
-        let ndc = view_proj.project_point3(g.world);
+        let ndc = view_proj.project_point3(g.world.as_vec3());
         let screen = Point::new(
             (ndc.x + 1.0) * 0.5 * bounds.width,
             (1.0 - ndc.y) * 0.5 * bounds.height,
@@ -123,7 +123,7 @@ pub fn find_hit_grip(
         let d = (dx * dx + dy * dy).sqrt();
         if d < best_dist {
             best_dist = d;
-            best = Some((g.id, g.is_midpoint, g.world));
+            best = Some((g.id, g.is_midpoint, g.world.as_vec3()));
         }
     }
     best

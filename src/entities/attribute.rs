@@ -8,8 +8,8 @@ use glam::Vec3;
 use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
 use crate::entities::text_support::{
-    layout_mtext, resolve_dxf_special_chars, resolve_text_style, text_local_bounds, MTextRenderOpts,
-    MTextVAnchor, ResolvedTextStyle,
+    layout_mtext, resolve_dxf_special_chars, resolve_text_style, text_local_bounds,
+    MTextRenderOpts, MTextVAnchor, ResolvedTextStyle,
 };
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::acad_to_truck::{TextStroke, TruckEntity, TruckObject};
@@ -162,7 +162,10 @@ fn build_attr_truck(input: AttrTextInputs<'_>, document: &acadrust::CadDocument)
     // stacked fractions, …) reaches the stroke output. SingleLine attribs
     // keep the Text-style anchor math below — they don't accept MText codes
     // in the DXF spec.
-    if matches!(input.mtext_flag, MTextFlag::MultiLine | MTextFlag::ConstantMultiLine) {
+    if matches!(
+        input.mtext_flag,
+        MTextFlag::MultiLine | MTextFlag::ConstantMultiLine
+    ) {
         let display_value = if input.value.is_empty() {
             String::new()
         } else {
@@ -282,7 +285,11 @@ fn build_attr_truck(input: AttrTextInputs<'_>, document: &acadrust::CadDocument)
             &resolved.font_name,
             line,
         );
-        strokes_all.push(TextStroke { strokes, origin, color: None });
+        strokes_all.push(TextStroke {
+            strokes,
+            origin,
+            color: None,
+        });
     }
     let _ = input.line_count; // round-trip only — recomputed above
 
@@ -338,10 +345,10 @@ impl Grippable for AttributeDefinition {
         }
         vec![square_grip(
             0,
-            Vec3::new(
-                self.insertion_point.x as f32,
-                self.insertion_point.y as f32,
-                self.insertion_point.z as f32,
+            glam::DVec3::new(
+                self.insertion_point.x,
+                self.insertion_point.y,
+                self.insertion_point.z,
             ),
         )]
     }
@@ -448,21 +455,9 @@ impl PropertyEditable for AttributeDefinition {
                         .collect(),
                 },
             },
-            ro(
-                "Multiline",
-                "att_is_multiline",
-                bool_yn(self.is_multiline),
-            ),
-            ro(
-                "Line Count",
-                "att_line_count",
-                self.line_count.to_string(),
-            ),
-            ro(
-                "Lock Position",
-                "att_lock_pos",
-                bool_yn(self.lock_position),
-            ),
+            ro("Multiline", "att_is_multiline", bool_yn(self.is_multiline)),
+            ro("Line Count", "att_line_count", self.line_count.to_string()),
+            ro("Lock Position", "att_lock_pos", bool_yn(self.lock_position)),
             ro("Invisible", "att_invisible", bool_yn(self.flags.invisible)),
             ro("Constant", "att_constant", bool_yn(self.flags.constant)),
             ro("Verify", "att_verify", bool_yn(self.flags.verify)),
@@ -591,10 +586,10 @@ impl Grippable for AttributeEntity {
         }
         vec![square_grip(
             0,
-            Vec3::new(
-                self.insertion_point.x as f32,
-                self.insertion_point.y as f32,
-                self.insertion_point.z as f32,
+            glam::DVec3::new(
+                self.insertion_point.x,
+                self.insertion_point.y,
+                self.insertion_point.z,
             ),
         )]
     }
@@ -691,17 +686,13 @@ impl PropertyEditable for AttributeEntity {
                     "atte_field_len",
                     self.field_length.to_string(),
                 ),
-                ro("MText Mode", "atte_mtext_flag", mtext_flag_str(self.mtext_flag)),
                 ro(
-                    "Multiline",
-                    "atte_is_multiline",
-                    bool_yn(self.is_multiline),
+                    "MText Mode",
+                    "atte_mtext_flag",
+                    mtext_flag_str(self.mtext_flag),
                 ),
-                ro(
-                    "Line Count",
-                    "atte_line_count",
-                    self.line_count.to_string(),
-                ),
+                ro("Multiline", "atte_is_multiline", bool_yn(self.is_multiline)),
+                ro("Line Count", "atte_line_count", self.line_count.to_string()),
                 ro(
                     "Lock Position",
                     "atte_lock_pos",
@@ -716,11 +707,7 @@ impl PropertyEditable for AttributeEntity {
                         format!("{:X}", self.attdef_handle.value())
                     },
                 ),
-                ro(
-                    "Invisible",
-                    "atte_invisible",
-                    bool_yn(self.flags.invisible),
-                ),
+                ro("Invisible", "atte_invisible", bool_yn(self.flags.invisible)),
                 ro("Constant", "atte_constant", bool_yn(self.flags.constant)),
                 ro("Verify", "atte_verify", bool_yn(self.flags.verify)),
                 ro("Preset", "atte_preset", bool_yn(self.flags.preset)),
