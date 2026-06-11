@@ -465,6 +465,18 @@ pub(crate) fn is_entity_corrupt(e: &EntityType) -> bool {
                 // radius small-sweep arc (still a visible curve) survives while
                 // sub-precision arcs are dropped.
                 || a.radius.abs() * (a.end_angle - a.start_angle).abs() < 1.0e-6
+                // Near-collinear sample points: even when the arc *length* clears
+                // the floor above, a small sweep over a modest radius leaves
+                // start/mid/end almost on one line (a 35-unit, 6.5e-7-rad arc has
+                // arc length 2.3e-5 — past the gate — yet bows off its chord by
+                // only ~2e-12). truck's 3-point `circle_arc` fit then returns a
+                // near-infinite radius and `parameter_division` subdivides without
+                // bound. Gate on the sagitta (chord height = r·(1−cos(sweep/2))),
+                // the true measure of how far the arc departs a straight line and
+                // of the fit's conditioning.
+                || a.radius.abs()
+                    * (1.0 - ((a.end_angle - a.start_angle).abs() * 0.5).cos())
+                    < 1.0e-6
                 || !finite_unit_normal(&a.normal)
         }
         E::Ellipse(e) => {
@@ -645,6 +657,24 @@ mod corrupt_guard_tests {
         a.start_angle = 1.0401656235942365;
         a.end_angle = 1.0401671831670538;
         a.normal = Vector3::new(0.0, 0.0, 1.0);
+        assert!(is_entity_corrupt(&EntityType::Arc(a)));
+    }
+
+    // A 35-unit-radius arc sweeping 6.5e-7 rad has arc length 2.3e-5 — past the
+    // arc-length floor — yet its start/mid/end bow off the chord by only ~2e-12,
+    // so truck's 3-point circle fit blows up and parameter_division hangs. The
+    // sagitta floor must reject it where the arc-length floor alone does not.
+    #[test]
+    fn rejects_near_collinear_arc() {
+        let mut a = Arc::new();
+        a.center = Vector3::new(551435.3071786845, 4051623.7156955916, 0.0);
+        a.radius = 35.0;
+        a.start_angle = 5.823361856481176;
+        a.end_angle = 5.823362506017916;
+        a.normal = Vector3::new(0.0, 0.0, 1.0);
+        // Sanity: arc length clears the old gate, proving the sagitta gate is
+        // what catches this one.
+        assert!(a.radius * (a.end_angle - a.start_angle).abs() > 1.0e-6);
         assert!(is_entity_corrupt(&EntityType::Arc(a)));
     }
 
