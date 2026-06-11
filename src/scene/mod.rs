@@ -3870,11 +3870,16 @@ impl Scene {
             let vx = (wo.v_vector.x * wo.size.y) as f32;
             let vy = (wo.v_vector.y * wo.size.y) as f32;
             let _ = oz;
+            // Close the loop (repeat corner 0): the GPU `in_polygon` ray-cast
+            // walks sequential vertex pairs and never wraps last→first, so an
+            // unclosed quad leaves the v3→v0 edge untested and the solid mask
+            // bleeds past the boundary — same reason the polygon branch closes.
             vec![
                 [ox, oy],
                 [ox + ux, oy + uy],
                 [ox + ux + vx, oy + uy + vy],
                 [ox + vx, oy + vy],
+                [ox, oy],
             ]
         }
     }
