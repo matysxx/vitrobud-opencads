@@ -3320,11 +3320,20 @@ impl OpenCADStudio {
                                     vp_mat,
                                     bounds,
                                 ));
-                                self.tabs[i].scene.deselect_all();
-                                for h in &handles {
-                                    self.tabs[i].scene.select_entity(*h, false);
+                                // Box/lasso accumulates like individual picks
+                                // (issue #83): a plain box adds to the current
+                                // selection, Shift+box removes the boxed
+                                // entities. Esc / empty-space click still clears.
+                                if self.shift_down {
+                                    for h in &handles {
+                                        self.tabs[i].scene.deselect_entity(*h);
+                                    }
+                                } else {
+                                    for h in &handles {
+                                        self.tabs[i].scene.select_entity(*h, false);
+                                    }
+                                    self.tabs[i].scene.expand_selection_for_groups(&handles);
                                 }
-                                self.tabs[i].scene.expand_selection_for_groups(&handles);
                                 self.refresh_properties();
                                 selection_just_completed = true;
                             }
@@ -3364,11 +3373,21 @@ impl OpenCADStudio {
                             ));
                             // Selection filter: keep only allowed types.
                             handles.retain(|&h| self.tabs[i].scene.passes_selection_filter(h));
-                            self.tabs[i].scene.deselect_all();
-                            for h in &handles {
-                                self.tabs[i].scene.select_entity(*h, false);
+                            // Accumulate like the box path (issue #83): plain
+                            // lasso adds, Shift+lasso removes, an empty lasso
+                            // clears.
+                            if self.shift_down {
+                                for h in &handles {
+                                    self.tabs[i].scene.deselect_entity(*h);
+                                }
+                            } else if handles.is_empty() {
+                                self.tabs[i].scene.deselect_all();
+                            } else {
+                                for h in &handles {
+                                    self.tabs[i].scene.select_entity(*h, false);
+                                }
+                                self.tabs[i].scene.expand_selection_for_groups(&handles);
                             }
-                            self.tabs[i].scene.expand_selection_for_groups(&handles);
                             self.refresh_properties();
                             selection_just_completed = true;
                         }
@@ -3451,8 +3470,11 @@ impl OpenCADStudio {
                                     self.refresh_properties();
                                     selection_just_completed = true;
                                 } else {
-                                    self.tabs[i].scene.deselect_all();
-                                    self.refresh_properties();
+                                    // Empty-space click only ARMS a box here; it
+                                    // no longer clears the selection, so a box can
+                                    // add to it (issue #83). The box completion
+                                    // (or Esc) decides what happens to the
+                                    // selection.
                                     let mut sel = self.tabs[i].scene.selection.borrow_mut();
                                     // Full-canvas space: ViewportMove updates
                                     // box_current in canvas coords and the overlay
@@ -3488,11 +3510,22 @@ impl OpenCADStudio {
                             ));
                             // Selection filter: keep only allowed types.
                             handles.retain(|&h| self.tabs[i].scene.passes_selection_filter(h));
-                            self.tabs[i].scene.deselect_all();
-                            for h in &handles {
-                                self.tabs[i].scene.select_entity(*h, false);
+                            // Accumulate (issue #83): a plain box adds to the
+                            // current selection, Shift+box removes the boxed
+                            // entities, and an empty box clears (the two-click
+                            // analogue of clicking empty space).
+                            if self.shift_down {
+                                for h in &handles {
+                                    self.tabs[i].scene.deselect_entity(*h);
+                                }
+                            } else if handles.is_empty() {
+                                self.tabs[i].scene.deselect_all();
+                            } else {
+                                for h in &handles {
+                                    self.tabs[i].scene.select_entity(*h, false);
+                                }
+                                self.tabs[i].scene.expand_selection_for_groups(&handles);
                             }
-                            self.tabs[i].scene.expand_selection_for_groups(&handles);
                             self.refresh_properties();
                             let mut sel = self.tabs[i].scene.selection.borrow_mut();
                             sel.box_last = Some((a, p));
