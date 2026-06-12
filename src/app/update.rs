@@ -5103,6 +5103,11 @@ impl OpenCADStudio {
                 if name != "Model" {
                     self.layout_rename_state = Some((name.clone(), name));
                     self.layout_context_menu = None;
+                    // Focus the inline field so the user types into it
+                    // directly instead of the command line (issue #86).
+                    return iced::widget::operation::focus(iced::widget::Id::new(
+                        crate::ui::statusbar::LAYOUT_RENAME_INPUT_ID,
+                    ));
                 }
                 Task::none()
             }

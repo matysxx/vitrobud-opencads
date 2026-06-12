@@ -4,6 +4,10 @@ use iced::widget::tooltip::Position as TipPos;
 use iced::widget::{button, container, mouse_area, row, text, text_input, tooltip, Row};
 use iced::{Background, Border, Color, Element, Length, Theme};
 
+/// Widget id of the inline layout-rename text input, so the rename can grab
+/// keyboard focus the moment it opens (issue #86).
+pub const LAYOUT_RENAME_INPUT_ID: &str = "layout_rename_input";
+
 use crate::app::Message;
 use crate::snap::Snapper;
 use crate::ui::statusbar_config::{StatusBarConfig, StatusPill};
@@ -574,6 +578,7 @@ fn space_tab<'a>(
     if let Some(edit_val) = rename_edit {
         // Inline rename text input with a cancel (✕) button.
         let input = text_input("", edit_val)
+            .id(iced::widget::Id::new(LAYOUT_RENAME_INPUT_ID))
             .on_input(Message::LayoutRenameEdit)
             .on_submit(Message::LayoutRenameCommit)
             .size(11)
