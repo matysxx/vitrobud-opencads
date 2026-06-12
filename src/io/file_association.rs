@@ -232,24 +232,79 @@ mod windows_impl {
         Ok(())
     }
 
-    /// Register the running .exe under HKCU\…\Applications so it shows up in the
-    /// shell's "Open with" list for .dwg / .dxf. The MSI does this machine-wide
-    /// for installed builds; this covers the portable .exe.
-    pub(super) fn register_handler() -> Result<(), String> {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let exe = exe.to_string_lossy().to_string();
-        const BASE: &str = r"Software\Classes\Applications\OpenCADStudio.exe";
-
+    /// Create a per-user ProgID (`HKCU\Software\Classes\<progid>`) with an icon
+    /// and an open command, mirroring one of the MSI's per-machine ProgIDs.
+    fn register_progid(exe: &str, progid: &str, description: &str) -> Result<(), String> {
+        let base = format!(r"Software\Classes\{progid}");
+        set_string(&base, None, description)?;
+        set_string(&format!(r"{base}\DefaultIcon"), None, &format!("\"{exe}\",0"))?;
         set_string(
-            &format!(r"{BASE}\shell\open\command"),
+            &format!(r"{base}\shell\open\command"),
             None,
             &format!("\"{exe}\" \"%1\""),
         )?;
-        set_string(BASE, Some("FriendlyAppName"), "Open CAD Studio")?;
+        Ok(())
+    }
+
+    /// Register the running .exe (per-user, HKCU) so the portable build matches
+    /// what the MSI provides machine-wide:
+    ///   * an `Applications\OpenCADStudio.exe` entry → listed under "Open with";
+    ///   * ProgIDs + a Capabilities / RegisteredApplications block → the app is
+    ///     a default-app candidate, so the in-app "set as default" prompt's OS
+    ///     dialog (LaunchAdvancedAssociationUI "Open CAD Studio") finds it.
+    pub(super) fn register_handler() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = exe.to_string_lossy().to_string();
+
+        // ── "Open with" exe listing ─────────────────────────────────────────
+        const APP_BASE: &str = r"Software\Classes\Applications\OpenCADStudio.exe";
+        set_string(
+            &format!(r"{APP_BASE}\shell\open\command"),
+            None,
+            &format!("\"{exe}\" \"%1\""),
+        )?;
+        set_string(APP_BASE, Some("FriendlyAppName"), "Open CAD Studio")?;
         // Listing the extensions under SupportedTypes is what makes the app
         // appear in the "Open with → Choose another app" picker for them.
-        set_string(&format!(r"{BASE}\SupportedTypes"), Some(".dwg"), "")?;
-        set_string(&format!(r"{BASE}\SupportedTypes"), Some(".dxf"), "")?;
+        set_string(&format!(r"{APP_BASE}\SupportedTypes"), Some(".dwg"), "")?;
+        set_string(&format!(r"{APP_BASE}\SupportedTypes"), Some(".dxf"), "")?;
+
+        // ── ProgIDs (per-user mirror of the MSI's) ──────────────────────────
+        // The Capabilities entries below point at these, and they must resolve
+        // to a real open command for "set as default" to apply them.
+        register_progid(&exe, "OpenCADStudio.DWG", "DWG Drawing")?;
+        register_progid(&exe, "OpenCADStudio.DXF", "DXF Drawing")?;
+        // Also offer the ProgIDs in each extension's Open-with list.
+        set_string(
+            r"Software\Classes\.dwg\OpenWithProgids",
+            Some("OpenCADStudio.DWG"),
+            "",
+        )?;
+        set_string(
+            r"Software\Classes\.dxf\OpenWithProgids",
+            Some("OpenCADStudio.DXF"),
+            "",
+        )?;
+
+        // ── Capabilities + RegisteredApplications ───────────────────────────
+        // Mirrors the MSI's DefaultPrograms component, but per-user, so the
+        // portable build is a Default-Apps candidate too. The value name in
+        // RegisteredApplications must equal the name passed to
+        // LaunchAdvancedAssociationUI ("Open CAD Studio").
+        const CAP: &str = r"Software\Open CAD Studio\Capabilities";
+        set_string(CAP, Some("ApplicationName"), "Open CAD Studio")?;
+        set_string(
+            CAP,
+            Some("ApplicationDescription"),
+            "2D/3D CAD application for DWG and DXF drawings.",
+        )?;
+        set_string(&format!(r"{CAP}\FileAssociations"), Some(".dwg"), "OpenCADStudio.DWG")?;
+        set_string(&format!(r"{CAP}\FileAssociations"), Some(".dxf"), "OpenCADStudio.DXF")?;
+        set_string(
+            r"Software\RegisteredApplications",
+            Some("Open CAD Studio"),
+            r"Software\Open CAD Studio\Capabilities",
+        )?;
         Ok(())
     }
 }
