@@ -264,6 +264,9 @@ mod windows_impl {
             &format!("\"{exe}\" \"%1\""),
         )?;
         set_string(APP_BASE, Some("FriendlyAppName"), "Open CAD Studio")?;
+        // DefaultIcon is what Windows uses to show the app icon in the
+        // "Open with" context-menu list and the "Choose another app" picker.
+        set_string(&format!(r"{APP_BASE}\DefaultIcon"), None, &format!("\"{exe}\",0"))?;
         // Listing the extensions under SupportedTypes is what makes the app
         // appear in the "Open with → Choose another app" picker for them.
         set_string(&format!(r"{APP_BASE}\SupportedTypes"), Some(".dwg"), "")?;
@@ -367,9 +370,40 @@ mod linux_impl {
 
         std::fs::create_dir_all(&apps).map_err(|e| e.to_string())?;
         std::fs::write(&desktop_path, &contents).map_err(|e| e.to_string())?;
+
+        install_icon()?;
+
         // Best-effort: refresh the MIME→app cache. Absent on minimal systems.
         let _ = std::process::Command::new("update-desktop-database")
             .arg(&apps)
+            .status();
+        Ok(())
+    }
+
+    /// Write the app SVG icon into the user's hicolor icon theme so that the
+    /// named `Icon={APP_ID}` entry in the .desktop file resolves correctly in
+    /// file managers and the "Open with" picker. Skipped when the icon is
+    /// already up-to-date; best-effort icon-cache refresh afterwards.
+    fn install_icon() -> Result<(), String> {
+        static LOGO_SVG: &[u8] = include_bytes!("../../assets/logo.svg");
+
+        let icon_dir = data_home()?.join("icons/hicolor/scalable/apps");
+        let icon_path = icon_dir.join(format!("{APP_ID}.svg"));
+
+        // Skip write when the on-disk file is already identical.
+        if std::fs::read(&icon_path).ok().as_deref() == Some(LOGO_SVG) {
+            return Ok(());
+        }
+
+        std::fs::create_dir_all(&icon_dir).map_err(|e| e.to_string())?;
+        std::fs::write(&icon_path, LOGO_SVG).map_err(|e| e.to_string())?;
+
+        // Refresh the icon cache so desktop environments pick up the new file.
+        let hicolor = data_home()
+            .map(|d| d.join("icons/hicolor"))
+            .unwrap_or_default();
+        let _ = std::process::Command::new("gtk-update-icon-cache")
+            .args(["--force", "--quiet", &hicolor.to_string_lossy()])
             .status();
         Ok(())
     }

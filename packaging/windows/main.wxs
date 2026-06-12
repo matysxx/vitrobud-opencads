@@ -112,13 +112,48 @@
             next association query without a forced refresh.
           -->
           <Component Id='DefaultPrograms' Guid='6f3e9b2a-1c4d-4f8a-9b7e-2d5a8c1f0e63' Win64='yes'>
+            <!--
+              Applications\<exename>\DefaultIcon is what Windows shows in the
+              "Open with" context-menu list and "Choose another app" picker.
+              Without it the entry appears with a blank generic document icon.
+            -->
+            <RegistryValue
+              Root='HKLM'
+              Key='SOFTWARE\Classes\Applications\OpenCADStudio.exe\DefaultIcon'
+              Name=''
+              Type='string'
+              Value='[APPLICATIONROOTDIRECTORY]OpenCADStudio.exe,0'
+              KeyPath='yes' />
+            <RegistryValue
+              Root='HKLM'
+              Key='SOFTWARE\Classes\Applications\OpenCADStudio.exe'
+              Name='FriendlyAppName'
+              Type='string'
+              Value='Open CAD Studio' />
+            <RegistryValue
+              Root='HKLM'
+              Key='SOFTWARE\Classes\Applications\OpenCADStudio.exe\shell\open\command'
+              Name=''
+              Type='string'
+              Value='"[APPLICATIONROOTDIRECTORY]OpenCADStudio.exe" "%1"' />
+            <RegistryValue
+              Root='HKLM'
+              Key='SOFTWARE\Classes\Applications\OpenCADStudio.exe\SupportedTypes'
+              Name='.dwg'
+              Type='string'
+              Value='' />
+            <RegistryValue
+              Root='HKLM'
+              Key='SOFTWARE\Classes\Applications\OpenCADStudio.exe\SupportedTypes'
+              Name='.dxf'
+              Type='string'
+              Value='' />
             <RegistryValue
               Root='HKLM'
               Key='Software\Open CAD Studio\Capabilities'
               Name='ApplicationName'
               Type='string'
-              Value='Open CAD Studio'
-              KeyPath='yes' />
+              Value='Open CAD Studio' />
             <RegistryValue
               Root='HKLM'
               Key='Software\Open CAD Studio\Capabilities'
