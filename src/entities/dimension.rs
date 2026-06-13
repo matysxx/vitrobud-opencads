@@ -203,9 +203,20 @@ fn apply_base_prop(base: &mut DimensionBase, field: &str, value: &str) -> bool {
             base.style_name = value.to_string();
             true
         }
-        "text_x" => assign_f64(value, &mut base.text_middle_point.x),
-        "text_y" => assign_f64(value, &mut base.text_middle_point.y),
-        "text_z" => assign_f64(value, &mut base.text_middle_point.z),
+        // Editing the text position in the properties panel pins it to a
+        // user-defined location (stops following DIMTAD). See #94.
+        "text_x" => {
+            base.text_user_positioned = true;
+            assign_f64(value, &mut base.text_middle_point.x)
+        }
+        "text_y" => {
+            base.text_user_positioned = true;
+            assign_f64(value, &mut base.text_middle_point.y)
+        }
+        "text_z" => {
+            base.text_user_positioned = true;
+            assign_f64(value, &mut base.text_middle_point.z)
+        }
         "text_rotation" => assign_f64(value, &mut base.text_rotation),
         "horizontal_direction" => assign_f64(value, &mut base.horizontal_direction),
         "line_spacing_factor" => assign_f64(value, &mut base.line_spacing_factor),
@@ -649,6 +660,9 @@ impl Grippable for Dimension {
         };
         if grip_id == text_grip {
             apply_to_v3(&mut self.base_mut().text_middle_point, &apply);
+            // Dragging the text grip pins it to a user-defined location, so it
+            // no longer follows the style (DIMTAD). See #94.
+            self.base_mut().text_user_positioned = true;
             return;
         }
 
@@ -2455,120 +2469,122 @@ fn vec3_local(v: Vector3, off: [f64; 3]) -> Vec3 {
     )
 }
 
+/// Style-driven text anchor on the dimension line: a point on the line through
+/// `defpt` parallel to (`ax`,`ay`), slid along it per DIMJUST and lifted by
+/// `perp_off` toward the side the dimension line sits on.
+fn text_on_dim_line(
+    first: Vector3,
+    second: Vector3,
+    defpt: Vector3,
+    ax: f64,
+    ay: f64,
+    dimjust: i16,
+    perp_off: f64,
+) -> Vector3 {
+    let px = -ay;
+    let py = ax;
+    // Side of the measured points the dimension line sits on.
+    let off = (defpt.x - first.x) * px + (defpt.y - first.y) * py;
+    let perp_sign = if off >= 0.0 { 1.0 } else { -1.0 };
+    // Along-axis positions of the extension points relative to the dim line.
+    let t1 = (first.x - defpt.x) * ax + (first.y - defpt.y) * ay;
+    let t2 = (second.x - defpt.x) * ax + (second.y - defpt.y) * ay;
+    // DIMJUST: 0=centred, 1/3=near first ext, 2/4=near second ext.
+    let along = match dimjust {
+        1 | 3 => t1,
+        2 | 4 => t2,
+        _ => (t1 + t2) * 0.5,
+    };
+    let bx = defpt.x + ax * along;
+    let by = defpt.y + ay * along;
+    Vector3::new(
+        bx + px * perp_off * perp_sign,
+        by + py * perp_off * perp_sign,
+        defpt.z,
+    )
+}
+
 fn dimension_text_pos_f64(dim: &Dimension, style: Option<&DimStyle>, text_height: f64) -> Vector3 {
     let base = dim.base();
-    let p = base.text_middle_point;
-    if p.x * p.x + p.y * p.y + p.z * p.z > 1e-16 {
-        return p;
-    }
-    let mid = match dim {
-        Dimension::Aligned(d) => Vector3::new(
-            (d.first_point.x + d.second_point.x) * 0.5,
-            (d.first_point.y + d.second_point.y) * 0.5,
-            (d.first_point.z + d.second_point.z) * 0.5,
-        ),
-        Dimension::Linear(d) => Vector3::new(
-            (d.first_point.x + d.second_point.x) * 0.5,
-            (d.first_point.y + d.second_point.y) * 0.5,
-            (d.first_point.z + d.second_point.z) * 0.5,
-        ),
-        Dimension::Radius(d) => Vector3::new(
-            (d.angle_vertex.x + d.definition_point.x) * 0.5,
-            (d.angle_vertex.y + d.definition_point.y) * 0.5,
-            (d.angle_vertex.z + d.definition_point.z) * 0.5,
-        ),
-        Dimension::Diameter(d) => Vector3::new(
-            (d.angle_vertex.x + d.definition_point.x) * 0.5,
-            (d.angle_vertex.y + d.definition_point.y) * 0.5,
-            (d.angle_vertex.z + d.definition_point.z) * 0.5,
-        ),
-        Dimension::Angular2Ln(d) => d.dimension_arc,
-        Dimension::Angular3Pt(d) => d.definition_point,
-        Dimension::Ordinate(d) => d.leader_endpoint,
-    };
 
-    // DIMTAD: 0=centred (on the line), 1=above (offset perpendicular), 2=outside,
-    //         3=JIS. We honour 0 and 1; 2/3 fall back to "above".
+    // DIMTAD: 0=centred (on the line), 1=above. 2/3/4 fall back to "above".
     let dimtad = style.map(|s| s.dimtad).unwrap_or(1);
     let dimgap = style.map(|s| s.dimgap).unwrap_or(0.0);
-    // DIMJUST horizontal placement on the dim line (only meaningful for
-    // linear/aligned dims). 0=centred, 1=near first ext, 2=near second ext,
-    // 3=above first ext (perpendicular text), 4=above second ext.
     let dimjust = style.map(|s| s.dimjust).unwrap_or(0);
-    // DIMTVP vertical-position multiplier (units of dimtxt). Only honoured
-    // when DIMTAD == 0; offsets text perpendicular to the dim line.
+    // DIMTVP vertical-position multiplier (units of dimtxt). Only honoured when
+    // DIMTAD == 0; offsets text perpendicular to the dim line.
     let dimtvp = style.map(|s| s.dimtvp).unwrap_or(0.0);
+    let perp_off = if dimtad == 0 {
+        dimtvp * text_height
+    } else {
+        text_height * 0.5 + dimgap
+    };
 
-    // Need axis + perp_sign (toward "above").
-    let (axis_x, axis_y, perp_sign, p1, p2) = match dim {
+    // Explicit per-entity override (text dragged to a custom location): the
+    // saved point wins. Otherwise the dimension style governs placement.
+    let use_saved = base.text_user_positioned && {
+        let p = base.text_middle_point;
+        p.x * p.x + p.y * p.y + p.z * p.z > 1e-16
+    };
+    if use_saved {
+        return base.text_middle_point;
+    }
+
+    match dim {
         Dimension::Linear(d) => {
             let ax = d.rotation.cos();
             let ay = d.rotation.sin();
-            let px = -ay;
-            let py = ax;
-            let off = (d.definition_point.x - d.first_point.x) * px
-                + (d.definition_point.y - d.first_point.y) * py;
-            (
-                ax,
-                ay,
-                if off >= 0.0 { 1.0 } else { -1.0 },
+            text_on_dim_line(
                 d.first_point,
                 d.second_point,
+                d.definition_point,
+                ax,
+                ay,
+                dimjust,
+                perp_off,
             )
         }
         Dimension::Aligned(d) => {
             let dx = d.second_point.x - d.first_point.x;
             let dy = d.second_point.y - d.first_point.y;
             let len = (dx * dx + dy * dy).sqrt().max(1e-12);
-            let ax = dx / len;
-            let ay = dy / len;
-            let px = -ay;
-            let py = ax;
-            let off = (d.definition_point.x - d.first_point.x) * px
-                + (d.definition_point.y - d.first_point.y) * py;
-            (
-                ax,
-                ay,
-                if off >= 0.0 { 1.0 } else { -1.0 },
+            text_on_dim_line(
                 d.first_point,
                 d.second_point,
+                d.definition_point,
+                dx / len,
+                dy / len,
+                dimjust,
+                perp_off,
             )
         }
         _ => {
-            // Non-linear: only DIMTAD offset applies; no horizontal shift along axis.
-            let off_perp = if dimtad == 0 {
-                dimtvp * text_height
-            } else {
-                text_height * 0.5 + dimgap
+            // Non-linear (radius / diameter / angular / ordinate): keep the
+            // saved text point when present for fidelity, else lift the natural
+            // mid point straight up by the style offset.
+            let p = base.text_middle_point;
+            if p.x * p.x + p.y * p.y + p.z * p.z > 1e-16 {
+                return p;
+            }
+            let mid = match dim {
+                Dimension::Radius(d) => Vector3::new(
+                    (d.angle_vertex.x + d.definition_point.x) * 0.5,
+                    (d.angle_vertex.y + d.definition_point.y) * 0.5,
+                    (d.angle_vertex.z + d.definition_point.z) * 0.5,
+                ),
+                Dimension::Diameter(d) => Vector3::new(
+                    (d.angle_vertex.x + d.definition_point.x) * 0.5,
+                    (d.angle_vertex.y + d.definition_point.y) * 0.5,
+                    (d.angle_vertex.z + d.definition_point.z) * 0.5,
+                ),
+                Dimension::Angular2Ln(d) => d.dimension_arc,
+                Dimension::Angular3Pt(d) => d.definition_point,
+                Dimension::Ordinate(d) => d.leader_endpoint,
+                _ => base.text_middle_point,
             };
-            return Vector3::new(mid.x, mid.y + off_perp * perp_sign_default(), mid.z);
+            Vector3::new(mid.x, mid.y + perp_off * perp_sign_default(), mid.z)
         }
-    };
-
-    // Horizontal slide along the dim axis to honour DIMJUST. Slide endpoints
-    // are the dim-line endpoints (projection of p1/p2 onto the dim line),
-    // approximated here as the def-points themselves (we don't have axis-
-    // projected d1/d2 here without more plumbing).
-    let along_offset = match dimjust {
-        1 => (p1.x - mid.x) * axis_x + (p1.y - mid.y) * axis_y,
-        2 => (p2.x - mid.x) * axis_x + (p2.y - mid.y) * axis_y,
-        3 => (p1.x - mid.x) * axis_x + (p1.y - mid.y) * axis_y,
-        4 => (p2.x - mid.x) * axis_x + (p2.y - mid.y) * axis_y,
-        _ => 0.0,
-    };
-
-    // Perpendicular offset: DIMTAD 0 → DIMTVP * dimtxt, else above-line gap.
-    let perp_offset = if dimtad == 0 {
-        dimtvp * text_height * perp_sign
-    } else {
-        (text_height * 0.5 + dimgap) * perp_sign
-    };
-
-    Vector3::new(
-        mid.x + axis_x * along_offset + (-axis_y) * perp_offset,
-        mid.y + axis_y * along_offset + (axis_x) * perp_offset,
-        mid.z,
-    )
+    }
 }
 
 fn perp_sign_default() -> f64 {
