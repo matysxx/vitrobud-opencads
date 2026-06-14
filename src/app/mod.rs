@@ -574,6 +574,12 @@ pub enum ColorPickTarget {
     DimStyle(DsField),
     MLeader(&'static str),
     Table(u8, &'static str),
+    /// Selected entities' colour (left properties panel).
+    Properties,
+    /// Current creation colour (ribbon).
+    Ribbon,
+    /// A layer's colour, by panel row index.
+    Layer(usize),
 }
 
 /// Identifies a DimStyle field that can be edited in the dialog.

@@ -111,13 +111,41 @@ pub fn color_selector<'a>(
     )
     .on_press(on_toggle)
     .padding([3, 6])
-    .width(170);
+    .width(Length::Fill);
 
     if !open {
         return head.into();
     }
 
-    // One named-colour row (swatch + name), selectable.
+    let popup = container(color_list(extras, on_select, on_more))
+        .style(|_: &Theme| container::Style {
+            background: Some(Background::Color(PICKER_BG)),
+            border: Border {
+                color: BORDER,
+                width: 1.0,
+                radius: 2.0.into(),
+            },
+            ..Default::default()
+        })
+        .padding(5)
+        .width(220);
+
+    // The popup is shown as a floating overlay (anchored below the button) so
+    // it doesn't push the surrounding form down.
+    Element::new(Floating {
+        base: head.into(),
+        popup: popup.into(),
+    })
+}
+
+/// The colour list shown inside a picker popup: named ACI colours (with
+/// swatches) plus a "More…" entry that opens the full palette window. Shared by
+/// `color_selector` and the ribbon's colour overlay.
+pub fn color_list<'a>(
+    extras: ColorExtras,
+    on_select: impl Fn(AcadColor) -> Message + 'a,
+    on_more: Message,
+) -> Element<'a, Message> {
     let named_row = |color: AcadColor| -> Element<'a, Message> {
         let (bg, name) = acad_color_display(color);
         button(
@@ -151,7 +179,6 @@ pub fn color_selector<'a>(
     for i in 1u8..=9 {
         list = list.push(named_row(AcadColor::Index(i)));
     }
-    // "More…" opens the full ACI palette in a separate window.
     list = list.push(
         button(text("More…").size(11).color(TEXT))
             .on_press(on_more)
@@ -168,26 +195,7 @@ pub fn color_selector<'a>(
             .padding([2, 4])
             .width(Length::Fill),
     );
-
-    let popup = container(list)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(PICKER_BG)),
-            border: Border {
-                color: BORDER,
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-            ..Default::default()
-        })
-        .padding(5)
-        .width(220);
-
-    // The popup is shown as a floating overlay (anchored below the button) so
-    // it doesn't push the surrounding form down.
-    Element::new(Floating {
-        base: head.into(),
-        popup: popup.into(),
-    })
+    list.into()
 }
 
 /// Full ACI palette as a standalone window body: ByLayer / ByBlock plus the

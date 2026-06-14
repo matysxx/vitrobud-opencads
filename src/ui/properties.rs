@@ -377,53 +377,18 @@ impl PropertiesPanel {
     // ── Color row (custom picker) ─────────────────────────────────────────
 
     fn render_color_row<'a>(&'a self, label: &'a str, color: AcadColor) -> Element<'a, Message> {
-        let (swatch_bg, color_label) = acad_color_display(color);
-
-        // The button that shows current color + opens picker
-        let color_btn = button(
-            row![
-                container(text("").width(SWATCH_SZ).height(SWATCH_SZ))
-                    .style(move |_: &Theme| container::Style {
-                        background: Some(Background::Color(swatch_bg)),
-                        border: Border {
-                            color: Color {
-                                r: 0.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.5
-                            },
-                            width: 1.0,
-                            radius: 2.0.into()
-                        },
-                        ..Default::default()
-                    })
-                    .width(SWATCH_SZ)
-                    .height(SWATCH_SZ),
-                text(color_label).size(FONT_SZ).color(VALUE_COLOR),
-            ]
-            .spacing(4)
-            .align_y(iced::Center),
-        )
-        .on_press(Message::PropColorPickerToggle)
-        .style(combo_btn_style)
-        .padding(Padding {
-            top: COMBO_PAD_V,
-            bottom: COMBO_PAD_V,
-            left: 6.0,
-            right: 6.0,
-        })
-        .width(Length::Fill);
-
-        let color_row = prop_row_widget(label, color_btn.into());
-
-        // Color picker dropdown (inline)
-        if self.color_picker_open {
-            column![color_row, self.render_color_picker()]
-                .spacing(0)
-                .into()
-        } else {
-            color_row
-        }
+        let selector = crate::ui::color_select::color_selector(
+            color,
+            self.color_picker_open,
+            crate::ui::color_select::ColorExtras {
+                by_layer: true,
+                by_block: true,
+            },
+            Message::PropColorChanged,
+            Message::PropColorPickerToggle,
+            Message::OpenColorWindow(crate::app::ColorPickTarget::Properties),
+        );
+        prop_row_widget(label, selector)
     }
 
     fn render_color_varies_row<'a>(&'a self, label: &'a str) -> Element<'a, Message> {

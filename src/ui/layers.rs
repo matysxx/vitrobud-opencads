@@ -1,7 +1,7 @@
 //! Layer Manager — floating window.
 
 use crate::app::Message;
-use crate::ui::properties::{color_picker_dropdown, lw_options, LinetypeItem, LwItem};
+use crate::ui::properties::{lw_options, LinetypeItem, LwItem};
 use crate::ui::ROW_H;
 use acadrust::tables::layer::Layer as DocLayer;
 use acadrust::tables::Table;
@@ -271,10 +271,6 @@ impl LayerPanel {
                 &self.vp_cols,
             ));
 
-            // Insert color picker dropdown below this row when open.
-            if color_open {
-                rows_col = rows_col.push(color_picker_palette(self.color_full_palette));
-            }
         }
 
         let table = scrollable(rows_col).height(Fill);
@@ -559,77 +555,23 @@ fn layer_row<'a>(
     // Color cell — looks like a combo_box input; click opens swatch dropdown below row.
     let aci = iced_to_aci(layer.color);
     let cur_color_name = color_label_aci(aci).to_string();
-    let layer_color = layer.color;
-
-    let swatch = container(text(""))
-        .style(move |_: &Theme| container::Style {
-            background: Some(Background::Color(layer_color)),
-            border: Border {
-                color: Color {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.5,
-                },
-                width: 1.0,
-                radius: 1.0.into(),
-            },
-            ..Default::default()
-        })
-        .width(12)
-        .height(12);
-
-    let color_cell: Element<'_, Message> = button(
-        row![
-            swatch,
-            text(cur_color_name).size(FONT_SZ).color(ROW_TEXT),
-            iced::widget::Space::new().width(Fill),
-            text(if color_picker_open { "▲" } else { "▼" })
-                .size(FONT_SZ * 0.75)
-                .color(DIM),
-        ]
-        .spacing(4)
-        .align_y(iced::Center),
-    )
-    .on_press(Message::LayerColorPickerToggle(index))
-    .style(move |_: &Theme, status| button::Style {
-        background: Some(Background::Color(match status {
-            button::Status::Hovered => Color {
-                r: 0.20,
-                g: 0.20,
-                b: 0.20,
-                a: 1.0,
-            },
-            _ => Color {
-                r: 0.13,
-                g: 0.13,
-                b: 0.13,
-                a: 1.0,
-            },
-        })),
-        border: Border {
-            radius: 2.0.into(),
-            width: 1.0,
-            color: if color_picker_open {
-                Color {
-                    r: 0.45,
-                    g: 0.65,
-                    b: 0.90,
-                    a: 1.0,
-                }
-            } else {
-                BORDER_COLOR
-            },
+    let _ = cur_color_name;
+    // Shared colour selector. Layers carry a concrete colour (no ByLayer /
+    // ByBlock); the chosen index is applied to this row.
+    let color_cell: Element<'_, Message> = container(crate::ui::color_select::color_selector(
+        acadrust::types::Color::Index(aci),
+        color_picker_open,
+        crate::ui::color_select::ColorExtras {
+            by_layer: false,
+            by_block: false,
         },
-        ..Default::default()
-    })
-    .padding(Padding {
-        top: COMBO_PAD_V,
-        bottom: COMBO_PAD_V,
-        left: 4.0,
-        right: 4.0,
-    })
-    .height(Length::Fixed(ROW_H))
+        |c| match c {
+            acadrust::types::Color::Index(i) => Message::LayerColorSet(i),
+            _ => Message::LayerColorSet(7),
+        },
+        Message::LayerColorPickerToggle(index),
+        Message::OpenColorWindow(crate::app::ColorPickTarget::Layer(index)),
+    ))
     .width(Length::Fixed(COL_COLOR))
     .into();
 
@@ -813,21 +755,6 @@ fn combo_input_style(
             a: 0.5,
         },
     }
-}
-
-// ── Color picker palette (shown below row) ────────────────────────────────
-
-fn color_picker_palette<'a>(full: bool) -> Element<'a, Message> {
-    // Horizontal offset to align dropdown under the Color column.
-    const LEFT_OFFSET: f32 =
-        20.0 + 4.0 + COL_NAME + 4.0 + COL_ICON + 4.0 + COL_ICON + 4.0 + COL_ICON + 4.0 + 8.0;
-
-    // Use the shared color_picker_dropdown from properties — no ByLayer/ByBlock for layers.
-    let dropdown = color_picker_dropdown(full, Message::LayerColorMorePalette, None, None, |aci| {
-        Message::LayerColorSet(aci)
-    });
-
-    row![iced::widget::Space::new().width(LEFT_OFFSET), dropdown,].into()
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────

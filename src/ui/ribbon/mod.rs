@@ -15,7 +15,7 @@ use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 use crate::app::Message;
 use crate::modules::{CadModule, IconKind, RibbonItem};
 use crate::plugin::all_ribbon_modules;
-use crate::ui::properties::{color_picker_dropdown, lw_options, LinetypeItem};
+use crate::ui::properties::{lw_options, LinetypeItem};
 
 mod widgets;
 use widgets::{StyleContext, *};
@@ -817,12 +817,13 @@ impl Ribbon {
     }
 
     fn prop_color_overlay(&self) -> Option<Element<'_, Message>> {
-        let picker = color_picker_dropdown(
-            self.prop_color_palette_open,
-            Message::RibbonColorPaletteToggle,
-            Some(Message::RibbonColorChanged(AcadColor::ByLayer)),
-            Some(Message::RibbonColorChanged(AcadColor::ByBlock)),
-            |aci| Message::RibbonColorChanged(AcadColor::Index(aci)),
+        let picker = crate::ui::color_select::color_list(
+            crate::ui::color_select::ColorExtras {
+                by_layer: true,
+                by_block: true,
+            },
+            Message::RibbonColorChanged,
+            Message::OpenColorWindow(crate::app::ColorPickTarget::Ribbon),
         );
 
         let panel = container(picker)

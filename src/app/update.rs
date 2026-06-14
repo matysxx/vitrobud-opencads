@@ -7330,6 +7330,10 @@ impl OpenCADStudio {
                 self.ds_color_open = None;
                 self.mls_color_open = None;
                 self.ts_color_open = None;
+                self.ribbon.close_dropdown();
+                let i = self.active_tab;
+                self.tabs[i].properties.color_picker_open = false;
+                self.tabs[i].layers.color_picker_row = None;
                 if let Some(id) = self.color_pick_window {
                     return window::gain_focus(id);
                 }
@@ -7355,6 +7359,19 @@ impl OpenCADStudio {
                             field: f,
                             value: s,
                         })
+                    }
+                    Some(crate::app::ColorPickTarget::Properties) => {
+                        Some(Message::PropColorChanged(color))
+                    }
+                    Some(crate::app::ColorPickTarget::Ribbon) => {
+                        Some(Message::RibbonColorChanged(color))
+                    }
+                    Some(crate::app::ColorPickTarget::Layer(idx)) => {
+                        self.tabs[self.active_tab].layers.selected = Some(idx);
+                        match color {
+                            acadrust::types::Color::Index(i) => Some(Message::LayerColorSet(i)),
+                            _ => None,
+                        }
                     }
                     None => None,
                 };
