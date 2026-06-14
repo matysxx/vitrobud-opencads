@@ -239,6 +239,57 @@ pub fn view_window<'a>(
             .into()
     };
 
+    // Enum dropdown: maps the stored integer code to a named option and back,
+    // so the user picks "Above" rather than typing "1".
+    let enum_field = move |label: &'static str,
+                           fld: DsField,
+                           val: &'a str,
+                           opts: &'static [(&'static str, &'static str)]|
+          -> Element<'a, Message> {
+        let labels: Vec<String> = opts.iter().map(|(_, l)| (*l).to_string()).collect();
+        let cur = opts
+            .iter()
+            .find(|(c, _)| *c == val.trim())
+            .map(|(_, l)| (*l).to_string())
+            .unwrap_or_else(|| val.to_string());
+        row![
+            lbl(label),
+            pick_list(labels, Some(cur), move |chosen| {
+                let code = opts
+                    .iter()
+                    .find(|(_, l)| *l == chosen.as_str())
+                    .map(|(c, _)| (*c).to_string())
+                    .unwrap_or(chosen);
+                Message::DsEdit(fld.clone(), code)
+            })
+            .text_size(11)
+            .width(150),
+        ]
+        .spacing(8)
+        .align_y(iced::Center)
+        .into()
+    };
+
+    // Zero-suppression codes shared by DIMZIN / DIMALTZ / DIMALTTZ / DIMTZIN.
+    const OPT_ZIN: &[(&str, &str)] = &[
+        ("0", "Suppress none"),
+        ("1", "Suppress 0 ft & 0 in"),
+        ("2", "Keep 0 ft, drop 0 in"),
+        ("3", "Drop 0 ft, keep 0 in"),
+        ("4", "Suppress leading"),
+        ("8", "Suppress trailing"),
+        ("12", "Suppress leading & trailing"),
+    ];
+    // Linear unit formats shared by DIMLUNIT / DIMALTU.
+    const OPT_LUNIT: &[(&str, &str)] = &[
+        ("1", "Scientific"),
+        ("2", "Decimal"),
+        ("3", "Engineering"),
+        ("4", "Architectural"),
+        ("5", "Fractional"),
+        ("6", "Windows desktop"),
+    ];
+
     // Block / linetype Handle dropdown: pick a block-record (arrowheads) or a
     // linetype by name from the available records.
     let hrow = move |label: &'static str,
@@ -402,12 +453,12 @@ pub fn view_window<'a>(
                 vals.dimsah,
                 DsField::Dimsah
             ),
-            row![
-                lbl("Arc length symbol (DIMARCSYM)"),
-                mk_field(DsField::Dimarcsym, vals.dimarcsym)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field(
+                "Arc length symbol (DIMARCSYM)",
+                DsField::Dimarcsym,
+                vals.dimarcsym,
+                &[("0", "Before text"), ("1", "Above text"), ("2", "None")],
+            ),
             row![
                 lbl("Jog angle ° (DIMJOGANG)"),
                 mk_field(DsField::Dimjogang, vals.dimjogang)
@@ -431,12 +482,18 @@ pub fn view_window<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Vertical pos (DIMTAD)"),
-                mk_field(DsField::Dimtad, vals.dimtad)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field(
+                "Vertical pos (DIMTAD)",
+                DsField::Dimtad,
+                vals.dimtad,
+                &[
+                    ("0", "Centered"),
+                    ("1", "Above"),
+                    ("2", "Outside"),
+                    ("3", "JIS"),
+                    ("4", "Below"),
+                ],
+            ),
             chk("Horizontal inside (DIMTIH)", vals.dimtih, DsField::Dimtih),
             chk("Horizontal outside (DIMTOH)", vals.dimtoh, DsField::Dimtoh),
             row![
@@ -445,24 +502,34 @@ pub fn view_window<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Horizontal just (DIMJUST)"),
-                mk_field(DsField::Dimjust, vals.dimjust)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field(
+                "Horizontal just (DIMJUST)",
+                DsField::Dimjust,
+                vals.dimjust,
+                &[
+                    ("0", "Centered"),
+                    ("1", "At first ext"),
+                    ("2", "At second ext"),
+                    ("3", "Over first ext"),
+                    ("4", "Over second ext"),
+                ],
+            ),
             row![
                 lbl("Vertical pos (DIMTVP)"),
                 mk_field(DsField::Dimtvp, vals.dimtvp)
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Text fill mode (DIMTFILL)"),
-                mk_field(DsField::Dimtfill, vals.dimtfill)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field(
+                "Text fill mode (DIMTFILL)",
+                DsField::Dimtfill,
+                vals.dimtfill,
+                &[
+                    ("0", "None"),
+                    ("1", "Drawing background"),
+                    ("2", "Color"),
+                ],
+            ),
             row![
                 lbl("Fill color ACI (DIMTFILLCLR)"),
                 mk_field(DsField::Dimtfillclr, vals.dimtfillclr)
@@ -493,12 +560,7 @@ pub fn view_window<'a>(
             .spacing(8)
             .align_y(iced::Center),
             text("Units").size(11).color(ACCENT),
-            row![
-                lbl("Format (DIMLUNIT)"),
-                mk_field(DsField::Dimlunit, vals.dimlunit)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field("Format (DIMLUNIT)", DsField::Dimlunit, vals.dimlunit, OPT_LUNIT),
             row![
                 lbl("Decimals (DIMDEC)"),
                 mk_field(DsField::Dimdec, vals.dimdec)
@@ -523,24 +585,28 @@ pub fn view_window<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Zero suppress (DIMZIN)"),
-                mk_field(DsField::Dimzin, vals.dimzin)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-            row![
-                lbl("Fraction format (DIMFRAC)"),
-                mk_field(DsField::Dimfrac, vals.dimfrac)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-            row![
-                lbl("Angular unit (DIMAUNIT)"),
-                mk_field(DsField::Dimaunit, vals.dimaunit)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field("Zero suppress (DIMZIN)", DsField::Dimzin, vals.dimzin, OPT_ZIN),
+            enum_field(
+                "Fraction format (DIMFRAC)",
+                DsField::Dimfrac,
+                vals.dimfrac,
+                &[
+                    ("0", "Horizontal"),
+                    ("1", "Diagonal"),
+                    ("2", "Not stacked"),
+                ],
+            ),
+            enum_field(
+                "Angular unit (DIMAUNIT)",
+                DsField::Dimaunit,
+                vals.dimaunit,
+                &[
+                    ("0", "Decimal degrees"),
+                    ("1", "Deg/min/sec"),
+                    ("2", "Gradians"),
+                    ("3", "Radians"),
+                ],
+            ),
             row![
                 lbl("Angular decimals (DIMADEC)"),
                 mk_field(DsField::Dimadec, vals.dimadec)
@@ -553,25 +619,39 @@ pub fn view_window<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Angular zero supp (DIMAZIN)"),
-                mk_field(DsField::Dimazin, vals.dimazin)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field(
+                "Angular zero supp (DIMAZIN)",
+                DsField::Dimazin,
+                vals.dimazin,
+                &[
+                    ("0", "None"),
+                    ("1", "Leading"),
+                    ("2", "Trailing"),
+                    ("3", "Leading & trailing"),
+                ],
+            ),
             text("Fit").size(11).color(ACCENT),
-            row![
-                lbl("Fit (DIMATFIT)"),
-                mk_field(DsField::Dimatfit, vals.dimatfit)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-            row![
-                lbl("Text movement (DIMTMOVE)"),
-                mk_field(DsField::Dimtmove, vals.dimtmove)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field(
+                "Fit (DIMATFIT)",
+                DsField::Dimatfit,
+                vals.dimatfit,
+                &[
+                    ("0", "Move text & arrows out"),
+                    ("1", "Arrows out first"),
+                    ("2", "Text out first"),
+                    ("3", "Best fit"),
+                ],
+            ),
+            enum_field(
+                "Text movement (DIMTMOVE)",
+                DsField::Dimtmove,
+                vals.dimtmove,
+                &[
+                    ("0", "Keep with dim line"),
+                    ("1", "Add leader"),
+                    ("2", "Move freely"),
+                ],
+            ),
             row![
                 lbl("Fit (legacy DIMFIT)"),
                 mk_field(DsField::Dimfit, vals.dimfit)
@@ -612,12 +692,7 @@ pub fn view_window<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Unit format (DIMALTU)"),
-                mk_field(DsField::Dimaltu, vals.dimaltu)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field("Unit format (DIMALTU)", DsField::Dimaltu, vals.dimaltu, OPT_LUNIT),
             row![
                 lbl("Tol decimals (DIMALTTD)"),
                 mk_field(DsField::Dimalttd, vals.dimalttd)
@@ -636,18 +711,13 @@ pub fn view_window<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Zero suppress (DIMALTZ)"),
-                mk_field(DsField::Dimaltz, vals.dimaltz)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-            row![
-                lbl("Tol zero supp (DIMALTTZ)"),
-                mk_field(DsField::Dimalttz, vals.dimalttz)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field("Zero suppress (DIMALTZ)", DsField::Dimaltz, vals.dimaltz, OPT_ZIN),
+            enum_field(
+                "Tol zero supp (DIMALTTZ)",
+                DsField::Dimalttz,
+                vals.dimalttz,
+                OPT_ZIN,
+            ),
         ]
         .spacing(7)
         .into(),
@@ -679,18 +749,13 @@ pub fn view_window<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            row![
-                lbl("Tol. vert just (DIMTOLJ)"),
-                mk_field(DsField::Dimtolj, vals.dimtolj)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
-            row![
-                lbl("Tol. zero supp (DIMTZIN)"),
-                mk_field(DsField::Dimtzin, vals.dimtzin)
-            ]
-            .spacing(8)
-            .align_y(iced::Center),
+            enum_field(
+                "Tol. vert just (DIMTOLJ)",
+                DsField::Dimtolj,
+                vals.dimtolj,
+                &[("0", "Bottom"), ("1", "Middle"), ("2", "Top")],
+            ),
+            enum_field("Tol. zero supp (DIMTZIN)", DsField::Dimtzin, vals.dimtzin, OPT_ZIN),
         ]
         .spacing(7)
         .into(),
