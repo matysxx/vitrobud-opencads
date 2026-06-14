@@ -32,7 +32,12 @@ impl OpenCADStudio {
         // command would silently do nothing. Allow only the commands that
         // make sense there (create / open a document, or quit) and tell the
         // user otherwise instead of running a no-op. See #96.
-        if self.tabs[i].is_start && !matches!(cmd, "NEW" | "OPEN" | "EXIT" | "QUIT") {
+        if self.tabs[i].is_start
+            && !matches!(
+                cmd,
+                "NEW" | "OPEN" | "EXIT" | "QUIT" | "REPORT" | "CHANGELOG" | "ABOUT"
+            )
+        {
             self.command_line
                 .push_info("No drawing open. Use NEW or OPEN to start a drawing.");
             return Task::none();
@@ -2663,7 +2668,7 @@ impl OpenCADStudio {
 
             "REPORT" => {
                 let _ = open::that("https://github.com/HakanSeven12/OpenCADStudio/issues/new");
-                self.command_line.push_info("Opening GitHub issue page...");
+                self.command_line.push_info("Opening feedback page...");
             }
 
             "ABOUT" => {

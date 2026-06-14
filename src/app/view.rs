@@ -3730,7 +3730,7 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
 
     let secondary_row = row![
         outline_btn(
-            "Contribute",
+            "Send Feedback",
             Message::RibbonToolClick {
                 tool_id: "REPORT".to_string(),
                 event: crate::modules::ModuleEvent::Command("REPORT".to_string()),
