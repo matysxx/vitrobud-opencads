@@ -229,7 +229,7 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
         .par_iter()
         .filter_map(|&handle| {
             if let EntityType::RasterImage(img) = doc.get_entity(handle)? {
-                ImageModel::from_raster_image(img).map(|m| (handle, m))
+                ImageModel::from_raster_image(img, world_offset).map(|m| (handle, m))
             } else {
                 None
             }
@@ -3441,7 +3441,7 @@ impl Scene {
             None
         };
         let image_seed = if let EntityType::RasterImage(img) = &entity {
-            ImageModel::from_raster_image(img)
+            ImageModel::from_raster_image(img, self.world_offset)
         } else {
             None
         };
@@ -4252,7 +4252,7 @@ impl Scene {
             })
             .collect();
         for (handle, img) in entries {
-            if let Some(model) = ImageModel::from_raster_image(&img) {
+            if let Some(model) = ImageModel::from_raster_image(&img, self.world_offset) {
                 self.images.insert(handle, model);
             }
         }

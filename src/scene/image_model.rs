@@ -36,12 +36,17 @@ pub struct ImageModel {
 impl ImageModel {
     /// Build an ImageModel from a DXF RasterImage entity.
     /// Returns `None` if the image file cannot be opened or decoded.
-    pub fn from_raster_image(img: &acadrust::entities::RasterImage) -> Option<Self> {
+    pub fn from_raster_image(
+        img: &acadrust::entities::RasterImage,
+        world_offset: [f64; 3],
+    ) -> Option<Self> {
         let w = img.size.x;
         let h = img.size.y;
-        let ox = img.insertion_point.x as f32;
-        let oy = img.insertion_point.y as f32;
-        let oz = img.insertion_point.z as f32;
+        // Model-space geometry is drawn in (WCS - world_offset) so large UTM-
+        // scale coordinates stay within f32 precision; offset the image too.
+        let ox = (img.insertion_point.x - world_offset[0]) as f32;
+        let oy = (img.insertion_point.y - world_offset[1]) as f32;
+        let oz = (img.insertion_point.z - world_offset[2]) as f32;
         let ux = (img.u_vector.x * w) as f32;
         let uy = (img.u_vector.y * w) as f32;
         let uz = (img.u_vector.z * w) as f32;
@@ -74,6 +79,19 @@ impl ImageModel {
 /// Returns `None` if the file does not exist or cannot be decoded.
 pub fn load_pixels(path_str: &str) -> Option<(Vec<u8>, u32, u32)> {
     let img = image::open(Path::new(path_str)).ok()?;
+    // GPUs cap 2-D texture dimensions (8192 with wgpu's default limits).
+    // Downscale oversized images to fit, preserving aspect ratio, so texture
+    // creation can't fail — they're displayed scaled-down anyway.
+    const MAX_DIM: u32 = 8192;
+    let img = if img.width() > MAX_DIM || img.height() > MAX_DIM {
+        let longest = img.width().max(img.height()) as f32;
+        let scale = MAX_DIM as f32 / longest;
+        let nw = ((img.width() as f32 * scale) as u32).clamp(1, MAX_DIM);
+        let nh = ((img.height() as f32 * scale) as u32).clamp(1, MAX_DIM);
+        img.resize(nw, nh, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     Some((rgba.into_raw(), w, h))
