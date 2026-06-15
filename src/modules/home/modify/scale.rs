@@ -3,8 +3,14 @@
 // Command:  SCALE (SC)
 //   Requires at least one entity selected.
 //   Step 1: pick base (scale center)
-//   Step 2: pick reference point  (defines reference distance)
-//   Step 3: pick new point        (new distance = scale factor * objects)
+//   Step 2: specify scale factor — drag for a live preview (factor = cursor
+//           distance from base) or type a factor. A live ghost of the
+//           selection tracks the cursor from the first move onward.
+//
+//   Reference scaling: type `R` at step 2 to define the factor as
+//   new-length / reference-length:
+//     Step 2a: specify reference length (pick a point or type a length)
+//     Step 2b: specify new length      (pick a point or type a length)
 
 use acadrust::Handle;
 use glam::Vec3;
@@ -26,8 +32,12 @@ pub fn tool() -> ToolDef {
 
 enum Step {
     Base,
-    Ref { base: Vec3 },
-    New { base: Vec3, ref_dist: f32 },
+    /// Default flow: factor is the cursor distance from `base`.
+    Factor { base: Vec3 },
+    /// Reference flow: defining the reference length from `base`.
+    RefLen { base: Vec3 },
+    /// Reference flow: factor is `cursor_dist / ref_dist` from `base`.
+    RefNew { base: Vec3, ref_dist: f32 },
 }
 
 pub struct ScaleCommand {
@@ -46,6 +56,18 @@ impl ScaleCommand {
             default_factor: defaults::get_scale_factor(),
         }
     }
+
+    /// Commit a uniform scale about `base` and end the command.
+    fn commit(&self, base: Vec3, factor: f32) -> CmdResult {
+        defaults::set_scale_factor(factor);
+        CmdResult::TransformSelected(
+            self.handles.clone(),
+            EntityTransform::Scale {
+                center: base,
+                factor,
+            },
+        )
+    }
 }
 
 impl CadCommand for ScaleCommand {
@@ -59,12 +81,16 @@ impl CadCommand for ScaleCommand {
                 "SCALE  Specify base point  [{} objects]:",
                 self.handles.len()
             ),
-            Step::Ref { .. } => {
-                "SCALE  Specify reference point  (or type scale factor directly):".into()
+            Step::Factor { .. } => format!(
+                "SCALE  Specify scale factor or [Reference]  <{:.4}>:",
+                self.default_factor
+            ),
+            Step::RefLen { .. } => {
+                "SCALE  Specify reference length  (pick a point or type a length):".into()
             }
-            Step::New { ref_dist, .. } => format!(
-                "SCALE  Specify new point or type scale factor  <{:.4}>  [ref={:.3}]:",
-                self.default_factor, ref_dist
+            Step::RefNew { ref_dist, .. } => format!(
+                "SCALE  Specify new length  (pick a point or type a length)  [ref={:.3}]:",
+                ref_dist
             ),
         }
     }
@@ -72,43 +98,33 @@ impl CadCommand for ScaleCommand {
     fn on_point(&mut self, pt: Vec3) -> CmdResult {
         match &self.step {
             Step::Base => {
-                self.step = Step::Ref { base: pt };
+                self.step = Step::Factor { base: pt };
                 CmdResult::NeedPoint
             }
-            Step::Ref { base } => {
+            Step::Factor { base } => {
+                let base = *base;
+                let factor = base.distance(pt).max(1e-6);
+                self.commit(base, factor)
+            }
+            Step::RefLen { base } => {
                 let base = *base;
                 let ref_dist = base.distance(pt).max(1e-6);
-                self.step = Step::New { base, ref_dist };
+                self.step = Step::RefNew { base, ref_dist };
                 CmdResult::NeedPoint
             }
-            Step::New { base, ref_dist } => {
+            Step::RefNew { base, ref_dist } => {
                 let base = *base;
                 let new_dist = base.distance(pt).max(1e-6);
-                let factor = new_dist / *ref_dist;
-                defaults::set_scale_factor(factor);
-                CmdResult::TransformSelected(
-                    self.handles.clone(),
-                    EntityTransform::Scale {
-                        center: base,
-                        factor,
-                    },
-                )
+                self.commit(base, new_dist / *ref_dist)
             }
         }
     }
 
     fn on_enter(&mut self) -> CmdResult {
-        // At New-point step: Enter uses the stored default factor applied from base.
-        if let Step::New { base, .. } = &self.step {
+        // Enter at the factor step accepts the stored default factor.
+        if let Step::Factor { base } = &self.step {
             let base = *base;
-            let factor = self.default_factor;
-            return CmdResult::TransformSelected(
-                self.handles.clone(),
-                EntityTransform::Scale {
-                    center: base,
-                    factor,
-                },
-            );
+            return self.commit(base, self.default_factor);
         }
         CmdResult::Cancel
     }
@@ -117,27 +133,47 @@ impl CadCommand for ScaleCommand {
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
-        if let Step::New { base, .. } | Step::Ref { base } = &self.step {
-            let factor: f32 = text.trim().replace(',', ".").parse().ok()?;
-            if factor > 0.0 {
+        let t = text.trim();
+        match &self.step {
+            Step::Factor { base } => {
                 let base = *base;
-                defaults::set_scale_factor(factor);
-                return Some(CmdResult::TransformSelected(
-                    self.handles.clone(),
-                    EntityTransform::Scale {
-                        center: base,
-                        factor,
-                    },
-                ));
+                // `R` / `Reference` switches to reference scaling.
+                let low = t.to_ascii_lowercase();
+                if low == "r" || low == "reference" {
+                    self.step = Step::RefLen { base };
+                    return Some(CmdResult::NeedPoint);
+                }
+                let factor: f32 = t.replace(',', ".").parse().ok()?;
+                (factor > 0.0).then(|| self.commit(base, factor))
             }
+            Step::RefLen { base } => {
+                let base = *base;
+                let ref_dist: f32 = t.replace(',', ".").parse().ok()?;
+                if ref_dist > 0.0 {
+                    self.step = Step::RefNew { base, ref_dist };
+                    return Some(CmdResult::NeedPoint);
+                }
+                None
+            }
+            Step::RefNew { base, ref_dist } => {
+                let (base, ref_dist) = (*base, *ref_dist);
+                let new_len: f32 = t.replace(',', ".").parse().ok()?;
+                (new_len > 0.0).then(|| self.commit(base, new_len / ref_dist))
+            }
+            Step::Base => None,
         }
-        None
     }
 
     fn on_preview_wires(&mut self, pt: Vec3) -> Vec<WireModel> {
         let (base, factor) = match &self.step {
-            Step::Ref { base } => {
-                // Reference pick: just show rubber-band line, no scale yet.
+            // Default flow: scale live by cursor distance from the base.
+            Step::Factor { base } => (*base, base.distance(pt).max(1e-6)),
+            // Reference flow, new-length step: factor = cursor_dist / ref_dist.
+            Step::RefNew { base, ref_dist } => {
+                (*base, base.distance(pt).max(1e-6) / ref_dist)
+            }
+            // Reference-length step: rubber-band only, no factor defined yet.
+            Step::RefLen { base } => {
                 return vec![WireModel::solid(
                     "rubber_band".into(),
                     vec![[base.x, base.y, base.z], [pt.x, pt.y, pt.z]],
@@ -145,11 +181,7 @@ impl CadCommand for ScaleCommand {
                     false,
                 )];
             }
-            Step::New { base, ref_dist } => {
-                let f = base.distance(pt).max(1e-6) / ref_dist;
-                (*base, f)
-            }
-            _ => return vec![],
+            Step::Base => return vec![],
         };
         let mut out: Vec<WireModel> = self
             .wire_models
