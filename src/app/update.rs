@@ -1278,19 +1278,13 @@ impl OpenCADStudio {
                     }
 
                     if let Some((coord, kind)) = parse_coord(&text) {
-                        // Resolve relative vs absolute. `@` forces relative,
-                        // `#` forces absolute, no prefix follows DYN: when
-                        // dynamic input is on, bare coordinates are relative
-                        // to the last point (issue #26).
-                        // `@` forces relative, `#` forces absolute, no
-                        // prefix follows DYN (on → relative). The very
-                        // first point has no reference, so relative falls
-                        // back to absolute.
-                        let want_relative = match kind {
-                            CoordKind::Relative => true,
-                            CoordKind::Absolute => false,
-                            CoordKind::Default => self.dyn_input,
-                        };
+                        // Command-line coordinates are absolute by default,
+                        // independent of DYN: `@` forces relative, `#` forces
+                        // absolute, and a bare value is absolute. (Relative-by-
+                        // default lives in the DYN tooltip path — see
+                        // `dyn_resolve_point` — matching AutoCAD, where the
+                        // command line stays absolute regardless of DYN.)
+                        let want_relative = matches!(kind, CoordKind::Relative);
                         let ucs = self.tabs[i].active_ucs.clone();
                         let wcs_pt = match (want_relative, self.last_point) {
                             (true, Some(base)) => {
