@@ -241,7 +241,7 @@ impl OpenCADStudio {
             }
             CmdResult::BatchCopy(handles, transforms) => {
                 let label = self.history_label_from_active_cmd(i, "ARRAY");
-                self.push_undo_snapshot(i, label);
+                self.push_undo_snapshot(i, label.clone());
                 let count = transforms.len();
                 for t in &transforms {
                     self.tabs[i].scene.copy_entities(&handles, t);
@@ -251,8 +251,9 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.restore_pre_cmd_tangent();
+                let noun = if count == 1 { "copy" } else { "copies" };
                 self.command_line
-                    .push_output(&format!("ARRAY: {count} copies created."));
+                    .push_output(&format!("{label}: {count} {noun} created."));
                 self.refresh_properties();
             }
             CmdResult::ReplaceMany(replacements, additions) => {
