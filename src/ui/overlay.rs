@@ -1191,12 +1191,18 @@ fn draw_ucs_icon(frame: &mut canvas::Frame, vp: Mat4, bounds: iced::Rectangle) {
 
 // ── Dynamic Input overlay ─────────────────────────────────────────────────
 
-/// Draw a small coordinate / distance-angle tooltip near the cursor.
-///
-/// `cursor_screen` — cursor position in viewport pixels.
-/// `label` — text to display (e.g. "X: 12.34  Y: 56.78").
-/// One labelled box in the dynamic-input overlay (e.g. `d` = distance,
-/// `<` = angle, `X` / `Y` = ordinates).
+use crate::command::{DynGuide, DynRole};
+
+const DYN_OFFSET_X: f32 = 14.0;
+const DYN_OFFSET_Y: f32 = 20.0;
+const DYN_PAD: f32 = 4.0;
+const DYN_GAP: f32 = 6.0;
+const DYN_FONT: f32 = 11.0;
+const DYN_CHAR_W: f32 = DYN_FONT * 0.62;
+const DYN_BOX_H: f32 = DYN_FONT + DYN_PAD * 2.0;
+
+/// One value box in the dynamic-input overlay. Its `role` drives both the
+/// label and where the box is placed relative to the step's guide geometry.
 #[derive(Clone)]
 pub struct DynBox {
     pub label: String,
@@ -1205,15 +1211,20 @@ pub struct DynBox {
     pub active: bool,
     /// User has typed a value (the box no longer tracks the cursor).
     pub locked: bool,
+    pub role: DynRole,
 }
 
 pub fn dynamic_input_overlay<'a>(
     cursor_screen: Point,
+    base_screen: Option<Point>,
+    guide: DynGuide,
     boxes: Vec<DynBox>,
     prompt: String,
 ) -> Element<'a, Message> {
     canvas(DynInputCanvas {
         cursor_screen,
+        base_screen,
+        guide,
         boxes,
         prompt,
     })
@@ -1224,10 +1235,256 @@ pub fn dynamic_input_overlay<'a>(
 
 struct DynInputCanvas {
     cursor_screen: Point,
+    /// Step anchor in viewport pixels (projected `dyn_anchor`). Guided layouts
+    /// (polar / radius / axis-delta) need it; `None` falls back to a cursor row.
+    base_screen: Option<Point>,
+    guide: DynGuide,
     boxes: Vec<DynBox>,
-    /// The active command's current prompt — tells the user what this step
-    /// is asking for, drawn just above the input boxes.
+    /// The active command's current prompt, drawn just above the boxes.
     prompt: String,
+}
+
+impl DynInputCanvas {
+    fn dotted() -> canvas::Stroke<'static> {
+        canvas::Stroke {
+            width: 1.0,
+            style: canvas::Style::Solid(Color { r: 0.55, g: 0.55, b: 0.58, a: 0.9 }),
+            line_dash: canvas::LineDash { segments: &[2.0, 3.0], offset: 0 },
+            ..Default::default()
+        }
+    }
+
+    fn box_content(b: &DynBox) -> String {
+        match b.role {
+            DynRole::Angle => format!("{}\u{00B0}", b.value),
+            _ if b.label.is_empty() => b.value.clone(),
+            _ => format!("{}{}", b.label, b.value),
+        }
+    }
+
+    /// Draw a value box centred at `center`, clamped inside `bounds`.
+    fn draw_box(frame: &mut canvas::Frame, b: &DynBox, center: Point, bounds: iced::Rectangle) {
+        let content = Self::box_content(b);
+        let w = (content.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
+        let x = (center.x - w * 0.5).clamp(0.0, (bounds.width - w).max(0.0));
+        let y = (center.y - DYN_BOX_H * 0.5).clamp(0.0, (bounds.height - DYN_BOX_H).max(0.0));
+        let rect = canvas::Path::rectangle(Point { x, y }, Size { width: w, height: DYN_BOX_H });
+        let (fill, border) = Self::box_colors(b);
+        frame.fill(&rect, fill);
+        frame.stroke(
+            &rect,
+            canvas::Stroke::default()
+                .with_color(border)
+                .with_width(if b.active { 1.6 } else { 1.0 }),
+        );
+        frame.fill_text(canvas::Text {
+            content,
+            position: Point { x: x + DYN_PAD, y: y + DYN_PAD },
+            color: Color { r: 0.92, g: 0.92, b: 0.92, a: 1.0 },
+            size: iced::Pixels(DYN_FONT),
+            ..Default::default()
+        });
+    }
+
+    fn box_colors(b: &DynBox) -> (Color, Color) {
+        if b.active {
+            (
+                Color { r: 0.12, g: 0.18, b: 0.30, a: 0.95 },
+                Color { r: 0.45, g: 0.70, b: 1.0, a: 1.0 },
+            )
+        } else if b.locked {
+            (
+                Color { r: 0.05, g: 0.05, b: 0.12, a: 0.9 },
+                Color { r: 0.95, g: 0.75, b: 0.30, a: 0.9 },
+            )
+        } else {
+            (
+                Color { r: 0.05, g: 0.05, b: 0.12, a: 0.9 },
+                Color { r: 0.35, g: 0.55, b: 0.90, a: 0.9 },
+            )
+        }
+    }
+
+    /// Prompt pill at `pos`.
+    fn draw_prompt(&self, frame: &mut canvas::Frame, pos: Point) {
+        if self.prompt.is_empty() {
+            return;
+        }
+        let pw = (self.prompt.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
+        let rect = canvas::Path::rectangle(pos, Size { width: pw, height: DYN_BOX_H });
+        frame.fill(&rect, Color { r: 0.10, g: 0.10, b: 0.12, a: 1.0 });
+        frame.stroke(
+            &rect,
+            canvas::Stroke::default()
+                .with_color(Color { r: 0.35, g: 0.55, b: 0.90, a: 0.9 })
+                .with_width(1.0),
+        );
+        frame.fill_text(canvas::Text {
+            content: self.prompt.clone(),
+            position: Point { x: pos.x + DYN_PAD, y: pos.y + DYN_PAD },
+            color: Color { r: 0.70, g: 0.85, b: 0.70, a: 1.0 },
+            size: iced::Pixels(DYN_FONT),
+            ..Default::default()
+        });
+    }
+
+    /// Guided layout: draw the guide geometry anchored at `base`, then place
+    /// each box according to its role.
+    fn draw_guided(&self, frame: &mut canvas::Frame, bounds: iced::Rectangle, base: Point) {
+        let cursor = self.cursor_screen;
+        let (vx, vy) = (cursor.x - base.x, cursor.y - base.y);
+        let len = (vx * vx + vy * vy).sqrt().max(1.0);
+        let (dx, dy) = (vx / len, vy / len);
+        // Perpendicular pointing to the lower half so labels sit under the line.
+        let (mut nx, mut ny) = (-dy, dx);
+        if ny < 0.0 {
+            nx = -nx;
+            ny = -ny;
+        }
+        // Short-way screen sweep from +X to the line, for the angle arc.
+        let mut sweep = dy.atan2(dx);
+        while sweep > std::f32::consts::PI {
+            sweep -= std::f32::consts::TAU;
+        }
+        while sweep < -std::f32::consts::PI {
+            sweep += std::f32::consts::TAU;
+        }
+        let corner = Point { x: cursor.x, y: base.y }; // axis-delta elbow
+
+        // ── Guide geometry ──
+        match self.guide {
+            DynGuide::Polar => {
+                let href = canvas::Path::new(|p| {
+                    p.move_to(base);
+                    p.line_to(Point { x: base.x + len, y: base.y });
+                });
+                frame.stroke(&href, Self::dotted());
+                let arc = canvas::Path::new(|p| {
+                    let steps = 48;
+                    for k in 0..=steps {
+                        let a = sweep * (k as f32 / steps as f32);
+                        let pt = Point {
+                            x: base.x + a.cos() * len,
+                            y: base.y + a.sin() * len,
+                        };
+                        if k == 0 {
+                            p.move_to(pt);
+                        } else {
+                            p.line_to(pt);
+                        }
+                    }
+                });
+                frame.stroke(&arc, Self::dotted());
+            }
+            DynGuide::Radius => {
+                let line = canvas::Path::new(|p| {
+                    p.move_to(base);
+                    p.line_to(cursor);
+                });
+                frame.stroke(&line, Self::dotted());
+            }
+            DynGuide::AxisDelta | DynGuide::RectSides => {
+                // Dotted legs from the anchor along its axes to the cursor.
+                let legs = canvas::Path::new(|p| {
+                    p.move_to(base);
+                    p.line_to(corner);
+                    p.line_to(cursor);
+                });
+                frame.stroke(&legs, Self::dotted());
+                if self.guide == DynGuide::RectSides {
+                    // Close the rectangle so both side pairs read as a box.
+                    let rest = canvas::Path::new(|p| {
+                        p.move_to(base);
+                        p.line_to(Point { x: base.x, y: cursor.y });
+                        p.line_to(cursor);
+                    });
+                    frame.stroke(&rest, Self::dotted());
+                }
+            }
+            DynGuide::None => {}
+        }
+
+        // ── Box placement by role ──
+        for b in &self.boxes {
+            let center = match b.role {
+                DynRole::Angle => {
+                    let a_mid = sweep * 0.5;
+                    Point {
+                        x: base.x + a_mid.cos() * len,
+                        y: base.y + a_mid.sin() * len,
+                    }
+                }
+                DynRole::X | DynRole::Width => Point {
+                    x: (base.x + cursor.x) * 0.5,
+                    y: base.y + 14.0,
+                },
+                DynRole::Y | DynRole::Height => Point {
+                    x: corner.x + 18.0,
+                    y: (base.y + cursor.y) * 0.5,
+                },
+                // Distance / Radius / Diameter and anything else ride the line.
+                _ => Point {
+                    x: base.x + dx * len * 0.5 + nx * 16.0,
+                    y: base.y + dy * len * 0.5 + ny * 16.0,
+                },
+            };
+            Self::draw_box(frame, b, center, bounds);
+        }
+    }
+
+    /// Fallback row layout near the cursor (no anchor / `None` guide).
+    fn draw_row(&self, frame: &mut canvas::Frame, bounds: iced::Rectangle) {
+        let texts: Vec<String> = self
+            .boxes
+            .iter()
+            .map(|b| {
+                if b.label.is_empty() {
+                    b.value.clone()
+                } else {
+                    format!("{}:{}", b.label, b.value)
+                }
+            })
+            .collect();
+        let widths: Vec<f32> = texts
+            .iter()
+            .map(|t| (t.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0)
+            .collect();
+        let total_w: f32 =
+            widths.iter().sum::<f32>() + DYN_GAP * (self.boxes.len() as f32 - 1.0);
+
+        let mut bx = self.cursor_screen.x + DYN_OFFSET_X;
+        let mut by = self.cursor_screen.y + DYN_OFFSET_Y;
+        if bx + total_w > bounds.width {
+            bx = (self.cursor_screen.x - total_w - 4.0).max(0.0);
+        }
+        if by + DYN_BOX_H > bounds.height {
+            by = (self.cursor_screen.y - DYN_BOX_H - 4.0).max(0.0);
+        }
+        self.draw_prompt(frame, Point { x: bx, y: (by - DYN_BOX_H - 2.0).max(0.0) });
+
+        let mut x = bx;
+        for (i, b) in self.boxes.iter().enumerate() {
+            let w = widths[i];
+            let rect =
+                canvas::Path::rectangle(Point { x, y: by }, Size { width: w, height: DYN_BOX_H });
+            let (fill, border) = Self::box_colors(b);
+            frame.fill(&rect, fill);
+            frame.stroke(
+                &rect,
+                canvas::Stroke::default()
+                    .with_color(border)
+                    .with_width(if b.active { 1.6 } else { 1.0 }),
+            );
+            frame.fill_text(canvas::Text {
+                content: texts[i].clone(),
+                position: Point { x: x + DYN_PAD, y: by + DYN_PAD },
+                color: Color { r: 0.92, g: 0.92, b: 0.92, a: 1.0 },
+                size: iced::Pixels(DYN_FONT),
+                ..Default::default()
+            });
+            x += w + DYN_GAP;
+        }
+    }
 }
 
 impl canvas::Program<Message> for DynInputCanvas {
@@ -1252,139 +1509,28 @@ impl canvas::Program<Message> for DynInputCanvas {
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
 
-        // Offset the row 14 px right and 20 px below the cursor.
-        const OFFSET_X: f32 = 14.0;
-        const OFFSET_Y: f32 = 20.0;
-        const PAD: f32 = 4.0;
-        const GAP: f32 = 6.0;
-        const FONT_SIZE: f32 = 11.0;
-        const CHAR_W: f32 = FONT_SIZE * 0.62; // monospace-ish width estimate
-        const BOX_H: f32 = FONT_SIZE + PAD * 2.0;
-
-        // No input box (a pick step) — draw just the prompt pill at the cursor,
-        // so object-selection steps still get their hint without a field.
+        // No boxes — just the prompt pill near the cursor.
         if self.boxes.is_empty() {
             if !self.prompt.is_empty() {
-                let pw = (self.prompt.len() as f32 * CHAR_W) + PAD * 2.0;
-                let mut px = self.cursor_screen.x + OFFSET_X;
-                let mut py = self.cursor_screen.y + OFFSET_Y;
+                let pw = (self.prompt.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
+                let mut px = self.cursor_screen.x + DYN_OFFSET_X;
+                let mut py = self.cursor_screen.y + DYN_OFFSET_Y;
                 if px + pw > bounds.width {
                     px = (self.cursor_screen.x - pw - 4.0).max(0.0);
                 }
-                if py + BOX_H > bounds.height {
-                    py = (self.cursor_screen.y - BOX_H - 4.0).max(0.0);
+                if py + DYN_BOX_H > bounds.height {
+                    py = (self.cursor_screen.y - DYN_BOX_H - 4.0).max(0.0);
                 }
-                let prect = canvas::Path::rectangle(
-                    Point { x: px, y: py },
-                    Size {
-                        width: pw,
-                        height: BOX_H,
-                    },
-                );
-                frame.fill(&prect, Color { r: 0.10, g: 0.10, b: 0.12, a: 1.0 });
-                frame.stroke(
-                    &prect,
-                    canvas::Stroke::default()
-                        .with_color(Color { r: 0.35, g: 0.55, b: 0.90, a: 0.9 })
-                        .with_width(1.0),
-                );
-                frame.fill_text(canvas::Text {
-                    content: self.prompt.clone(),
-                    position: Point { x: px + PAD, y: py + PAD },
-                    color: Color { r: 0.70, g: 0.85, b: 0.70, a: 1.0 },
-                    size: iced::Pixels(FONT_SIZE),
-                    ..Default::default()
-                });
+                self.draw_prompt(&mut frame, Point { x: px, y: py });
             }
             return vec![frame.into_geometry()];
         }
 
-        // Each box is "<label>:<value>"; width tracks the text length.
-        let texts: Vec<String> = self
-            .boxes
-            .iter()
-            .map(|b| format!("{}:{}", b.label, b.value))
-            .collect();
-        let widths: Vec<f32> = texts
-            .iter()
-            .map(|t| (t.len() as f32 * CHAR_W) + PAD * 2.0)
-            .collect();
-        let total_w: f32 = widths.iter().sum::<f32>() + GAP * (self.boxes.len() as f32 - 1.0);
-
-        let mut bx = self.cursor_screen.x + OFFSET_X;
-        let mut by = self.cursor_screen.y + OFFSET_Y;
-        if bx + total_w > bounds.width {
-            bx = (self.cursor_screen.x - total_w - 4.0).max(0.0);
+        // Guided layouts need the anchor; without it fall back to a cursor row.
+        match (self.guide, self.base_screen) {
+            (DynGuide::None, _) | (_, None) => self.draw_row(&mut frame, bounds),
+            (_, Some(base)) => self.draw_guided(&mut frame, bounds, base),
         }
-        if by + BOX_H > bounds.height {
-            by = (self.cursor_screen.y - BOX_H - 4.0).max(0.0);
-        }
-
-        // Prompt line above the boxes — what this step wants right now.
-        // Drawn on an opaque pill so the viewport behind it stays legible.
-        if !self.prompt.is_empty() {
-            let py = (by - BOX_H - 2.0).max(0.0);
-            let pw = (self.prompt.len() as f32 * CHAR_W) + PAD * 2.0;
-            let prect = canvas::Path::rectangle(
-                Point { x: bx, y: py },
-                Size { width: pw, height: BOX_H },
-            );
-            frame.fill(&prect, Color { r: 0.10, g: 0.10, b: 0.12, a: 1.0 });
-            frame.stroke(
-                &prect,
-                canvas::Stroke::default()
-                    .with_color(Color { r: 0.35, g: 0.55, b: 0.90, a: 0.9 })
-                    .with_width(1.0),
-            );
-            frame.fill_text(canvas::Text {
-                content: self.prompt.clone(),
-                position: Point { x: bx + PAD, y: py + PAD },
-                color: Color { r: 0.70, g: 0.85, b: 0.70, a: 1.0 },
-                size: iced::Pixels(FONT_SIZE),
-                ..Default::default()
-            });
-        }
-
-        let mut x = bx;
-        for (i, b) in self.boxes.iter().enumerate() {
-            let w = widths[i];
-            let rect = canvas::Path::rectangle(Point { x, y: by }, Size { width: w, height: BOX_H });
-            // Active box: brighter fill + accent border. Locked (typed)
-            // boxes get a warm border so it's clear they hold a fixed
-            // value rather than tracking the cursor.
-            let (fill, border) = if b.active {
-                (
-                    Color { r: 0.12, g: 0.18, b: 0.30, a: 0.92 },
-                    Color { r: 0.45, g: 0.70, b: 1.0, a: 1.0 },
-                )
-            } else if b.locked {
-                (
-                    Color { r: 0.05, g: 0.05, b: 0.12, a: 0.85 },
-                    Color { r: 0.95, g: 0.75, b: 0.30, a: 0.9 },
-                )
-            } else {
-                (
-                    Color { r: 0.05, g: 0.05, b: 0.12, a: 0.85 },
-                    Color { r: 0.35, g: 0.55, b: 0.90, a: 0.9 },
-                )
-            };
-            frame.fill(&rect, fill);
-            frame.stroke(
-                &rect,
-                canvas::Stroke::default()
-                    .with_color(border)
-                    .with_width(if b.active { 1.6 } else { 1.0 }),
-            );
-            frame.fill_text(canvas::Text {
-                content: texts[i].clone(),
-                position: Point { x: x + PAD, y: by + PAD },
-                color: Color { r: 0.92, g: 0.92, b: 0.92, a: 1.0 },
-                size: iced::Pixels(FONT_SIZE),
-                ..Default::default()
-            });
-            x += w + GAP;
-        }
-
         vec![frame.into_geometry()]
     }
 }

@@ -41,6 +41,9 @@ pub(super) enum DynComponent {
 #[derive(Clone, Debug)]
 pub(super) struct DynFieldEntry {
     pub(super) component: DynComponent,
+    /// Semantic role — drives the label and value scaling (e.g. diameter).
+    /// Defaults to the role matching `component` on the legacy path.
+    pub(super) role: crate::command::DynRole,
     pub(super) buffer: Option<String>,
 }
 
@@ -48,11 +51,47 @@ impl DynFieldEntry {
     pub(super) fn new(component: DynComponent) -> Self {
         Self {
             component,
+            role: default_role_for(component),
+            buffer: None,
+        }
+    }
+    /// Build from an explicit role (spec-driven path); the resolution
+    /// component is derived from the role.
+    pub(super) fn from_role(role: crate::command::DynRole) -> Self {
+        Self {
+            component: component_for_role(role),
+            role,
             buffer: None,
         }
     }
     pub(super) fn locked(&self) -> bool {
         self.buffer.is_some()
+    }
+}
+
+/// Map a [`DynRole`](crate::command::DynRole) to the ordinate/distance/angle
+/// component used by point resolution.
+pub(super) fn component_for_role(role: crate::command::DynRole) -> DynComponent {
+    use crate::command::DynRole;
+    match role {
+        DynRole::X | DynRole::Width => DynComponent::X,
+        DynRole::Y | DynRole::Height => DynComponent::Y,
+        DynRole::Z => DynComponent::Z,
+        DynRole::Distance | DynRole::Radius | DynRole::Diameter => DynComponent::Distance,
+        DynRole::Angle => DynComponent::Angle,
+        DynRole::Factor | DynRole::Count => DynComponent::Scalar,
+    }
+}
+
+fn default_role_for(component: DynComponent) -> crate::command::DynRole {
+    use crate::command::DynRole;
+    match component {
+        DynComponent::X => DynRole::X,
+        DynComponent::Y => DynRole::Y,
+        DynComponent::Z => DynRole::Z,
+        DynComponent::Distance => DynRole::Distance,
+        DynComponent::Angle => DynRole::Angle,
+        DynComponent::Scalar => DynRole::Factor,
     }
 }
 
@@ -78,11 +117,21 @@ pub(super) struct DocumentTab {
     pub(super) visual_style: String,
     pub(super) last_cursor_world: glam::Vec3,
     pub(super) last_cursor_screen: iced::Point,
+    /// Base point (`App::last_point`) projected to viewport pixels, refreshed
+    /// on cursor move. Lets the dynamic-input overlay place the distance label
+    /// along the rubber-band line and the angle label at its end.
+    pub(super) last_point_screen: Option<iced::Point>,
     /// Dynamic-input fields shown near the cursor while a command waits
     /// for a point/distance/angle. Rebuilt whenever the active command's
     /// `dyn_field()` or the presence of a base point changes. Empty when
     /// dynamic input is not active.
     pub(super) dyn_fields: Vec<DynFieldEntry>,
+    /// Guide geometry the overlay draws for the current step (set alongside
+    /// `dyn_fields`). Polar arc, radius line, axis-delta projections, etc.
+    pub(super) dyn_guide: crate::command::DynGuide,
+    /// World-space anchor the current step's values are measured from. `None`
+    /// falls back to `App::last_point`.
+    pub(super) dyn_anchor: Option<glam::Vec3>,
     /// Index of the field that TAB has focused (the one keystrokes edit).
     pub(super) dyn_active: usize,
     pub(super) history: HistoryState,
@@ -142,7 +191,10 @@ impl DocumentTab {
             visual_style: "Wireframe 2D".into(),
             last_cursor_world: glam::Vec3::ZERO,
             last_cursor_screen: iced::Point::ORIGIN,
+            last_point_screen: None,
             dyn_fields: Vec::new(),
+            dyn_guide: crate::command::DynGuide::Polar,
+            dyn_anchor: None,
             dyn_active: 0,
             history: HistoryState::default(),
             active_layer: "0".to_string(),

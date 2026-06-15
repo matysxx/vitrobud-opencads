@@ -2542,6 +2542,17 @@ impl OpenCADStudio {
                     };
                     self.tabs[i].last_cursor_world = effective;
                     self.tabs[i].last_cursor_screen = p_full;
+                    // Project the step anchor (an explicit `dyn_anchor` or the
+                    // last point) so the dynamic-input overlay can place its
+                    // guide geometry and labels.
+                    let anchor = self.tabs[i].dyn_anchor.or(self.last_point);
+                    self.tabs[i].last_point_screen = anchor.map(|bp| {
+                        let ndc = view_proj.project_point3(bp);
+                        iced::Point::new(
+                            (ndc.x + 1.0) * 0.5 * bounds.width,
+                            (1.0 - ndc.y) * 0.5 * bounds.height,
+                        )
+                    });
 
                     // Entity-pick previews (TRIM/EXTEND/FILLET…) compare the
                     // cursor against WCS document entities and return WCS wires.
@@ -7464,6 +7475,13 @@ impl OpenCADStudio {
             self.tabs[i].dyn_active = 0;
             return;
         }
+        // A command may describe its step explicitly via `dyn_spec()` — that
+        // takes full control of the boxes, guide and anchor. Otherwise fall
+        // back to the legacy `dyn_field()` shaping below.
+        if let Some(spec) = self.tabs[i].active_cmd.as_ref().and_then(|c| c.dyn_spec()) {
+            self.apply_dyn_spec(i, spec);
+            return;
+        }
         let field = self.tabs[i]
             .active_cmd
             .as_ref()
@@ -7480,6 +7498,15 @@ impl OpenCADStudio {
             .as_ref()
             .map(|c| c.wants_text_input())
             .unwrap_or(false);
+        // A point step that also accepts keyword letters (PLINE A/L/C…) keeps
+        // its polar boxes: only letters reach the command line, digits stay
+        // coordinates. So such a step is NOT treated as a text-only prompt.
+        let point_keywords = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .map(|c| c.point_step_accepts_keywords())
+            .unwrap_or(false);
+        let wants_text = wants_text && !point_keywords;
         // A step that hit-tests for an object (entity / structure pick) has no
         // coordinate to enter — clicks select, they don't place a point. Show
         // no coordinate box so the cursor stays clean and typed option keywords
@@ -7551,6 +7578,39 @@ impl OpenCADStudio {
             self.tabs[i].dyn_fields = default.into_iter().map(DynFieldEntry::new).collect();
             self.tabs[i].dyn_active = 0;
         }
+        // Derive the guide + anchor for the legacy field set so the overlay
+        // draws the right construction without each command opting in.
+        let comps: Vec<DynComponent> =
+            self.tabs[i].dyn_fields.iter().map(|f| f.component).collect();
+        self.tabs[i].dyn_guide = match comps.as_slice() {
+            [DynComponent::Distance, DynComponent::Angle] | [DynComponent::Angle] => {
+                crate::command::DynGuide::Polar
+            }
+            [DynComponent::Distance] => crate::command::DynGuide::Radius,
+            _ => crate::command::DynGuide::None,
+        };
+        self.tabs[i].dyn_anchor = self.last_point;
+    }
+
+    /// Apply an explicit per-step [`DynSpec`](crate::command::DynSpec): rebuild
+    /// the boxes from its roles (preserving typed buffers when the role set is
+    /// unchanged), and set the guide + anchor.
+    fn apply_dyn_spec(&mut self, i: usize, spec: crate::command::DynSpec) {
+        use super::document::DynFieldEntry;
+        let new_roles: Vec<crate::command::DynRole> =
+            spec.fields.iter().map(|f| f.role).collect();
+        let cur_roles: Vec<crate::command::DynRole> =
+            self.tabs[i].dyn_fields.iter().map(|f| f.role).collect();
+        if cur_roles != new_roles {
+            self.tabs[i].dyn_fields =
+                spec.fields.iter().map(|f| DynFieldEntry::from_role(f.role)).collect();
+            self.tabs[i].dyn_active = 0;
+        }
+        self.tabs[i].dyn_guide = spec.guide;
+        self.tabs[i].dyn_anchor = match spec.anchor {
+            crate::command::DynAnchor::LastPoint => self.last_point,
+            crate::command::DynAnchor::Point(p) => Some(p),
+        };
     }
 
     /// Track cursor dwell over a selected entity's grip. Sets
@@ -7718,20 +7778,39 @@ impl OpenCADStudio {
             return None;
         }
         let w = self.tabs[i].last_cursor_world;
-        let base = self.last_point.unwrap_or(glam::Vec3::ZERO);
-        // Buffer value parsed as f32, or the supplied live value.
+        let base = self.tabs[i]
+            .dyn_anchor
+            .or(self.last_point)
+            .unwrap_or(glam::Vec3::ZERO);
+        // Buffer value parsed as f32 (de-scaled by the role so a typed diameter
+        // becomes a radius), or the supplied geometric live value.
         let val = |idx: usize, live: f32| -> f32 {
             fields[idx]
                 .buffer
                 .as_ref()
                 .map(|s| s.trim().replace(',', "."))
                 .and_then(|s| crate::app::expr_eval::eval_number(&s).map(|v| v as f32))
+                .map(|v| v / fields[idx].role.value_scale())
                 .unwrap_or(live)
         };
         let dx = w.x - base.x;
         let dy = w.y - base.y;
         let live_d = (dx * dx + dy * dy).sqrt();
         let live_a = dy.atan2(dx); // radians
+        // A typed angle is shown unsigned (0..180); give it the sign of the
+        // cursor's current side so an entry made below the X axis sweeps
+        // downward to match the arc instead of mirroring up. Untyped → live.
+        let angle_rad = |idx: usize| -> f32 {
+            match fields[idx]
+                .buffer
+                .as_ref()
+                .map(|s| s.trim().replace(',', "."))
+                .and_then(|s| crate::app::expr_eval::eval_number(&s).map(|v| v as f32))
+            {
+                Some(mag) => mag.abs().to_radians().copysign(dy),
+                None => live_a,
+            }
+        };
         let comps: Vec<DynComponent> = fields.iter().map(|f| f.component).collect();
         // DYN-on defaults to RELATIVE coordinates when a base point is set
         // (see #26 / #35). The live cartesian fallback is the cursor
@@ -7758,7 +7837,7 @@ impl OpenCADStudio {
             }
             [DynComponent::Distance, DynComponent::Angle] => {
                 let d = val(0, live_d);
-                let a = val(1, live_a.to_degrees()).to_radians();
+                let a = angle_rad(1);
                 Some(glam::Vec3::new(
                     base.x + d * a.cos(),
                     base.y + d * a.sin(),
@@ -7771,7 +7850,10 @@ impl OpenCADStudio {
                 Some(base + dir * val(0, live_d))
             }
             [DynComponent::Angle] => {
-                // Keep the cursor's distance, override the angle.
+                // Standalone angle (e.g. ROTATE): the typed value is an
+                // absolute CCW angle, not a cursor-signed magnitude — keep it
+                // literal. Only the polar Distance+Angle pair uses the
+                // cursor-signed `angle_rad`.
                 let a = val(0, live_a.to_degrees()).to_radians();
                 Some(glam::Vec3::new(
                     base.x + live_d * a.cos(),
@@ -7887,10 +7969,12 @@ impl OpenCADStudio {
         // `on_text_input` (a count, radius, distance) rather than resolving a
         // point. Only the typed buffer matters here — a mouse-driven live
         // value commits through the viewport click, not Enter.
+        // A point-with-keywords step (PLINE) commits a typed distance/angle as
+        // a point, not as text, so it is excluded here.
         let wants_text = self.tabs[i]
             .active_cmd
             .as_ref()
-            .map(|c| c.wants_text_input())
+            .map(|c| c.wants_text_input() && !c.point_step_accepts_keywords())
             .unwrap_or(false);
         if wants_text {
             let text = self.tabs[i]

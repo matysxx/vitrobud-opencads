@@ -189,6 +189,21 @@ impl CadCommand for CircleCommand {
             StepCR::Radius(_) => DynField::Distance,
         }
     }
+
+    fn dyn_spec(&self) -> Option<crate::command::DynSpec> {
+        use crate::command::{DynAnchor, DynFieldSpec, DynGuide, DynRole, DynSpec};
+        match self.step {
+            // Center is a normal first-point pick.
+            StepCR::Center => None,
+            // Radius: a single R value with one dotted line from the centre to
+            // the cursor (no angle, no axis legs).
+            StepCR::Radius(c) => Some(DynSpec {
+                anchor: DynAnchor::Point(c),
+                fields: vec![DynFieldSpec::new(DynRole::Radius)],
+                guide: DynGuide::Radius,
+            }),
+        }
+    }
 }
 
 // ── Command: Center, Diameter ──────────────────────────────────────────────
@@ -261,6 +276,20 @@ impl CadCommand for CircleCDCommand {
             }
         }
         None
+    }
+
+    fn dyn_spec(&self) -> Option<crate::command::DynSpec> {
+        use crate::command::{DynAnchor, DynFieldSpec, DynGuide, DynRole, DynSpec};
+        match self.step {
+            StepCR::Center => None,
+            // Diameter: the box shows/accepts twice the cursor radius; resolved
+            // back to a radius point by the host (role scaling).
+            StepCR::Radius(c) => Some(DynSpec {
+                anchor: DynAnchor::Point(c),
+                fields: vec![DynFieldSpec::new(DynRole::Diameter)],
+                guide: DynGuide::Radius,
+            }),
+        }
     }
 }
 

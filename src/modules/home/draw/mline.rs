@@ -63,6 +63,13 @@ impl CadCommand for MlineCommand {
         self.waiting_scale || !self.points.is_empty()
     }
 
+    fn point_step_accepts_keywords(&self) -> bool {
+        // The vertex steps accept J / S keywords but are point picks, so keep
+        // polar dynamic input. The scale prompt (`waiting_scale`) is genuine
+        // text entry and is excluded.
+        !self.waiting_scale && !self.points.is_empty()
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         // Waiting for scale value
         if self.waiting_scale {

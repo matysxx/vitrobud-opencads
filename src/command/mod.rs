@@ -248,6 +248,112 @@ pub enum DynField {
     Scalar,
 }
 
+// ── Per-step dynamic-input specification ───────────────────────────────────
+//
+// `DynField` only says "this step wants a point / distance / angle". `DynSpec`
+// lets a command describe its step precisely: which value boxes to show (with
+// roles + labels), what guide geometry to draw, and where it is measured from.
+// A command returns `Some(DynSpec)` from `dyn_spec()` to take explicit control;
+// returning `None` (the default) keeps the legacy `dyn_field()` behaviour.
+
+/// Semantic role of a dynamic-input box. Resolution maps each role to a base
+/// ordinate/distance/angle; the role additionally drives the label and any
+/// value scaling (e.g. a diameter shows/accepts twice the geometric radius).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DynRole {
+    X,
+    Y,
+    Z,
+    /// Linear distance from the anchor.
+    Distance,
+    /// Angle from the anchor, degrees.
+    Angle,
+    /// Distance shown labelled `R` (circle/arc radius).
+    Radius,
+    /// Distance shown labelled `⌀`; displayed/typed value is twice the radius.
+    Diameter,
+    /// Cartesian X-delta shown labelled `W` (rectangle width).
+    Width,
+    /// Cartesian Y-delta shown labelled `H` (rectangle height).
+    Height,
+    /// Typed-only scale factor.
+    Factor,
+    /// Typed-only integer count.
+    Count,
+}
+
+impl DynRole {
+    /// Default label shown before the value (empty = value only).
+    pub fn label(self) -> &'static str {
+        match self {
+            DynRole::X => "X",
+            DynRole::Y => "Y",
+            DynRole::Z => "Z",
+            DynRole::Distance | DynRole::Angle | DynRole::Factor => "",
+            DynRole::Radius => "R",
+            DynRole::Diameter => "\u{2300}",
+            DynRole::Width => "W",
+            DynRole::Height => "H",
+            DynRole::Count => "#",
+        }
+    }
+
+    /// Multiplier between the geometric value and the displayed/typed value.
+    /// A diameter box shows and accepts twice the underlying radius.
+    pub fn value_scale(self) -> f32 {
+        match self {
+            DynRole::Diameter => 2.0,
+            _ => 1.0,
+        }
+    }
+}
+
+/// Guide geometry the overlay draws for a step, anchored at the step's base.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DynGuide {
+    /// No guide lines.
+    None,
+    /// +X reference line and the angle arc (polar point entry).
+    Polar,
+    /// Dotted projections from the cursor down to the anchor's X and Y axes.
+    AxisDelta,
+    /// A line from the anchor to the cursor (radius / single distance).
+    Radius,
+    /// The two rectangle sides (width × height) from the anchor corner.
+    RectSides,
+}
+
+/// Where a step's values are measured from.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum DynAnchor {
+    /// The previous committed point (`App::last_point`).
+    LastPoint,
+    /// An explicit world point.
+    Point(Vec3),
+}
+
+/// One value box in a [`DynSpec`].
+#[derive(Clone, Debug)]
+pub struct DynFieldSpec {
+    pub role: DynRole,
+    /// Label override; `None` uses the role's default label.
+    pub label: Option<&'static str>,
+}
+
+impl DynFieldSpec {
+    pub fn new(role: DynRole) -> Self {
+        Self { role, label: None }
+    }
+}
+
+/// A full per-step dynamic-input description.
+#[derive(Clone, Debug)]
+pub struct DynSpec {
+    pub anchor: DynAnchor,
+    pub fields: Vec<DynFieldSpec>,
+    pub guide: DynGuide,
+}
+
 // ── Trait ─────────────────────────────────────────────────────────────────
 
 /// An interactive CAD command that collects user input step-by-step.
@@ -348,6 +454,16 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Returns `true` when the current step is a point pick that *also* accepts
+    /// optional keyword letters (e.g. PLINE's A/L/C/U). Such a step keeps the
+    /// polar dynamic-input boxes: typed digits become coordinates while letters
+    /// still reach the command line as keywords. Without this, a command that
+    /// returns `wants_text_input() == true` for its keywords would suppress the
+    /// dynamic-input distance/angle entirely. Default `false`.
+    fn point_step_accepts_keywords(&self) -> bool {
+        false
+    }
+
     /// Returns `true` when the active text prompt expects free-form prose
     /// that can legitimately contain whitespace (the body of a TEXT /
     /// MTEXT / DDEDIT entity, an attribute default value, etc.). For
@@ -436,6 +552,14 @@ pub trait CadCommand: Send {
     /// `Angle`.
     fn dyn_field(&self) -> DynField {
         DynField::Point
+    }
+
+    /// Explicit per-step dynamic-input description. `Some(spec)` takes full
+    /// control of the boxes, guide geometry and anchor for this step; `None`
+    /// (the default) falls back to the legacy `dyn_field()` behaviour so
+    /// commands that haven't migrated keep working unchanged.
+    fn dyn_spec(&self) -> Option<DynSpec> {
+        None
     }
 
     /// Live value for the dynamic-input scalar box, derived from the cursor

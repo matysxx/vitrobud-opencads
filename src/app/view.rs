@@ -718,6 +718,17 @@ impl OpenCADStudio {
                 // perpendicular distance to a picked object); show that live
                 // value in the box until the user types over it.
                 let live = tab.active_cmd.as_ref().and_then(|c| c.dyn_live_value(w));
+                // A Distance+Angle set is polar point entry; its angle box is
+                // shown unsigned to match the overlay's short arc. A standalone
+                // angle (ROTATE) keeps absolute CCW.
+                let polar_pair = tab
+                    .dyn_fields
+                    .iter()
+                    .any(|f| f.component == DynComponent::Distance)
+                    && tab
+                        .dyn_fields
+                        .iter()
+                        .any(|f| f.component == DynComponent::Angle);
                 let boxes: Vec<overlay::DynBox> = tab
                     .dyn_fields
                     .iter()
@@ -733,13 +744,14 @@ impl OpenCADStudio {
                             {
                                 format!("{lv:.4}")
                             }
-                            _ => dyn_component_value(f, w, base),
+                            _ => dyn_component_value(f, w, base, polar_pair),
                         };
                         overlay::DynBox {
-                            label: dyn_component_label(f.component),
+                            label: f.role.label().to_string(),
                             value,
                             active: idx == tab.dyn_active,
                             locked: f.locked(),
+                            role: f.role,
                         }
                     })
                     .collect();
@@ -750,6 +762,8 @@ impl OpenCADStudio {
                     .unwrap_or_default();
                 Some(overlay::dynamic_input_overlay(
                     tab.last_cursor_screen,
+                    tab.last_point_screen,
+                    tab.dyn_guide,
                     boxes,
                     prompt,
                 ))
@@ -4050,21 +4064,15 @@ fn render_mode_picker<'a>(current: acadrust::entities::ViewportRenderMode) -> El
 // ── Dynamic-input field formatting ─────────────────────────────────────────
 
 /// Short prefix shown before a dynamic-input box's value.
-fn dyn_component_label(c: DynComponent) -> String {
-    match c {
-        DynComponent::X => "X".into(),
-        DynComponent::Y => "Y".into(),
-        DynComponent::Z => "Z".into(),
-        DynComponent::Distance => "d".into(),
-        DynComponent::Angle => "<".into(),
-        DynComponent::Scalar => "".into(),
-    }
-}
-
 /// The string shown inside a dynamic-input box: the typed buffer when the
 /// field is locked, otherwise the live value derived from the cursor
 /// world position (and the base point for polar quantities).
-fn dyn_component_value(f: &DynFieldEntry, w: glam::Vec3, base: Option<glam::Vec3>) -> String {
+fn dyn_component_value(
+    f: &DynFieldEntry,
+    w: glam::Vec3,
+    base: Option<glam::Vec3>,
+    polar_pair: bool,
+) -> String {
     if let Some(b) = &f.buffer {
         return b.clone();
     }
@@ -4083,7 +4091,14 @@ fn dyn_component_value(f: &DynFieldEntry, w: glam::Vec3, base: Option<glam::Vec3
         DynComponent::X => format!("{:.4}", w.x),
         DynComponent::Y => format!("{:.4}", w.y),
         DynComponent::Z => format!("{:.4}", b.z),
-        DynComponent::Distance => format!("{:.4}", (dx * dx + dy * dy).sqrt()),
+        // Scaled by the role so a diameter box reads twice the radius.
+        DynComponent::Distance => {
+            format!("{:.4}", (dx * dx + dy * dy).sqrt() * f.role.value_scale() as f64)
+        }
+        // Polar point entry (Distance+Angle): unsigned [0,180] to match the
+        // short arc — above or below the X axis both read e.g. 30°.
+        DynComponent::Angle if polar_pair => format!("{:.1}", dy.atan2(dx).to_degrees().abs()),
+        // Standalone angle (ROTATE): absolute CCW 0..360, as before.
         DynComponent::Angle => format!("{:.1}", dy.atan2(dx).to_degrees().rem_euclid(360.0)),
         // Typed-only scalar — no geometric value to track when empty.
         DynComponent::Scalar => String::new(),

@@ -253,6 +253,12 @@ impl CadCommand for PlineCommand {
         !self.vertices.is_empty()
     }
 
+    fn point_step_accepts_keywords(&self) -> bool {
+        // Each segment is a point pick that also accepts A / L / C / U, so the
+        // polar dynamic-input distance/angle stays visible.
+        !self.vertices.is_empty()
+    }
+
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
         match text.trim().to_uppercase().as_str() {
             "A" | "ARC" => {
