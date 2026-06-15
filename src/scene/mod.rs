@@ -3703,23 +3703,57 @@ impl Scene {
                 continue;
             }
             let selected = self.selected.contains(&ins.common.handle);
-            for sub in ins
+            // XCLIP: clip this insert's exploded hatch fills to the boundary,
+            // matching how the line geometry is clipped in expand_insert.
+            let clip_poly = xclip::insert_spatial_filter(&self.document, ins)
+                .map(|sf| xclip::world_clip_polygon(sf, ins, hatch_offset));
+            // Walk the full block tree: `explode_from_document` only descends
+            // one level, so nested INSERTs are re-exploded here. Each level
+            // bakes its transform into the children it returns, so nested
+            // hatches land in the correct world position. A depth guard keeps
+            // a malformed cyclic block reference from looping forever.
+            let normalize = crate::modules::home::modify::explode::normalize_insert_entity;
+            let mut stack: Vec<(EntityType, usize)> = ins
                 .explode_from_document(&self.document)
                 .into_iter()
-                .map(crate::modules::home::modify::explode::normalize_insert_entity)
-            {
-                let EntityType::Hatch(dxf) = sub else {
-                    continue;
-                };
-                if dxf.common.invisible || layer_hidden(&dxf.common.layer) {
-                    continue;
-                }
-                let color = self.render_style(&EntityType::Hatch(dxf.clone())).0;
-                if let Some(mut model) = Self::hatch_model_from_dxf(&dxf, color, hatch_offset) {
-                    if selected {
-                        model.color = [0.15, 0.55, 1.00, model.color[3]];
+                .map(|e| (normalize(e), 0usize))
+                .collect();
+            while let Some((sub, depth)) = stack.pop() {
+                match sub {
+                    EntityType::Insert(nins) => {
+                        if depth >= 32 {
+                            continue;
+                        }
+                        for e in nins.explode_from_document(&self.document) {
+                            stack.push((normalize(e), depth + 1));
+                        }
                     }
-                    models.push(model);
+                    EntityType::Hatch(dxf) => {
+                        if dxf.common.invisible || layer_hidden(&dxf.common.layer) {
+                            continue;
+                        }
+                        let color = self.render_style(&EntityType::Hatch(dxf.clone())).0;
+                        if let Some(mut model) =
+                            Self::hatch_model_from_dxf(&dxf, color, hatch_offset)
+                        {
+                            if let Some(poly) = &clip_poly {
+                                let clipped = xclip::clip_hatch_boundary(
+                                    &model.boundary,
+                                    model.world_origin,
+                                    poly,
+                                );
+                                if clipped.is_empty() {
+                                    continue;
+                                }
+                                model.boundary = std::sync::Arc::new(clipped);
+                            }
+                            if selected {
+                                model.color = [0.15, 0.55, 1.00, model.color[3]];
+                            }
+                            models.push(model);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

@@ -110,6 +110,116 @@ pub fn clip_wires(wires: &mut Vec<WireModel>, poly: &[[f32; 2]]) {
     wires.retain(|w| !w.points.is_empty() || !w.fill_tris.is_empty());
 }
 
+/// Clip a hatch fill boundary to `poly`.
+///
+/// `boundary` is a hatch's NaN-separated loops in f32 offsets from
+/// `world_origin` (the [`HatchModel`](crate::scene::hatch_model::HatchModel)
+/// representation); `poly` is the clip ring in the same world space the hatch
+/// occupies. Each loop is intersected with the clip polygon independently —
+/// the even-odd island structure is preserved because intersecting every loop
+/// with the same region distributes over the even-odd fill. Returns the
+/// clipped loops in offsets from `world_origin`; empty if nothing survives.
+pub fn clip_hatch_boundary(
+    boundary: &[[f32; 2]],
+    world_origin: [f64; 2],
+    poly: &[[f32; 2]],
+) -> Vec<[f32; 2]> {
+    if poly.len() < 3 {
+        return boundary.to_vec();
+    }
+    let (ox, oy) = (world_origin[0] as f32, world_origin[1] as f32);
+    let mut out: Vec<[f32; 2]> = Vec::new();
+    let mut i = 0;
+    while i < boundary.len() {
+        if !boundary[i][0].is_finite() || !boundary[i][1].is_finite() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < boundary.len()
+            && boundary[i][0].is_finite()
+            && boundary[i][1].is_finite()
+        {
+            i += 1;
+        }
+        // Lift the loop into the clip polygon's world space.
+        let loop_abs: Vec<[f32; 2]> = boundary[start..i]
+            .iter()
+            .map(|p| [p[0] + ox, p[1] + oy])
+            .collect();
+        let clipped = clip_polygon_2d(&loop_abs, poly);
+        if clipped.len() >= 3 {
+            if !out.is_empty() {
+                out.push([f32::NAN, f32::NAN]);
+            }
+            for p in clipped {
+                out.push([p[0] - ox, p[1] - oy]);
+            }
+        }
+    }
+    out
+}
+
+/// Sutherland–Hodgman clip of a closed 2D polygon `subject` against the convex
+/// polygon `clip`.
+fn clip_polygon_2d(subject: &[[f32; 2]], clip: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let n = clip.len();
+    let mut area2 = 0.0f32;
+    let mut j = n - 1;
+    for i in 0..n {
+        area2 += clip[j][0] * clip[i][1] - clip[i][0] * clip[j][1];
+        j = i;
+    }
+    let ccw = area2 > 0.0;
+
+    let mut output: Vec<[f32; 2]> = subject.to_vec();
+    let mut j = n - 1;
+    for i in 0..n {
+        if output.is_empty() {
+            break;
+        }
+        let (a, b) = (clip[j], clip[i]);
+        j = i;
+        let inside = |p: &[f32; 2]| {
+            let cr = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+            if ccw {
+                cr >= 0.0
+            } else {
+                cr <= 0.0
+            }
+        };
+        let input = std::mem::take(&mut output);
+        let len = input.len();
+        for k in 0..len {
+            let cur = input[k];
+            let prev = input[(k + len - 1) % len];
+            let cur_in = inside(&cur);
+            let prev_in = inside(&prev);
+            if cur_in {
+                if !prev_in {
+                    output.push(line_cross_2d(prev, cur, a, b));
+                }
+                output.push(cur);
+            } else if prev_in {
+                output.push(line_cross_2d(prev, cur, a, b));
+            }
+        }
+    }
+    output
+}
+
+fn line_cross_2d(p0: [f32; 2], p1: [f32; 2], a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    let r = (p1[0] - p0[0], p1[1] - p0[1]);
+    let s = (b[0] - a[0], b[1] - a[1]);
+    let denom = r.0 * s.1 - r.1 * s.0;
+    let t = if denom.abs() < 1e-12 {
+        0.0
+    } else {
+        ((a[0] - p0[0]) * s.1 - (a[1] - p0[1]) * s.0) / denom
+    };
+    [p0[0] + r.0 * t, p0[1] + r.1 * t]
+}
+
 /// Ray-cast point-in-polygon test for a closed ring.
 fn point_in_poly(x: f32, y: f32, poly: &[[f32; 2]]) -> bool {
     let mut inside = false;
@@ -418,6 +528,39 @@ mod tests {
         let pts = &wires[0].points;
         assert!(pts.iter().all(|p| p[0].is_nan() || p[0] <= 10.0 + 1e-3));
         assert!(pts.iter().any(|p| (p[0] - 10.0).abs() < 1e-3));
+    }
+
+    #[test]
+    fn hatch_boundary_clipped_kept_and_dropped() {
+        let clip = square(); // 0..10
+        // Hatch loop straddling the right edge → clipped to x<=10.
+        let straddle = [[5.0, 5.0], [15.0, 5.0], [15.0, 8.0], [5.0, 8.0]];
+        let out = clip_hatch_boundary(&straddle, [0.0, 0.0], &clip);
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|p| p[0].is_nan() || p[0] <= 10.0 + 1e-3));
+
+        // Hatch fully inside → unchanged vertex count.
+        let inside = [[1.0, 1.0], [4.0, 1.0], [4.0, 4.0], [1.0, 4.0]];
+        let out_in = clip_hatch_boundary(&inside, [0.0, 0.0], &clip);
+        assert_eq!(out_in.len(), 4);
+
+        // Hatch fully outside → dropped.
+        let outside = [[20.0, 20.0], [25.0, 20.0], [25.0, 25.0]];
+        let out_out = clip_hatch_boundary(&outside, [0.0, 0.0], &clip);
+        assert!(out_out.is_empty());
+    }
+
+    #[test]
+    fn hatch_boundary_respects_world_origin() {
+        // Same geometry as the straddle case but expressed as offsets from a
+        // large world_origin — clipping must account for the origin shift.
+        let clip = vec![[1000.0, 1000.0], [1010.0, 1000.0], [1010.0, 1010.0], [1000.0, 1010.0]];
+        let origin = [1000.0, 1000.0];
+        let loop_off = [[5.0, 5.0], [15.0, 5.0], [15.0, 8.0], [5.0, 8.0]];
+        let out = clip_hatch_boundary(&loop_off, origin, &clip);
+        assert!(!out.is_empty());
+        // Offsets must stay <= 10 (i.e. world x <= 1010).
+        assert!(out.iter().all(|p| p[0].is_nan() || p[0] <= 10.0 + 1e-3));
     }
 
     #[test]
