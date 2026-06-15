@@ -1033,19 +1033,7 @@ impl OpenCADStudio {
                     // reshaping the field set when going polar → cartesian
                     // (Distance → X, Y) or 2-D → 3-D (X, Y → X, Y, Z).
                     // See #35.
-                    // A leading `@` / `#` escapes dynamic-input capture: the
-                    // whole coordinate is typed into the command line so the
-                    // prefix's relative / absolute meaning is honoured even
-                    // while DYN fields are showing. Without this, the prefix
-                    // lands in the command line while the digits go to a DYN
-                    // field, splitting the value.
-                    let coord_prefix_escape = self.command_line.input.starts_with('@')
-                        || self.command_line.input.starts_with('#');
-                    if s == ","
-                        && self.dyn_input
-                        && !self.tabs[i].dyn_fields.is_empty()
-                        && !coord_prefix_escape
-                    {
+                    if s == "," && self.dyn_input && !self.tabs[i].dyn_fields.is_empty() {
                         self.dyn_comma_advance();
                         self.command_line.autocomplete_cursor = None;
                         return self.focus_cmd_input();
@@ -1059,11 +1047,7 @@ impl OpenCADStudio {
                             c.is_ascii_digit()
                                 || matches!(c, '.' | '-' | '+' | '*' | '/' | '^' | '%' | '(' | ')')
                         });
-                    if dyn_field_char
-                        && self.dyn_input
-                        && !self.tabs[i].dyn_fields.is_empty()
-                        && !coord_prefix_escape
-                    {
+                    if dyn_field_char && self.dyn_input && !self.tabs[i].dyn_fields.is_empty() {
                         let a = self.tabs[i]
                             .dyn_active
                             .min(self.tabs[i].dyn_fields.len() - 1);
