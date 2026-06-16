@@ -130,10 +130,12 @@ pub enum Bool {
     Intersect,
 }
 
+#[cfg(feature = "solid3d")]
 const BOOL_TOL: f64 = 0.05;
 
 /// Combine two solids. `Subtract` removes `b` from `a`. Returns `None` when the
 /// operation fails (e.g. the solids don't actually overlap).
+#[cfg(feature = "solid3d")]
 pub fn boolean(op: Bool, a: &Solid, b: &Solid) -> Option<Solid> {
     match op {
         Bool::Union => truck_shapeops::or(a, b, BOOL_TOL),
@@ -144,6 +146,12 @@ pub fn boolean(op: Bool, a: &Solid, b: &Solid) -> Option<Solid> {
             truck_shapeops::and(a, &bn, BOOL_TOL)
         }
     }
+}
+
+/// Without `solid3d` (e.g. wasm) there is no boolean kernel.
+#[cfg(not(feature = "solid3d"))]
+pub fn boolean(_op: Bool, _a: &Solid, _b: &Solid) -> Option<Solid> {
+    None
 }
 
 // ── Tessellation ────────────────────────────────────────────────────────────

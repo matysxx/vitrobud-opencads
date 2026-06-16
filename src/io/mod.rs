@@ -40,7 +40,7 @@ pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
         .add_filter("All Files", &["*"])
         .pick_file()
         .await?;
-    let path = handle.path().to_path_buf();
+    let path = crate::sys::handle_path(&handle);
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Some((path, size))
 }
@@ -250,7 +250,7 @@ pub async fn pick_plot_style() -> Option<plot_style::PlotStyleTable> {
         .add_filter("All Files", &["*"])
         .pick_file()
         .await?;
-    plot_style::PlotStyleTable::load(handle.path()).ok()
+    plot_style::PlotStyleTable::load(&crate::sys::handle_path(&handle)).ok()
 }
 
 // ── Image file picker ─────────────────────────────────────────────────────
@@ -267,7 +267,7 @@ pub async fn pick_image_file() -> Result<(PathBuf, u32, u32), String> {
         .pick_file()
         .await
         .ok_or_else(|| "Cancelled".to_string())?;
-    let path = handle.path().to_path_buf();
+    let path = crate::sys::handle_path(&handle);
     let img = image::open(&path).map_err(|e| e.to_string())?;
     let (w, h) = image::GenericImageView::dimensions(&img);
     Ok((path, w, h))

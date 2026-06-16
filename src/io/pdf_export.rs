@@ -62,7 +62,7 @@ pub async fn pick_pdf_path_owned(stem: String) -> Option<std::path::PathBuf> {
         .add_filter("All Files", &["*"])
         .save_file()
         .await
-        .map(|h| h.path().to_path_buf())
+        .map(|h| crate::sys::handle_path(&h))
 }
 
 // ── PDF builder ───────────────────────────────────────────────────────────

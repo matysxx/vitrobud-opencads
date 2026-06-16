@@ -408,7 +408,7 @@ impl OpenCADStudio {
                         .pick_file()
                         .await;
                     match handle {
-                        Some(h) => Ok(h.path().to_path_buf()),
+                        Some(h) => Ok(crate::sys::handle_path(&h)),
                         None => Err("Cancelled".to_string()),
                     }
                 },
@@ -443,7 +443,7 @@ impl OpenCADStudio {
                             .add_filter("DWG Files", &["dwg"])
                             .save_file()
                             .await
-                            .map(|h| h.path().to_path_buf());
+                            .map(|h| crate::sys::handle_path(&h));
                         (name, path)
                     },
                     |(name, path)| Message::WblockSaveResult(name, path),
@@ -497,7 +497,7 @@ impl OpenCADStudio {
                             .add_filter("All Files", &["*"])
                             .save_file()
                             .await
-                            .map(|h| h.path().to_path_buf());
+                            .map(|h| crate::sys::handle_path(&h));
                         (csv_clone, path)
                     },
                     |(csv, path)| Message::DataExtractionSaveResult(csv, path),
@@ -540,7 +540,7 @@ impl OpenCADStudio {
                             .add_filter("All Files", &["*"])
                             .save_file()
                             .await
-                            .map(|h| h.path().to_path_buf())
+                            .map(|h| crate::sys::handle_path(&h))
                     },
                     Message::StlExportPath,
                 )
@@ -594,7 +594,7 @@ impl OpenCADStudio {
                             .add_filter("All Files", &["*"])
                             .save_file()
                             .await
-                            .map(|h| h.path().to_path_buf())
+                            .map(|h| crate::sys::handle_path(&h))
                     },
                     Message::StepExportPath,
                 )
@@ -637,7 +637,7 @@ impl OpenCADStudio {
                         .add_filter("All Files", &["*"])
                         .pick_file()
                         .await
-                        .map(|h| h.path().to_path_buf())
+                        .map(|h| crate::sys::handle_path(&h))
                 },
                 Message::ObjImportPath,
             ),
@@ -5730,7 +5730,7 @@ impl OpenCADStudio {
                 }
             }
             Message::UpdateNoticeOpenRelease => {
-                let _ = open::that(crate::update_check::RELEASES_PAGE);
+                crate::sys::open_url(crate::update_check::RELEASES_PAGE);
                 if let Some(id) = self.update_notice_window.take() {
                     window::close(id)
                 } else {
@@ -6313,7 +6313,7 @@ impl OpenCADStudio {
                             .add_filter("All Files", &["*"])
                             .save_file()
                             .await
-                            .map(|h| h.path().to_path_buf())
+                            .map(|h| crate::sys::handle_path(&h))
                     },
                     Message::PlotStylePanelSavePath,
                 )

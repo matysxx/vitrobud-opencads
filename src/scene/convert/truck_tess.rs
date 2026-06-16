@@ -8,9 +8,11 @@
 // The caller (acad_to_truck / tessellate) decides which function to call based on
 // the truck topology level of the object.
 
+#[cfg(feature = "solid3d")]
 use truck_meshalgo::tessellation::{MeshableShape, MeshedShape};
 use truck_modeling::base::{BoundedCurve, ParameterDivision1D};
 use truck_modeling::{Edge, Shell, Solid, Vertex, Wire};
+#[cfg(feature = "solid3d")]
 use truck_polymesh::PolygonMesh;
 
 
@@ -140,21 +142,45 @@ pub fn tessellate_wire(w: &Wire, offset: [f64; 3]) -> TruckTessResult {
 // ── Shell ─────────────────────────────────────────────────────────────────
 
 #[allow(dead_code)]
+#[cfg(feature = "solid3d")]
 pub fn tessellate_shell(s: &Shell, offset: [f64; 3]) -> TruckTessResult {
     let meshed = s.triangulation(MESH_TOL);
     polygon_to_result(meshed.to_polygon(), offset)
 }
 
+/// Without `solid3d` (e.g. wasm) there is no mesher; a shell yields no mesh.
+#[cfg(not(feature = "solid3d"))]
+pub fn tessellate_shell(_s: &Shell, _offset: [f64; 3]) -> TruckTessResult {
+    TruckTessResult::Mesh {
+        verts: Vec::new(),
+        normals: Vec::new(),
+        indices: Vec::new(),
+    }
+}
+
 // ── Solid ─────────────────────────────────────────────────────────────────
 
 #[allow(dead_code)]
+#[cfg(feature = "solid3d")]
 pub fn tessellate_solid(s: &Solid, offset: [f64; 3]) -> TruckTessResult {
     let meshed = s.triangulation(MESH_TOL);
     polygon_to_result(meshed.to_polygon(), offset)
 }
 
+/// Without `solid3d` (e.g. wasm) there is no mesher; a solid yields no mesh.
+#[allow(dead_code)]
+#[cfg(not(feature = "solid3d"))]
+pub fn tessellate_solid(_s: &Solid, _offset: [f64; 3]) -> TruckTessResult {
+    TruckTessResult::Mesh {
+        verts: Vec::new(),
+        normals: Vec::new(),
+        indices: Vec::new(),
+    }
+}
+
 // ── Internal ─────────────────────────────────────────────────────────────
 
+#[cfg(feature = "solid3d")]
 fn polygon_to_result(mesh: PolygonMesh, offset: [f64; 3]) -> TruckTessResult {
     let verts: Vec<[f32; 3]> = mesh
         .positions()

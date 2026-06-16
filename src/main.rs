@@ -15,6 +15,7 @@ mod patterns;
 mod scene;
 mod snap;
 mod ui;
+mod sys;
 mod update_check;
 
 fn main() -> iced::Result {

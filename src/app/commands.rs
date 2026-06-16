@@ -2489,7 +2489,7 @@ impl OpenCADStudio {
             }
 
             "DONATE" => {
-                let _ = open::that("https://patreon.com/HakanSeven12");
+                crate::sys::open_url("https://patreon.com/HakanSeven12");
                 self.command_line.push_info("Opening Patreon page...");
             }
 
@@ -2669,7 +2669,7 @@ impl OpenCADStudio {
             }
 
             "REPORT" => {
-                let _ = open::that("https://github.com/HakanSeven12/OpenCADStudio/issues/new");
+                crate::sys::open_url("https://github.com/HakanSeven12/OpenCADStudio/issues/new");
                 self.command_line.push_info("Opening feedback page...");
             }
 
@@ -2682,7 +2682,7 @@ impl OpenCADStudio {
             }
 
             "CHANGELOG" => {
-                let _ = open::that("https://github.com/HakanSeven12/OpenCADStudio/releases");
+                crate::sys::open_url("https://github.com/HakanSeven12/OpenCADStudio/releases");
                 self.command_line.push_info("Opening release notes...");
             }
 

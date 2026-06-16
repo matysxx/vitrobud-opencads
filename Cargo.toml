@@ -12,6 +12,15 @@ members = ["crates/ocs_plugin_api"]
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
+[features]
+default = ["solid3d"]
+# 3-D solid modelling: B-rep tessellation (truck-meshalgo) and booleans
+# (truck-shapeops). Disabled for wasm builds — truck-meshalgo pulls
+# vtkio → xz2 → lzma-sys (a C library) that does not cross-compile to
+# wasm32. Without this feature the app is a 2-D CAD editor; the Model tab,
+# solid tessellation and ACIS import become no-ops.
+solid3d = ["dep:truck-meshalgo", "dep:truck-shapeops", "dep:lzma-sys"]
+
 [dependencies]
 # Stable, dependency-free add-on contract (manifest + ribbon/CadModule types).
 # Plugin authors target this crate's semver, not OpenCADStudio internals.
@@ -22,23 +31,21 @@ ocs_plugin_api = { path = "crates/ocs_plugin_api" }
 # the .app crashes on launch on machines without that exact library (#56).
 # Forcing the `static` feature builds liblzma from the bundled source, making
 # the binary self-contained on every platform.
-lzma-sys = { version = "0.1", features = ["static"] }
+lzma-sys = { version = "0.1", features = ["static"], optional = true }
 iced = { version = "0.14", features = ["image", "svg", "advanced", "canvas", "smol"] }
 bytemuck = { version = "1.25", features = ["derive"] }
 glam = { version = "0.33", features = ["bytemuck"] }
 truck-modeling = "0.6"
-truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation"] }
+truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation"], optional = true }
 truck-polymesh = "0.6"
 rfd = "0.17"
 acadrust = "0.3.4"
-open = "5"
 printpdf = "0.9.1"
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
 rayon = "1"
-ureq = { version = "3", default-features = false, features = ["rustls"] }
 inventory = "0.3"
-truck-shapeops = "0.4"
+truck-shapeops = { version = "0.4", optional = true }
 # Fast non-cryptographic hasher. Handle/u64 keys dominate the hot block,
 # hatch, draw-depth and wire caches; the default SipHash is overkill there.
 rustc-hash = "2"
@@ -68,3 +75,7 @@ windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_Window
 # Z-decode fix, and CANNOSCALE/CANNOSCALEVALUE header support on top of
 # upstream. Revert to upstream once those PRs land.
 acadrust = { git = "https://github.com/HakanSeven12/acadrust", branch = "main" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+open = "5"
+ureq = { version = "3", default-features = false, features = ["rustls"] }

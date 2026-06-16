@@ -28,6 +28,7 @@ pub struct UpdateInfo {
     pub body: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn check_for_update() -> Option<UpdateInfo> {
     std::thread::spawn(fetch_latest_if_outdated)
         .join()
@@ -35,6 +36,14 @@ pub async fn check_for_update() -> Option<UpdateInfo> {
         .flatten()
 }
 
+/// On wasm there is no background thread or blocking HTTP client; the web build
+/// skips the self-update check (the page is always served fresh).
+#[cfg(target_arch = "wasm32")]
+pub async fn check_for_update() -> Option<UpdateInfo> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch_latest_if_outdated() -> Option<UpdateInfo> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(5)))
