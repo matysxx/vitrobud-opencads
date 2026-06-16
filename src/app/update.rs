@@ -82,6 +82,46 @@ impl OpenCADStudio {
         }
     }
 
+    /// Close the active in-canvas modal (Plan B), mirroring what closing the
+    /// old OS window did: a style editor discards its staged (un-applied)
+    /// changes, and the ribbon tool that launched the dialog is de-highlighted.
+    fn close_active_modal(&mut self) {
+        use super::ModalKind::*;
+        if matches!(
+            self.active_modal,
+            Some(TextStyle | DimStyle | TableStyle | MLeaderStyle | MlStyle)
+        ) {
+            self.style_stage_discard();
+        }
+        match self.active_modal {
+            Some(Layers) => self.ribbon.deactivate_tool_if("LAYERS"),
+            Some(PageSetup) => self.ribbon.deactivate_tool_if("PAGESETUP"),
+            Some(TextStyle) => {
+                self.ribbon.deactivate_tool_if("STYLE");
+                self.ribbon.deactivate_tool_if("TEXTSTYLE");
+            }
+            Some(TableStyle) => self.ribbon.deactivate_tool_if("TABLESTYLE"),
+            Some(MlStyle) => self.ribbon.deactivate_tool_if("MLSTYLE"),
+            Some(MLeaderStyle) => self.ribbon.deactivate_tool_if("MLEADERSTYLE"),
+            Some(LayoutManager) => {
+                self.ribbon.deactivate_tool_if("LAYOUTMANAGER");
+                self.ribbon.deactivate_tool_if("LAYOUTPANEL");
+            }
+            Some(Plotstyle) => {
+                self.ribbon.deactivate_tool_if("PLOTSTYLE");
+                self.ribbon.deactivate_tool_if("STYLESMANAGER");
+            }
+            Some(DimStyle) => self.ribbon.deactivate_tool_if("DIMSTYLE"),
+            Some(Shortcuts) => {
+                self.ribbon.deactivate_tool_if("SHORTCUTS");
+                self.ribbon.deactivate_tool_if("KEYBOARD");
+            }
+            Some(About) => self.ribbon.deactivate_tool_if("ABOUT"),
+            _ => {}
+        }
+        self.active_modal = None;
+    }
+
     pub fn update(&mut self, msg: Message) -> Task<Message> {
         let task = self.update_inner(msg);
         // After every message, mirror the active command step's prompt so
@@ -5293,7 +5333,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::LayoutManagerClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::LayoutManagerSelect(name) => {
@@ -5431,7 +5471,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::ShortcutsPanelClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
 
@@ -5442,7 +5482,7 @@ impl OpenCADStudio {
             }
 
             Message::CloseModal => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
 
@@ -5462,7 +5502,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::PluginManagerClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
 
@@ -5721,7 +5761,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::PageSetupClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::UpdateCheckResult(latest) => {
@@ -5734,12 +5774,12 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::UpdateNoticeClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::UpdateNoticeOpenRelease => {
                 crate::sys::open_url(crate::update_check::RELEASES_PAGE);
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::AssocPromptYes => {
@@ -6202,7 +6242,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::PlotStylePanelClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::PlotStylePanelSelectAci(aci) => {
@@ -6354,7 +6394,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::TextStyleDialogClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::TextStyleDialogSelect(name) => {
@@ -6495,7 +6535,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::TableStyleDialogClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::TableStyleDialogSelect(name) => {
@@ -6814,7 +6854,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MlStyleDialogClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::MlStyleDialogSelect(name) => {
@@ -6899,7 +6939,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MLeaderStyleDialogClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::MLeaderStyleDialogSelect(name) => {
@@ -7247,7 +7287,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::DimStyleDialogClose => {
-                self.active_modal = None;
+                self.close_active_modal();
                 Task::none()
             }
             Message::DimStyleDialogApply => {
