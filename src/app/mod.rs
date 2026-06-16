@@ -597,6 +597,10 @@ pub enum ModalKind {
     Shortcuts,
     PluginManager,
     UpdateNotice,
+    Layers,
+    PageSetup,
+    LayoutManager,
+    Plotstyle,
 }
 
 /// Identifies a DimStyle field that can be edited in the dialog.

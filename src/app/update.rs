@@ -1600,24 +1600,14 @@ impl OpenCADStudio {
             }
 
             Message::ToggleLayers => {
-                if let Some(id) = self.layer_window.take() {
-                    // Close path: `OsWindowClosed`'s deactivate guard
-                    // sees `layer_window == None` after the take(), so do
-                    // it here so the button flips off in the same frame
-                    // (#40).
+                if self.active_modal == Some(super::ModalKind::Layers) {
                     self.ribbon.deactivate_tool_if("LAYERS");
-                    window::close(id)
+                    self.active_modal = None;
                 } else {
                     self.sync_ribbon_layers();
-                    let (id, task) = window::open(window::Settings {
-                        size: iced::Size::new(900.0, 360.0),
-                        resizable: true,
-                        level: window::Level::AlwaysOnTop,
-                        ..Default::default()
-                    });
-                    self.layer_window = Some(id);
-                    task.map(|_| Message::Noop)
+                    self.active_modal = Some(super::ModalKind::Layers);
                 }
+                Task::none()
             }
 
             Message::WindowCloseRequested(id) => {
@@ -5299,24 +5289,12 @@ impl OpenCADStudio {
                 } else {
                     current
                 };
-                if let Some(id) = self.layout_manager_window {
-                    return window::gain_focus(id);
-                }
-                let (id, task) = window::open(window::Settings {
-                    size: iced::Size::new(640.0, 320.0),
-                    resizable: true,
-                    level: window::Level::AlwaysOnTop,
-                    ..Default::default()
-                });
-                self.layout_manager_window = Some(id);
-                task.map(|_| Message::Noop)
+                self.active_modal = Some(super::ModalKind::LayoutManager);
+                Task::none()
             }
             Message::LayoutManagerClose => {
-                if let Some(id) = self.layout_manager_window.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.active_modal = None;
+                Task::none()
             }
             Message::LayoutManagerSelect(name) => {
                 self.layout_manager_rename_buf = if name == "Model" {
@@ -5739,24 +5717,12 @@ impl OpenCADStudio {
                 };
                 self.page_setup_w = format!("{w:.1}");
                 self.page_setup_h = format!("{h:.1}");
-                if let Some(id) = self.page_setup_window {
-                    return window::gain_focus(id);
-                }
-                let (id, task) = window::open(window::Settings {
-                    size: iced::Size::new(520.0, 460.0),
-                    resizable: false,
-                    level: window::Level::AlwaysOnTop,
-                    ..Default::default()
-                });
-                self.page_setup_window = Some(id);
-                task.map(|_| Message::Noop)
+                self.active_modal = Some(super::ModalKind::PageSetup);
+                Task::none()
             }
             Message::PageSetupClose => {
-                if let Some(id) = self.page_setup_window.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.active_modal = None;
+                Task::none()
             }
             Message::UpdateCheckResult(latest) => {
                 let Some(info) = latest else {
@@ -6232,24 +6198,12 @@ impl OpenCADStudio {
                 self.ps_screening_buf = entry
                     .map(|e| e.screening.to_string())
                     .unwrap_or("100".into());
-                if let Some(id) = self.plotstyle_window {
-                    return window::gain_focus(id);
-                }
-                let (id, task) = window::open(window::Settings {
-                    size: iced::Size::new(780.0, 540.0),
-                    resizable: true,
-                    level: window::Level::AlwaysOnTop,
-                    ..Default::default()
-                });
-                self.plotstyle_window = Some(id);
-                task.map(|_| Message::Noop)
+                self.active_modal = Some(super::ModalKind::Plotstyle);
+                Task::none()
             }
             Message::PlotStylePanelClose => {
-                if let Some(id) = self.plotstyle_window.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.active_modal = None;
+                Task::none()
             }
             Message::PlotStylePanelSelectAci(aci) => {
                 self.plotstyle_panel_aci = aci;

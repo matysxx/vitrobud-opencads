@@ -40,22 +40,6 @@ impl std::fmt::Display for RenderModeChoice {
 impl OpenCADStudio {
     pub fn view(&self, window_id: window::Id) -> Element<'_, Message> {
         // ── Floating panel windows ─────────────────────────────────────────
-        if Some(window_id) == self.layer_window {
-            let tab = &self.tabs[self.active_tab];
-            return tab.layers.view_window();
-        }
-        if Some(window_id) == self.page_setup_window {
-            return crate::ui::page_setup::view_window(
-                &self.page_setup_w,
-                &self.page_setup_h,
-                &self.page_setup_plot_area,
-                self.page_setup_center,
-                &self.page_setup_offset_x,
-                &self.page_setup_offset_y,
-                &self.page_setup_rotation,
-                &self.page_setup_scale,
-            );
-        }
         if Some(window_id) == self.textstyle_window {
             let tab = &self.tabs[self.active_tab];
             let styles: Vec<String> = tab
@@ -291,26 +275,6 @@ impl OpenCADStudio {
                 },
             );
         }
-        if Some(window_id) == self.layout_manager_window {
-            let i = self.active_tab;
-            let layouts = self.tabs[i].scene.layout_names();
-            let current = self.tabs[i].scene.current_layout.clone();
-            return crate::ui::layout_manager::view_window(
-                layouts,
-                &self.layout_manager_selected,
-                &self.layout_manager_rename_buf,
-                current,
-            );
-        }
-        if Some(window_id) == self.plotstyle_window {
-            return crate::ui::plotstyle::view_window(
-                self.active_plot_style.as_ref(),
-                self.plotstyle_panel_aci,
-                &self.ps_color_buf,
-                &self.ps_lineweight_buf,
-                &self.ps_screening_buf,
-            );
-        }
         if Some(window_id) == self.dimstyle_window {
             let tab = &self.tabs[self.active_tab];
             let styles: Vec<String> = tab
@@ -467,20 +431,6 @@ impl OpenCADStudio {
         }
         if Some(window_id) == self.color_pick_window {
             return crate::ui::color_select::color_grid_window(Message::ColorWindowPick);
-        }
-        if Some(window_id) == self.shortcuts_window {
-            return crate::ui::shortcuts::view_window(&self.shortcut_overrides);
-        }
-        if Some(window_id) == self.about_window {
-            return crate::ui::about::view_window();
-        }
-        if Some(window_id) == self.plugin_manager_window {
-            return crate::ui::plugin_manager::view_window(&crate::plugin::installed_manifests());
-        }
-        if Some(window_id) == self.update_notice_window {
-            let latest = self.update_notice_version.as_deref().unwrap_or("?");
-            let body = self.update_notice_body.as_deref().unwrap_or("");
-            return crate::ui::update_notice::view_window(latest, body);
         }
         if Some(window_id) == self.assoc_prompt_window {
             return default_assoc_dialog_window();
@@ -1517,44 +1467,82 @@ impl OpenCADStudio {
         // ── In-canvas modal dialogs (Plan B) ───────────────────────────────
         // Former pop-up windows render as overlays here, so they work on both
         // the native (single main window) and web builds.
-        use crate::ui::modal::modal;
-        match self.active_modal {
-            Some(super::ModalKind::About) => {
-                modal(composed, crate::ui::about::view_window(), Message::CloseModal)
-            }
-            Some(super::ModalKind::Shortcuts) => modal(
-                composed,
-                // Content-heavy dialogs (lists / scroll) keep a bounded size —
-                // their inner `Fill` widgets fill it — instead of shrinking.
-                iced::widget::container(crate::ui::shortcuts::view_window(
-                    &self.shortcut_overrides,
-                ))
-                .width(720)
-                .height(520),
-                Message::CloseModal,
-            ),
-            Some(super::ModalKind::PluginManager) => modal(
-                composed,
-                iced::widget::container(crate::ui::plugin_manager::view_window(
-                    &crate::plugin::installed_manifests(),
-                ))
-                .width(520)
-                .height(460),
-                Message::CloseModal,
-            ),
-            Some(super::ModalKind::UpdateNotice) => {
-                let latest = self.update_notice_version.as_deref().unwrap_or("?");
-                let body = self.update_notice_body.as_deref().unwrap_or("");
-                modal(
-                    composed,
-                    iced::widget::container(crate::ui::update_notice::view_window(latest, body))
-                        .width(560)
-                        .height(460),
-                    Message::CloseModal,
-                )
-            }
+        match self.modal_content() {
+            Some(content) => crate::ui::modal::modal(composed, content, Message::CloseModal),
             None => composed.into(),
         }
+    }
+
+    /// Build the currently-open modal dialog's content (Plan B), or `None`.
+    /// Each former pop-up window is constructed here and given a bounded size
+    /// (About shrinks to its content). Rendered as an overlay by `view_main`.
+    fn modal_content(&self) -> Option<Element<'_, Message>> {
+        fn sized<'a>(e: Element<'a, Message>, w: u16, h: u16) -> Element<'a, Message> {
+            iced::widget::container(e)
+                .width(iced::Length::Fixed(w as f32))
+                .height(iced::Length::Fixed(h as f32))
+                .into()
+        }
+        Some(match self.active_modal? {
+            super::ModalKind::About => crate::ui::about::view_window(),
+            super::ModalKind::Shortcuts => {
+                sized(crate::ui::shortcuts::view_window(&self.shortcut_overrides), 720, 520)
+            }
+            super::ModalKind::PluginManager => sized(
+                crate::ui::plugin_manager::view_window(&crate::plugin::installed_manifests()),
+                520,
+                460,
+            ),
+            super::ModalKind::UpdateNotice => {
+                let latest = self.update_notice_version.as_deref().unwrap_or("?");
+                let body = self.update_notice_body.as_deref().unwrap_or("");
+                sized(crate::ui::update_notice::view_window(latest, body), 560, 460)
+            }
+            super::ModalKind::Layers => {
+                let tab = &self.tabs[self.active_tab];
+                sized(tab.layers.view_window(), 900, 360)
+            }
+            super::ModalKind::PageSetup => sized(
+                crate::ui::page_setup::view_window(
+                    &self.page_setup_w,
+                    &self.page_setup_h,
+                    &self.page_setup_plot_area,
+                    self.page_setup_center,
+                    &self.page_setup_offset_x,
+                    &self.page_setup_offset_y,
+                    &self.page_setup_rotation,
+                    &self.page_setup_scale,
+                ),
+                520,
+                460,
+            ),
+            super::ModalKind::LayoutManager => {
+                let i = self.active_tab;
+                let layouts = self.tabs[i].scene.layout_names();
+                let current = self.tabs[i].scene.current_layout.clone();
+                sized(
+                    crate::ui::layout_manager::view_window(
+                        layouts,
+                        &self.layout_manager_selected,
+                        &self.layout_manager_rename_buf,
+                        current,
+                    ),
+                    640,
+                    320,
+                )
+            }
+            super::ModalKind::Plotstyle => sized(
+                crate::ui::plotstyle::view_window(
+                    self.active_plot_style.as_ref(),
+                    self.plotstyle_panel_aci,
+                    &self.ps_color_buf,
+                    &self.ps_lineweight_buf,
+                    &self.ps_screening_buf,
+                ),
+                780,
+                540,
+            ),
+        })
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
