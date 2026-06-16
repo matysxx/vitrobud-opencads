@@ -82,3 +82,8 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
+# Browsers without WebGPU (e.g. Firefox by default) need wgpu's WebGL2 backend;
+# `webgl` enables it. `fira-sans` embeds the default UI font — the web has no
+# system fonts, so without it all iced text (ribbon labels, command line) is
+# blank. Features merge with the main `iced` dependency.
+iced = { version = "0.14", features = ["webgl", "fira-sans"] }

@@ -61,7 +61,7 @@ pub async fn open_path_with_phase(
     let path2 = path.clone();
     let phase2 = phase.clone();
     let (doc, caches) = std::thread::spawn(move || -> Result<_, String> {
-        use std::time::Instant;
+        use iced::time::Instant;
         phase2.store(PHASE_PARSING, Ordering::Relaxed);
         let t_parse = Instant::now();
         let mut doc = load_file(&path2)?;

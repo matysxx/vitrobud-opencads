@@ -1,6 +1,6 @@
 //! OpenCADStudio-style command line — bottom panel with input and history
 
-use std::time::Instant;
+use iced::time::Instant;
 
 use crate::app::Message;
 use iced::widget::{button, column, container, opaque, row, scrollable, text, text_input};

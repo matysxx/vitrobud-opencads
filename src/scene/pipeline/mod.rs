@@ -35,8 +35,9 @@ pub struct Pipeline {
     hatch_pipeline: wgpu::RenderPipeline,
     /// Phase 4-B — single-draw batched hatch pipeline. Per-instance
     /// data lives in storage buffers; one draw call covers every
-    /// hatch in the frame.
-    hatch_batched_pipeline: wgpu::RenderPipeline,
+    /// hatch in the frame. `None` on WebGL2 (wasm), which lacks
+    /// vertex-stage storage buffers.
+    hatch_batched_pipeline: Option<wgpu::RenderPipeline>,
     image_pipeline: wgpu::RenderPipeline,
     mesh_pipeline: wgpu::RenderPipeline,
     /// Wireframe variant of the mesh pipeline (LineList topology, same
@@ -56,8 +57,8 @@ pub struct Pipeline {
     uniform_bind_group: wgpu::BindGroup,
     hatch_bgl1: wgpu::BindGroupLayout,
     /// Group-1 layout for the batched hatch pipeline (storage buffers
-    /// for instances / boundary / families / dashes).
-    hatch_batched_bgl1: wgpu::BindGroupLayout,
+    /// for instances / boundary / families / dashes). `None` on WebGL2.
+    hatch_batched_bgl1: Option<wgpu::BindGroupLayout>,
     image_bgl1: wgpu::BindGroupLayout,
     depth_texture_size: Size<u32>,
     depth_view: wgpu::TextureView,
@@ -355,6 +356,16 @@ impl Pipeline {
         });
 
         // ── Hatch batched pipeline (Phase 4-B) ─────────────────────────────
+        // WebGL2 (the wasm fallback backend) has no vertex-stage storage
+        // buffers, which this pipeline's bind group requires. Skip it on wasm
+        // and run without the batched-hatch optimization.
+        #[cfg(target_arch = "wasm32")]
+        let (hatch_batched_bgl1, hatch_batched_pipeline): (
+            Option<wgpu::BindGroupLayout>,
+            Option<wgpu::RenderPipeline>,
+        ) = (None, None);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (hatch_batched_bgl1, hatch_batched_pipeline) = {
         let hatch_batched_bgl1 = hatch_batched_gpu::HatchBatchedGpu::bind_group_layout(device);
         let hatch_batched_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hatch_batched.pipeline_layout"),
@@ -406,6 +417,8 @@ impl Pipeline {
             multiview: None,
             cache: None,
         });
+        (Some(hatch_batched_bgl1), Some(hatch_batched_pipeline))
+        };
 
         // ── Mesh pipeline ──────────────────────────────────────────────────
         let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1152,10 +1165,15 @@ impl Pipeline {
     }
 
     pub fn upload_hatches(&mut self, device: &wgpu::Device, hatches: &[HatchModel]) {
+        // No batched pipeline (WebGL2) → nothing to upload.
+        let Some(bgl1) = &self.hatch_batched_bgl1 else {
+            self.gpu_hatch_batched = None;
+            return;
+        };
         let renderable: Vec<HatchModel> =
             hatches.iter().filter(|h| h.boundary.len() >= 3).cloned().collect();
         self.gpu_hatch_batched =
-            hatch_batched_gpu::HatchBatchedGpu::build(device, &self.hatch_batched_bgl1, &renderable);
+            hatch_batched_gpu::HatchBatchedGpu::build(device, bgl1, &renderable);
     }
 
     pub fn upload_wipeouts(&mut self, device: &wgpu::Device, wipeouts: &[HatchModel]) {
@@ -1257,8 +1275,10 @@ impl Pipeline {
             // by `compute_hatch_lod`). Per-hatch viewport scissor
             // (paper-space MSPACE) isn't ported to the batched path
             // yet — follow-up if it shows up as a visual issue.
-            if let Some(batch) = &self.gpu_hatch_batched {
-                pass.set_pipeline(&self.hatch_batched_pipeline);
+            if let (Some(batch), Some(pipeline)) =
+                (&self.gpu_hatch_batched, &self.hatch_batched_pipeline)
+            {
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_bind_group(1, &batch.bind_group, &[]);
                 pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));

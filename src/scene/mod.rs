@@ -1710,7 +1710,7 @@ impl Scene {
             Some([cx - w * margin, cy - h * margin, cx + w * margin, cy + h * margin])
         };
         let block = self.model_space_block_handle();
-        let t_tess = std::time::Instant::now();
+        let t_tess = iced::time::Instant::now();
         let arc = Arc::new(self.wires_for_block_culled(block, tess_region, wpp, None, None));
         self.last_tess_ms.set(t_tess.elapsed().as_secs_f32() * 1000.0);
         self.last_tess_wires.set(arc.len());
@@ -1739,7 +1739,7 @@ impl Scene {
             }
         }
         let layout_block = self.current_layout_block_handle();
-        let t_tess = std::time::Instant::now();
+        let t_tess = iced::time::Instant::now();
         let mut wires = self.wires_for_block(layout_block);
         self.last_tess_ms.set(t_tess.elapsed().as_secs_f32() * 1000.0);
         self.last_tess_wires.set(wires.len());
