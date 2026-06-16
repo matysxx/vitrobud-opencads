@@ -294,8 +294,9 @@ pub(super) struct OpenCADStudio {
     color_pick_target: Option<ColorPickTarget>,
     shortcuts_window: Option<window::Id>,
     about_window: Option<window::Id>,
-    /// In-canvas About modal (Plan B: shared overlay instead of an OS window).
-    about_open: bool,
+    /// The open in-canvas modal dialog, if any (Plan B: shared overlay instead
+    /// of OS windows).
+    active_modal: Option<ModalKind>,
     plugin_manager_window: Option<window::Id>,
     /// New-release notification window — opened on startup when the
     /// GitHub releases API reports a newer version than this build.
@@ -585,6 +586,17 @@ pub enum ColorPickTarget {
     Ribbon,
     /// A layer's colour, by panel row index.
     Layer(usize),
+}
+
+/// Which in-canvas modal dialog is currently open (Plan B). At most one shows
+/// at a time; dialog-specific data lives in its own fields. Closed via the
+/// modal's ✕ (`Message::CloseModal`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ModalKind {
+    About,
+    Shortcuts,
+    PluginManager,
+    UpdateNotice,
 }
 
 /// Identifies a DimStyle field that can be edited in the dialog.
@@ -994,7 +1006,8 @@ pub enum Message {
     ShortcutsPanelClose,
     // ── About window ────────────────────────────────────────────────────
     AboutOpen,
-    AboutClose,
+    /// Close whatever in-canvas modal dialog is open (Plan B).
+    CloseModal,
     AboutCopyInfo,
     // ── Plugin Manager window ───────────────────────────────────────────
     PluginManagerOpen,
@@ -1416,7 +1429,7 @@ impl OpenCADStudio {
             color_pick_target: None,
             shortcuts_window: None,
             about_window: None,
-            about_open: false,
+            active_modal: None,
             plugin_manager_window: None,
             update_notice_window: None,
             assoc_prompt_window: None,

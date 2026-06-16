@@ -1517,14 +1517,43 @@ impl OpenCADStudio {
         // ── In-canvas modal dialogs (Plan B) ───────────────────────────────
         // Former pop-up windows render as overlays here, so they work on both
         // the native (single main window) and web builds.
-        if self.about_open {
-            crate::ui::modal::modal(
+        use crate::ui::modal::modal;
+        match self.active_modal {
+            Some(super::ModalKind::About) => {
+                modal(composed, crate::ui::about::view_window(), Message::CloseModal)
+            }
+            Some(super::ModalKind::Shortcuts) => modal(
                 composed,
-                crate::ui::about::view_window(),
-                Message::AboutClose,
-            )
-        } else {
-            composed.into()
+                // Content-heavy dialogs (lists / scroll) keep a bounded size —
+                // their inner `Fill` widgets fill it — instead of shrinking.
+                iced::widget::container(crate::ui::shortcuts::view_window(
+                    &self.shortcut_overrides,
+                ))
+                .width(720)
+                .height(520),
+                Message::CloseModal,
+            ),
+            Some(super::ModalKind::PluginManager) => modal(
+                composed,
+                iced::widget::container(crate::ui::plugin_manager::view_window(
+                    &crate::plugin::installed_manifests(),
+                ))
+                .width(520)
+                .height(460),
+                Message::CloseModal,
+            ),
+            Some(super::ModalKind::UpdateNotice) => {
+                let latest = self.update_notice_version.as_deref().unwrap_or("?");
+                let body = self.update_notice_body.as_deref().unwrap_or("");
+                modal(
+                    composed,
+                    iced::widget::container(crate::ui::update_notice::view_window(latest, body))
+                        .width(560)
+                        .height(460),
+                    Message::CloseModal,
+                )
+            }
+            None => composed.into(),
         }
     }
 

@@ -5449,34 +5449,22 @@ impl OpenCADStudio {
 
             // ── Keyboard Shortcuts Panel ──────────────────────────────────────
             Message::ShortcutsPanelOpen => {
-                if let Some(id) = self.shortcuts_window {
-                    return window::gain_focus(id);
-                }
-                let (id, task) = window::open(window::Settings {
-                    size: iced::Size::new(720.0, 520.0),
-                    resizable: true,
-                    level: window::Level::AlwaysOnTop,
-                    ..Default::default()
-                });
-                self.shortcuts_window = Some(id);
-                task.map(|_| Message::Noop)
+                self.active_modal = Some(super::ModalKind::Shortcuts);
+                Task::none()
             }
             Message::ShortcutsPanelClose => {
-                if let Some(id) = self.shortcuts_window.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.active_modal = None;
+                Task::none()
             }
 
             // ── About window ──────────────────────────────────────────────
             Message::AboutOpen => {
-                self.about_open = true;
+                self.active_modal = Some(super::ModalKind::About);
                 Task::none()
             }
 
-            Message::AboutClose => {
-                self.about_open = false;
+            Message::CloseModal => {
+                self.active_modal = None;
                 Task::none()
             }
 
@@ -5492,24 +5480,12 @@ impl OpenCADStudio {
 
             // ── Plugin Manager window ─────────────────────────────────────
             Message::PluginManagerOpen => {
-                if let Some(id) = self.plugin_manager_window {
-                    return window::gain_focus(id);
-                }
-                let (id, task) = window::open(window::Settings {
-                    size: iced::Size::new(520.0, 460.0),
-                    resizable: true,
-                    level: window::Level::AlwaysOnTop,
-                    ..Default::default()
-                });
-                self.plugin_manager_window = Some(id);
-                task.map(|_| Message::Noop)
+                self.active_modal = Some(super::ModalKind::PluginManager);
+                Task::none()
             }
             Message::PluginManagerClose => {
-                if let Some(id) = self.plugin_manager_window.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.active_modal = None;
+                Task::none()
             }
 
             Message::EnterViewport(handle) => {
@@ -5788,35 +5764,17 @@ impl OpenCADStudio {
                 };
                 self.update_notice_version = Some(info.version);
                 self.update_notice_body = Some(info.body);
-                if let Some(id) = self.update_notice_window {
-                    return window::gain_focus(id);
-                }
-                let (id, task) = window::open(window::Settings {
-                    // Sized for the new release-notes panel — wide enough
-                    // for typical GitHub release headlines, tall enough for
-                    // a meaningful scroll preview without dwarfing the app.
-                    size: iced::Size::new(560.0, 460.0),
-                    resizable: true,
-                    level: window::Level::AlwaysOnTop,
-                    ..Default::default()
-                });
-                self.update_notice_window = Some(id);
-                task.map(|_| Message::Noop)
+                self.active_modal = Some(super::ModalKind::UpdateNotice);
+                Task::none()
             }
             Message::UpdateNoticeClose => {
-                if let Some(id) = self.update_notice_window.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.active_modal = None;
+                Task::none()
             }
             Message::UpdateNoticeOpenRelease => {
                 crate::sys::open_url(crate::update_check::RELEASES_PAGE);
-                if let Some(id) = self.update_notice_window.take() {
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.active_modal = None;
+                Task::none()
             }
             Message::AssocPromptYes => {
                 self.mark_assoc_prompted();
