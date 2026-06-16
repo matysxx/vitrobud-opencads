@@ -294,6 +294,8 @@ pub(super) struct OpenCADStudio {
     color_pick_target: Option<ColorPickTarget>,
     shortcuts_window: Option<window::Id>,
     about_window: Option<window::Id>,
+    /// In-canvas About modal (Plan B: shared overlay instead of an OS window).
+    about_open: bool,
     plugin_manager_window: Option<window::Id>,
     /// New-release notification window — opened on startup when the
     /// GitHub releases API reports a newer version than this build.
@@ -992,6 +994,7 @@ pub enum Message {
     ShortcutsPanelClose,
     // ── About window ────────────────────────────────────────────────────
     AboutOpen,
+    AboutClose,
     AboutCopyInfo,
     // ── Plugin Manager window ───────────────────────────────────────────
     PluginManagerOpen,
@@ -1413,6 +1416,7 @@ impl OpenCADStudio {
             color_pick_target: None,
             shortcuts_window: None,
             about_window: None,
+            about_open: false,
             plugin_manager_window: None,
             update_notice_window: None,
             assoc_prompt_window: None,

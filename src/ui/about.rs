@@ -1,6 +1,6 @@
 use crate::app::Message;
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Background, Border, Color, Element, Fill, Theme};
+use iced::widget::{button, column, container, row, text};
+use iced::{Background, Border, Color, Element, Theme};
 
 const BG: Color = Color {
     r: 0.15,
@@ -65,7 +65,6 @@ pub fn view_window<'a>() -> Element<'a, Message> {
         .spacing(4)
         .align_x(iced::Center),
     )
-    .width(Fill)
     .padding(iced::Padding {
         top: 20.0,
         right: 0.0,
@@ -83,7 +82,6 @@ pub fn view_window<'a>() -> Element<'a, Message> {
         .spacing(2)
         .padding([12, 16]),
     )
-    .width(Fill)
     .style(|_: &Theme| container::Style {
         background: Some(Background::Color(PANEL)),
         border: Border {
@@ -115,7 +113,7 @@ pub fn view_window<'a>() -> Element<'a, Message> {
         })
         .padding([6, 16]);
 
-    let footer = row![Space::new().width(Fill), copy_btn,]
+    let footer = row![copy_btn]
         .align_y(iced::Center)
         .padding(iced::Padding {
             top: 12.0,
@@ -138,7 +136,5 @@ pub fn view_window<'a>() -> Element<'a, Message> {
         background: Some(Background::Color(BG)),
         ..Default::default()
     })
-    .width(Fill)
-    .height(Fill)
     .into()
 }

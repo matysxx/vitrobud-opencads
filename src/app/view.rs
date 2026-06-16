@@ -1499,7 +1499,7 @@ impl OpenCADStudio {
             iced::widget::Space::new().width(0).height(0).into()
         };
 
-        stack![
+        let composed = stack![
             main_ui,
             self.app_menu.view(),
             snap_layer,
@@ -1512,8 +1512,20 @@ impl OpenCADStudio {
             layout_ctx_layer,
             qselect_layer,
             open_progress_layer,
-        ]
-        .into()
+        ];
+
+        // ── In-canvas modal dialogs (Plan B) ───────────────────────────────
+        // Former pop-up windows render as overlays here, so they work on both
+        // the native (single main window) and web builds.
+        if self.about_open {
+            crate::ui::modal::modal(
+                composed,
+                crate::ui::about::view_window(),
+                Message::AboutClose,
+            )
+        } else {
+            composed.into()
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

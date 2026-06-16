@@ -5471,17 +5471,13 @@ impl OpenCADStudio {
 
             // ── About window ──────────────────────────────────────────────
             Message::AboutOpen => {
-                if let Some(id) = self.about_window {
-                    return window::gain_focus(id);
-                }
-                let (id, task) = window::open(window::Settings {
-                    size: iced::Size::new(340.0, 240.0),
-                    resizable: false,
-                    level: window::Level::AlwaysOnTop,
-                    ..Default::default()
-                });
-                self.about_window = Some(id);
-                task.map(|_| Message::Noop)
+                self.about_open = true;
+                Task::none()
+            }
+
+            Message::AboutClose => {
+                self.about_open = false;
+                Task::none()
             }
 
             Message::AboutCopyInfo => {

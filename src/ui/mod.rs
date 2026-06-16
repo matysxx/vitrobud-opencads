@@ -13,6 +13,7 @@ pub mod layers;
 pub mod layout_manager;
 pub mod mleaderstyle;
 pub mod mlstyle;
+pub mod modal;
 pub mod open_progress;
 pub mod overlay;
 pub mod page_setup;
