@@ -134,7 +134,7 @@ impl OpenCADStudio {
             CmdResult::CommitSolid { entity, solid } => {
                 let label = self.history_label_from_active_cmd(i, "SOLID");
                 self.push_undo_snapshot(i, label);
-                self.add_model_solid(entity, *solid);
+                self.add_solid_model(entity, *solid);
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.clear_preview_wire();
                 self.tabs[i].active_cmd = None;

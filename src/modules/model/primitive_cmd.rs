@@ -13,7 +13,7 @@ use glam::Vec3;
 use truck_modeling::Solid;
 
 use crate::command::{CadCommand, CmdResult};
-use crate::scene::model::model_solid;
+use crate::scene::model::solid_model;
 use crate::scene::model::wire_model::WireModel;
 
 /// Which primitive a `PrimitiveCommand` builds.
@@ -116,13 +116,13 @@ impl PrimitiveCommand {
                     ];
                     (
                         primitives::build_box(center, length, width, height),
-                        model_solid::box_solid(center, length, width, height),
+                        solid_model::box_solid(center, length, width, height),
                     )
                 } else {
                     let origin = [a.x.min(b.x) as f64, a.y.min(b.y) as f64, 0.0];
                     (
                         primitives::build_wedge(origin, length, width, height),
-                        model_solid::wedge_solid(origin, length, width, height),
+                        solid_model::wedge_solid(origin, length, width, height),
                     )
                 }
             }
@@ -136,12 +136,12 @@ impl PrimitiveCommand {
                 if self.shape == Shape::Cylinder {
                     (
                         primitives::build_cylinder(center, r, height),
-                        model_solid::cylinder_solid(center, r, height),
+                        solid_model::cylinder_solid(center, r, height),
                     )
                 } else {
                     (
                         primitives::build_cone(center, r, height),
-                        model_solid::cone_solid(center, r, height),
+                        solid_model::cone_solid(center, r, height),
                     )
                 }
             }
@@ -154,7 +154,7 @@ impl PrimitiveCommand {
                 let center = [c.x as f64, c.y as f64, 0.0];
                 (
                     primitives::build_sphere(center, r),
-                    model_solid::sphere_solid(center, r),
+                    solid_model::sphere_solid(center, r),
                 )
             }
             Shape::Torus => {
@@ -167,7 +167,7 @@ impl PrimitiveCommand {
                 let center = [c.x as f64, c.y as f64, 0.0];
                 (
                     primitives::build_torus(center, major, minor),
-                    model_solid::torus_solid(center, major, minor),
+                    solid_model::torus_solid(center, major, minor),
                 )
             }
         };
@@ -175,7 +175,7 @@ impl PrimitiveCommand {
         s3d.set_sat_document(&doc);
         // Edge wires make the solid click-pickable and draw a wireframe over
         // the shaded mesh.
-        s3d.wires = model_solid::edge_wires(&solid);
+        s3d.wires = solid_model::edge_wires(&solid);
         Some((EntityType::Solid3D(s3d), solid))
     }
 

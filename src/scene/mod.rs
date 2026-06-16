@@ -685,7 +685,7 @@ pub struct Scene {
     /// keyed by entity handle. Backs the Design-group boolean tools (a solid
     /// must be here to be combined). Not persisted — rebuilt only by creating
     /// or combining primitives in-session.
-    pub model_solids: HashMap<Handle, truck_modeling::Solid>,
+    pub solid_models: HashMap<Handle, truck_modeling::Solid>,
     /// GPU render data for raster images (RasterImage entities), keyed by handle.
     pub images: HashMap<Handle, ImageModel>,
     /// The viewport that is currently "entered" (MSPACE mode).
@@ -821,7 +821,7 @@ impl Scene {
             current_layout: "Model".to_string(),
             hatches: HashMap::default(),
             meshes: HashMap::default(),
-            model_solids: HashMap::default(),
+            solid_models: HashMap::default(),
             images: HashMap::default(),
             active_viewport: None,
             bg_color: [0.11, 0.11, 0.11, 1.0],
@@ -1011,16 +1011,16 @@ impl Scene {
     /// tessellate it into the shaded mesh pipeline under `handle`. The solid is
     /// in the same offset-relative frame the mesh pipeline uses, so the mesh is
     /// stored as-is (Model-tab geometry is authored at world_offset 0).
-    pub fn register_model_solid(&mut self, handle: Handle, solid: truck_modeling::Solid) {
+    pub fn register_solid_model(&mut self, handle: Handle, solid: truck_modeling::Solid) {
         let color = self
             .document
             .get_entity(handle)
             .map(|e| self.render_style(e).0)
             .unwrap_or([0.8, 0.8, 0.85, 1.0]);
-        if let Some(set) = crate::scene::model::model_solid::mesh_from_solid(&solid, color) {
+        if let Some(set) = crate::scene::model::solid_model::mesh_from_solid(&solid, color) {
             self.meshes.insert(handle, set);
         }
-        self.model_solids.insert(handle, solid);
+        self.solid_models.insert(handle, solid);
         self.bump_geometry();
     }
 
@@ -3360,7 +3360,7 @@ impl Scene {
         for h in &to_remove {
             self.hatches.remove(h);
             self.meshes.remove(h);
-            self.model_solids.remove(h);
+            self.solid_models.remove(h);
             self.document.remove_entity(*h);
         }
 
@@ -4808,7 +4808,7 @@ impl Scene {
             self.selected.remove(&h);
             self.hatches.remove(&h);
             self.meshes.remove(&h);
-            self.model_solids.remove(&h);
+            self.solid_models.remove(&h);
             self.mark_entity_dirty(h);
         }
         // Remove erased handles from all groups; delete groups that become empty.
