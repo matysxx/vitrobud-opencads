@@ -493,6 +493,11 @@ pub struct ArrayPathCommand {
     all_entities: Vec<EntityType>,
     step: PathStep,
     default_count: u32,
+    /// Where the user clicked to select the path. The array starts from the
+    /// path end nearest this point, so clicking near either end picks the
+    /// travel direction (a stored arc is always CCW regardless of how it was
+    /// drawn, so without this the array could run opposite to expectation).
+    pick_pt: Vec3,
 }
 
 impl ArrayPathCommand {
@@ -507,7 +512,22 @@ impl ArrayPathCommand {
             all_entities,
             step: PathStep::SelectPath,
             default_count: defaults::get_array_path_count() as u32,
+            pick_pt: Vec3::ZERO,
         }
+    }
+
+    /// Sample the path and orient the points so index 0 is the end nearest the
+    /// pick point, giving the user control over the array's travel direction.
+    fn oriented_samples(&self, entity: &EntityType, count: usize) -> Vec<Vec3> {
+        let mut pts = Self::sample_path(entity, count);
+        if pts.len() >= 2 {
+            let d_first = self.pick_pt.distance_squared(pts[0]);
+            let d_last = self.pick_pt.distance_squared(pts[pts.len() - 1]);
+            if d_last < d_first {
+                pts.reverse();
+            }
+        }
+        pts
     }
 
     /// Sample `count` evenly-spaced points along `entity`.
@@ -688,7 +708,7 @@ impl CadCommand for ArrayPathCommand {
         }
     }
 
-    fn on_entity_pick(&mut self, handle: Handle, _pt: Vec3) -> CmdResult {
+    fn on_entity_pick(&mut self, handle: Handle, pt: Vec3) -> CmdResult {
         if handle.is_null() || self.handles.contains(&handle) {
             return CmdResult::NeedPoint;
         }
@@ -698,6 +718,7 @@ impl CadCommand for ArrayPathCommand {
             .find(|e| e.common().handle == handle)
             .cloned()
         {
+            self.pick_pt = pt;
             self.step = PathStep::Count {
                 path_entity: entity,
             };
@@ -743,7 +764,7 @@ impl CadCommand for ArrayPathCommand {
             self.default_count = v;
             v
         };
-        let pts = Self::sample_path(path_entity, count as usize);
+        let pts = self.oriented_samples(path_entity, count as usize);
         let transforms = Self::build_transforms(&pts);
         if transforms.is_empty() {
             return Some(CmdResult::Cancel);
@@ -755,7 +776,7 @@ impl CadCommand for ArrayPathCommand {
         let PathStep::Count { path_entity } = &self.step else {
             return vec![];
         };
-        let pts = Self::sample_path(path_entity, self.default_count as usize);
+        let pts = self.oriented_samples(path_entity, self.default_count as usize);
         let transforms = Self::build_transforms(&pts);
         transforms
             .iter()
