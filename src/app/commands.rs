@@ -1122,6 +1122,33 @@ impl OpenCADStudio {
                 }
             }
 
+            "TORIENT" => {
+                let handles: Vec<_> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .map(|(h, _)| h)
+                    .collect();
+                if handles.is_empty() {
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    let cmd = SelectObjectsCommand::new("TORIENT");
+                    self.command_line.push_info(&cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                } else {
+                    use crate::modules::draw::modify::torient::TorientCommand;
+                    let entities: Vec<_> = handles
+                        .iter()
+                        .filter_map(|&h| self.tabs[i].scene.document.get_entity(h).cloned().map(|e| (h, e)))
+                        .collect();
+                    let cam_rot = self.tabs[i].scene.camera.borrow().rotation;
+                    let right = cam_rot * glam::Vec3::X;
+                    let view_twist = right.y.atan2(right.x) as f64;
+                    let new_cmd = TorientCommand::new(handles, entities, view_twist);
+                    self.command_line.push_info(&new_cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+                }
+            }
+
             "POINT" | "PO" => {
                 use crate::modules::draw::draw::point::PointCommand;
                 let new_cmd = PointCommand::new();
