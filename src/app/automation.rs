@@ -151,6 +151,14 @@ impl OpenCADStudio {
             }
             "entities" => self.entity_summary(),
             "query" => self.entity_query(&req),
+            "undo" => {
+                let _ = self.update(super::Message::Undo);
+                self.entity_summary()
+            }
+            "redo" => {
+                let _ = self.update(super::Message::Redo);
+                self.entity_summary()
+            }
             "select" => {
                 let i = self.active_tab;
                 self.tabs[i].scene.deselect_all();
@@ -355,6 +363,16 @@ mod tests {
         app.automation_op(r#"{"op":"run","cmd":"ERASE"}"#);
         let r = app.automation_op(r#"{"op":"entities"}"#);
         assert_eq!(r["total"], 1); // only the Circle remains
+
+        // undo restores the erased lines.
+        let r = app.automation_op(r#"{"op":"undo"}"#);
+        assert_eq!(r["total"], 3);
+
+        // move a selected entity by a displacement.
+        app.automation_op(r#"{"op":"select","type":"Circle"}"#);
+        app.automation_op(r#"{"op":"run","cmd":"MOVE 0,0 100,0"}"#);
+        let r = app.automation_op(r#"{"op":"query","type":"Circle"}"#);
+        assert_eq!(r["entities"][0]["center"][0], 105.0); // 5 + 100
 
         // Errors are reported, never panics.
         assert_eq!(app.automation_op(r#"{"op":"bogus"}"#)["ok"], false);

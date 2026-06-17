@@ -92,6 +92,14 @@ class Ocs:
             op="select", handles=handles, type=type, layer=layer, clear=clear
         )
 
+    def undo(self) -> dict[str, Any]:
+        """Undo the last change."""
+        return self._send(op="undo")
+
+    def redo(self) -> dict[str, Any]:
+        """Redo the last undone change."""
+        return self._send(op="redo")
+
     def save(self, path: Optional[str] = None) -> dict[str, Any]:
         """Write the document (defaults to the opened/last-saved path)."""
         return self._send(op="save", path=path)

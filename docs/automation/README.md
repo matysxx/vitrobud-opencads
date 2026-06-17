@@ -21,6 +21,7 @@ can act → observe → act.
 | `{"op":"entities"}` | `{"ok":true,"total":N,"by_type":{"Line":42,...}}` |
 | `{"op":"query","type":"Line","layer":"Walls"}` | per-entity `{handle,type,layer,…geometry}` (filters + `limit` optional) |
 | `{"op":"select","handles":["2B"]}` | set the selection (by `handles`, `type`, or `layer`; `clear` to deselect) → `{"ok":true,"selected":N}` |
+| `{"op":"undo"}` / `{"op":"redo"}` | step the document history → entity summary |
 | `{"op":"save","path":"out.dwg"}` | `{"ok":true,"saved":"out.dwg"}` (path optional once opened/saved) |
 
 Selection drives modify commands — `select` the targets (e.g. the handles a
