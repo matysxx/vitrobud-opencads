@@ -5,6 +5,7 @@
 //!   Extension, Insertion, Perpendicular, Nearest, ApparentIntersection, Grid, Tangent
 
 use glam::{Mat4, Vec3};
+use iced::time::Instant;
 use iced::{Point, Rectangle};
 
 use crate::command::TangentObject;
@@ -98,8 +99,10 @@ pub struct Snapper {
     pub tracking_points: Vec<Vec3>,
     /// Last snap world position (for dwell detection).
     pub last_snap_world: Option<Vec3>,
-    /// How many consecutive moves the cursor has been near last_snap_world.
-    pub dwell_count: u32,
+    /// When the cursor first rested near `last_snap_world`.
+    pub dwell_since: Option<Instant>,
+    /// Whether the current dwell already acquired/removed a point (fire once).
+    pub dwell_acquired: bool,
 }
 
 impl Default for Snapper {
@@ -121,7 +124,8 @@ impl Default for Snapper {
             otrack_enabled: false,
             tracking_points: Vec::new(),
             last_snap_world: None,
-            dwell_count: 0,
+            dwell_since: None,
+            dwell_acquired: false,
         }
     }
 }
@@ -172,19 +176,25 @@ impl Snapper {
         snap_world: Option<Vec3>,
         view_proj: glam::Mat4,
         bounds: iced::Rectangle,
+        now: Instant,
     ) {
         if !self.otrack_enabled {
-            self.dwell_count = 0;
             self.last_snap_world = None;
+            self.dwell_since = None;
+            self.dwell_acquired = false;
             return;
         }
-        const DWELL_THRESHOLD: u32 = 4;
+        // The cursor must rest near a snap point for this long before it is
+        // acquired, so that brushing past snap points while moving the mouse
+        // does not create accidental tracking points.
+        const DWELL_MS: u128 = 250;
         const DWELL_PX: f32 = 8.0;
 
         match snap_world {
             None => {
-                self.dwell_count = 0;
                 self.last_snap_world = None;
+                self.dwell_since = None;
+                self.dwell_acquired = false;
             }
             Some(p) => {
                 // Convert to screen to measure pixel distance.
@@ -198,8 +208,11 @@ impl Snapper {
                     false
                 };
                 if is_same {
-                    self.dwell_count += 1;
-                    if self.dwell_count == DWELL_THRESHOLD {
+                    let elapsed = self
+                        .dwell_since
+                        .map_or(0, |t| now.duration_since(t).as_millis());
+                    if !self.dwell_acquired && elapsed >= DWELL_MS {
+                        self.dwell_acquired = true;
                         // Dwelling over an already-acquired point removes it;
                         // otherwise acquire it (max 4 tracked points).
                         let existing = self.tracking_points.iter().position(|t| {
@@ -219,8 +232,9 @@ impl Snapper {
                         }
                     }
                 } else {
-                    self.dwell_count = 1;
                     self.last_snap_world = Some(p);
+                    self.dwell_since = Some(now);
+                    self.dwell_acquired = false;
                 }
             }
         }
@@ -291,8 +305,9 @@ impl Snapper {
     /// Clear all acquired tracking points (e.g. when command ends).
     pub fn clear_tracking(&mut self) {
         self.tracking_points.clear();
-        self.dwell_count = 0;
         self.last_snap_world = None;
+        self.dwell_since = None;
+        self.dwell_acquired = false;
     }
 
     /// Only runs Tangent snap — used when a command needs object picks via tangent.
@@ -317,7 +332,8 @@ impl Snapper {
             otrack_enabled: false,
             tracking_points: Vec::new(),
             last_snap_world: None,
-            dwell_count: 0,
+            dwell_since: None,
+            dwell_acquired: false,
         };
         tmp.snap(cursor_world, cursor_screen, wires, view_proj, bounds)
     }

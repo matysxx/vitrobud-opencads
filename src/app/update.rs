@@ -2481,8 +2481,12 @@ impl OpenCADStudio {
                     // distance can place a point along it — issue #69).
                     let otrack_hit = {
                         let snap_world = self.tabs[i].snap_result.map(|s| s.world);
-                        self.snapper
-                            .update_otrack_dwell(snap_world, view_proj, bounds);
+                        self.snapper.update_otrack_dwell(
+                            snap_world,
+                            view_proj,
+                            bounds,
+                            Instant::now(),
+                        );
                         if self.tabs[i].snap_result.is_none() {
                             let step = if self.polar_mode {
                                 Some(self.polar_increment_deg)
