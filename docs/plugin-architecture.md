@@ -1,12 +1,20 @@
 # Open CAD Studio — Plugin Architecture
 
-**Status:** Accepted (phase 1)  
-**Author:** Open CAD Studio contributors  
+**Status:** Accepted
+**Author:** Open CAD Studio contributors
 **Date:** June 2026
 
-This document is the **authoritative spec** for how add-on packages integrate with Open CAD Studio. It follows patterns familiar from [QGIS](https://plugins.qgis.org/) and other open-source extensibility models: a small metadata file, a single entry-point registration, optional separate engine crate, and user-installable packages in a later phase.
+This document is the **authoritative spec** for how add-on packages integrate
+with Open CAD Studio. The model follows [QGIS](https://plugins.qgis.org/)-style
+extensibility: a small metadata file, a single entry point, an optional separate
+engine crate, and user-installable packages from a curated index.
 
-> **Scope:** Generic host runtime only (`src/plugin/`, `src/app/plugin_host.rs`). Domain plugins (Storm Sewer, future sanitary/geotech) live under `src/modules/<name>/` and optional `crates/<engine>/`. They **consume** this API; they are **not** part of the framework source.
+> **Open CAD Studio ships no built-in plugins.** Every add-on is an **external
+> dynamic library** (`cdylib`) the host loads at runtime from the user plugins
+> folder. The host source only contains the generic plugin *runtime*
+> (`src/plugin/`, `src/app/plugin_host.rs`) and the stable contract crate
+> (`crates/ocs_plugin_api`). Add-ons live in their own repositories and
+> **consume** that contract.
 
 ---
 
@@ -14,357 +22,330 @@ This document is the **authoritative spec** for how add-on packages integrate wi
 
 | Goal | Rationale |
 |------|-----------|
-| **One package, one registration** | Ribbon tab, commands, and manifest ship together — no duplicate hooks in `build.rs` and `commands.rs`. |
-| **Stable host surface** | Plugin authors target the semver-versioned `ocs_plugin_api` crate (manifest + ribbon today) and `HostSession`, not `OpenCADStudio` internals. |
-| **Open-source add-on ergonomics** | Separate git repo + workspace crate is supported; in-tree built-ins use the same layout. |
-| **DWG round-trip** | Domain data on entities (XDATA), not opaque plugin databases. |
-| **Engine reuse** | Headless crates (`stormsewer`, …) run in WASM/CLI without the CAD host. |
+| **One package, one entry point** | Manifest, ribbon tab and commands ship together in the plugin crate; no edits to the host. |
+| **Stable contract** | Authors target the semver-versioned `ocs_plugin_api` crate, not `OpenCADStudio` internals. |
+| **Out-of-tree by default** | A plugin is its own repo + crate; the host never recompiles to gain one. |
+| **DWG round-trip** | Domain data lives on entities as XDATA, not in an opaque side database. |
+| **Engine reuse** | A headless `std`-only engine crate can run in WASM/CLI without the CAD host. |
 
-## Non-goals (phase 1)
+## Non-goals
 
-- Sandboxed scripting (Python/Lua).
-- Replacing the `acadrust` entity model.
-- Full Autodesk CUI XML import.
+- Sandboxing or signature verification (installing a plugin runs native code; the
+  user trusts the repos they install from).
+- Cross-toolchain binary compatibility — see [Compatibility](#compatibility--abi).
+- Sandboxed scripting (Python/Lua); replacing the `acadrust` entity model.
 
 ---
 
-## Three layers (do not mix)
+## Three layers
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│  Layer A — Host core                                                │
+│  Layer A — Host (OpenCADStudio)                                     │
 │  iced UI · Scene · Document · Undo · Command line                   │
-│  Built-in ribbon tabs: Home, Model, View, … (NOT plugins)           │
+│  Core ribbon tabs: Home, Model, View, … (NOT plugins)              │
+│  Generic plugin runtime: discovery, libloading, dispatch           │
 └───────────────────────────────┬────────────────────────────────────┘
-                                │ HostSession (stable adapter)
+                                │ &mut dyn HostApi  (ocs_plugin_api)
 ┌───────────────────────────────▼────────────────────────────────────┐
-│  Layer B — Add-on plugin package                                    │
-│  plugin.toml · manifest.rs · register.rs · plugin.rs · dispatch.rs │
-│  Optional ribbon (CadModule) · per-tab state · XDATA schemas        │
+│  Layer B — Plugin package  (external repo, cdylib)                  │
+│  Cargo.toml · plugin.toml · src/lib.rs                              │
+│  PluginManifest · CadModule ribbon · BuiltinPlugin · export_plugin! │
 └───────────────────────────────┬────────────────────────────────────┘
                                 │ pure Rust API
 ┌───────────────────────────────▼────────────────────────────────────┐
-│  Layer C — Domain engine crate (optional)                           │
-│  crates/stormsewer — hydraulics, IO, no iced/acadrust dependency    │
+│  Layer C — Domain engine crate (optional)                          │
+│  hydraulics / COGO / … — `std` only, no iced/acadrust              │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-| Layer | Examples | May depend on |
+| Layer | Lives in | May depend on |
 |-------|----------|---------------|
-| **A — Host core** | `src/app/`, `src/ui/`, `src/modules/home/` | Everything in the app |
-| **B — Plugin package** | `src/modules/storm_sewer/` | Host + optional engine crate |
-| **C — Engine** | `crates/stormsewer/` | `std` only (target: WASM/CLI too) |
+| **A — Host** | this repo: `src/`, `crates/ocs_plugin_api` | everything |
+| **B — Plugin** | a separate repo (cdylib) | `ocs_plugin_api` + optional engine |
+| **C — Engine** | the plugin's own crate or crates.io | `std` only (WASM/CLI-capable) |
 
 **Hard rules**
 
-1. `src/plugin/` must **not** import any domain module (`storm_sewer`, …).
-2. Engine crates must **not** import `iced`, `acadrust`, or `OpenCADStudio`.
-3. Add-on plugins must **not** edit `src/app/commands.rs` for new commands.
+1. The host (`src/plugin/`) imports no plugin code — it only knows the contract.
+2. Engine crates import neither `iced`, `acadrust`, nor `OpenCADStudio`.
+3. A plugin never edits host source; it runs entirely from its own crate.
 
 ---
 
-## Comparison to QGIS
+## The contract crate — `ocs_plugin_api`
 
-| QGIS | Open CAD Studio |
-|------|-----------------|
-| `metadata.txt` (name, version, author, …) | `plugin.toml` beside the package |
-| `classFactory(iface)` in `__init__.py` | `inventory::submit!(PluginRegistration { construct })` in `register.rs` |
-| `iface` stable API | `ocs_plugin_api` crate (manifest + ribbon) + `HostSession` |
-| User folder `…/python/plugins/<id>/` | Phase 2: `%APPDATA%/OpenCADStudio/plugins/<id>/` |
-| Plugin repository (plugins.qgis.org) | Future: curated index; today = git + in-tree |
-| `qgisMinimumVersion` | `api_version` in manifest (host ABI major) |
-| Processing algorithms | Headless engine crates + `SS_ANALYZE`-style commands |
-| Vector layer provider | XDATA on DWG entities (`STORMSEWER_*`) |
+[`crates/ocs_plugin_api`](../crates/ocs_plugin_api) is the semver-versioned API a
+plugin compiles against. Two tiers:
 
-QGIS separates **core application** from **Python plugins** loaded at runtime. Open CAD Studio phase 1 compiles add-ons **in-tree** (same ergonomics, static linking). Phase 2 adds dynamic `.dll`/`.so` with the **same** `plugin.toml` and C ABI entry point.
+- **Dependency-free core** (default): `PluginManifest` / `ApiVersion` and the
+  ribbon vocabulary — `CadModule`, `ToolDef`, `RibbonGroup`, `RibbonItem`,
+  `IconKind`, `ModuleEvent`, `StyleKey`. Engine crates and tooling depend on this
+  cheaply.
+- **`host` feature** (pulls `acadrust`): the runtime surface — the `HostApi`
+  trait, the `BuiltinPlugin` entry-point trait, and the `export_plugin!` macro.
 
----
-
-## Add-on package layout
-
-Every add-on — whether in-tree or external — uses this directory shape:
-
-```
-<plugin_id>/                    # e.g. storm_sewer or opencad-storm-sewer repo
-  plugin.toml                   # human metadata (mirrors manifest.rs)
-  PLUGIN.md                     # XDATA schemas, command reference
-  register.rs                   # ONLY inventory::submit! — no domain logic
-  plugin.rs                     # thin BuiltinPlugin impl
-  manifest.rs                   # static PluginManifest (compile-time truth)
-  dispatch.rs                   # command routing for this plugin
-  state.rs                      # per-document tab state (optional)
-  mod.rs                        # CadModule ribbon (if the plugin has a tab)
-  icons/                        # SVG assets
-  …                             # domain modules (data.rs, preview.rs, …)
-
-crates/<engine>/                # optional, separate workspace member
-  Cargo.toml
-  src/
-```
-
-### `plugin.toml` (metadata file)
-
-Source of truth for **humans and phase-2 loader**. Values must match `manifest.rs`.
-
-```toml
-[plugin]
-id = "opencad.storm_sewer"
-name = "Storm Sewer"
-version = "0.2.0"
-description = "Gravity storm-drain network design and analysis"
-author = "Open CAD Studio contributors"
-license = "GPL-3.0-only"
-homepage = "https://github.com/…/storm-sewer"
-
-[opencad]
-api_version = 1
-ribbon_order = 50
-command_prefixes = ["SS_"]
-xdata_apps = ["STORMSEWER_STRUCT", "STORMSEWER_PIPE", "STORMSEWER_CATCHMENT"]
-```
-
-**Discovery rule:** If `src/modules/<dir>/plugin.toml` exists, `build.rs` **excludes** that directory from the auto-generated ribbon registry. The tab is registered only via `BuiltinPlugin::ribbon()`.
-
----
-
-## Host runtime API (phase 1)
+A plugin enables the `host` feature.
 
 ### `PluginManifest`
 
 ```rust
 pub struct PluginManifest {
-    pub id: &'static str,              // reverse-DNS: "opencad.storm_sewer"
+    pub id: &'static str,              // reverse-DNS: "opencad.example"
     pub name: &'static str,
     pub version: &'static str,
     pub description: &'static str,
-    pub api_version: ApiVersion,       // host ABI major; must match host
+    pub api_version: ApiVersion,       // host ABI major; must match the host
     pub ribbon_order: i32,             // sort key among add-on tabs
     pub xdata_apps: &'static [&'static str],
     pub command_prefixes: &'static [&'static str],
 }
 ```
 
-### `BuiltinPlugin`
+### `BuiltinPlugin` — the entry point
 
 ```rust
 pub trait BuiltinPlugin: Send + Sync {
     fn manifest(&self) -> &'static PluginManifest;
-    fn ribbon(&self) -> Box<dyn CadModule>;
+    fn ribbon(&self) -> Box<dyn CadModule>;            // the ribbon tab
     fn dispatch(&self, host: &mut dyn HostApi, cmd: &str) -> bool;
 }
 ```
 
-### Registration (single entry point)
+### `HostApi` — the plugin-facing runtime surface
 
-```rust
-// register.rs — keep this file free of domain logic
-inventory::submit! {
-    crate::plugin::registry::PluginRegistration {
-        construct: || Box::new(MyPlugin),
-    }
-}
-```
-
-Host startup:
-
-1. `inventory::iter::<PluginRegistration>` constructs all plugins.
-2. `try_dispatch` routes commands before the legacy `commands.rs` match.
-3. `all_ribbon_modules()` = core tabs from `build.rs` + plugin tabs sorted by `ribbon_order`.
-
-### `HostSession` — plugin-facing surface
-
-Plugins use `HostSession`, not `OpenCADStudio`:
+`dispatch` receives `&mut dyn HostApi`, so a plugin never touches the host's
+concrete types:
 
 | Category | Methods |
 |----------|---------|
-| Document | `document()`, `document_mut()`, `entities()`, `entities_mut()`, `add_entity()`, `bump_geometry()` |
-| XDATA | `read_record(handle, app)`, `write_record(handle, record)`, `remove_record(handle, app)` — keyed by entity handle; `write_record` registers the APPID so the file stays standard |
-| Tab state | `plugin_state()`, `plugin_state_mut()`, `ensure_plugin_state()` keyed by `manifest.id` |
-| Command line | `push_info`, `push_output`, `push_error`, `set_active_command` |
+| Document | `document()`, `document_mut()`, `add_entity()`, `bump_geometry()` |
+| XDATA | `read_record(handle, app)`, `write_record(handle, record)`, `remove_record(handle, app)` — keyed by entity handle; `write_record` registers the APPID so data round-trips through DWG/DXF |
+| Tab state | object-safe `plugin_state_any*`; use the `ocs_plugin_api::host::plugin_state` / `plugin_state_mut` / `ensure_plugin_state` helpers (keyed by `manifest.id`) |
+| Command line | `push_info`, `push_output`, `push_error` |
 | Undo / dirty | `push_undo`, `set_dirty` |
+| Tab | `tab_index()` |
 
-**Status:** The whole contract now lives in the standalone, semver-versioned
-[`crates/ocs_plugin_api`](../crates/ocs_plugin_api) crate:
-- **Dependency-free core** — `PluginManifest` / `ApiVersion` (manifest) and
-  `CadModule` + ribbon types (`ToolDef`, `RibbonGroup`, …). Engine crates and
-  external tooling depend on this cheaply.
-- **`host` feature** — the `acadrust`-typed `HostApi` trait (the runtime surface
-  in the table above). `HostSession` in the binary implements it; a plugin's
-  `dispatch` receives `&mut dyn HostApi`, so an out-of-tree add-on compiles
-  against this crate alone. Per-tab plugin state is reached through the
-  object-safe `plugin_state*` helpers. `set_active_command` (interactive
-  acquisition) stays host-side for now — see Command routing.
-
-The host re-exports both (`crate::plugin::manifest`, `crate::modules`,
-`crate::plugin::host::HostApi`) so in-tree paths are unchanged.
-
-### Command routing
+### `export_plugin!` — the C-ABI export
 
 ```rust
-// app/commands.rs — plugins run first
-if crate::plugin::try_dispatch(self, tab_index, cmd) {
-    return Task::none();
-}
-// … legacy core commands …
+ocs_plugin_api::export_plugin!(MyPlugin);
 ```
 
-Plugins own:
+emits the two symbols the loader looks for:
 
-- One-shot commands (`SS_ANALYZE`)
-- Interactive acquisition (`SS_PIPE` → `PlacePipe`)
-- Subcommands (`SS_PARAMS RP 25`)
-
-Autocomplete: each plugin submits `inventory::submit!(CommandRegistration { names: &[…] })` in `mod.rs` or `register.rs`.
-
-Interactive acquisition (C3D-style orange ObjectPick) stays in the **host** via generic `CadCommand` hooks — `resolve_object_pick`, `object_pick_hover_previews`, `entity_pick_acquire_previews` — so `app/update.rs` never imports domain modules.
-
-### Per-document state
-
-```rust
-DocumentTab {
-    plugin_state: HashMap<&'static str, Box<dyn Any + Send + Sync>>,
-}
-```
-
-Store under `manifest.id` (e.g. `opencad.storm_sewer`), not ad hoc globals.
-
-### XDATA contract
-
-Domain persistence lives on entities. Document schemas in `PLUGIN.md`:
-
-| App id | Owner | Purpose |
-|--------|-------|---------|
-| `STORMSEWER_STRUCT` | `opencad.storm_sewer` | Inlet / junction / outfall |
-| `STORMSEWER_PIPE` | `opencad.storm_sewer` | Pipe link between structures |
-| `STORMSEWER_CATCHMENT` | `opencad.storm_sewer` | Catchment boundary + hydrology |
-
-`HostSession` provides `read_record` / `write_record` / `remove_record` helpers (keyed by entity handle) over the `acadrust` XDATA API; `write_record` also registers the application in the APPID table so the data survives a DWG/DXF round-trip. Plugins may still use the raw `acadrust` XDATA APIs directly.
+- `ocs_plugin_api_version() -> u32` — checked **first**, so an API-incompatible
+  build never runs its code.
+- `ocs_plugin_register() -> *mut Box<dyn BuiltinPlugin>` — constructs the plugin
+  and hands ownership to the host.
 
 ---
 
-## Core ribbon vs add-on ribbon
+## Writing a plugin
 
-| Kind | Location | Registration |
-|------|----------|--------------|
-| **Core tab** | `src/modules/home/`, `view/`, … | `build.rs` auto-discovers `mod.rs` (no `plugin.toml`) |
-| **Add-on tab** | `src/modules/storm_sewer/`, … | `plugin.toml` + `BuiltinPlugin::ribbon()` |
+A plugin is a standalone crate that builds a `cdylib`:
 
-This mirrors QGIS: the application ships core menus; plugins add tabs/tools without patching the host binary.
+```toml
+# Cargo.toml
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ocs_plugin_api = { git = "https://github.com/HakanSeven12/OpenCADStudio", features = ["host"] }
+
+# Match the host's acadrust so the loaded library is binary-compatible.
+[patch.crates-io]
+acadrust = { git = "https://github.com/HakanSeven12/acadrust", branch = "main" }
+```
+
+```rust
+// src/lib.rs
+use ocs_plugin_api::host::{BuiltinPlugin, HostApi};
+use ocs_plugin_api::manifest::{ApiVersion, PluginManifest};
+use ocs_plugin_api::ribbon::{CadModule, IconKind, ModuleEvent, RibbonGroup, RibbonItem, ToolDef};
+
+static MANIFEST: PluginManifest = PluginManifest {
+    id: "opencad.example", name: "Example Plugin", version: "0.1.0",
+    description: "…", api_version: ApiVersion::CURRENT,
+    ribbon_order: 50, xdata_apps: &[], command_prefixes: &["EX_"],
+};
+
+struct ExampleModule;
+impl CadModule for ExampleModule {
+    fn id(&self) -> &'static str { "example" }
+    fn title(&self) -> &'static str { "Example" }
+    fn ribbon_groups(&self) -> Vec<RibbonGroup> {
+        vec![RibbonGroup { title: "Demo", tools: vec![RibbonItem::LargeTool(ToolDef {
+            id: "EX_HELLO", label: "Hello", icon: IconKind::Glyph("◆"),
+            event: ModuleEvent::Command("EX_HELLO".to_string()),
+        })]}]
+    }
+}
+
+struct ExamplePlugin;
+impl BuiltinPlugin for ExamplePlugin {
+    fn manifest(&self) -> &'static PluginManifest { &MANIFEST }
+    fn ribbon(&self) -> Box<dyn CadModule> { Box::new(ExampleModule) }
+    fn dispatch(&self, host: &mut dyn HostApi, cmd: &str) -> bool {
+        match cmd { "EX_HELLO" => { host.push_info("Hello"); true } _ => false }
+    }
+}
+
+ocs_plugin_api::export_plugin!(ExamplePlugin);
+```
+
+```toml
+# plugin.toml — shipped beside the binary; values mirror MANIFEST
+[plugin]
+id = "opencad.example"
+name = "Example Plugin"
+version = "0.1.0"
+description = "…"
+
+[opencad]
+api_version = 1
+ribbon_order = 50
+command_prefixes = ["EX_"]
+xdata_apps = []
+```
+
+The full, buildable scaffold is in [`docs/plugin-template/`](plugin-template);
+the live reference is the
+[`opencad-example-plugin`](https://github.com/HakanSeven12/opencad-example-plugin)
+repository.
+
+### Commands
+
+A plugin owns its `command_prefixes` (e.g. `EX_`). The host's command router
+calls `try_dispatch` first; a returning `true` consumes the command. A plugin
+tool fires `ModuleEvent::Command("EX_FOO")`, which round-trips to
+`dispatch(host, "EX_FOO")`.
+
+`ModuleEvent::PluginFileDialog { command, title, filter_name, extensions }` lets a
+tool request a native file picker; on selection the host dispatches
+`"<command> <path>"` back with the path's original case preserved.
+
+### XDATA — domain persistence
+
+Store domain data on entities as XDATA (under your `xdata_apps` ids), not in a
+side database, so it round-trips through DWG/DXF. `write_record` also registers
+the APPID. Document your schemas in the plugin's own `PLUGIN.md`.
 
 ---
 
-## Phased rollout
+## Building & distribution
 
-### Phase 1 — Built-in add-ons (current)
+Build per platform and publish to **GitHub Releases**:
 
-- [x] `src/plugin/` runtime + `try_dispatch`
-- [x] Per-tab `plugin_state`
-- [x] Storm Sewer off `commands.rs` monolith
-- [x] Single registration (`plugin.toml` + `BuiltinPlugin::ribbon`)
-- [x] Extract `ocs_plugin_api` crate — dependency-free manifest + ribbon/`CadModule`, plus the `acadrust`-typed `HostApi` trait behind the optional `host` feature; `dispatch` takes `&mut dyn HostApi`
-- [x] Plugin manager UI (list installed, versions) — `PLUGINS` / `PLUGINMANAGER` command, or the Start-page "Plugins" button
-- [x] Enable/disable plugins from the manager — a disabled plugin drops its ribbon tab and command dispatch; persisted in `settings.txt` (`disabled_plugins=`)
-- [x] `ModuleEvent::PluginFileDialog` — a plugin tool requests a native file picker; the host opens it and dispatches `"<command> <path>"` back to the plugin with original case preserved (bypasses the command-line upper-casing)
-- [x] XDATA convenience on `HostSession` — `read_record` / `write_record` / `remove_record`; `write_record` registers the APPID so plugin data round-trips through DWG/DXF
+```
+cargo build --release        # → target/release/lib<crate>.so | <crate>.dll | lib<crate>.dylib
+```
 
-### Phase 2 — Dynamic loading (desktop)
+A release attaches one binary per platform plus `plugin.toml`, with the platform
+in the asset name so the host can pick the right one:
+
+```
+opencad.example-linux-x86_64.so
+opencad.example-windows-x86_64.dll
+opencad.example-macos-aarch64.dylib
+plugin.toml
+```
+
+A GitHub Actions matrix workflow (see the example repo / template) cross-builds
+and uploads these on a `v*` tag.
+
+---
+
+## Loading
+
+On startup the host scans `<config>/OpenCADStudio/plugins/<id>/` for a
+`plugin.toml` + native library (`src/plugin/external.rs`):
 
 ```
 <config>/OpenCADStudio/plugins/
   opencad.example/
     plugin.toml
-    libocs_example_plugin.so   # cdylib (.dll / .dylib per platform)
+    libocs_example_plugin.so      # any name with the platform extension
 ```
 
-- [x] Discover packages — scan the plugins folder, read `plugin.toml`, check for
-  a native library, gate on `api_version`. Surfaced in the Plugin Manager with
-  a status pill (`src/plugin/external.rs`).
-- [x] Load via `libloading` — each cdylib exports two C symbols (via the
-  `ocs_plugin_api::export_plugin!` macro): `ocs_plugin_api_version` (checked
-  first, so an incompatible build never runs) and `ocs_plugin_register` →
-  `*mut Box<dyn BuiltinPlugin>`. Loaded once at startup; the library stays
-  resident for the session (ribbon tabs / dispatch hold its vtables). External
-  plugins merge into the same ribbon + `try_dispatch` path as built-ins and
-  honour the enable/disable set.
-- [x] `api_version` compatibility gate at load time.
-- [x] Enable/disable in settings (like QGIS plugin manager) — landed in phase 1.
+For each compatible package it `dlopen`s the library (`libloading`), calls
+`ocs_plugin_api_version` and refuses on mismatch, then `ocs_plugin_register` to
+obtain the boxed `BuiltinPlugin`. Loaded libraries stay **resident for the
+session** (ribbon tabs and dispatch hold their vtables, so they are never
+reloaded mid-session). External plugins merge into the same ribbon and
+`try_dispatch` path the host uses and honour the enable/disable set
+(`disabled_plugins` in `settings.txt`).
 
-**ABI approach:** the plugin hands back a boxed `BuiltinPlugin` (not a `repr(C)`
-vtable). This assumes the package was built against the same toolchain and
-`ocs_plugin_api` version; the version symbol enforces the latter. Reference
-implementation: [`crates/ocs_example_plugin`](../crates/ocs_example_plugin).
-
-### Phase 3 — Interchange & QA
-
-- LandXML / SWMM export as plugins or engine features
-- Golden-file tests per plugin
-- Public plugin index (optional)
-
-### Phase 4 — Live analysis & WASM
-
-- `on_entity_committed` hooks
-- WASM-hosted engines on hydrocomplete.com
+`<config>` is `%APPDATA%` (Windows), `~/Library/Application Support` (macOS), or
+`$XDG_CONFIG_HOME` / `~/.config` (Linux).
 
 ---
 
-## Authoring a new add-on (checklist)
+## Marketplace
 
-1. Copy `docs/plugin-template/` into `src/modules/<name>/`.
-2. Fill `plugin.toml` and `manifest.rs` (keep in sync).
-3. Implement `CadModule` in `mod.rs` (ribbon).
-4. Implement `dispatch.rs` (all commands for your prefixes).
-5. Add `plugin.rs` + `register.rs`.
-6. Add `pub mod <name>;` to `src/modules/mod.rs`.
-7. Document XDATA in `PLUGIN.md`.
-8. Optional: add `crates/<engine>/` and depend from the plugin package only.
-9. `cargo build` — tab appears via plugin registry; `commands.rs` untouched.
+The **Plugin Manager** (`PLUGINS` / `PLUGINMANAGER`, or the Start-page button)
+installs plugins from GitHub Releases:
 
-**External repo:** Publish the engine crate to crates.io; depend on `ocs_plugin_api` (when extracted) + ship a `cdylib` for phase 2. In-tree path: add as a git submodule under `src/modules/<name>/` or `plugins/`.
-
----
-
-## Reference implementation: Storm Sewer
-
-| Piece | Path |
-|-------|------|
-| Metadata | `storm_sewer/plugin.toml`, `manifest.rs` |
-| Registration | `storm_sewer/register.rs` |
-| Adapter | `storm_sewer/plugin.rs` |
-| Commands | `storm_sewer/dispatch.rs` |
-| Ribbon | `storm_sewer/mod.rs` |
-| Tab state | `storm_sewer/state.rs` |
-| XDATA | `storm_sewer/data.rs`, `PLUGIN.md` |
-| Engine | `crates/stormsewer/` |
+- **Curated registry** — [`plugins/registry.json`](../plugins/registry.json) in
+  this repo lists discoverable plugins. The host fetches it from `main` at
+  runtime and shows each entry under *Available plugins*. To list a plugin, open
+  a PR adding `{ "repo", "name", "description" }` (see
+  [`plugins/README.md`](../plugins/README.md)); merged PRs reach every user with
+  no app update.
+- **Manual link** — *Add a repository* (`owner/repo`) for unlisted or private
+  dev repos; linked repos persist in `settings.txt` (`plugin_repos=`).
+- **Install / upgrade / reinstall** — pick a release from the dropdown and
+  *Install*; the host downloads the platform asset + `plugin.toml` into the
+  plugins folder, checking `api_version` first. Reinstalling overwrites and
+  clears any stale library; picking a newer release upgrades. Changes take effect
+  on the next restart (the running library stays resident).
+- **Uninstall** — removes the package folder (effective next restart).
+- **Enable/disable** — toggles a loaded plugin's ribbon tab + dispatch without
+  uninstalling.
 
 ---
 
-## Workspace layout
+## Compatibility & ABI
 
-```
-OpenCADStudio/
-  docs/
-    plugin-architecture.md      # this file
-    plugin-template/            # scaffold for new add-ons
-  src/
-    plugin/                     # Layer A runtime (generic)
-    modules/
-      home/                     # core ribbon (no plugin.toml)
-      storm_sewer/              # add-on (has plugin.toml)
-  crates/
-    stormsewer/                 # Layer C engine
-    ocs_plugin_api/             # stable contract: manifest + ribbon (host API: phase 1b)
-  plugins/                      # (phase 2) third-party cdylibs
-```
+Loading uses **approach B**: the plugin returns a boxed `BuiltinPlugin` across the
+`cdylib` boundary. This is sound only when the plugin was built with the **same
+Rust toolchain and `ocs_plugin_api` version** as the host. The
+`ocs_plugin_api_version` symbol gates the API version; it does **not** detect a
+toolchain mismatch. In practice CI built with current stable Rust matches a host
+built the same way.
+
+A future hardening step is a `#[repr(C)]` vtable (a true C ABI) so binaries built
+by any toolchain interoperate — required before trusting prebuilt binaries from
+arbitrary build environments.
 
 ---
 
-## Appendix: Civil 3D / SSA contrast
+## Roadmap
 
-| SSA / Civil 3D | Open CAD Studio add-on |
-|----------------|------------------------|
-| Proprietary project DB | DWG + XDATA |
-| Vendor-only hydraulics | Pluggable `stormsewer` engine |
-| Monolithic install | QGIS-style optional packages |
-| Closed API | Documented `HostSession` + `PLUGIN.md` |
+Done:
 
-This positions Open CAD Studio as an **open, inspectable** civil CAD platform rather than a single-vendor clone.
+- [x] Stable `ocs_plugin_api` crate — dependency-free core + `host` feature
+      (`HostApi` / `BuiltinPlugin` / `export_plugin!`).
+- [x] Runtime discovery + `libloading` loading with an `api_version` gate.
+- [x] XDATA helpers, `ModuleEvent::PluginFileDialog`, per-tab plugin state.
+- [x] Marketplace — curated registry + manual repo link, install / upgrade /
+      reinstall / uninstall, enable/disable.
+
+Next:
+
+- [ ] `#[repr(C)]` vtable / strict handshake for cross-toolchain binaries.
+- [ ] Trust: checksums / signatures before `dlopen`.
+- [ ] Interchange (LandXML / SWMM) and live `on_entity_committed` hooks.
+- [ ] External automation API (drive OCS headless from a process) — issue #29.
+
+---
+
+## Reference
+
+| Piece | Location |
+|-------|----------|
+| Contract crate | [`crates/ocs_plugin_api`](../crates/ocs_plugin_api) |
+| Plugin runtime (host) | `src/plugin/`, `src/app/plugin_host.rs` |
+| Marketplace + registry | `src/plugin/marketplace.rs`, [`plugins/registry.json`](../plugins/registry.json) |
+| Template scaffold | [`docs/plugin-template/`](plugin-template) |
+| Live example plugin | [`opencad-example-plugin`](https://github.com/HakanSeven12/opencad-example-plugin) |
