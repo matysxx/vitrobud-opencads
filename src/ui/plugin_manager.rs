@@ -6,7 +6,6 @@
 
 use crate::app::Message;
 use crate::plugin::external::{ExternalPlugin, RegistryEntry};
-use crate::plugin::manifest::PluginManifest;
 use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
 use iced::{Background, Border, Color, Element, Fill, Theme};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -109,48 +108,6 @@ fn toggle_button<'a>(id: &str, disabled: bool) -> Element<'a, Message> {
         .into()
 }
 
-fn plugin_card<'a>(m: &PluginManifest, disabled: bool) -> Element<'a, Message> {
-    let mut header = row![text(m.name.to_string()).size(15).color(WHITE)];
-    if disabled {
-        header = header.push(Space::new().width(8));
-        header = header.push(badge("Disabled".to_string()));
-    }
-    let header = header
-        .push(Space::new().width(Fill))
-        .push(badge(format!("v{}", m.version)))
-        .push(Space::new().width(8))
-        .push(badge(format!("API {}", m.api_version.major)))
-        .push(Space::new().width(10))
-        .push(toggle_button(m.id, disabled))
-        .align_y(iced::Center);
-
-    let id_line = text(m.id.to_string()).size(11).color(ACCENT);
-    let desc = text(m.description.to_string()).size(12).color(DIM);
-
-    let mut body = column![header, id_line, desc].spacing(5);
-
-    if !m.command_prefixes.is_empty() {
-        body = body.push(
-            text(format!("Commands: {}", m.command_prefixes.join(", ")))
-                .size(11)
-                .color(DIM),
-        );
-    }
-
-    container(body.padding([12, 14]))
-        .width(Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(CARD)),
-            border: Border {
-                color: BORDER,
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
 /// Coloured status pill for a discovered external package.
 fn status_badge<'a>(label: &str, color: Color) -> Element<'a, Message> {
     container(text(label.to_string()).size(11).color(WHITE))
@@ -166,8 +123,10 @@ fn status_badge<'a>(label: &str, color: Color) -> Element<'a, Message> {
         .into()
 }
 
-fn external_card<'a>(p: &ExternalPlugin, loaded: bool) -> Element<'a, Message> {
-    let (status, color) = if loaded {
+fn external_card<'a>(p: &ExternalPlugin, loaded: bool, disabled: bool) -> Element<'a, Message> {
+    let (status, color) = if loaded && disabled {
+        ("Disabled", Color { r: 0.45, g: 0.45, b: 0.45, a: 1.0 })
+    } else if loaded {
         ("Loaded", Color { r: 0.2, g: 0.5, b: 0.3, a: 1.0 })
     } else if !p.api_compatible() {
         ("API incompatible", Color { r: 0.55, g: 0.28, b: 0.28, a: 1.0 })
@@ -176,7 +135,7 @@ fn external_card<'a>(p: &ExternalPlugin, loaded: bool) -> Element<'a, Message> {
     } else {
         ("Restart to load", Color { r: 0.5, g: 0.42, b: 0.2, a: 1.0 })
     };
-    let header = row![
+    let mut header = row![
         text(p.name.clone()).size(15).color(WHITE),
         Space::new().width(8),
         badge(format!("v{}", p.version)),
@@ -186,6 +145,11 @@ fn external_card<'a>(p: &ExternalPlugin, loaded: bool) -> Element<'a, Message> {
         status_badge(status, color),
     ]
     .align_y(iced::Center);
+    // A loaded plugin can be turned off (drops its ribbon tab + dispatch).
+    if loaded {
+        header = header.push(Space::new().width(10));
+        header = header.push(toggle_button(&p.id, disabled));
+    }
 
     let id_line = text(p.id.clone()).size(11).color(ACCENT);
     let mut body = column![header, id_line].spacing(5);
@@ -329,40 +293,28 @@ fn marketplace_section<'a>(m: &MarketView) -> Element<'a, Message> {
 }
 
 pub fn view_window<'a>(
-    plugins: &[&'static PluginManifest],
     disabled: &FxHashSet<String>,
     externals: &[ExternalPlugin],
     loaded: &FxHashSet<String>,
     market: MarketView,
 ) -> Element<'a, Message> {
-    let title = text("Installed Plugins").size(20).color(WHITE);
-    let subtitle = text(format!(
-        "{} add-on{} compiled into this build",
-        plugins.len(),
-        if plugins.len() == 1 { "" } else { "s" }
-    ))
-    .size(12)
-    .color(DIM);
+    let title = text("Plugins").size(20).color(WHITE);
+    let subtitle = text("Add-ons load from the plugins folder. Install from a repository below.")
+        .size(12)
+        .color(DIM);
 
     let mut list = column![].spacing(10);
-    if plugins.is_empty() {
-        list = list.push(text("No built-in plugins.").size(13).color(DIM));
+    // Installed external packages (from the plugins folder).
+    if externals.is_empty() {
+        list = list.push(text("No plugins installed yet.").size(13).color(DIM));
     } else {
-        for m in plugins {
-            list = list.push(plugin_card(m, disabled.contains(m.id)));
-        }
-    }
-    // External (plugins-folder) packages — discovered, not yet loaded.
-    if !externals.is_empty() {
-        list = list.push(Space::new().height(10));
-        list = list.push(text("External (plugins folder)").size(13).color(ACCENT));
-        list = list.push(
-            text("Detected on disk. Dynamic loading is not active yet.")
-                .size(11)
-                .color(DIM),
-        );
+        list = list.push(text("Installed").size(13).color(ACCENT));
         for p in externals {
-            list = list.push(external_card(p, loaded.contains(&p.id)));
+            list = list.push(external_card(
+                p,
+                loaded.contains(&p.id),
+                disabled.contains(&p.id),
+            ));
         }
     }
     // Marketplace: install from a linked repository's releases.

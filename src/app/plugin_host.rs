@@ -1,6 +1,6 @@
 // HostSession — plugin-facing API implemented inside `app` (private field access).
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 
 use acadrust::tables::AppId;
 use acadrust::xdata::ExtendedDataRecord;
@@ -8,7 +8,6 @@ use acadrust::{CadDocument, EntityType, Handle};
 use ocs_plugin_api::host::HostApi;
 
 use super::OpenCADStudio;
-use crate::command::CadCommand;
 
 /// Session adapter: one active document tab, command line, undo.
 pub(crate) struct HostSession<'a> {
@@ -31,14 +30,6 @@ impl<'a> HostSession<'a> {
 
     pub fn document_mut(&mut self) -> &mut CadDocument {
         &mut self.app.tabs[self.tab].scene.document
-    }
-
-    pub fn entities(&self) -> impl Iterator<Item = &EntityType> {
-        self.document().entities()
-    }
-
-    pub fn entities_mut(&mut self) -> impl Iterator<Item = &mut EntityType> {
-        self.document_mut().entities_mut()
     }
 
     pub fn add_entity(&mut self, entity: EntityType) -> Handle {
@@ -141,31 +132,6 @@ impl<'a> HostSession<'a> {
         self.app.command_line.push_error(msg);
     }
 
-    pub fn set_active_command(&mut self, cmd: Box<dyn CadCommand>) {
-        self.app.tabs[self.tab].active_cmd = Some(cmd);
-    }
-
-    pub fn plugin_state<T: Any + Send + Sync + 'static>(
-        &self,
-        plugin_id: &'static str,
-    ) -> Option<&T> {
-        self.app.tabs[self.tab].plugin_state(plugin_id, TypeId::of::<T>())
-    }
-
-    pub fn plugin_state_mut<T: Any + Send + Sync + 'static>(
-        &mut self,
-        plugin_id: &'static str,
-    ) -> Option<&mut T> {
-        self.app.tabs[self.tab].plugin_state_mut(plugin_id, TypeId::of::<T>())
-    }
-
-    pub fn ensure_plugin_state<T: Any + Send + Sync + 'static>(
-        &mut self,
-        plugin_id: &'static str,
-        init: impl FnOnce() -> T,
-    ) -> &mut T {
-        self.app.tabs[self.tab].ensure_plugin_state(plugin_id, init)
-    }
 }
 
 /// The stable contract a plugin's `dispatch` sees. Each method forwards to the

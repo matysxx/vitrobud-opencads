@@ -1122,7 +1122,6 @@ impl OpenCADStudio {
             }
             super::ModalKind::PluginManager => sized(
                 crate::ui::plugin_manager::view_window(
-                    &crate::plugin::installed_manifests(),
                     &self.disabled_plugins,
                     &self.external_plugins,
                     &self.loaded_plugin_ids,

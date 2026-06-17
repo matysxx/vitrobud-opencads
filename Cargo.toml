@@ -5,7 +5,7 @@ edition = "2021"
 build = "build.rs"
 
 [workspace]
-members = ["crates/ocs_plugin_api", "crates/ocs_example_plugin"]
+members = ["crates/ocs_plugin_api"]
 
 # Embed the application icon into the Windows .exe so Explorer, the taskbar,
 # the Start-menu tile and file-association entries show it (issue #107).

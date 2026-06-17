@@ -3626,13 +3626,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ocs_example_plugin"
-version = "0.1.0"
-dependencies = [
- "ocs_plugin_api",
-]
-
-[[package]]
 name = "ocs_plugin_api"
 version = "0.1.0"
 dependencies = [

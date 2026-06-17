@@ -9,7 +9,7 @@ use crate::ui::{LayerPanel, PropertiesPanel};
 use acadrust::tables::Ucs;
 use acadrust::{CadDocument, Handle};
 use iced;
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -214,37 +214,6 @@ impl DocumentTab {
             is_start: false,
             plugin_state: HashMap::new(),
         }
-    }
-
-    pub(super) fn plugin_state<T: Any + Send + Sync + 'static>(
-        &self,
-        plugin_id: &'static str,
-        _type_id: TypeId,
-    ) -> Option<&T> {
-        self.plugin_state.get(plugin_id)?.downcast_ref::<T>()
-    }
-
-    pub(super) fn plugin_state_mut<T: Any + Send + Sync + 'static>(
-        &mut self,
-        plugin_id: &'static str,
-        _type_id: TypeId,
-    ) -> Option<&mut T> {
-        self.plugin_state.get_mut(plugin_id)?.downcast_mut::<T>()
-    }
-
-    pub(super) fn ensure_plugin_state<T: Any + Send + Sync + 'static>(
-        &mut self,
-        plugin_id: &'static str,
-        init: impl FnOnce() -> T,
-    ) -> &mut T {
-        if !self.plugin_state.contains_key(plugin_id) {
-            self.plugin_state.insert(plugin_id, Box::new(init()));
-        }
-        self.plugin_state
-            .get_mut(plugin_id)
-            .expect("just inserted")
-            .downcast_mut::<T>()
-            .expect("plugin_id type mismatch")
     }
 
     /// Welcome / Start tab. Carries a dummy Scene so the rest of the app

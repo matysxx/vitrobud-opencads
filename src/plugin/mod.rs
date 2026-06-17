@@ -1,15 +1,11 @@
-// Open CAD Studio plugin runtime (phase 1: built-in, in-process).
-//
-// Generic host only — no domain logic. See `docs/plugin-architecture.md`.
-// Domain plugins (e.g. storm_sewer) live under `src/modules/<name>/` and
-// register here via `inventory::submit!(PluginRegistration { … })`.
+// Open CAD Studio plugin runtime. Plugins are external cdylibs loaded from the
+// user plugins folder (see `external`) and installed via the marketplace; the
+// host ships no built-in add-ons. See `docs/plugin-architecture.md`.
 
 pub mod external;
 pub mod host;
-pub mod manifest;
 pub mod marketplace;
 pub mod registry;
 
 pub use registry::{all_ribbon_modules, ribbon_modules_enabled};
-pub(crate) use host::BuiltinPlugin;
-pub(crate) use registry::{installed_manifests, try_dispatch};
+pub(crate) use registry::try_dispatch;

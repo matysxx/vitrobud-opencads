@@ -205,7 +205,7 @@ fn parse_string_array(s: &str) -> Vec<String> {
 // ── Runtime loading (desktop only) ──────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use loader::{load, load_at_startup, loaded_ids, with_loaded, LoadedPlugin};
+pub use loader::{load_at_startup, loaded_ids, with_loaded};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod loader {
