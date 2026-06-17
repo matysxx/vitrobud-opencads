@@ -25,9 +25,20 @@ Every response has `"ok"`; failures carry `"error"`. `run` drives Open CAD
 Studio's **own** command system — no separate bindings to maintain — so its
 coverage grows with the app.
 
-> **Status (first increment):** `run` applies synchronous commands (system
-> variables, layer ops, …). Pick-based interactive commands (drawing by clicking
-> points) need coordinate feeding and are not wired headless yet.
+Interactive draw commands take their points as coordinate tokens; the tool is
+started, the points are fed, and it is terminated as if Enter were pressed:
+
+```
+{"op":"run","cmd":"LINE 0,0 10,10 10,20"}   → two Line segments
+{"op":"run","cmd":"CIRCLE 5,5 3"}           → centre 5,5 radius 3
+```
+
+Coordinates are `x,y` or `x,y,z`; `@dx,dy` is relative to the previous point.
+Inline-argument commands (`PDMODE 3`, `LAYER Walls`) are passed through as-is.
+
+> Coverage is growing: commands whose options are typed keywords or coordinates
+> work; ones that still rely on on-screen picking (object selection by clicking)
+> are being wired next.
 
 ## Python client
 

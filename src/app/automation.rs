@@ -65,6 +65,9 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 self.tabs[i].scene.document = acadrust::CadDocument::new();
                 self.tabs[i].current_path = None;
+                // The headless session starts on the welcome (Start) tab, which
+                // blocks drawing commands; turn it into a real drawing.
+                self.tabs[i].is_start = false;
                 self.tabs[i].scene.bump_geometry();
                 self.entity_summary()
             }
@@ -85,6 +88,7 @@ impl OpenCADStudio {
                         let i = self.active_tab;
                         self.tabs[i].scene.document = doc;
                         self.tabs[i].current_path = Some(PathBuf::from(path));
+                        self.tabs[i].is_start = false;
                         self.tabs[i].scene.bump_geometry();
                         self.entity_summary()
                     }
@@ -98,11 +102,7 @@ impl OpenCADStudio {
                 }
                 let i = self.active_tab;
                 let before = self.tabs[i].scene.document.entities().count();
-                // The returned Task drives GUI follow-up; synchronous commands
-                // (system variables, layer ops, …) have already applied. Pick-
-                // based interactive commands need coordinate feeding — not yet
-                // wired headless.
-                let _ = self.dispatch_command(&cmd);
+                self.run_headless(&cmd);
                 let after = self.tabs[i].scene.document.entities().count();
                 json!({
                     "ok": true,
@@ -131,6 +131,62 @@ impl OpenCADStudio {
             }
             "" => err("missing \"op\""),
             other => err(format!("unknown op: {other}")),
+        }
+    }
+
+    /// Run a command headlessly. Single-word and inline-argument commands
+    /// (`PDMODE 3`, `LAYER Walls`) dispatch as-is. For an interactive tool with
+    /// coordinate arguments (`LINE 0,0 10,10`) the first word starts the tool
+    /// and the remaining tokens are fed as points / option keywords, then the
+    /// command is terminated as if Enter were pressed.
+    fn run_headless(&mut self, cmd: &str) {
+        let i = self.active_tab;
+        let tokens: Vec<&str> = cmd.split_whitespace().collect();
+        if tokens.len() <= 1 {
+            let _ = self.dispatch_command(cmd);
+            return;
+        }
+        let _ = self.dispatch_command(tokens[0]);
+        if self.tabs[i].active_cmd.is_none() {
+            // Not an interactive tool — an inline-argument command.
+            let _ = self.dispatch_command(cmd);
+            return;
+        }
+        self.last_point = None;
+        for tok in &tokens[1..] {
+            if self.tabs[i].active_cmd.is_none() {
+                break;
+            }
+            self.feed_active_cmd(tok);
+        }
+        // Terminate a still-open command (LINE / PLINE finish on Enter).
+        if self.tabs[i].active_cmd.is_some() {
+            if let Some(r) = self.tabs[i].active_cmd.as_mut().map(|c| c.on_enter()) {
+                let _ = self.apply_cmd_result(r);
+            }
+        }
+    }
+
+    /// Feed one token to the active command: a coordinate becomes a point, any
+    /// other token an option keyword.
+    fn feed_active_cmd(&mut self, token: &str) {
+        let i = self.active_tab;
+        if let Some((mut pt, kind)) = super::helpers::parse_coord(token) {
+            if matches!(kind, super::helpers::CoordKind::Relative) {
+                if let Some(base) = self.last_point {
+                    pt += base;
+                }
+            }
+            self.last_point = Some(pt);
+            if let Some(r) = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt)) {
+                let _ = self.apply_cmd_result(r);
+            }
+        } else if let Some(r) = self.tabs[i]
+            .active_cmd
+            .as_mut()
+            .and_then(|c| c.on_text_input(token))
+        {
+            let _ = self.apply_cmd_result(r);
         }
     }
 
@@ -166,8 +222,18 @@ mod tests {
         assert_eq!(r["ok"], true);
         assert_eq!(r["cmd"], "PDMODE 3");
 
+        // A draw command with coordinates creates real geometry.
+        let r = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,10 10,20"}"#);
+        assert_eq!(r["ok"], true);
+        assert_eq!(r["added"], 2); // two segments → two Line entities
+        let r = app.automation_op(r#"{"op":"run","cmd":"CIRCLE 5,5 3"}"#);
+        assert_eq!(r["added"], 1);
+
         let r = app.automation_op(r#"{"op":"entities"}"#);
         assert_eq!(r["ok"], true);
+        assert_eq!(r["total"], 3);
+        assert_eq!(r["by_type"]["Line"], 2);
+        assert_eq!(r["by_type"]["Circle"], 1);
 
         // Errors are reported, never panics.
         assert_eq!(app.automation_op(r#"{"op":"bogus"}"#)["ok"], false);
