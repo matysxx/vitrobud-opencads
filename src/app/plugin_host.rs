@@ -235,6 +235,15 @@ impl crate::command::CadCommand for PluginInteractiveAdapter {
     fn on_enter(&mut self) -> crate::command::CmdResult {
         plugin_step_to_result(self.inner.on_enter())
     }
+    fn needs_entity_pick(&self) -> bool {
+        self.inner.needs_object_pick()
+    }
+    fn on_entity_pick(&mut self, handle: Handle, pt: glam::Vec3) -> crate::command::CmdResult {
+        plugin_step_to_result(
+            self.inner
+                .on_object_pick(handle, [pt.x as f64, pt.y as f64, pt.z as f64]),
+        )
+    }
 }
 
 fn plugin_step_to_result(
@@ -339,5 +348,57 @@ mod tests {
         }
         assert_eq!(app.tabs[0].scene.document.entities().count(), 1);
         assert!(app.tabs[0].active_cmd.is_none(), "command should have ended");
+    }
+
+    /// A plugin command that picks an existing object, then marks it.
+    struct PickThenMark;
+    impl ocs_plugin_api::host::InteractiveCommand for PickThenMark {
+        fn prompt(&self) -> String {
+            "Pick an object".into()
+        }
+        fn on_point(&mut self, _pt: [f64; 3]) -> ocs_plugin_api::host::CommandStep {
+            ocs_plugin_api::host::CommandStep::Cancel
+        }
+        fn needs_object_pick(&self) -> bool {
+            true
+        }
+        fn on_object_pick(
+            &mut self,
+            _handle: acadrust::Handle,
+            pt: [f64; 3],
+        ) -> ocs_plugin_api::host::CommandStep {
+            let p = acadrust::entities::Point::at(acadrust::types::Vector3::new(
+                pt[0], pt[1], pt[2],
+            ));
+            ocs_plugin_api::host::CommandStep::CommitAndEnd(acadrust::EntityType::Point(p))
+        }
+    }
+
+    #[test]
+    fn plugin_object_pick_routes_to_command() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let target = {
+            let mut host = HostSession::new(&mut app, 0);
+            let h = host.add_entity(acadrust::EntityType::Point(
+                acadrust::entities::Point::at(acadrust::types::Vector3::new(3.0, 4.0, 0.0)),
+            ));
+            host.start_interactive(Box::new(PickThenMark));
+            h
+        };
+        // The command requested an entity pick, not a free point.
+        assert!(app.tabs[0]
+            .active_cmd
+            .as_ref()
+            .unwrap()
+            .needs_entity_pick());
+        let r = app.tabs[0]
+            .active_cmd
+            .as_mut()
+            .unwrap()
+            .on_entity_pick(target, glam::Vec3::new(3.0, 4.0, 0.0));
+        let _ = app.apply_cmd_result(r);
+        // Original point + the mark the command committed.
+        assert_eq!(app.tabs[0].scene.document.entities().count(), 2);
     }
 }

@@ -45,6 +45,19 @@ pub trait InteractiveCommand: Send {
     fn on_enter(&mut self) -> CommandStep {
         CommandStep::Cancel
     }
+
+    /// When `true`, the next input picks an existing **entity** (the user clicks
+    /// on it; over `--serve`, a handle is supplied) rather than a free point —
+    /// the host then calls [`on_object_pick`](Self::on_object_pick). Use this to
+    /// reference existing geometry (e.g. connect a pipe between two structures).
+    fn needs_object_pick(&self) -> bool {
+        false
+    }
+    /// An existing entity was picked: its `handle` and the pick point. Read the
+    /// entity's data (XDATA / geometry) via `HostApi`, keyed by the handle.
+    fn on_object_pick(&mut self, _handle: Handle, _pt: [f64; 3]) -> CommandStep {
+        CommandStep::Cancel
+    }
 }
 
 /// The outcome of an [`InteractiveCommand`] step.

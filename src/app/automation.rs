@@ -249,10 +249,42 @@ impl OpenCADStudio {
         }
     }
 
-    /// Feed one token to the active command: a coordinate becomes a point, any
-    /// other token an option keyword.
+    /// Feed one token to the active command. When the command is picking an
+    /// existing entity, the token is a hex handle; otherwise a coordinate point
+    /// or an option keyword.
     fn feed_active_cmd(&mut self, token: &str) {
         let i = self.active_tab;
+        // Object-pick step: the token is a handle (as returned by `query`).
+        if self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|c| c.needs_entity_pick())
+        {
+            if let Ok(v) = u64::from_str_radix(token.trim_start_matches("0x"), 16) {
+                let handle = acadrust::Handle::new(v);
+                let pt = self.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(handle)
+                    .map(|e| {
+                        let bb = e.as_entity().bounding_box();
+                        glam::Vec3::new(
+                            ((bb.min.x + bb.max.x) * 0.5) as f32,
+                            ((bb.min.y + bb.max.y) * 0.5) as f32,
+                            0.0,
+                        )
+                    })
+                    .unwrap_or(glam::Vec3::ZERO);
+                if let Some(r) = self.tabs[i]
+                    .active_cmd
+                    .as_mut()
+                    .map(|c| c.on_entity_pick(handle, pt))
+                {
+                    let _ = self.apply_cmd_result(r);
+                }
+            }
+            return;
+        }
         if let Some((mut pt, kind)) = super::helpers::parse_coord(token) {
             if matches!(kind, super::helpers::CoordKind::Relative) {
                 if let Some(base) = self.last_point {

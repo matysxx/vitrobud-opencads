@@ -243,6 +243,12 @@ command works by clicking in the viewport and by feeding coordinates over the
 API to **v2** — the added `HostApi` method changes the contract's vtable, so v1
 binaries are refused at load.
 
+To reference **existing** geometry (e.g. connect a pipe between two structures),
+set `needs_object_pick() -> true`; the host then calls
+`on_object_pick(handle, pt)` with the clicked entity's handle (read its
+XDATA/geometry via `HostApi`). Over `--serve` the pick is supplied as a hex
+handle: `run "MY_CMD 2F 30"`.
+
 ### XDATA — domain persistence
 
 Store domain data on entities as XDATA (under your `xdata_apps` ids), not in a
