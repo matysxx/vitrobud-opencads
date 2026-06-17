@@ -1009,7 +1009,10 @@ fn tessellate_dimension_inner(
     // draws 2D fills under all wires, so the line is gapped rather than masked.
     let dimgap_local = style.map(|s| (s.dimgap * dim_scale) as f32).unwrap_or(0.09);
     let text_break = {
-        let tp = vec3_local(dimension_text_pos_f64(dim, style, dim_txt), world_offset);
+        let tp = vec3_local(
+            dimension_text_pos_f64(dim, style, dim_txt, dim_scale),
+            world_offset,
+        );
         let tw = dimension_text_value(dim, style)
             .map(|t| t.chars().count() as f32 * dim_txt as f32 * 0.6)
             .unwrap_or(0.0);
@@ -1223,7 +1226,7 @@ fn tessellate_dimension_inner(
     // DIMTFILL: 0=none, 1=drawing background (mask), 2=DIMTFILLCLR.
     if let Some(s) = style {
         if s.dimtfill == 1 || s.dimtfill == 2 {
-            if let Some(rect) = text_fill_rect(dim, style, dim_txt, world_offset) {
+            if let Some(rect) = text_fill_rect(dim, style, dim_txt, world_offset, dim_scale) {
                 let fill_color = if selected {
                     WireModel::SELECTED
                 } else if s.dimtfill == 1 {
@@ -1254,7 +1257,8 @@ fn tessellate_dimension_inner(
         }
     }
 
-    if let Some(synth_text_entity) = dimension_text_entity(dim, dim_txt, style, document) {
+    if let Some(synth_text_entity) = dimension_text_entity(dim, dim_txt, style, document, dim_scale)
+    {
         // Tolerance Text rendered separately so DIMTFAC scales its height
         // and DIMTOLJ aligns it vertically against the primary text.
         let tol_entity = dimension_tolerance_entity(dim, style, &synth_text_entity, dim_txt);
@@ -1414,13 +1418,14 @@ fn text_fill_rect(
     style: Option<&DimStyle>,
     text_height: f64,
     world_offset: [f64; 3],
+    dim_scale: f64,
 ) -> Option<Vec<[f32; 3]>> {
     let value = dimension_text_value(dim, style)?;
     if value.is_empty() {
         return None;
     }
-    let pos = dimension_text_pos_f64(dim, style, text_height);
-    let dimgap = style.map(|s| s.dimgap).unwrap_or(0.0).max(0.0);
+    let pos = dimension_text_pos_f64(dim, style, text_height, dim_scale);
+    let dimgap = style.map(|s| s.dimgap).unwrap_or(0.0).max(0.0) * dim_scale;
     // ~0.6 × text_height per character; matches average glyph aspect for
     // the bundled stick fonts. Inflate by 1 DIMGAP on each side.
     let approx_w = value.chars().count() as f64 * text_height * 0.6 + dimgap * 2.0;
@@ -1913,12 +1918,13 @@ fn dimension_text_entity(
     text_height: f64,
     style: Option<&DimStyle>,
     document: &CadDocument,
+    dim_scale: f64,
 ) -> Option<EntityType> {
     let value = dimension_text_value(dim, style)?;
     // Use f64 position directly to avoid f32 round-trip precision loss at large
     // coordinates (e.g. Turkish UTM ~4,000,000 m). tessellate() will apply
     // world_offset when rendering this synthetic entity.
-    let pos_f64 = dimension_text_pos_f64(dim, style, text_height);
+    let pos_f64 = dimension_text_pos_f64(dim, style, text_height, dim_scale);
     let base = dim.base();
 
     // DIMTIH/DIMTOH: when set, text is forced horizontal (rotation = 0)
@@ -2622,14 +2628,21 @@ fn text_on_dim_line(
     )
 }
 
-fn dimension_text_pos_f64(dim: &Dimension, style: Option<&DimStyle>, text_height: f64) -> Vector3 {
+fn dimension_text_pos_f64(
+    dim: &Dimension,
+    style: Option<&DimStyle>,
+    text_height: f64,
+    dim_scale: f64,
+) -> Vector3 {
     let base = dim.base();
 
     // DIMTAD: 0=centred (on the line), 1=above, 4=below. 2 (outside, i.e. the
     // side farthest from the defining points) and 3 (JIS) both resolve to the
     // away-from-object side, which is the same as "above" for 2-D linear dims.
     let dimtad = style.map(|s| s.dimtad).unwrap_or(1);
-    let dimgap = style.map(|s| s.dimgap).unwrap_or(0.0);
+    // DIMGAP scales with DIMSCALE just like DIMTXT, so the text-to-line gap
+    // stays consistent when DIMSCALE != 1.
+    let dimgap = style.map(|s| s.dimgap).unwrap_or(0.0) * dim_scale;
     let dimjust = style.map(|s| s.dimjust).unwrap_or(0);
     // DIMTIX forces the text to stay between the extension lines.
     let dimtix = style.map(|s| s.dimtix).unwrap_or(false);
