@@ -140,6 +140,20 @@ mod tests {
     }
 
     #[test]
+    fn plugin_file_dialog_dispatch_preserves_case() {
+        // ModuleEvent::PluginFileDialog dispatches "<command> <path>" verbatim;
+        // the mixed-case path must reach the plugin unaltered.
+        let mut app = OpenCADStudio::new_for_test();
+        let line = "DP_IMPORT /home/User/My Points.CSV";
+        assert!(try_dispatch(&mut app, 0, line));
+        let info = app.command_history_info();
+        assert!(
+            info.iter().any(|t| t.contains("/home/User/My Points.CSV")),
+            "path case not preserved; info: {info:?}"
+        );
+    }
+
+    #[test]
     fn unknown_plugin_command_falls_through() {
         let mut app = OpenCADStudio::new_for_test();
         assert!(!try_dispatch(&mut app, 0, "DP_NOPE"));

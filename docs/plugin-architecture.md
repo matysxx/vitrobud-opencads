@@ -257,6 +257,7 @@ This mirrors QGIS: the application ships core menus; plugins add tabs/tools with
 - [~] Extract `ocs_plugin_api` crate — manifest + ribbon/`CadModule` done; `acadrust`-typed host surface pending
 - [x] Plugin manager UI (list installed, versions) — `PLUGINS` / `PLUGINMANAGER` command, or the Start-page "Plugins" button
 - [x] Enable/disable plugins from the manager — a disabled plugin drops its ribbon tab and command dispatch; persisted in `settings.txt` (`disabled_plugins=`)
+- [x] `ModuleEvent::PluginFileDialog` — a plugin tool requests a native file picker; the host opens it and dispatches `"<command> <path>"` back to the plugin with original case preserved (bypasses the command-line upper-casing)
 
 ### Phase 2 — Dynamic loading (desktop)
 

@@ -722,6 +722,13 @@ pub enum Message {
         tool_id: String,
         event: ModuleEvent,
     },
+    /// Result of a plugin-requested file picker (`ModuleEvent::PluginFileDialog`).
+    /// `path` is `None` when the user cancels. On `Some`, the host dispatches
+    /// `"<command> <path>"` to the plugins with original case preserved.
+    PluginFileDialogResult {
+        command: String,
+        path: Option<std::path::PathBuf>,
+    },
     // ── Application menu ──────────────────────────────────────────────────
     ToggleAppMenu,
     CloseAppMenu,

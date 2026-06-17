@@ -1269,6 +1269,12 @@ pub fn module_event_to_message(event: ModuleEvent) -> Message {
         ModuleEvent::ClearModels => Message::ClearScene,
         ModuleEvent::SetWireframe(w) => Message::SetWireframe(w),
         ModuleEvent::ToggleLayers => Message::ToggleLayers,
+        // Needs the tool context + async picker — route through the normal
+        // ribbon-click handler rather than a direct 1:1 message.
+        e @ ModuleEvent::PluginFileDialog { .. } => Message::RibbonToolClick {
+            tool_id: String::new(),
+            event: e,
+        },
     }
 }
 

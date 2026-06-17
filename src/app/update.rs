@@ -1027,6 +1027,42 @@ impl OpenCADStudio {
                     ModuleEvent::ToggleLayers => {
                         return Task::done(Message::ToggleLayers);
                     }
+                    ModuleEvent::PluginFileDialog {
+                        command,
+                        title,
+                        filter_name,
+                        extensions,
+                    } => {
+                        return Task::perform(
+                            async move {
+                                let exts: Vec<&str> =
+                                    extensions.iter().map(|s| s.as_str()).collect();
+                                let path = rfd::AsyncFileDialog::new()
+                                    .set_title(title)
+                                    .add_filter(filter_name, &exts)
+                                    .add_filter("All Files", &["*"])
+                                    .pick_file()
+                                    .await
+                                    .map(|h| crate::sys::handle_path(&h));
+                                (command, path)
+                            },
+                            |(command, path)| Message::PluginFileDialogResult { command, path },
+                        );
+                    }
+                }
+                Task::none()
+            }
+            Message::PluginFileDialogResult { command, path } => {
+                if let Some(path) = path {
+                    // Dispatch "<command> <path>" with original case intact —
+                    // the command line would upper-case the whole string and
+                    // mangle case-sensitive paths on Linux/macOS.
+                    let line = format!("{} {}", command, path.to_string_lossy());
+                    let i = self.active_tab;
+                    if !crate::plugin::try_dispatch(self, i, &line) {
+                        self.command_line
+                            .push_error(&format!("No plugin handled: {command}"));
+                    }
                 }
                 Task::none()
             }

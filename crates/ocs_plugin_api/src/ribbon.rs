@@ -17,6 +17,21 @@ pub enum ModuleEvent {
     SetWireframe(bool),
     /// Toggle the layer manager panel.
     ToggleLayers,
+    /// Ask the host to open a native file picker. On selection the host
+    /// dispatches `"<command> <path>"` back to the plugin (full original case,
+    /// bypassing the command line so case-sensitive paths/args survive); on
+    /// cancel nothing happens. Lets an add-on import files without owning any
+    /// dialog UI.
+    PluginFileDialog {
+        /// Plugin command to dispatch with the chosen path appended.
+        command: String,
+        /// Dialog window title.
+        title: String,
+        /// Human label for the file-type filter (e.g. "PNEZD Points").
+        filter_name: String,
+        /// Accepted extensions, without the dot (e.g. `["csv", "txt"]`).
+        extensions: Vec<String>,
+    },
 }
 
 // ── Data types ────────────────────────────────────────────────────────────

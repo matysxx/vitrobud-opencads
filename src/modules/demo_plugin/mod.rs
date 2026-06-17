@@ -8,7 +8,7 @@ pub mod register;
 use crate::modules::{CadModule, IconKind, ModuleEvent, RibbonGroup, RibbonItem, ToolDef};
 
 inventory::submit!(crate::command::CommandRegistration {
-    names: &["DP_HELLO"]
+    names: &["DP_HELLO", "DP_IMPORT"]
 });
 
 pub struct DemoPluginModule;
@@ -25,12 +25,27 @@ impl CadModule for DemoPluginModule {
     fn ribbon_groups(&self) -> Vec<RibbonGroup> {
         vec![RibbonGroup {
             title: "Smoke",
-            tools: vec![RibbonItem::LargeTool(ToolDef {
-                id: "DP_HELLO",
-                label: "Hello",
-                icon: IconKind::Glyph("★"),
-                event: ModuleEvent::Command("DP_HELLO".to_string()),
-            })],
+            tools: vec![
+                RibbonItem::LargeTool(ToolDef {
+                    id: "DP_HELLO",
+                    label: "Hello",
+                    icon: IconKind::Glyph("★"),
+                    event: ModuleEvent::Command("DP_HELLO".to_string()),
+                }),
+                // Exercises ModuleEvent::PluginFileDialog: the host opens a
+                // native picker and dispatches "DP_IMPORT <path>" back here.
+                RibbonItem::LargeTool(ToolDef {
+                    id: "DP_IMPORT",
+                    label: "Import",
+                    icon: IconKind::Glyph("📂"),
+                    event: ModuleEvent::PluginFileDialog {
+                        command: "DP_IMPORT".to_string(),
+                        title: "Import Demo File".to_string(),
+                        filter_name: "Text".to_string(),
+                        extensions: vec!["txt".to_string(), "csv".to_string()],
+                    },
+                }),
+            ],
         }]
     }
 }
