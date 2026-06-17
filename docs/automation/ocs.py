@@ -70,6 +70,15 @@ class Ocs:
         """Total entity count and a breakdown by type."""
         return self._send(op="entities")
 
+    def query(
+        self,
+        type: Optional[str] = None,
+        layer: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """List entities (handle, type, layer, geometry), optionally filtered."""
+        return self._send(op="query", type=type, layer=layer, limit=limit)
+
     def save(self, path: Optional[str] = None) -> dict[str, Any]:
         """Write the document (defaults to the opened/last-saved path)."""
         return self._send(op="save", path=path)

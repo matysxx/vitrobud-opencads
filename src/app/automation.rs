@@ -53,6 +53,44 @@ fn err(msg: impl std::fmt::Display) -> Value {
     json!({ "ok": false, "error": msg.to_string() })
 }
 
+fn v3(v: acadrust::types::Vector3) -> Value {
+    json!([v.x, v.y, v.z])
+}
+
+/// One entity as JSON: handle, type, layer, plus basic geometry for the common
+/// types (others carry only the common fields).
+fn entity_json(e: &acadrust::EntityType) -> Value {
+    use acadrust::EntityType as E;
+    let c = e.common();
+    let mut obj = json!({
+        "handle": format!("{:X}", c.handle.value()),
+        "type": crate::entities::names::ui_name(e),
+        "layer": c.layer,
+    });
+    let map = obj.as_object_mut().expect("json object");
+    match e {
+        E::Line(l) => {
+            map.insert("start".into(), v3(l.start));
+            map.insert("end".into(), v3(l.end));
+        }
+        E::Circle(cc) => {
+            map.insert("center".into(), v3(cc.center));
+            map.insert("radius".into(), json!(cc.radius));
+        }
+        E::Arc(a) => {
+            map.insert("center".into(), v3(a.center));
+            map.insert("radius".into(), json!(a.radius));
+            map.insert("start_angle".into(), json!(a.start_angle));
+            map.insert("end_angle".into(), json!(a.end_angle));
+        }
+        E::Point(p) => {
+            map.insert("location".into(), v3(p.location));
+        }
+        _ => {}
+    }
+    obj
+}
+
 impl OpenCADStudio {
     /// Handle one JSON request line and return the JSON response.
     pub(crate) fn automation_op(&mut self, line: &str) -> Value {
@@ -112,6 +150,7 @@ impl OpenCADStudio {
                 })
             }
             "entities" => self.entity_summary(),
+            "query" => self.entity_query(&req),
             "save" => {
                 let i = self.active_tab;
                 let path = req["path"]
@@ -190,6 +229,40 @@ impl OpenCADStudio {
         }
     }
 
+    /// List entities (handle, type, layer, basic geometry), optionally filtered
+    /// by `type` and/or `layer`, capped by `limit` (default 1000).
+    fn entity_query(&self, req: &Value) -> Value {
+        let i = self.active_tab;
+        let type_filter = req["type"].as_str();
+        let layer_filter = req["layer"].as_str();
+        let limit = req["limit"].as_u64().unwrap_or(1000) as usize;
+
+        let mut entities = Vec::new();
+        let mut matched = 0u64;
+        for e in self.tabs[i].scene.document.entities() {
+            if let Some(tf) = type_filter {
+                if !crate::entities::names::ui_name(e).eq_ignore_ascii_case(tf) {
+                    continue;
+                }
+            }
+            if let Some(lf) = layer_filter {
+                if e.common().layer != lf {
+                    continue;
+                }
+            }
+            matched += 1;
+            if entities.len() < limit {
+                entities.push(entity_json(e));
+            }
+        }
+        json!({
+            "ok": true,
+            "count": matched,
+            "returned": entities.len(),
+            "entities": entities,
+        })
+    }
+
     /// Count of entities in the active document, total and by type.
     fn entity_summary(&self) -> Value {
         let i = self.active_tab;
@@ -234,6 +307,12 @@ mod tests {
         assert_eq!(r["total"], 3);
         assert_eq!(r["by_type"]["Line"], 2);
         assert_eq!(r["by_type"]["Circle"], 1);
+
+        // query returns per-entity detail and honours a type filter.
+        let r = app.automation_op(r#"{"op":"query","type":"Circle"}"#);
+        assert_eq!(r["count"], 1);
+        assert_eq!(r["entities"][0]["type"], "Circle");
+        assert_eq!(r["entities"][0]["radius"], 3.0);
 
         // Errors are reported, never panics.
         assert_eq!(app.automation_op(r#"{"op":"bogus"}"#)["ok"], false);

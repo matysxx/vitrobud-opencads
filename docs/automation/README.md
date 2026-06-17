@@ -19,6 +19,7 @@ can act → observe → act.
 | `{"op":"open","path":"plan.dwg"}` | entity summary |
 | `{"op":"run","cmd":"LAYER Walls"}` | `{"ok":true,"cmd":...,"entities":N,"added":D}` |
 | `{"op":"entities"}` | `{"ok":true,"total":N,"by_type":{"Line":42,...}}` |
+| `{"op":"query","type":"Line","layer":"Walls"}` | per-entity `{handle,type,layer,…geometry}` (filters + `limit` optional) |
 | `{"op":"save","path":"out.dwg"}` | `{"ok":true,"saved":"out.dwg"}` (path optional once opened/saved) |
 
 Every response has `"ok"`; failures carry `"error"`. `run` drives Open CAD
