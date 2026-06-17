@@ -87,8 +87,11 @@ pub struct Snapper {
     pub enabled: HashSet<SnapType>,
     /// World-space grid spacing.
     pub grid_spacing: f32,
-    /// Pixel-radius threshold.
+    /// Pixel-radius threshold for tracking / polar / extension pickup.
     pub snap_radius_px: f32,
+    /// Pixel-radius threshold for object snapping (OSNAP). Kept smaller than
+    /// `snap_radius_px` so it is easy to click just outside a snap point.
+    pub osnap_radius_px: f32,
     /// Object Snap Tracking on/off (F11).
     pub otrack_enabled: bool,
     /// Acquired OST points (world XZ, Y=0 plane).
@@ -114,6 +117,7 @@ impl Default for Snapper {
             enabled,
             grid_spacing: 1.0,
             snap_radius_px: CROSSHAIR_ARM,
+            osnap_radius_px: CROSSHAIR_ARM * 0.25,
             otrack_enabled: false,
             tracking_points: Vec::new(),
             last_snap_world: None,
@@ -302,6 +306,7 @@ impl Snapper {
             },
             grid_spacing: self.grid_spacing,
             snap_radius_px: self.snap_radius_px,
+            osnap_radius_px: self.osnap_radius_px,
             otrack_enabled: false,
             tracking_points: Vec::new(),
             last_snap_world: None,
@@ -323,7 +328,7 @@ impl Snapper {
             return None;
         }
         let mut best: Option<SnapResult> = None;
-        let mut best_d2 = self.snap_radius_px * self.snap_radius_px;
+        let mut best_d2 = self.osnap_radius_px * self.osnap_radius_px;
 
         // World-space snap radius — derived from the view scale so wires whose
         // entire extent is clearly outside the snap circle can be skipped cheaply
@@ -333,7 +338,7 @@ impl Snapper {
         let world_snap_r = {
             let s = view_proj.col(0).x.abs() * bounds.width * 0.5;
             if s > 1e-6 {
-                self.snap_radius_px / s
+                self.osnap_radius_px / s
             } else {
                 f32::MAX
             }
@@ -514,7 +519,7 @@ impl Snapper {
                         p0 - p1,
                         view_proj,
                         bounds,
-                        self.snap_radius_px,
+                        self.osnap_radius_px,
                     ) {
                         try_pt(ext, SnapType::Extension);
                     }
@@ -529,7 +534,7 @@ impl Snapper {
                         p_last - p_prev,
                         view_proj,
                         bounds,
-                        self.snap_radius_px,
+                        self.osnap_radius_px,
                     ) {
                         try_pt(ext, SnapType::Extension);
                     }
