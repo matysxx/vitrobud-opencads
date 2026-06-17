@@ -23,14 +23,16 @@ enum Step {
 pub struct TorientCommand {
     handles: Vec<Handle>,
     entities: Vec<(Handle, EntityType)>,
+    view_twist: f64,
     step: Step,
 }
 
 impl TorientCommand {
-    pub fn new(handles: Vec<Handle>, entities: Vec<(Handle, EntityType)>) -> Self {
+    pub fn new(handles: Vec<Handle>, entities: Vec<(Handle, EntityType)>, view_twist: f64) -> Self {
         Self {
             handles,
             entities,
+            view_twist,
             step: Step::AngleOrFirstPoint,
         }
     }
@@ -44,24 +46,24 @@ impl TorientCommand {
 
             match &mut new_entity {
                 EntityType::Text(text) => {
-                    let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(text.rotation));
+                    let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(text.rotation, self.view_twist));
                     text.rotation = angle;
                     changed = true;
                 }
                 EntityType::MText(mtext) => {
-                    let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(mtext.rotation as f64));
+                    let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(mtext.rotation as f64, self.view_twist));
                     mtext.rotation = angle as f64;
                     changed = true;
                 }
                 EntityType::AttributeDefinition(attdef) => {
-                    let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(attdef.rotation));
+                    let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(attdef.rotation, self.view_twist));
                     attdef.rotation = angle;
                     changed = true;
                 }
                 EntityType::Insert(insert) => {
                     let mut block_changed = false;
                     for attr in &mut insert.attributes {
-                        let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(attr.rotation));
+                        let angle = new_angle_rad.unwrap_or_else(|| most_readable_angle(attr.rotation, self.view_twist));
                         attr.rotation = angle;
                         block_changed = true;
                     }
@@ -85,23 +87,30 @@ impl TorientCommand {
     }
 }
 
-fn most_readable_angle(mut angle_rad: f64) -> f64 {
+fn most_readable_angle(wcs_angle_rad: f64, view_twist: f64) -> f64 {
     let two_pi = 2.0 * std::f64::consts::PI;
-    angle_rad %= two_pi;
-    if angle_rad < 0.0 {
-        angle_rad += two_pi;
+    
+    // Calculate the angle as it appears on screen
+    let mut screen_angle = (wcs_angle_rad - view_twist) % two_pi;
+    if screen_angle < 0.0 {
+        screen_angle += two_pi;
     }
 
-    // "Most Readable" logic: if upside down (i.e. angle > 90 and <= 270 deg), rotate 180 deg
+    // "Most Readable" logic: if upside down on screen (angle > 90 and <= 270 deg)
     let half_pi = std::f64::consts::PI / 2.0;
     let three_half_pi = 3.0 * std::f64::consts::PI / 2.0;
 
-    if angle_rad > half_pi + 1e-6 && angle_rad <= three_half_pi + 1e-6 {
-        angle_rad += std::f64::consts::PI;
-        angle_rad %= two_pi;
+    let mut final_wcs_angle = wcs_angle_rad;
+    if screen_angle > half_pi + 1e-6 && screen_angle <= three_half_pi + 1e-6 {
+        final_wcs_angle += std::f64::consts::PI;
     }
     
-    angle_rad
+    // Normalize final WCS angle
+    final_wcs_angle %= two_pi;
+    if final_wcs_angle < 0.0 {
+        final_wcs_angle += two_pi;
+    }
+    final_wcs_angle
 }
 
 impl CadCommand for TorientCommand {
@@ -173,5 +182,9 @@ impl CadCommand for TorientCommand {
 
     fn dyn_spec(&self) -> Option<crate::command::DynSpec> {
         None
+    }
+
+    fn dyn_commit_as_text(&self) -> bool {
+        matches!(self.step, Step::AngleOrFirstPoint)
     }
 }
