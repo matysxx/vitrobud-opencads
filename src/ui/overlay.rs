@@ -1171,6 +1171,7 @@ fn draw_ucs_icon(frame: &mut canvas::Frame, vp: Mat4, bounds: iced::Rectangle) {
                 position: Point::new(tip.x + nx * 8.0 - 3.5, tip.y + ny * 8.0 - 5.0),
                 color: col,
                 size: iced::Pixels(10.0),
+                shaping: iced::advanced::text::Shaping::Advanced,
                 ..Default::default()
             });
         }
@@ -1285,6 +1286,11 @@ impl DynInputCanvas {
             position: Point { x: x + DYN_PAD, y: y + DYN_PAD },
             color: Color { r: 0.92, g: 0.92, b: 0.92, a: 1.0 },
             size: iced::Pixels(DYN_FONT),
+            // Force Advanced shaping: the default `Auto` uses Basic shaping for
+            // ASCII-only strings, which the web (wgpu/webgl) backend fails to
+            // render — so all-digit value boxes came up blank while the angle
+            // box (containing the non-ASCII `°`) rendered. (#117)
+            shaping: iced::advanced::text::Shaping::Advanced,
             ..Default::default()
         });
     }
@@ -1327,6 +1333,7 @@ impl DynInputCanvas {
             position: Point { x: pos.x + DYN_PAD, y: pos.y + DYN_PAD },
             color: Color { r: 0.70, g: 0.85, b: 0.70, a: 1.0 },
             size: iced::Pixels(DYN_FONT),
+            shaping: iced::advanced::text::Shaping::Advanced,
             ..Default::default()
         });
     }
@@ -1562,6 +1569,7 @@ impl DynInputCanvas {
                 position: Point { x: x + DYN_PAD, y: by + DYN_PAD },
                 color: Color { r: 0.92, g: 0.92, b: 0.92, a: 1.0 },
                 size: iced::Pixels(DYN_FONT),
+                shaping: iced::advanced::text::Shaping::Advanced,
                 ..Default::default()
             });
             x += w + DYN_GAP;
