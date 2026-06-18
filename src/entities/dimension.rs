@@ -1017,7 +1017,15 @@ fn tessellate_dimension_inner(
             .map(|t| t.chars().count() as f32 * dim_txt as f32 * 0.6)
             .unwrap_or(0.0);
         if tw > 0.0 {
-            Some((tp, tw * 0.5 + dimgap_local, dim_txt as f32 * 0.5 + dimgap_local))
+            // Vertical threshold is the bare text half-height (no DIMGAP): the
+            // line only breaks when it actually passes under the glyphs. Text
+            // placed above/below the line (DIMTAD 1/4) sits exactly
+            // `text_half + DIMGAP` away, so excluding the gap here keeps it
+            // strictly outside and the line continuous — otherwise the two
+            // terms cancel at the same scaled value and the gap flickers with
+            // DIMGAP/DIMSCALE. The horizontal half-width keeps DIMGAP so a
+            // genuine break still clears the text comfortably. (#94)
+            Some((tp, tw * 0.5 + dimgap_local, dim_txt as f32 * 0.5))
         } else {
             None
         }
