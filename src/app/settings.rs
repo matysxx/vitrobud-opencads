@@ -27,7 +27,9 @@ const SNAP_ORDER: &[SnapType] = &[
     SnapType::Nearest,
     SnapType::ApparentIntersection,
     SnapType::Parallel,
-    SnapType::Grid,
+    // Grid snap (SNAPMODE) is a per-drawing view setting stored on the VPort,
+    // not a global OSNAP preference, so it is deliberately excluded from the
+    // persisted set. (#121)
 ];
 
 fn snap_id(s: SnapType) -> &'static str {

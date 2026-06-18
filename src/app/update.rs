@@ -340,17 +340,26 @@ impl OpenCADStudio {
         self.persist_settings_if_changed();
     }
 
-    /// Mirror the current grid/snap toggles onto tab `i`'s `*Active` VPort
-    /// entries so a save writes the real display state rather than VPort
-    /// defaults (#121). Cheap; safe to call every frame.
+    /// Mirror the live grid display + grid-snap toggles onto tab `i`'s active
+    /// model tile so a save writes them to that viewport's VPort entry (#121).
     fn sync_vport_display(&mut self, i: usize) {
         let grid_on = self.show_grid;
-        let snap_on =
-            self.snapper.snap_enabled && self.snapper.is_on(crate::snap::SnapType::Grid);
-        let grid_spacing = self.snapper.grid_spacing as f64;
-        self.tabs[i]
-            .scene
-            .set_active_vport_display(grid_on, snap_on, grid_spacing);
+        let snap_on = self.snapper.is_on(crate::snap::SnapType::Grid);
+        self.tabs[i].scene.set_active_tile_grid_snap(grid_on, snap_on);
+    }
+
+    /// Adopt the active viewport's grid display + grid-snap into the live
+    /// toggles. Called on load and whenever the active tab or viewport changes,
+    /// so grid/snap follow the active viewport rather than a global setting.
+    fn adopt_view_display(&mut self, i: usize) {
+        if let Some((grid_on, snap_on)) = self.tabs[i].scene.active_tile_grid_snap() {
+            self.show_grid = grid_on;
+            if snap_on {
+                self.snapper.enabled.insert(crate::snap::SnapType::Grid);
+            } else {
+                self.snapper.enabled.remove(&crate::snap::SnapType::Grid);
+            }
+        }
     }
 
     fn update_inner(&mut self, msg: Message) -> Task<Message> {
@@ -598,11 +607,9 @@ impl OpenCADStudio {
                 // selected — see #21.
                 self.sync_ribbon_from_selection();
                 self.tabs[i].scene.restore_saved_camera();
-                // Grid visibility is a per-drawing view setting — adopt the
-                // opened file's saved state rather than a global preference.
-                if let Some(grid_on) = self.tabs[i].scene.active_vport_grid_on() {
-                    self.show_grid = grid_on;
-                }
+                // Grid/snap are per-drawing view settings — adopt the opened
+                // file's active viewport state rather than a global preference.
+                self.adopt_view_display(i);
                 self.sync_render_mode_to_active_tile(i);
                 self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
                 self.tabs[i].dirty = false;
@@ -1263,6 +1270,8 @@ impl OpenCADStudio {
                 // fresh tab's defaults (ByLayer) instead of inheriting the
                 // previous tab's last selection.
                 self.sync_ribbon_from_selection();
+                // A fresh drawing starts with grid/snap off (its tile defaults).
+                self.adopt_view_display(self.active_tab);
                 Task::none()
             }
 
@@ -1276,6 +1285,8 @@ impl OpenCADStudio {
                     // CECOLOR / CELTYPE / CELWEIGHT (or its current selection
                     // if there is one), not the prior tab's choice.
                     self.sync_ribbon_from_selection();
+                    // Grid/snap follow the newly active drawing's viewport.
+                    self.adopt_view_display(idx);
                 }
                 Task::none()
             }
@@ -2471,6 +2482,8 @@ impl OpenCADStudio {
                     {
                         self.tabs[i].scene.camera_generation += 1;
                         self.sync_render_mode_to_active_tile(i);
+                        // Grid/snap follow the newly active viewport.
+                        self.adopt_view_display(i);
                     }
                 }
 
@@ -3092,6 +3105,8 @@ impl OpenCADStudio {
                     {
                         self.tabs[i].scene.camera_generation += 1;
                         self.sync_render_mode_to_active_tile(i);
+                        // Grid/snap follow the newly active viewport.
+                        self.adopt_view_display(i);
                         return Task::none();
                     }
                 }

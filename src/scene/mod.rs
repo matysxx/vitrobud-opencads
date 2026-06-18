@@ -475,6 +475,11 @@ pub(crate) struct ModelTile {
     /// Visual style for this tile alone — each pane carries its own so
     /// changing one tile's render mode never touches the others.
     pub(crate) render_mode: acadrust::entities::ViewportRenderMode,
+    /// Grid display + grid-snap for this viewport alone, round-tripped through
+    /// its VPort entry. The app mirrors the *active* tile's pair into the live
+    /// grid/snap toggles. (#121)
+    pub(crate) grid_on: bool,
+    pub(crate) snap_on: bool,
 }
 
 /// Tolerance for matching two normalized tile coordinates as "the same"
@@ -792,6 +797,8 @@ impl Scene {
                 },
                 camera: Camera::default(),
                 render_mode: acadrust::entities::ViewportRenderMode::Wireframe2D,
+                grid_on: false,
+                snap_on: false,
             }]),
             active_model_tile: std::cell::Cell::new(0),
             selection: Rc::new(RefCell::new(SelectionState::default())),
@@ -5383,14 +5390,17 @@ impl Scene {
     /// Set the model-space camera from the VPORT table's *Active entry.
     /// Returns true if the entry was found and the camera was set.
     fn apply_active_vport_camera(&mut self) -> bool {
-        // Restore the single tile's visual style from the *Active entry,
-        // independent of where the camera itself comes from below.
+        // Restore the single tile's visual style + grid/snap from the *Active
+        // entry, independent of where the camera itself comes from below.
         if let Some(vp) = self.document.vports.iter().find(|v| v.name == "*Active") {
             let mode = vp.render_mode;
+            let (grid_on, snap_on) = (vp.grid_on, vp.snap_on);
             let mut tiles = self.model_tiles.borrow_mut();
             let active = self.active_model_tile.get().min(tiles.len().saturating_sub(1));
             if let Some(t) = tiles.get_mut(active) {
                 t.render_mode = mode;
+                t.grid_on = grid_on;
+                t.snap_on = snap_on;
             }
         }
         // Prefer our named View entry — survives DWG save without being overridden.
@@ -5542,6 +5552,8 @@ impl Scene {
                     rect: Self::vport_to_tile_rect(vp.lower_left, vp.upper_right),
                     camera: cam,
                     render_mode: vp.render_mode,
+                    grid_on: vp.grid_on,
+                    snap_on: vp.snap_on,
                 })
             })
             .collect();
@@ -5573,15 +5585,6 @@ impl Scene {
         }
 
         let table_handle = self.document.vports.handle();
-        // Carry the grid/snap display state from the existing `*Active` entry
-        // across the rebuild — these flags track the in-app toggles and must
-        // not reset to VPort defaults each camera sync. (#121)
-        let display = self
-            .document
-            .vports
-            .iter()
-            .find(|v| v.name == "*Active")
-            .map(|v| (v.grid_on, v.snap_on, v.grid_spacing, v.snap_spacing, v.snap_base));
         let preserved_vps: Vec<acadrust::tables::VPort> = self
             .document
             .vports
@@ -5613,41 +5616,32 @@ impl Scene {
             let (ll, ur) = Self::tile_rect_to_vport(tile.rect);
             let mut entry = self.vport_from_camera("*Active", &tile.camera, ll, ur);
             entry.render_mode = tile.render_mode;
-            if let Some((grid_on, snap_on, grid_spacing, snap_spacing, snap_base)) = display {
-                entry.grid_on = grid_on;
-                entry.snap_on = snap_on;
-                entry.grid_spacing = grid_spacing;
-                entry.snap_spacing = snap_spacing;
-                entry.snap_base = snap_base;
-            }
+            // Each viewport persists its own grid display + grid-snap (#121).
+            entry.grid_on = tile.grid_on;
+            entry.snap_on = tile.snap_on;
             entry.handle = self.document.allocate_handle();
             self.document.vports.add_allow_duplicate(entry);
         }
     }
 
-    /// Stamp the grid/snap display state onto every `*Active` VPort entry so a
-    /// saved file reflects the in-app grid/snap toggles (otherwise other CAD
-    /// apps read VPort defaults). `grid_spacing` is applied to both axes and
-    /// mirrored to the snap spacing. (#121)
-    pub fn set_active_vport_display(&mut self, grid_on: bool, snap_on: bool, grid_spacing: f64) {
-        let spacing = acadrust::types::Vector2 { x: grid_spacing, y: grid_spacing };
-        for vp in self.document.vports.iter_mut().filter(|v| v.name == "*Active") {
-            vp.grid_on = grid_on;
-            vp.snap_on = snap_on;
-            vp.grid_spacing = spacing;
-            vp.snap_spacing = spacing;
+    /// Mirror the live grid/snap toggles onto the *active* model tile so the
+    /// save writes them to that viewport's VPort entry. (#121)
+    pub fn set_active_tile_grid_snap(&self, grid_on: bool, snap_on: bool) {
+        let mut tiles = self.model_tiles.borrow_mut();
+        let active = self.active_model_tile.get().min(tiles.len().saturating_sub(1));
+        if let Some(t) = tiles.get_mut(active) {
+            t.grid_on = grid_on;
+            t.snap_on = snap_on;
         }
     }
 
-    /// Grid visibility stored on the `*Active` VPort entry, applied to the app's
-    /// grid toggle when a file loads (grid is a per-drawing view setting, not a
-    /// global preference). `None` when there is no active entry. (#121)
-    pub fn active_vport_grid_on(&self) -> Option<bool> {
-        self.document
-            .vports
-            .iter()
-            .find(|v| v.name == "*Active")
-            .map(|v| v.grid_on)
+    /// The active model tile's grid display + grid-snap, adopted into the live
+    /// toggles on load and whenever the active viewport / tab changes. `None`
+    /// when there are no tiles. (#121)
+    pub fn active_tile_grid_snap(&self) -> Option<(bool, bool)> {
+        let tiles = self.model_tiles.borrow();
+        let active = self.active_model_tile.get().min(tiles.len().saturating_sub(1));
+        tiles.get(active).map(|t| (t.grid_on, t.snap_on))
     }
 
     /// Set the paper-space camera from the sheet viewport's stored view.
@@ -6344,10 +6338,13 @@ impl Scene {
             )
         };
         let mode = tiles[active].render_mode;
+        let (grid_on, snap_on) = (tiles[active].grid_on, tiles[active].snap_on);
         tiles[active] = ModelTile {
             rect: a,
             camera: cam_now.clone(),
             render_mode: mode,
+            grid_on,
+            snap_on,
         };
         tiles.insert(
             active + 1,
@@ -6355,6 +6352,8 @@ impl Scene {
                 rect: b,
                 camera: cam_now,
                 render_mode: mode,
+                grid_on,
+                snap_on,
             },
         );
     }
@@ -6402,13 +6401,17 @@ impl Scene {
     pub fn set_model_tile_layout(&self, rects: Vec<iced::Rectangle>) {
         let cam_now = self.camera.borrow().clone();
         // Every new pane inherits the active tile's current visual style.
-        let mode = {
+        let (mode, grid_on, snap_on) = {
             let tiles = self.model_tiles.borrow();
             let active = self.active_model_tile.get().min(tiles.len().saturating_sub(1));
             tiles
                 .get(active)
-                .map(|t| t.render_mode)
-                .unwrap_or(acadrust::entities::ViewportRenderMode::Wireframe2D)
+                .map(|t| (t.render_mode, t.grid_on, t.snap_on))
+                .unwrap_or((
+                    acadrust::entities::ViewportRenderMode::Wireframe2D,
+                    false,
+                    false,
+                ))
         };
         let tiles: Vec<ModelTile> = rects
             .into_iter()
@@ -6416,6 +6419,8 @@ impl Scene {
                 rect,
                 camera: cam_now.clone(),
                 render_mode: mode,
+                grid_on,
+                snap_on,
             })
             .collect();
         *self.model_tiles.borrow_mut() = if tiles.is_empty() {
@@ -6428,6 +6433,8 @@ impl Scene {
                 },
                 camera: cam_now,
                 render_mode: mode,
+                grid_on,
+                snap_on,
             }]
         } else {
             tiles
