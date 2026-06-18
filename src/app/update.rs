@@ -15,6 +15,40 @@ use acadrust::{EntityType as AcadEntityType, Handle};
 use iced::time::Instant;
 use iced::{mouse, Task};
 
+/// Keystroke-derived messages that an open modal dialog must swallow so the
+/// keyboard can't reach the main window (command line, F-key toggles, edit
+/// shortcuts) while a dialog is up. `CommandEscape` is handled separately (it
+/// closes the modal); a modal's own text fields emit their own messages, which
+/// are not in this set. See [`OpenCADStudio::update`] and #126.
+fn is_modal_blocked_key_msg(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::CommandInput(_)
+            | Message::CommandAppendChar(_)
+            | Message::CommandSpace
+            | Message::CommandFinalize
+            | Message::CommandBackspace
+            | Message::CommandHistoryPrev
+            | Message::CommandHistoryNext
+            | Message::DynTabNext
+            | Message::MTextCaretMove(_)
+            | Message::DeleteSelected
+            | Message::ToggleSnapEnabled
+            | Message::ToggleGrid
+            | Message::ToggleOrtho
+            | Message::ToggleGridSnap
+            | Message::TogglePolar
+            | Message::ToggleOTrack
+            | Message::ToggleDynInput
+            | Message::TabNew
+            | Message::OpenFile
+            | Message::SaveFile
+            | Message::SaveAs
+            | Message::Undo
+            | Message::Redo
+    )
+}
+
 const VIEWCUBE_HIT_SIZE: f32 = VIEWCUBE_DRAW_PX;
 /// Pixel distance from a Model-tile inner divider that still registers as
 /// a resize grip on the press.
@@ -96,6 +130,21 @@ impl OpenCADStudio {
     }
 
     pub fn update(&mut self, msg: Message) -> Task<Message> {
+        // A modal dialog must capture the keyboard the same way it already
+        // captures the mouse. Otherwise keystrokes from the global key
+        // subscription leak past the modal into the command line and fire as
+        // commands once the dialog closes. While a modal is open, Escape
+        // closes it and every other keystroke-derived message is swallowed;
+        // the modal's own text fields keep working because they emit their own
+        // (non-blocked) messages. (#126)
+        if self.active_modal.is_some() {
+            if matches!(msg, Message::CommandEscape) {
+                return self.update(Message::CloseModal);
+            }
+            if is_modal_blocked_key_msg(&msg) {
+                return Task::none();
+            }
+        }
         let task = self.update_inner(msg);
         // After every message, mirror the active command step's prompt so
         // its history line stays pinned (non-fading) until the step changes.
