@@ -194,12 +194,12 @@ impl super::OpenCADStudio {
 
     /// Commit the editor: create a new TEXT entity or update the edited slot.
     /// Empty content drops a new entity and leaves an edited one untouched.
-    pub(super) fn text_inline_commit(&mut self) {
+    pub(super) fn text_inline_commit(&mut self) -> bool {
         let i = self.active_tab;
-        let Some(ed) = self.text_inline.take() else { return };
+        let Some(ed) = self.text_inline.take() else { return false };
         if ed.value.trim().is_empty() && ed.editing.is_none() {
             self.refresh_properties();
-            return;
+            return false;
         }
         if let Some(h) = ed.editing {
             self.push_undo_snapshot(i, "TEXT");
@@ -230,6 +230,7 @@ impl super::OpenCADStudio {
             self.tabs[i].dirty = true;
         }
         self.refresh_properties();
+        true
     }
 
     /// Discard the editor without changing the drawing.

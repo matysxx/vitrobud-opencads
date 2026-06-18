@@ -4693,8 +4693,8 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MTextOk => {
-                self.mtext_commit();
-                self.post_editor_closed(true)
+                let committed = self.mtext_commit();
+                self.post_editor_closed(committed)
             }
             Message::MTextCancel => {
                 self.mtext_cancel();
@@ -4708,8 +4708,8 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::TextInlineOk => {
-                self.text_inline_commit();
-                self.post_editor_closed(true)
+                let committed = self.text_inline_commit();
+                self.post_editor_closed(committed)
             }
 
             Message::DrawOrderSubmenuToggle => {
