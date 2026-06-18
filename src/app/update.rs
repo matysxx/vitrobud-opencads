@@ -1677,7 +1677,6 @@ impl OpenCADStudio {
                 // buffer to the same submit path so typing a command name (or
                 // an option keyword like "R") and pressing Enter works without
                 // first clicking into the command line (issue #99).
-                let i = self.active_tab;
                 if !self.command_line.input.trim().is_empty() {
                     return self.update(Message::CommandSubmit);
                 }

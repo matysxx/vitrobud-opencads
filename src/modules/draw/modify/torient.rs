@@ -9,7 +9,6 @@ use acadrust::Handle;
 use glam::Vec3;
 
 use crate::command::{CadCommand, CmdResult, DynField};
-use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use acadrust::EntityType;
 
@@ -21,16 +20,14 @@ enum Step {
 }
 
 pub struct TorientCommand {
-    handles: Vec<Handle>,
     entities: Vec<(Handle, EntityType)>,
     view_twist: f64,
     step: Step,
 }
 
 impl TorientCommand {
-    pub fn new(handles: Vec<Handle>, entities: Vec<(Handle, EntityType)>, view_twist: f64) -> Self {
+    pub fn new(entities: Vec<(Handle, EntityType)>, view_twist: f64) -> Self {
         Self {
-            handles,
             entities,
             view_twist,
             step: Step::AngleOrFirstPoint,

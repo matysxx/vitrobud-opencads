@@ -47,6 +47,7 @@ impl ExternalPlugin {
 
     /// True when the package can be loaded today: compatible API *and* a native
     /// library present for this platform.
+    #[allow(dead_code)] // plugin-host surface (issue #100); not yet wired
     pub fn loadable(&self) -> bool {
         self.api_compatible() && self.lib_present
     }

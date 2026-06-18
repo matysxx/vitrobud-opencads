@@ -407,7 +407,7 @@ impl<'a> Widget<Message, Theme, Renderer> for Floating<'a> {
         &'b mut self,
         tree: &'b mut widget::Tree,
         layout: Layout<'b>,
-        renderer: &Renderer,
+        _renderer: &Renderer,
         _viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {

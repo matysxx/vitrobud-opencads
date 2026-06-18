@@ -47,7 +47,7 @@ impl OpenCADStudio {
     /// sorted by name so the `HashMap` backing them renders stably).
     pub(super) fn style_names(&self, kind: StyleKind) -> Vec<String> {
         let doc = &self.tabs[self.active_tab].scene.document;
-        let mut from_objects = |pick: fn(&ObjectType) -> Option<&str>| -> Vec<String> {
+        let from_objects = |pick: fn(&ObjectType) -> Option<&str>| -> Vec<String> {
             let mut v: Vec<String> = doc
                 .objects
                 .values()

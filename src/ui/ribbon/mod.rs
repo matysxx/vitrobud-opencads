@@ -180,11 +180,13 @@ impl Ribbon {
     }
 
     /// Returns the index of the Layout module in the modules list.
+    #[allow(dead_code)] // layout-tab helpers; not yet wired
     pub fn layout_module_index(&self) -> Option<usize> {
         self.modules.iter().position(|m| m.id() == "layout")
     }
 
     /// Returns true if the currently active tab is the Layout module.
+    #[allow(dead_code)]
     pub fn active_is_layout(&self) -> bool {
         self.modules
             .get(self.active)

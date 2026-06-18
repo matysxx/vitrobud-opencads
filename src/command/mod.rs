@@ -379,6 +379,7 @@ pub enum DynAnchor {
 pub struct DynFieldSpec {
     pub role: DynRole,
     /// Label override; `None` uses the role's default label.
+    #[allow(dead_code)] // dyn-spec framework field; not yet consumed
     pub label: Option<&'static str>,
 }
 

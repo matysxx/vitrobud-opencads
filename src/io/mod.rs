@@ -361,6 +361,7 @@ pub fn save(doc: &CadDocument, path: &Path) -> Result<(), String> {
 /// `doc.version`). Used by the web build, which hands the bytes to a browser
 /// download instead of writing a path — the byte-buffer counterpart to
 /// [`save_as_version`].
+#[allow(dead_code)] // web/wasm build only; unused in the native target
 pub fn save_to_bytes(
     doc: &CadDocument,
     ext: &str,

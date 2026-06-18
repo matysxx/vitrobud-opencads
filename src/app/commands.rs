@@ -1204,7 +1204,7 @@ impl OpenCADStudio {
                     let cam_rot = self.tabs[i].scene.camera.borrow().rotation;
                     let right = cam_rot * glam::Vec3::X;
                     let view_twist = right.y.atan2(right.x) as f64;
-                    let new_cmd = TorientCommand::new(handles, entities, view_twist);
+                    let new_cmd = TorientCommand::new(entities, view_twist);
                     self.command_line.push_info(&new_cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                 }

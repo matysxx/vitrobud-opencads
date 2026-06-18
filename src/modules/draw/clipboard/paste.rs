@@ -1,6 +1,6 @@
 // Paste tool — ribbon definition + CadCommand implementation.
 
-use crate::modules::{IconKind, ModuleEvent, ToolDef};
+use crate::modules::IconKind;
 
 /// Shared icon for the Paste button and its dropdown entries.
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../../assets/icons/paste.svg"));
@@ -12,15 +12,6 @@ pub const MENU_ITEMS: &[(&str, &str, IconKind)] = &[
     ("PASTEORIG", "Paste to Original Coordinates", ICON),
     ("PASTEBLOCK", "Paste as Block", ICON),
 ];
-
-pub fn tool() -> ToolDef {
-    ToolDef {
-        id: "PASTECLIP",
-        label: "Paste",
-        icon: ICON,
-        event: ModuleEvent::Command("PASTECLIP".to_string()),
-    }
-}
 
 // ── CadCommand implementation ─────────────────────────────────────────────
 
