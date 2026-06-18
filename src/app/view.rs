@@ -4249,17 +4249,36 @@ fn viewport_controls<'a>(
         handle_color: light,
     });
 
+    // Thin vertical divider between control groups.
+    let sep = || {
+        container(iced::widget::Space::new().width(1.0).height(16.0)).style(|_: &Theme| {
+            iced::widget::container::Style {
+                background: Some(Background::Color(Color {
+                    r: 0.45,
+                    g: 0.45,
+                    b: 0.45,
+                    a: 0.7,
+                })),
+                ..Default::default()
+            }
+        })
+    };
+
     let mut bar = row![]
-        .spacing(2)
+        .spacing(3)
         .align_y(iced::alignment::Vertical::Center);
     if include_split {
         bar = bar
             .push(icon_btn(crate::ui::icons::SPLIT_H, false, Message::SplitModelViewport(true)))
-            .push(icon_btn(crate::ui::icons::SPLIT_V, false, Message::SplitModelViewport(false)));
+            .push(sep())
+            .push(icon_btn(crate::ui::icons::SPLIT_V, false, Message::SplitModelViewport(false)))
+            .push(sep());
     }
     bar = bar
         .push(picker)
+        .push(sep())
         .push(icon_btn(crate::ui::icons::GRID, show_grid, Message::ToggleGrid))
+        .push(sep())
         .push(icon_btn(crate::ui::icons::SNAP, snap_on, Message::ToggleGridSnap));
 
     container(bar)
