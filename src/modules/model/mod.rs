@@ -12,12 +12,22 @@ use crate::modules::{CadModule, IconKind, ModuleEvent, RibbonGroup, RibbonItem, 
 
 pub struct ModelModule;
 
+const BOX_ICON: &[u8] = include_bytes!("../../../assets/icons/box3d.svg");
+const CYLINDER_ICON: &[u8] = include_bytes!("../../../assets/icons/cylinder3d.svg");
+const CONE_ICON: &[u8] = include_bytes!("../../../assets/icons/cone3d.svg");
+const SPHERE_ICON: &[u8] = include_bytes!("../../../assets/icons/sphere3d.svg");
+const WEDGE_ICON: &[u8] = include_bytes!("../../../assets/icons/wedge3d.svg");
+const TORUS_ICON: &[u8] = include_bytes!("../../../assets/icons/torus3d.svg");
+const UNION_ICON: &[u8] = include_bytes!("../../../assets/icons/union.svg");
+const SUBTRACT_ICON: &[u8] = include_bytes!("../../../assets/icons/subtract.svg");
+const INTERSECT_ICON: &[u8] = include_bytes!("../../../assets/icons/intersect.svg");
+
 /// Helper to declare a ribbon tool that fires a named command.
-fn tool(id: &'static str, label: &'static str, glyph: &'static str) -> ToolDef {
+fn tool(id: &'static str, label: &'static str, icon: &'static [u8]) -> ToolDef {
     ToolDef {
         id,
         label,
-        icon: IconKind::Glyph(glyph),
+        icon: IconKind::Svg(icon),
         event: ModuleEvent::Command(id.to_string()),
     }
 }
@@ -35,16 +45,16 @@ impl CadModule for ModelModule {
             RibbonGroup {
                 title: "Model",
                 tools: vec![
-                    RibbonItem::LargeTool(tool("BOX", "Box", "▦")),
-                    RibbonItem::LargeTool(tool("CYLINDER", "Cylinder", "⬭")),
-                    RibbonItem::LargeTool(tool("CONE", "Cone", "△")),
-                    RibbonItem::LargeTool(tool("SPHERE", "Sphere", "◯")),
+                    RibbonItem::LargeTool(tool("BOX", "Box", BOX_ICON)),
+                    RibbonItem::LargeTool(tool("CYLINDER", "Cylinder", CYLINDER_ICON)),
+                    RibbonItem::LargeTool(tool("CONE", "Cone", CONE_ICON)),
+                    RibbonItem::LargeTool(tool("SPHERE", "Sphere", SPHERE_ICON)),
                     RibbonItem::Dropdown {
                         id: "MODEL_MORE",
-                        icon: IconKind::Glyph("◰"),
+                        icon: IconKind::Svg(WEDGE_ICON),
                         items: vec![
-                            ("WEDGE", "Wedge", IconKind::Glyph("◣")),
-                            ("TORUS", "Torus", IconKind::Glyph("◎")),
+                            ("WEDGE", "Wedge", IconKind::Svg(WEDGE_ICON)),
+                            ("TORUS", "Torus", IconKind::Svg(TORUS_ICON)),
                         ],
                         default: "WEDGE",
                     },
@@ -53,9 +63,9 @@ impl CadModule for ModelModule {
             RibbonGroup {
                 title: "Design",
                 tools: vec![
-                    RibbonItem::LargeTool(tool("UNION", "Union", "⊕")),
-                    RibbonItem::LargeTool(tool("SUBTRACT", "Subtract", "⊖")),
-                    RibbonItem::LargeTool(tool("INTERSECT", "Intersect", "⊗")),
+                    RibbonItem::LargeTool(tool("UNION", "Union", UNION_ICON)),
+                    RibbonItem::LargeTool(tool("SUBTRACT", "Subtract", SUBTRACT_ICON)),
+                    RibbonItem::LargeTool(tool("INTERSECT", "Intersect", INTERSECT_ICON)),
                 ],
             },
         ]

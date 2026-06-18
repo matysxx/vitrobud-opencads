@@ -73,10 +73,7 @@ pub fn units_popup_overlay(current: i16) -> Element<'static, Message> {
 }
 
 fn unit_row(label: &'static str, active: bool, msg: Message) -> Element<'static, Message> {
-    let check = text(if active { "✓" } else { "  " })
-        .size(11)
-        .color(if active { CHECK_COLOR } else { Color::TRANSPARENT })
-        .width(Length::Fixed(14.0));
+    let check = crate::ui::icons::check_cell(active, CHECK_COLOR);
 
     let lbl = text(label)
         .size(11)

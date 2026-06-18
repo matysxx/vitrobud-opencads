@@ -107,14 +107,7 @@ fn snap_row<'a>(
     label: &'a str,
     active: bool,
 ) -> Element<'a, Message> {
-    let checkmark = text(if active { "✓" } else { "  " })
-        .size(11)
-        .color(if active {
-            CHECK_COLOR
-        } else {
-            Color::TRANSPARENT
-        })
-        .width(Length::Fixed(14.0));
+    let checkmark = crate::ui::icons::check_cell(active, CHECK_COLOR);
 
     let icon_el = text(icon)
         .size(11)

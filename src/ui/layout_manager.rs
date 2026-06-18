@@ -194,14 +194,28 @@ pub fn view_window<'a>(
                 })
                 .padding([4, 10]),
             Space::new().width(Fill),
-            button(text("◀ Move Left").size(11))
-                .on_press(Message::LayoutManagerMoveLeft)
-                .style(btn_s(false))
-                .padding([4, 8]),
-            button(text("Move Right ▶").size(11))
-                .on_press(Message::LayoutManagerMoveRight)
-                .style(btn_s(false))
-                .padding([4, 8]),
+            button(
+                row![
+                    crate::ui::icons::tinted(crate::ui::icons::TRI_LEFT_B, 9.0, Color::WHITE),
+                    text("Move Left").size(11),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::LayoutManagerMoveLeft)
+            .style(btn_s(false))
+            .padding([4, 8]),
+            button(
+                row![
+                    text("Move Right").size(11),
+                    crate::ui::icons::arrow_right(9.0, Color::WHITE),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::LayoutManagerMoveRight)
+            .style(btn_s(false))
+            .padding([4, 8]),
             button(text("Set Current").size(11))
                 .on_press(Message::LayoutManagerSetCurrent)
                 .style(btn_s(true))
@@ -223,12 +237,17 @@ pub fn view_window<'a>(
         .map(|name| {
             let is_sel = name.as_str() == selected;
             let is_cur = name.as_str() == current.as_str();
-            let label = if is_cur {
-                format!("{name} ◀")
-            } else {
-                name.clone()
-            };
-            button(text(label).size(12))
+            let mut item_row = row![text(name.clone()).size(12)]
+                .spacing(5)
+                .align_y(iced::Center);
+            if is_cur {
+                item_row = item_row.push(crate::ui::icons::tinted(
+                    crate::ui::icons::TRI_LEFT_B,
+                    8.0,
+                    Color::WHITE,
+                ));
+            }
+            button(item_row)
                 .on_press(Message::LayoutManagerSelect(name.clone()))
                 .style(list_item(is_sel))
                 .padding([5, 10])
@@ -286,7 +305,7 @@ pub fn view_window<'a>(
             row![
                 text("Status:").size(11).color(DIM).width(80),
                 text(if selected == current.as_str() {
-                    "Active ◀"
+                    "Active"
                 } else {
                     "Inactive"
                 })

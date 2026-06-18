@@ -367,13 +367,17 @@ impl OpenCADStudio {
         if !is_paper && !tab.is_start {
             // Render-mode picker + viewport-split buttons (horizontal /
             // vertical divider of the active Model tile).
-            let split_btn = |glyph: &'static str, horizontal: bool| {
-                button(text(glyph).size(13).color(Color {
-                    r: 0.85,
-                    g: 0.85,
-                    b: 0.85,
-                    a: 1.0,
-                }))
+            let split_btn = |bytes: &'static [u8], horizontal: bool| {
+                button(crate::ui::icons::tinted(
+                    bytes,
+                    14.0,
+                    Color {
+                        r: 0.85,
+                        g: 0.85,
+                        b: 0.85,
+                        a: 1.0,
+                    },
+                ))
                 .on_press(Message::SplitModelViewport(horizontal))
                 .padding([4, 8])
                 .style(|_: &Theme, status| iced::widget::button::Style {
@@ -410,7 +414,12 @@ impl OpenCADStudio {
                     ..Default::default()
                 })
             };
-            let bar = row![info, split_btn("▤", true), split_btn("▥", false)].spacing(4);
+            let bar = row![
+                info,
+                split_btn(crate::ui::icons::SPLIT_H, true),
+                split_btn(crate::ui::icons::SPLIT_V, false)
+            ]
+            .spacing(4);
             // Position the bar at the active model tile's top-left corner so
             // it follows the active panel in a tiled layout (full canvas when
             // a single tile fills the window). Leading Spaces offset it.
@@ -636,9 +645,20 @@ impl OpenCADStudio {
                 let mut col = column![].spacing(0).width(iced::Length::Fixed(row_w));
                 for (idx, name) in popup.items.iter().enumerate() {
                     let is_cur = popup.current == Some(idx);
-                    let label = format!("{} {}", if is_cur { "✓" } else { "  " }, name);
-                    let btn = button(text(label).size(12).color(Color::WHITE))
-                        .on_press(Message::VisibilityPick(idx))
+                    let mark: Element<'_, Message> = if is_cur {
+                        crate::ui::icons::tinted(crate::ui::icons::CHECK, 11.0, Color::WHITE)
+                    } else {
+                        Space::new().width(11).into()
+                    };
+                    let btn = button(
+                        row![
+                            container(mark).width(16),
+                            text(name).size(12).color(Color::WHITE),
+                        ]
+                        .spacing(2)
+                        .align_y(iced::Center),
+                    )
+                    .on_press(Message::VisibilityPick(idx))
                         .padding([3, 10])
                         .width(Fill)
                         .style(move |_: &Theme, status| iced::widget::button::Style {
@@ -1851,13 +1871,28 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
     for (idx, tab) in tabs.iter().enumerate() {
         let is_active = idx == active_tab;
         let name = crate::ui::text_util::elide(&tab.tab_display_name(), 24);
-        let label = if tab.dirty {
-            format!("● {}", name)
+        let title_inner: Element<'_, Message> = if tab.dirty {
+            row![
+                crate::ui::icons::tinted(
+                    crate::ui::icons::DOT,
+                    7.0,
+                    Color {
+                        r: 0.90,
+                        g: 0.75,
+                        b: 0.30,
+                        a: 1.0,
+                    },
+                ),
+                text(name).size(12),
+            ]
+            .spacing(5)
+            .align_y(iced::Center)
+            .into()
         } else {
-            name
+            text(name).size(12).into()
         };
 
-        let title_btn = button(text(label).size(12))
+        let title_btn = button(title_inner)
             .on_press(Message::TabSwitch(idx))
             .padding([5, 12])
             .style(move |_: &Theme, status| button::Style {
@@ -1888,12 +1923,16 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
         let row_inner: Row<'_, Message> = if tab.is_start {
             row![title_btn].spacing(0).align_y(iced::Center)
         } else {
-            let close_btn = button(text("×").size(11).color(Color {
-                r: 0.55,
-                g: 0.55,
-                b: 0.55,
-                a: 1.0,
-            }))
+            let close_btn = button(crate::ui::icons::tinted(
+                crate::ui::icons::CLOSE,
+                10.0,
+                Color {
+                    r: 0.55,
+                    g: 0.55,
+                    b: 0.55,
+                    a: 1.0,
+                },
+            ))
             .on_press(Message::TabClose(idx))
             .padding([3, 5])
             .style(move |_: &Theme, status| button::Style {
@@ -2825,12 +2864,35 @@ fn viewport_context_menu_overlay(
                 Message::Command("COPY".to_string()),
             ));
             items.push(sep());
-            let arrow = if draworder_open {
-                "Draw Order  \u{25be}"
+            let do_caret = if draworder_open {
+                crate::ui::icons::arrow_down(9.0, TEXT_COL)
             } else {
-                "Draw Order  \u{25b8}"
+                crate::ui::icons::arrow_right(9.0, TEXT_COL)
             };
-            items.push(item(arrow.to_string(), Message::DrawOrderSubmenuToggle));
+            items.push(
+                button(
+                    row![
+                        text("Draw Order").size(12).color(TEXT_COL),
+                        iced::widget::Space::new().width(Fill),
+                        do_caret,
+                    ]
+                    .align_y(iced::Center),
+                )
+                .on_press(Message::DrawOrderSubmenuToggle)
+                .style(|_: &Theme, status| button::Style {
+                    background: Some(Background::Color(match status {
+                        button::Status::Hovered | button::Status::Pressed => ITEM_HOVER,
+                        _ => Color::TRANSPARENT,
+                    })),
+                    text_color: TEXT_COL,
+                    border: Border::default(),
+                    shadow: iced::Shadow::default(),
+                    snap: false,
+                })
+                .padding([4, 12])
+                .width(Fill)
+                .into(),
+            );
             if draworder_open {
                 items.push(subitem(
                     "Bring to Front".to_string(),
@@ -3353,7 +3415,7 @@ fn save_as_dialog_window<'a>(
     let path_bar = row![
         {
             let up_msg = up_path.map(Message::SaveDialogNavigate);
-            let b = button(text("↑").size(14).color(TEXT))
+            let b = button(crate::ui::icons::tinted(crate::ui::icons::UP, 14.0, TEXT))
                 .style(|_: &Theme, st| button::Style {
                     background: Some(Background::Color(
                         if matches!(st, button::Status::Hovered | button::Status::Pressed) {
@@ -3398,14 +3460,18 @@ fn save_as_dialog_window<'a>(
         let rows: Vec<Element<'_, Message>> = entries
             .iter()
             .map(|(name, is_dir, path)| {
-                let icon = if *is_dir { "📁" } else { "📄" };
+                let icon_bytes = if *is_dir {
+                    crate::ui::icons::FOLDER
+                } else {
+                    crate::ui::icons::DOC
+                };
                 let color = if *is_dir { DIR_COL } else { FILE_COL };
                 let p = path.clone();
                 let d = *is_dir;
                 mouse_area(
                     container(
                         row![
-                            text(icon).size(13),
+                            crate::ui::icons::tinted(icon_bytes, 13.0, color),
                             Space::new().width(6),
                             text(crate::ui::text_util::elide(name.as_str(), 48))
                                 .size(13)
@@ -3792,9 +3858,10 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
     let donate_btn = {
         button(
             row![
-                text("♥ ").size(15).color(Color::WHITE),
+                crate::ui::icons::tinted(crate::ui::icons::HEART, 14.0, Color::WHITE),
                 text("Donate").size(14).color(Color::WHITE),
             ]
+            .spacing(5)
             .align_y(iced::Center),
         )
         .on_press(Message::RibbonToolClick {
@@ -4097,7 +4164,7 @@ pub(super) fn recent_files_panel<'a>(recents: &'a [std::path::PathBuf]) -> Eleme
             });
 
             let path_for_remove = path.clone();
-            let remove_btn = button(text("×").size(12).color(MUTED))
+            let remove_btn = button(crate::ui::icons::tinted(crate::ui::icons::CLOSE, 11.0, MUTED))
                 .on_press(Message::RecentRemove(path_for_remove))
                 .padding([4, 8])
                 .style(|_: &Theme, status| button::Style {

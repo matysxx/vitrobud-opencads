@@ -14,13 +14,13 @@ pub fn paper_space_tools() -> Vec<ToolDef> {
         ToolDef {
             id: "PAGESETUP",
             label: "Page Setup",
-            icon: IconKind::Glyph("📋"),
+            icon: IconKind::Svg(include_bytes!("../../../assets/icons/pagesetup.svg")),
             event: ModuleEvent::Command("PAGESETUP".to_string()),
         },
         ToolDef {
             id: "PLOT",
             label: "Export PDF",
-            icon: IconKind::Glyph("🖨"),
+            icon: IconKind::Svg(include_bytes!("../../../assets/icons/plot.svg")),
             event: ModuleEvent::Command("PLOT".to_string()),
         },
     ]
@@ -48,14 +48,14 @@ impl CadModule for LayoutModule {
                     ToolDef {
                         id: "PAGESETUP",
                         label: "Page Setup",
-                        icon: IconKind::Glyph("📋"),
+                        icon: IconKind::Svg(include_bytes!("../../../assets/icons/pagesetup.svg")),
                         event: ModuleEvent::Command("PAGESETUP".to_string()),
                     }
                     .into(),
                     ToolDef {
                         id: "PLOT",
                         label: "Export PDF",
-                        icon: IconKind::Glyph("🖨"),
+                        icon: IconKind::Svg(include_bytes!("../../../assets/icons/plot.svg")),
                         event: ModuleEvent::Command("PLOT".to_string()),
                     }
                     .into(),

@@ -234,20 +234,8 @@ impl Ribbon {
 
         // ── Tab buttons ───────────────────────────────────────────────────
         let history_controls = row![
-            render_history_control(
-                "↶",
-                "Undo",
-                UNDO_HISTORY_ID,
-                undo_count,
-                &self.open_dropdown
-            ),
-            render_history_control(
-                "↷",
-                "Redo",
-                REDO_HISTORY_ID,
-                redo_count,
-                &self.open_dropdown
-            ),
+            render_history_control("Undo", UNDO_HISTORY_ID, undo_count, &self.open_dropdown),
+            render_history_control("Redo", REDO_HISTORY_ID, redo_count, &self.open_dropdown),
         ]
         .spacing(TOP_HIST_GAP)
         .align_y(iced::Center);
@@ -609,14 +597,13 @@ impl Ribbon {
             .iter()
             .map(|(cmd, label, item_icon)| {
                 let is_current = *cmd == last_cmd;
-                let checkmark = text(if is_current { "✓" } else { "  " })
-                    .size(11)
-                    .color(if is_current {
-                        CHECK_COLOR
-                    } else {
-                        Color::TRANSPARENT
-                    })
-                    .width(Length::Fixed(14.0));
+                let checkmark: Element<'_, Message> = container(if is_current {
+                    crate::ui::icons::tinted(crate::ui::icons::CHECK, 11.0, CHECK_COLOR)
+                } else {
+                    iced::widget::Space::new().width(0).into()
+                })
+                .width(Length::Fixed(14.0))
+                .into();
                 let icon_el: Element<Message> = match *item_icon {
                     IconKind::Glyph(s) => text(s)
                         .size(13)
@@ -717,59 +704,16 @@ impl Ribbon {
                     .width(12)
                     .height(12);
 
-                let vis = text(if lv { "●" } else { "○" }).size(10).color(if lv {
-                    Color {
-                        r: 0.95,
-                        g: 0.85,
-                        b: 0.20,
-                        a: 1.0,
-                    }
+                let vis = crate::ui::icons::raw(crate::ui::icons::layer_visible(lv), 14.0);
+                let freeze = crate::ui::icons::raw(crate::ui::icons::layer_freeze(lf), 14.0);
+                let lock = crate::ui::icons::raw(crate::ui::icons::layer_lock(ll), 14.0);
+                let checkmark: Element<'_, Message> = container(if is_active {
+                    crate::ui::icons::tinted(crate::ui::icons::CHECK, 11.0, CHECK_COLOR)
                 } else {
-                    Color {
-                        r: 0.45,
-                        g: 0.45,
-                        b: 0.45,
-                        a: 1.0,
-                    }
-                });
-                let freeze = text("✱").size(10).color(if lf {
-                    Color {
-                        r: 0.40,
-                        g: 0.80,
-                        b: 1.00,
-                        a: 1.0,
-                    }
-                } else {
-                    Color {
-                        r: 0.95,
-                        g: 0.85,
-                        b: 0.20,
-                        a: 1.0,
-                    }
-                });
-                let lock = text(if ll { "🔒" } else { "🔓" }).size(10).color(if ll {
-                    Color {
-                        r: 0.95,
-                        g: 0.70,
-                        b: 0.20,
-                        a: 1.0,
-                    }
-                } else {
-                    Color {
-                        r: 0.55,
-                        g: 0.55,
-                        b: 0.55,
-                        a: 1.0,
-                    }
-                });
-                let checkmark = text(if is_active { "✓" } else { "  " })
-                    .size(11)
-                    .color(if is_active {
-                        CHECK_COLOR
-                    } else {
-                        Color::TRANSPARENT
-                    })
-                    .width(Length::Fixed(14.0));
+                    iced::widget::Space::new().width(0).into()
+                })
+                .width(Length::Fixed(14.0))
+                .into();
                 let label =
                     text(&info.name)
                         .size(11)
@@ -893,14 +837,13 @@ impl Ribbon {
             .into_iter()
             .map(|lt| {
                 let is_cur = lt.name == *active_lt;
-                let check = text(if is_cur { "✓" } else { "  " })
-                    .size(11)
-                    .color(if is_cur {
-                        CHECK_COLOR
-                    } else {
-                        Color::TRANSPARENT
-                    })
-                    .width(Length::Fixed(14.0));
+                let check: Element<'_, Message> = container(if is_cur {
+                    crate::ui::icons::tinted(crate::ui::icons::CHECK, 11.0, CHECK_COLOR)
+                } else {
+                    iced::widget::Space::new().width(0).into()
+                })
+                .width(Length::Fixed(14.0))
+                .into();
                 let name_col = text(lt.name.clone())
                     .size(11)
                     .color(if is_cur { LABEL_ON } else { LABEL_OFF })
@@ -971,14 +914,13 @@ impl Ribbon {
             .map(|item| {
                 let is_cur = item.0 == active_lw;
                 let label = item.to_string();
-                let check = text(if is_cur { "✓" } else { "  " })
-                    .size(11)
-                    .color(if is_cur {
-                        CHECK_COLOR
-                    } else {
-                        Color::TRANSPARENT
-                    })
-                    .width(Length::Fixed(14.0));
+                let check: Element<'_, Message> = container(if is_cur {
+                    crate::ui::icons::tinted(crate::ui::icons::CHECK, 11.0, CHECK_COLOR)
+                } else {
+                    iced::widget::Space::new().width(0).into()
+                })
+                .width(Length::Fixed(14.0))
+                .into();
                 button(
                     row![
                         check,

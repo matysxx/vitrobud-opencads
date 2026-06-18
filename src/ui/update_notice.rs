@@ -109,7 +109,7 @@ fn render_notes_line<'a>(raw: &str) -> Element<'a, Message> {
     }
     if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
         return row![
-            text("•").size(11).color(DIM).width(14),
+            container(crate::ui::icons::tinted(crate::ui::icons::DOT, 5.0, DIM)).width(14),
             text(strip_inline_md(rest)).size(11).color(WHITE),
         ]
         .spacing(4)
@@ -165,8 +165,12 @@ pub fn view_window<'a>(latest: &'a str, body: &'a str) -> Element<'a, Message> {
         false,
     );
     let latest_card = version_card("Latest", format!("v{}", latest), true);
-    let arrow = container(text("→").size(22).color(DIM))
-        .width(iced::Length::Fixed(32.0))
+    let arrow = container(crate::ui::icons::tinted(
+        crate::ui::icons::ARROW_LONG_RIGHT,
+        20.0,
+        DIM,
+    ))
+    .width(iced::Length::Fixed(32.0))
         .height(Fill)
         .align_x(iced::Center)
         .align_y(iced::Center);

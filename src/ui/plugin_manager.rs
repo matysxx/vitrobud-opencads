@@ -199,6 +199,27 @@ fn pill_button<'a>(label: &str, msg: Message, bg: Color) -> Element<'a, Message>
         .into()
 }
 
+/// Square icon variant of [`pill_button`] for glyph-free actions (e.g. remove).
+fn pill_icon_button<'a>(icon: &'static [u8], msg: Message, bg: Color) -> Element<'a, Message> {
+    button(crate::ui::icons::tinted(icon, 11.0, WHITE))
+        .padding([5, 9])
+        .on_press(msg)
+        .style(move |_: &Theme, status| {
+            let c = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                Color { r: bg.r + 0.08, g: bg.g + 0.08, b: bg.b + 0.08, a: 1.0 }
+            } else {
+                bg
+            };
+            button::Style {
+                background: Some(Background::Color(c)),
+                text_color: WHITE,
+                border: Border { radius: 4.0.into(), ..Default::default() },
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
 const GREEN: Color = Color { r: 0.2, g: 0.45, b: 0.28, a: 1.0 };
 const RED: Color = Color { r: 0.4, g: 0.25, b: 0.25, a: 1.0 };
 
@@ -229,7 +250,11 @@ fn install_controls<'a>(
     .spacing(4);
     if removable {
         controls = controls.push(Space::new().width(6));
-        controls = controls.push(pill_button("✕", Message::PluginRepoRemove(repo_s), RED));
+        controls = controls.push(pill_icon_button(
+            crate::ui::icons::CLOSE,
+            Message::PluginRepoRemove(repo_s),
+            RED,
+        ));
     }
     controls.into()
 }

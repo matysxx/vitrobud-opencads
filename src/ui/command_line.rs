@@ -397,13 +397,13 @@ impl CommandLine {
         // full backlog (everything pushed since the app started) so the
         // user can recover anything that has already faded off the
         // overlay.
-        let dropdown_label = if self.history_open { "▾" } else { "▸" };
-        let dropdown_btn = button(
-            text(dropdown_label)
-                .size(11)
-                .color(PROMPT_COLOR),
-        )
-        .on_press(Message::CommandHistoryToggle)
+        let dropdown_icon = if self.history_open {
+            crate::ui::icons::arrow_down(11.0, PROMPT_COLOR)
+        } else {
+            crate::ui::icons::arrow_right(11.0, PROMPT_COLOR)
+        };
+        let dropdown_btn = button(dropdown_icon)
+            .on_press(Message::CommandHistoryToggle)
         .style(|_: &Theme, _status| button::Style {
             background: Some(Background::Color(INPUT_ROW_BG)),
             text_color: Color::WHITE,

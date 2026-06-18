@@ -193,25 +193,33 @@ impl CadModule for AnnotateModule {
                     RibbonItem::Tool(crate::modules::ToolDef {
                         id: "ANNOSCALE",
                         label: "Scale List",
-                        icon: crate::modules::IconKind::Glyph("⬡"),
+                        icon: crate::modules::IconKind::Svg(include_bytes!(
+                            "../../../assets/icons/scale_list.svg"
+                        )),
                         event: crate::modules::ModuleEvent::Command("ANNOSCALE".to_string()),
                     }),
                     RibbonItem::Tool(crate::modules::ToolDef {
                         id: "OBJECTSCALE",
                         label: "Add Scale",
-                        icon: crate::modules::IconKind::Glyph("⊕"),
+                        icon: crate::modules::IconKind::Svg(include_bytes!(
+                            "../../../assets/icons/add_scale.svg"
+                        )),
                         event: crate::modules::ModuleEvent::Command("OBJECTSCALE".to_string()),
                     }),
                     RibbonItem::Tool(crate::modules::ToolDef {
                         id: "SCALELISTEDIT",
                         label: "Scale Edit",
-                        icon: crate::modules::IconKind::Glyph("≡"),
+                        icon: crate::modules::IconKind::Svg(include_bytes!(
+                            "../../../assets/icons/scale_list.svg"
+                        )),
                         event: crate::modules::ModuleEvent::Command("SCALELISTEDIT".to_string()),
                     }),
                     RibbonItem::Tool(crate::modules::ToolDef {
                         id: "SYNCPVIEWPORTS",
                         label: "Sync Scales",
-                        icon: crate::modules::IconKind::Glyph("⇄"),
+                        icon: crate::modules::IconKind::Svg(include_bytes!(
+                            "../../../assets/icons/sync.svg"
+                        )),
                         event: crate::modules::ModuleEvent::Command("SYNCPVIEWPORTS".to_string()),
                     }),
                 ],

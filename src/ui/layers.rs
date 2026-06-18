@@ -170,9 +170,19 @@ impl LayerPanel {
         // ── Toolbar ───────────────────────────────────────────────────────
         let toolbar = container(
             row![
-                toolbar_btn("⊕ New", Message::LayerNew),
-                toolbar_btn_cond("⊗ Delete", Message::LayerDelete, has_sel && !sel_is_zero),
-                toolbar_btn_cond("✓ Set Current", Message::LayerSetCurrent, has_sel),
+                toolbar_btn(crate::ui::icons::PLUS, "New", Message::LayerNew),
+                toolbar_btn_cond(
+                    crate::ui::icons::TRASH,
+                    "Delete",
+                    Message::LayerDelete,
+                    has_sel && !sel_is_zero,
+                ),
+                toolbar_btn_cond(
+                    crate::ui::icons::CHECK,
+                    "Set Current",
+                    Message::LayerSetCurrent,
+                    has_sel,
+                ),
             ]
             .spacing(2),
         )
@@ -289,9 +299,16 @@ impl LayerPanel {
 
 // ── Toolbar buttons ───────────────────────────────────────────────────────
 
-fn toolbar_btn(label: &str, msg: Message) -> Element<'_, Message> {
-    button(text(label).size(11).color(Color::WHITE))
-        .on_press(msg)
+fn toolbar_btn<'a>(icon: &'static [u8], label: &'a str, msg: Message) -> Element<'a, Message> {
+    button(
+        row![
+            crate::ui::icons::tinted(icon, 12.0, Color::WHITE),
+            text(label).size(11).color(Color::WHITE),
+        ]
+        .spacing(5)
+        .align_y(iced::Center),
+    )
+    .on_press(msg)
         .style(|_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
                 button::Status::Hovered => Color {
@@ -325,8 +342,13 @@ fn toolbar_btn(label: &str, msg: Message) -> Element<'_, Message> {
         .into()
 }
 
-fn toolbar_btn_cond(label: &str, msg: Message, enabled: bool) -> Element<'_, Message> {
-    let mut b = button(text(label).size(11).color(if enabled {
+fn toolbar_btn_cond<'a>(
+    icon: &'static [u8],
+    label: &'a str,
+    msg: Message,
+    enabled: bool,
+) -> Element<'a, Message> {
+    let fg = if enabled {
         Color::WHITE
     } else {
         Color {
@@ -335,7 +357,15 @@ fn toolbar_btn_cond(label: &str, msg: Message, enabled: bool) -> Element<'_, Mes
             b: 0.45,
             a: 1.0,
         }
-    }))
+    };
+    let mut b = button(
+        row![
+            crate::ui::icons::tinted(icon, 12.0, fg),
+            text(label).size(11).color(fg),
+        ]
+        .spacing(5)
+        .align_y(iced::Center),
+    )
     .style(|_: &Theme, status| button::Style {
         background: Some(Background::Color(match status {
             button::Status::Hovered => Color {
@@ -431,42 +461,32 @@ fn layer_row<'a>(
         .into()
     };
 
-    let vis_svg: &'static [u8] = if layer.visible {
-        include_bytes!("../../assets/icons/layers/layon.svg")
-    } else {
-        include_bytes!("../../assets/icons/layers/layoff.svg")
-    };
-    let frz_svg: &'static [u8] = if layer.frozen {
-        include_bytes!("../../assets/icons/layers/layfrz.svg")
-    } else {
-        include_bytes!("../../assets/icons/layers/laythw.svg")
-    };
-    let lck_svg: &'static [u8] = if layer.locked {
-        include_bytes!("../../assets/icons/layers/laylck.svg")
-    } else {
-        include_bytes!("../../assets/icons/layers/layulk.svg")
-    };
+    let vis_svg = crate::ui::icons::layer_visible(layer.visible);
+    let frz_svg = crate::ui::icons::layer_freeze(layer.frozen);
+    let lck_svg = crate::ui::icons::layer_lock(layer.locked);
 
     let status_dot: Element<'_, Message> = if is_current {
-        text("✓")
-            .size(13)
-            .color(Color {
+        crate::ui::icons::tinted(
+            crate::ui::icons::CHECK,
+            13.0,
+            Color {
                 r: 0.25,
                 g: 0.85,
                 b: 0.45,
                 a: 1.0,
-            })
-            .into()
+            },
+        )
     } else {
-        text("▣")
-            .size(11)
-            .color(Color {
+        crate::ui::icons::tinted(
+            crate::ui::icons::DOT,
+            9.0,
+            Color {
                 r: 0.55,
                 g: 0.55,
                 b: 0.55,
                 a: 1.0,
-            })
-            .into()
+            },
+        )
     };
 
     // Name cell
@@ -693,11 +713,7 @@ fn layer_row<'a>(
     // Per-viewport freeze columns
     for (vp_idx, _vp_col) in vp_cols.iter().enumerate() {
         let is_vp_frozen = layer.vp_frozen.get(vp_idx).copied().unwrap_or(false);
-        let vp_frz_svg: &'static [u8] = if is_vp_frozen {
-            include_bytes!("../../assets/icons/layers/layfrz.svg")
-        } else {
-            include_bytes!("../../assets/icons/layers/laythw.svg")
-        };
+        let vp_frz_svg = crate::ui::icons::layer_freeze(is_vp_frozen);
         row_content = row_content.push(
             container(svg_btn(
                 vp_frz_svg,

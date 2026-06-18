@@ -11,6 +11,7 @@ use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use crate::app::Message;
 use crate::modules::{IconKind, ModuleEvent, RibbonGroup, RibbonItem, StyleKey, ToolDef};
+use crate::ui::icons;
 use crate::ui::properties::{acad_color_display, LwItem};
 
 use super::LayerInfo;
@@ -361,7 +362,7 @@ pub(super) fn render_small<'a>(
 
             let arr_tip = format!("{} options", cur_label);
             let arr_btn = button(
-                container(text("▾").size(7).color(ARROW_COLOR))
+                container(icons::arrow_down(8.0, ARROW_COLOR))
                     .width(Fill)
                     .height(Fill)
                     .align_x(iced::Center)
@@ -513,7 +514,7 @@ pub(super) fn render_large<'a>(
             });
 
             let arr_btn = button(
-                container(text("▾").size(9).color(ARROW_COLOR))
+                container(icons::arrow_down(9.0, ARROW_COLOR))
                     .width(Fill)
                     .height(Fill)
                     .align_x(iced::Center)
@@ -562,51 +563,9 @@ pub(super) fn render_large<'a>(
             let ll = info.map(|l| l.locked).unwrap_or(false);
             let is_open = open_dd.as_deref() == Some(LAYER_COMBO_ID);
 
-            let vis_icon = text(if lv { "●" } else { "○" }).size(10).color(if lv {
-                Color {
-                    r: 0.95,
-                    g: 0.85,
-                    b: 0.20,
-                    a: 1.0,
-                }
-            } else {
-                Color {
-                    r: 0.45,
-                    g: 0.45,
-                    b: 0.45,
-                    a: 1.0,
-                }
-            });
-            let freeze_icon = text("✱").size(10).color(if lf {
-                Color {
-                    r: 0.40,
-                    g: 0.80,
-                    b: 1.00,
-                    a: 1.0,
-                }
-            } else {
-                Color {
-                    r: 0.95,
-                    g: 0.85,
-                    b: 0.20,
-                    a: 1.0,
-                }
-            });
-            let lock_icon = text(if ll { "🔒" } else { "🔓" }).size(10).color(if ll {
-                Color {
-                    r: 0.95,
-                    g: 0.70,
-                    b: 0.20,
-                    a: 1.0,
-                }
-            } else {
-                Color {
-                    r: 0.65,
-                    g: 0.65,
-                    b: 0.65,
-                    a: 1.0,
-                }
-            });
+            let vis_icon = icons::raw(icons::layer_visible(lv), 14.0);
+            let freeze_icon = icons::raw(icons::layer_freeze(lf), 14.0);
+            let lock_icon = icons::raw(icons::layer_lock(ll), 14.0);
             let swatch = container(text(""))
                 .style(move |_: &Theme| container::Style {
                     background: Some(Background::Color(lc)),
@@ -625,7 +584,7 @@ pub(super) fn render_large<'a>(
                 .width(12)
                 .height(12);
 
-            const ICONS_USED: f32 = 10.0 + 10.0 + 10.0 + 12.0 + 10.0 + 5.0 * 4.0 + 16.0 + 16.0;
+            const ICONS_USED: f32 = 14.0 + 14.0 + 14.0 + 12.0 + 10.0 + 5.0 * 4.0 + 16.0 + 16.0;
             let name_w = (COMBO_W - ICONS_USED).max(40.0);
 
             let combo_btn = button(
@@ -637,12 +596,15 @@ pub(super) fn render_large<'a>(
                     container(text(active_layer).size(11).color(Color::WHITE))
                         .width(name_w)
                         .clip(true),
-                    text("▾").size(9).color(Color {
-                        r: 0.7,
-                        g: 0.7,
-                        b: 0.7,
-                        a: 1.0
-                    }),
+                    icons::arrow_down(
+                        9.0,
+                        Color {
+                            r: 0.7,
+                            g: 0.7,
+                            b: 0.7,
+                            a: 1.0,
+                        },
+                    ),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -801,12 +763,16 @@ pub(super) fn render_large<'a>(
                         container(text(label).size(10).color(Color::WHITE))
                             .width(Fill)
                             .clip(true),
-                        text(if is_open { "▲" } else { "▼" }).size(7).color(Color {
-                            r: 0.6,
-                            g: 0.6,
-                            b: 0.6,
-                            a: 1.0
-                        }),
+                        icons::arrow_toggle(
+                            is_open,
+                            8.0,
+                            Color {
+                                r: 0.6,
+                                g: 0.6,
+                                b: 0.6,
+                                a: 1.0,
+                            },
+                        ),
                     ]
                     .spacing(4)
                     .align_y(iced::Center),
@@ -905,12 +871,16 @@ pub(super) fn render_large<'a>(
                     container(text(active.clone()).size(11).color(Color::WHITE))
                         .width(Fill)
                         .clip(true),
-                    text(if is_open { "▲" } else { "▾" }).size(9).color(Color {
-                        r: 0.7,
-                        g: 0.7,
-                        b: 0.7,
-                        a: 1.0
-                    }),
+                    icons::arrow_toggle(
+                        is_open,
+                        9.0,
+                        Color {
+                            r: 0.7,
+                            g: 0.7,
+                            b: 0.7,
+                            a: 1.0,
+                        },
+                    ),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -971,18 +941,21 @@ pub(super) fn render_large<'a>(
                         let key = style_key;
                         button(
                             row![
-                                text(if is_sel { "✓" } else { " " })
-                                    .size(10)
-                                    .color(if is_sel {
+                                container(if is_sel {
+                                    icons::tinted(
+                                        icons::CHECK,
+                                        10.0,
                                         Color {
                                             r: 0.2,
                                             g: 0.8,
                                             b: 0.4,
                                             a: 1.0,
-                                        }
-                                    } else {
-                                        Color::TRANSPARENT
-                                    }),
+                                        },
+                                    )
+                                } else {
+                                    iced::widget::Space::new().width(0).into()
+                                })
+                                .width(12),
                                 text(name).size(11).color(Color::WHITE),
                             ]
                             .spacing(6)
@@ -1281,7 +1254,6 @@ pub fn module_event_to_message(event: ModuleEvent) -> Message {
 // ── History control ────────────────────────────────────────────────────────
 
 pub(super) fn render_history_control<'a>(
-    glyph: &'static str,
     label: &'static str,
     dropdown_id: &'static str,
     count: usize,
@@ -1289,12 +1261,20 @@ pub(super) fn render_history_control<'a>(
 ) -> Element<'a, Message> {
     let dd_open = open_dropdown.as_deref() == Some(dropdown_id);
     let active = count > 0;
+    let icon_color = if active { Color::WHITE } else { LABEL_OFF };
 
     let main_btn = {
+        let glyph = if dropdown_id == UNDO_HISTORY_ID {
+            icons::undo(15.0, icon_color)
+        } else {
+            icons::redo(15.0, icon_color)
+        };
         let btn = button(
-            text(glyph)
-                .size(14)
-                .color(if active { Color::WHITE } else { LABEL_OFF }),
+            container(glyph)
+                .width(Fill)
+                .height(Fill)
+                .align_x(iced::Center)
+                .align_y(iced::Center),
         )
         .style(move |_: &Theme, status| top_hist_btn_style(active, dd_open, status))
         .width(Length::Fixed(TOP_HIST_W))
@@ -1321,11 +1301,10 @@ pub(super) fn render_history_control<'a>(
 
     let arrow_btn = {
         let btn = button(
-            container(
-                text("▾")
-                    .size(7)
-                    .color(if active { ARROW_COLOR } else { LABEL_OFF }),
-            )
+            container(icons::arrow_down(
+                8.0,
+                if active { ARROW_COLOR } else { LABEL_OFF },
+            ))
             .width(Fill)
             .height(Fill)
             .align_x(iced::Center)

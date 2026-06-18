@@ -8,6 +8,7 @@ pub mod color_select;
 pub mod command_line;
 pub mod cycle_popup;
 pub mod dimstyle;
+pub mod icons;
 pub mod isolate_popup;
 pub mod layers;
 pub mod layout_manager;

@@ -7,7 +7,7 @@ pub fn tool() -> ToolDef {
     ToolDef {
         id: "COLOR",
         label: "Color",
-        icon: IconKind::Glyph("🎨"),
+        icon: IconKind::Svg(include_bytes!("../../../../assets/icons/color_palette.svg")),
         event: ModuleEvent::Command("COLOR".to_string()),
     }
 }

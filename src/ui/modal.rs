@@ -6,7 +6,7 @@
 //! so both stack dialogs here — one code path for every platform.
 
 use crate::app::Message;
-use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text};
+use iced::widget::{button, column, container, mouse_area, opaque, row, stack};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme, Vector};
 
 const PANEL: Color = Color {
@@ -49,17 +49,26 @@ pub fn modal<'a>(
     on_close: Message,
     offset: Vector,
 ) -> Element<'a, Message> {
-    let close = button(text("✕").size(15))
-        .on_press(on_close)
-        .padding([1, 7])
-        .style(close_style);
+    let close = button(crate::ui::icons::tinted(
+        crate::ui::icons::CLOSE,
+        13.0,
+        Color {
+            r: 0.85,
+            g: 0.85,
+            b: 0.85,
+            a: 1.0,
+        },
+    ))
+    .on_press(on_close)
+    .padding([1, 7])
+    .style(close_style);
 
     // Draggable title bar: a grip handle next to the ✕. Kept `Shrink` (no
     // `Fill`) so a single Fill child can't blow the dialog out to the full
     // screen width — the dialog stays sized to its content. Pressing the grip
     // starts a drag (handled in `update`).
     let grip = mouse_area(
-        container(text("✥").size(15).color(GRIP_C))
+        container(crate::ui::icons::tinted(crate::ui::icons::MOVE, 14.0, GRIP_C))
             .padding([1, 7])
             .style(|_: &Theme| container::Style {
                 background: Some(Background::Color(TITLE_C)),

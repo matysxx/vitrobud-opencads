@@ -329,12 +329,12 @@ pub fn view_window<'a>(
         hdivider(),
         section_label("Position"),
         button(
-            text(if center {
-                "✓ Center on page"
-            } else {
-                "  Center on page"
-            })
-            .size(11)
+            row![
+                crate::ui::icons::check_cell(center, Color::WHITE),
+                text("Center on page").size(11),
+            ]
+            .spacing(2)
+            .align_y(iced::Center)
         )
         .on_press(Message::PageSetupCenterToggle)
         .style(pill(center))

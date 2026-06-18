@@ -3,7 +3,7 @@ pub fn tool() -> ToolDef {
     ToolDef {
         id: "SPHERE",
         label: "Sphere",
-        icon: IconKind::Glyph("⬤"),
+        icon: IconKind::Svg(include_bytes!("../../../assets/icons/sphere3d.svg")),
         event: ModuleEvent::Command("SPHERE".to_string()),
     }
 }

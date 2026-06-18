@@ -125,7 +125,7 @@ pub fn color_selector<'a>(
         row![
             swatch(cur_bg),
             text(cur_name).size(11).color(TEXT),
-            text(if open { " ▲" } else { " ▾" }).size(9).color(TEXT),
+            crate::ui::icons::arrow_toggle(open, 9.0, TEXT),
         ]
         .spacing(5)
         .align_y(iced::Center),

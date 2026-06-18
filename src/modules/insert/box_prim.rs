@@ -3,7 +3,7 @@ pub fn tool() -> ToolDef {
     ToolDef {
         id: "BOX",
         label: "Box",
-        icon: IconKind::Glyph("⬜"),
+        icon: IconKind::Svg(include_bytes!("../../../assets/icons/box3d.svg")),
         event: ModuleEvent::Command("BOX".to_string()),
     }
 }

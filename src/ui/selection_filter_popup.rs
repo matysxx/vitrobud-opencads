@@ -60,10 +60,7 @@ pub fn selection_filter_popup_overlay(
 }
 
 fn type_row(name: String, included: bool) -> Element<'static, Message> {
-    let check = text(if included { "✓" } else { "  " })
-        .size(11)
-        .color(if included { CHECK_COLOR } else { Color::TRANSPARENT })
-        .width(Length::Fixed(14.0));
+    let check = crate::ui::icons::check_cell(included, CHECK_COLOR);
 
     let lbl = text(name.clone())
         .size(11)

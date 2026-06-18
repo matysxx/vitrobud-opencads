@@ -4,7 +4,7 @@ pub fn tool() -> ToolDef {
     ToolDef {
         id: "OPTIONS",
         label: "Options",
-        icon: IconKind::Glyph("⚙"),
+        icon: IconKind::Svg(include_bytes!("../../../assets/icons/options_tool.svg")),
         event: ModuleEvent::Command("OPTIONS".to_string()),
     }
 }

@@ -3,7 +3,7 @@ pub fn tool() -> ToolDef {
     ToolDef {
         id: "CLEAR",
         label: "Clear",
-        icon: IconKind::Glyph("🗑"),
+        icon: IconKind::Svg(include_bytes!("../../../assets/icons/clear_tool.svg")),
         event: ModuleEvent::ClearModels,
     }
 }

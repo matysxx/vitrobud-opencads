@@ -70,14 +70,7 @@ pub fn scale_popup_overlay(
 }
 
 fn scale_row(label: String, active: bool, msg: Message) -> Element<'static, Message> {
-    let check = text(if active { "✓" } else { "  " })
-        .size(11)
-        .color(if active {
-            CHECK_COLOR
-        } else {
-            Color::TRANSPARENT
-        })
-        .width(Length::Fixed(14.0));
+    let check = crate::ui::icons::check_cell(active, CHECK_COLOR);
 
     let lbl = text(label)
         .size(11)

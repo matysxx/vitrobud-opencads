@@ -6,7 +6,7 @@ pub fn tool() -> ToolDef {
     ToolDef {
         id: "BYLAYER",
         label: "ByLayer",
-        icon: IconKind::Glyph("⊟"),
+        icon: IconKind::Svg(include_bytes!("../../../../assets/icons/bylayer.svg")),
         event: ModuleEvent::Command("BYLAYER".to_string()),
     }
 }

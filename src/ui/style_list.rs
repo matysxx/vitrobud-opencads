@@ -61,12 +61,8 @@ pub fn item<'a>(
     } else {
         // Fixed-width ✓ column keeps every name left-aligned whether or not the
         // row is current.
-        let check = if is_current {
-            text("✓").size(11).color(CURRENT_CHECK)
-        } else {
-            text("").size(11)
-        };
-        let label = row![check.width(14), text(name.to_string()).size(11).color(TEXT)]
+        let check = crate::ui::icons::check_cell(is_current, CURRENT_CHECK);
+        let label = row![check, text(name.to_string()).size(11).color(TEXT)]
             .align_y(iced::Center);
         let cell = container(label)
             .padding([4, 8])

@@ -52,10 +52,7 @@ pub fn statusbar_menu_overlay(config: &StatusBarConfig) -> Element<'static, Mess
 }
 
 fn menu_row(label: &'static str, checked: bool, msg: Message) -> Element<'static, Message> {
-    let check = text(if checked { "✓" } else { "  " })
-        .size(11)
-        .color(if checked { CHECK_COLOR } else { Color::TRANSPARENT })
-        .width(Length::Fixed(14.0));
+    let check = crate::ui::icons::check_cell(checked, CHECK_COLOR);
 
     let lbl = text(label)
         .size(11)

@@ -676,13 +676,14 @@ pub fn color_picker_dropdown<'a>(
 
     // "More Colors…" toggle button
     let more_btn = button(
-        text(if palette_open {
-            "▲ Less"
-        } else {
-            "▼ More Colors…"
-        })
-        .size(10)
-        .color(HINT_COLOR),
+        row![
+            crate::ui::icons::arrow_toggle(palette_open, 9.0, HINT_COLOR),
+            text(if palette_open { "Less" } else { "More Colors…" })
+                .size(10)
+                .color(HINT_COLOR),
+        ]
+        .spacing(4)
+        .align_y(iced::Center),
     )
     .on_press(palette_toggle_msg)
     .style(|_: &Theme, _| button::Style {

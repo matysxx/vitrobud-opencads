@@ -76,7 +76,7 @@ impl StatusBar {
         // Which pills the user has chosen to show on the bar.
         config: &'a StatusBarConfig,
     ) -> Element<'a, Message> {
-        let menu_btn = button(text("≡").size(14).color(ICON_COLOR))
+        let menu_btn = button(crate::ui::icons::tinted(crate::ui::icons::MENU, 14.0, ICON_COLOR))
             .on_press(Message::Command("MENU".into()))
             .style(|_: &Theme, _| button::Style {
                 background: Some(Background::Color(Color::TRANSPARENT)),
@@ -285,7 +285,7 @@ fn format_coords(p: glam::Vec3) -> String {
 // ── Customization handle ──────────────────────────────────────────────────
 
 fn customize_btn() -> Element<'static, Message> {
-    button(text("≡").size(14).color(ICON_COLOR))
+    button(crate::ui::icons::tinted(crate::ui::icons::MENU, 14.0, ICON_COLOR))
         .on_press(Message::ToggleStatusBarMenu)
         .style(|_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
@@ -466,8 +466,15 @@ fn osnap_btn(active: bool, snap_enabled: bool, open: bool) -> Element<'static, M
         OSNAP_OFF_TEXT
     };
 
-    let left = button(text("⚡ OSNAP").size(10).color(text_color))
-        .on_press(Message::ToggleSnapEnabled)
+    let left = button(
+        row![
+            crate::ui::icons::tinted(crate::ui::icons::BOLT, 11.0, text_color),
+            text("OSNAP").size(10).color(text_color),
+        ]
+        .spacing(3)
+        .align_y(iced::Center),
+    )
+    .on_press(Message::ToggleSnapEnabled)
         .style(move |_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
                 button::Status::Hovered => {
@@ -495,7 +502,7 @@ fn osnap_btn(active: bool, snap_enabled: bool, open: bool) -> Element<'static, M
         })
         .padding([2, 6]);
 
-    let right = button(text("▾").size(9).color(text_color))
+    let right = button(crate::ui::icons::arrow_down(9.0, text_color))
         .on_press(Message::ToggleSnapPopup)
         .style(move |_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
@@ -607,12 +614,16 @@ fn space_tab<'a>(
             .padding([2, 6])
             .width(Length::Fixed(90.0));
 
-        let cancel_btn = button(text("✕").size(10).color(Color {
-            r: 0.65,
-            g: 0.65,
-            b: 0.65,
-            a: 1.0,
-        }))
+        let cancel_btn = button(crate::ui::icons::tinted(
+            crate::ui::icons::CLOSE,
+            10.0,
+            Color {
+                r: 0.65,
+                g: 0.65,
+                b: 0.65,
+                a: 1.0,
+            },
+        ))
         .on_press(Message::LayoutRenameCancel)
         .style(|_: &Theme, _| button::Style {
             background: Some(Background::Color(Color::TRANSPARENT)),

@@ -19,7 +19,7 @@ pub fn tool() -> ToolDef {
     ToolDef {
         id:    "MVIEW",
         label: "Viewport",
-        icon:  IconKind::Glyph("⬜"),
+        icon:  IconKind::Svg(include_bytes!("../../../assets/icons/viewport.svg")),
         event: ModuleEvent::Command("MVIEW".to_string()),
     }
 }

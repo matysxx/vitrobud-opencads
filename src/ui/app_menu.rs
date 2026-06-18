@@ -18,7 +18,7 @@ use crate::app::Message;
 // ── Menu item definitions ─────────────────────────────────────────────────
 
 struct MenuItem {
-    icon: &'static str,
+    icon: &'static [u8],
     label: &'static str,
     desc: &'static str,
     command: &'static str,
@@ -26,43 +26,43 @@ struct MenuItem {
 
 const MENU_ITEMS: &[MenuItem] = &[
     MenuItem {
-        icon: "◻",
+        icon: crate::ui::icons::DOC_NEW,
         label: "New",
         desc: "Create a new drawing",
         command: "NEW",
     },
     MenuItem {
-        icon: "📂",
+        icon: crate::ui::icons::FOLDER,
         label: "Open",
         desc: "Open an existing file",
         command: "OPEN",
     },
     MenuItem {
-        icon: "💾",
+        icon: crate::ui::icons::SAVE,
         label: "Save",
         desc: "Save the current drawing",
         command: "SAVE",
     },
     MenuItem {
-        icon: "📄",
+        icon: crate::ui::icons::DOC,
         label: "Save As",
         desc: "Save as DWG or DXF",
         command: "SAVEAS",
     },
     MenuItem {
-        icon: "🖨",
+        icon: crate::ui::icons::PRINT,
         label: "Print",
         desc: "Print or plot the drawing",
         command: "PRINT",
     },
     MenuItem {
-        icon: "⚙",
+        icon: crate::ui::icons::GEAR,
         label: "Options",
         desc: "Open application settings",
         command: "OPTIONS",
     },
     MenuItem {
-        icon: "❓",
+        icon: crate::ui::icons::HELP,
         label: "Help",
         desc: "Open help documentation",
         command: "HELP",
@@ -336,7 +336,7 @@ impl AppMenu {
 fn menu_item_btn<'a>(item: &'a MenuItem) -> Element<'a, Message> {
     button(
         row![
-            container(text(item.icon).size(16).color(ICON_COLOR))
+            container(crate::ui::icons::tinted(item.icon, 16.0, ICON_COLOR))
                 .width(32)
                 .padding([0, 4]),
             column![
@@ -386,7 +386,8 @@ fn recent_item_btn(path: &PathBuf) -> Element<'_, Message> {
     let path_str = path.display().to_string();
     button(
         row![
-            container(text("📄").size(13).color(ICON_COLOR)).width(24),
+            container(crate::ui::icons::tinted(crate::ui::icons::DOC, 13.0, ICON_COLOR))
+                .width(24),
             column![
                 text(name).size(11).color(Color::WHITE),
                 text(type_label).size(9).color(DIM_COLOR),
