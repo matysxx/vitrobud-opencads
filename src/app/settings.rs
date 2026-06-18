@@ -65,7 +65,6 @@ pub struct UserSettings {
     pub ortho: bool,
     pub polar: bool,
     pub polar_increment_deg: f32,
-    pub show_grid: bool,
     pub snap_enabled: bool,
     pub otrack: bool,
     /// Active snap modes, in `SNAP_ORDER`.
@@ -90,7 +89,6 @@ impl Default for UserSettings {
             ortho: false,
             polar: false,
             polar_increment_deg: 45.0,
-            show_grid: false,
             snap_enabled: false,
             otrack: false,
             snap_modes: vec![
@@ -135,7 +133,6 @@ impl UserSettings {
                         s.polar_increment_deg = v;
                     }
                 }
-                "grid" => s.show_grid = val == "1",
                 "osnap" => s.snap_enabled = val == "1",
                 "otrack" => s.otrack = val == "1",
                 "default_assoc_prompted" => s.default_assoc_prompted = val == "1",
@@ -180,12 +177,11 @@ impl UserSettings {
             .collect::<Vec<_>>()
             .join(",");
         let body = format!(
-            "dyn={}\northo={}\npolar={}\npolar_increment_deg={}\ngrid={}\nosnap={}\notrack={}\ndefault_assoc_prompted={}\nsnap_modes={}\ndisabled_plugins={}\nplugin_repos={}\n",
+            "dyn={}\northo={}\npolar={}\npolar_increment_deg={}\nosnap={}\notrack={}\ndefault_assoc_prompted={}\nsnap_modes={}\ndisabled_plugins={}\nplugin_repos={}\n",
             b(self.dyn_input),
             b(self.ortho),
             b(self.polar),
             self.polar_increment_deg,
-            b(self.show_grid),
             b(self.snap_enabled),
             b(self.otrack),
             b(self.default_assoc_prompted),

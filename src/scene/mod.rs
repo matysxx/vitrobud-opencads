@@ -5639,6 +5639,17 @@ impl Scene {
         }
     }
 
+    /// Grid visibility stored on the `*Active` VPort entry, applied to the app's
+    /// grid toggle when a file loads (grid is a per-drawing view setting, not a
+    /// global preference). `None` when there is no active entry. (#121)
+    pub fn active_vport_grid_on(&self) -> Option<bool> {
+        self.document
+            .vports
+            .iter()
+            .find(|v| v.name == "*Active")
+            .map(|v| v.grid_on)
+    }
+
     /// Set the paper-space camera from the sheet viewport's stored view.
     /// Returns true if a valid sheet viewport was found and the camera was set.
     ///

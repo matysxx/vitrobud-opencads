@@ -185,7 +185,6 @@ impl OpenCADStudio {
             ortho: self.ortho_mode,
             polar: self.polar_mode,
             polar_increment_deg: self.polar_increment_deg,
-            show_grid: self.show_grid,
             snap_enabled: self.snapper.snap_enabled,
             otrack: self.snapper.otrack_enabled,
             snap_modes: super::settings::UserSettings::modes_from(self.snapper.enabled.iter()),
@@ -205,7 +204,6 @@ impl OpenCADStudio {
         self.ortho_mode = s.ortho;
         self.polar_mode = s.polar;
         self.polar_increment_deg = s.polar_increment_deg;
-        self.show_grid = s.show_grid;
         self.snapper.snap_enabled = s.snap_enabled;
         self.snapper.otrack_enabled = s.otrack;
         self.snapper.enabled = s.snap_modes.iter().copied().collect();
@@ -600,6 +598,11 @@ impl OpenCADStudio {
                 // selected — see #21.
                 self.sync_ribbon_from_selection();
                 self.tabs[i].scene.restore_saved_camera();
+                // Grid visibility is a per-drawing view setting — adopt the
+                // opened file's saved state rather than a global preference.
+                if let Some(grid_on) = self.tabs[i].scene.active_vport_grid_on() {
+                    self.show_grid = grid_on;
+                }
                 self.sync_render_mode_to_active_tile(i);
                 self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
                 self.tabs[i].dirty = false;
