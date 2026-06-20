@@ -97,15 +97,20 @@ pub fn ocs_axes(normal: (f64, f64, f64)) -> ((f64, f64, f64), (f64, f64, f64)) {
         return ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0));
     }
     // Arbitrary-axis algorithm (DXF spec).
-    // When |Nx| < 1/64 and |Ny| < 1/64 use Wy=(0,1,0)×N, else Wx=(1,0,0)×N.
+    // When |Nx| < 1/64 and |Ny| < 1/64 the normal is near ±Z, so cross with
+    // Wy=(0,1,0); otherwise cross with Wz=(0,0,1). The else branch MUST use Wz,
+    // not Wx: Wx=(1,0,0)×N collapses to zero for an X-aligned normal (e.g.
+    // N=(-1,0,0)), zeroing the OCS axes and mapping every point to the origin —
+    // the resulting coincident points then send the arc tessellator into an
+    // infinite loop. (#142)
     let (ax_x, ax_y, ax_z) = if nx.abs() < 1.0 / 64.0 && ny.abs() < 1.0 / 64.0 {
         // (0,1,0) × (nx,ny,nz) = (nz, 0, -nx)
         let (x, y, z) = (nz, 0.0, -nx);
         let len = (x * x + y * y + z * z).sqrt().max(1e-12);
         (x / len, y / len, z / len)
     } else {
-        // (1,0,0) × (nx,ny,nz) = (0, -nz, ny)
-        let (x, y, z) = (0.0, -nz, ny);
+        // (0,0,1) × (nx,ny,nz) = (-ny, nx, 0)
+        let (x, y, z) = (-ny, nx, 0.0);
         let len = (x * x + y * y + z * z).sqrt().max(1e-12);
         (x / len, y / len, z / len)
     };
@@ -198,5 +203,18 @@ mod mirror_delegation_tests {
         );
         // Mirror of (2,0) across x=5 is (8,0).
         assert!((sx - 8.0).abs() < 1e-9 && sy.abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod ocs_axes_142 {
+    #[test]
+    fn x_normal_axes_nonzero() {
+        let (ax, ay) = super::ocs_axes((-1.0, 0.0, 0.0));
+        let nz = |v: (f64,f64,f64)| v.0.abs()+v.1.abs()+v.2.abs();
+        assert!(nz(ax) > 0.5, "ax collapsed: {:?}", ax);
+        assert!(nz(ay) > 0.5, "ay collapsed: {:?}", ay);
+        let p = super::ocs_point_to_wcs((-25.0, 90.0, 0.0), (-1.0,0.0,0.0));
+        assert!(p.0.abs()+p.1.abs()+p.2.abs() > 1.0, "point collapsed: {:?}", p);
     }
 }
