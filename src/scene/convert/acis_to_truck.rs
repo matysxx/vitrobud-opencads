@@ -202,7 +202,7 @@ fn plane_face(sat: &SatDocument, face: &SatFace) -> Option<Face> {
     // plane from the outer wire and cuts the rest as holes, so a pierced face
     // (e.g. a wall with a window opening) renders with the opening. (#123)
     let loops = collect_face_loops(sat, face, BOUNDARY_SEGS);
-    if loops.first().map_or(true, |l| l.len() < 3) {
+    if loops.is_empty() {
         return None;
     }
     let build_wire = |pts: &[[f64; 3]], reverse: bool| -> Option<Wire> {
@@ -225,14 +225,30 @@ fn plane_face(sat: &SatDocument, face: &SatFace) -> Option<Face> {
             .collect();
         Some(edges.into())
     };
+    // The outer boundary is the loop that encloses the rest — i.e. the one with
+    // the largest area. ACIS does not guarantee it comes first in the face's
+    // loop list (a pierced wall lists its window holes before the wall edge),
+    // so pick it by area rather than trusting index 0. (#123)
+    let outer_idx = (0..loops.len())
+        .max_by(|&a, &b| {
+            vlen(loop_normal(&loops[a]))
+                .partial_cmp(&vlen(loop_normal(&loops[b])))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap();
+    if loops[outer_idx].len() < 3 {
+        return None;
+    }
     // `try_attach_plane` only cuts an inner wire as a hole when it winds the
     // *opposite* way to the outer boundary. ACIS doesn't guarantee that, so
     // reverse any hole loop whose winding matches the outer's. (#123)
-    let outer_n = loop_normal(&loops[0]);
+    let outer_n = loop_normal(&loops[outer_idx]);
     let mut wires: Vec<Wire> = Vec::new();
-    let outer = build_wire(&loops[0], false)?;
-    wires.push(outer);
-    for lp in &loops[1..] {
+    wires.push(build_wire(&loops[outer_idx], false)?);
+    for (i, lp) in loops.iter().enumerate() {
+        if i == outer_idx {
+            continue;
+        }
         let same = vdot(loop_normal(lp), outer_n) > 0.0;
         if let Some(w) = build_wire(lp, same) {
             wires.push(w);
@@ -470,5 +486,3 @@ fn vnorm(a: [f64; 3]) -> [f64; 3] {
         [a[0] / l, a[1] / l, a[2] / l]
     }
 }
-
-
