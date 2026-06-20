@@ -1,7 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod automation;
 #[cfg(not(target_arch = "wasm32"))]
-pub use automation::serve;
+pub use automation::{export_headless, serve};
 mod cmd_result;
 mod commands;
 mod document;
@@ -332,6 +332,9 @@ pub(super) struct OpenCADStudio {
     /// Whether the one-time default-association prompt has already been shown.
     /// Persisted via [`settings::UserSettings`] so it survives restarts.
     default_assoc_prompted: bool,
+    /// Read-only session (`--read-only`): editing is allowed but every save
+    /// path is refused. Set once at boot from the CLI config.
+    read_only: bool,
     /// Tag of the latest available release (without the leading "v"),
     /// e.g. `"0.3.0"`. `None` when up-to-date or check hasn't returned.
     update_notice_version: Option<String>,
@@ -1594,6 +1597,7 @@ impl OpenCADStudio {
             point_size_buf: String::new(),
             point_size_relative: true,
             default_assoc_prompted: false,
+            read_only: false,
             update_notice_version: None,
             update_notice_body: None,
             clipboard: Vec::new(),
@@ -1834,18 +1838,32 @@ impl OpenCADStudio {
             Message::UpdateCheckResult,
         );
         let focus_cmd = s.focus_cmd_input();
-        // Open a file path passed on the command line. Used by the
-        // OS file association: double-clicking a .dwg in the file
-        // explorer launches the binary with the file path as the
-        // first positional argument. Unknown / flag-style args are
-        // ignored. `Message::OpenRecent` does the existence check
-        // and reports a clean error if the path is bogus.
-        let cli_open: Task<Message> = std::env::args_os()
-            .nth(1)
-            .map(PathBuf::from)
-            .filter(|p| !p.as_os_str().to_string_lossy().starts_with('-'))
-            .map(|p| Task::done(Message::OpenRecent(p)))
-            .unwrap_or_else(Task::none);
+        // Startup configuration from the command line (see `cli`). A file
+        // argument — also how the OS file association launches us when a .dwg
+        // is double-clicked — opens via `OpenRecent`, which existence-checks
+        // the path and reports a clean error if it is bogus. `--new` opens a
+        // fresh drawing tab instead of the welcome screen. `--read-only`
+        // disables saving. `--script` queues command lines to run once up.
+        let cfg = crate::cli::gui_config();
+        s.read_only = cfg.read_only;
+        let cli_open: Task<Message> = if let Some(p) = cfg.file {
+            Task::done(Message::OpenRecent(p))
+        } else if cfg.new {
+            Task::done(Message::TabNew)
+        } else {
+            Task::none()
+        };
+        // Startup command script: each line dispatched as if typed at the
+        // command line, in order, after any file open is requested.
+        let script: Task<Message> = if cfg.script_lines.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(
+                cfg.script_lines
+                    .into_iter()
+                    .map(|line| Task::done(Message::Command(line))),
+            )
+        };
         // One-time prompt offering to make Open CAD Studio the default app for
         // .dwg / .dxf. Shown only on the first launch that hasn't answered it
         // yet; the flag is persisted so we never ask twice.
@@ -1855,7 +1873,14 @@ impl OpenCADStudio {
         }
         (
             s,
-            Task::batch([open_main, check_update, focus_cmd, cli_open, assoc_prompt]),
+            Task::batch([
+                open_main,
+                check_update,
+                focus_cmd,
+                cli_open,
+                script,
+                assoc_prompt,
+            ]),
         )
     }
 

@@ -32,6 +32,29 @@ pub fn serve() {
     }
 }
 
+/// Headless one-shot format conversion (`--export IN OUT`). Loads `input`,
+/// writes `output` (format chosen from `output`'s extension), and returns a
+/// process exit code (0 on success). No window is created.
+pub fn export_headless(input: &std::path::Path, output: &std::path::Path) -> i32 {
+    let doc = match crate::io::load_file(input) {
+        Ok(doc) => doc,
+        Err(e) => {
+            eprintln!("export: cannot read {}: {e}", input.display());
+            return 1;
+        }
+    };
+    match crate::io::save(&doc, output) {
+        Ok(()) => {
+            println!("Exported {} → {}", input.display(), output.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("export: cannot write {}: {e}", output.display());
+            1
+        }
+    }
+}
+
 /// `--port <N>` if present on the command line.
 fn port_arg() -> Option<u16> {
     let mut args = std::env::args();

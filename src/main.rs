@@ -5,6 +5,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+#[cfg(not(target_arch = "wasm32"))]
+mod cli;
 mod command;
 mod entities;
 mod io;
@@ -20,32 +22,78 @@ mod sys;
 mod update_check;
 
 fn main() -> iced::Result {
-    // On some Windows hybrid-GPU laptops the AMD OpenGL driver (atio6axx.dll)
-    // access-violates the moment wgpu enumerates its GL backend at startup,
-    // killing the app before any window appears — even though DX12 would work
-    // fine (#55). Restrict wgpu to DX12/Vulkan so the GL ICD is never touched.
-    // An explicit user-set WGPU_BACKEND still wins.
-    #[cfg(target_os = "windows")]
-    if std::env::var_os("WGPU_BACKEND").is_none() {
-        std::env::set_var("WGPU_BACKEND", "dx12,vulkan");
-    }
-
     // Web (wasm) uses the single-window entry; native uses the multi-window
-    // daemon. Trunk calls `main` from its generated JS bootstrap.
+    // daemon. Trunk calls `main` from its generated JS bootstrap. The web build
+    // takes no CLI args, so it skips parsing entirely.
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
-        app::run_web()
+        return app::run_web();
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Headless automation server — drive the app over JSON on stdin/stdout
-        // with no GUI (issue #29). `--serve` is the opt-in; everything else
-        // launches the editor.
-        if std::env::args().skip(1).any(|a| a == "--serve") {
+        use clap::Parser;
+        let args = cli::Cli::parse();
+
+        // Opt-in logging. `--log LEVEL` seeds RUST_LOG; the subscriber then
+        // surfaces wgpu / iced / winit diagnostics that are otherwise silent.
+        if let Some(level) = &args.log {
+            std::env::set_var("RUST_LOG", level);
+        }
+        if std::env::var_os("RUST_LOG").is_some() {
+            let _ = env_logger::try_init();
+        }
+
+        // GPU backend selection. Explicit `--backend` wins; `--safe-mode`
+        // forces GL for flaky drivers. On Windows, fall back to DX12/Vulkan so
+        // the AMD OpenGL ICD (atio6axx.dll) is never touched at startup — it
+        // access-violates on some hybrid-GPU laptops before any window appears
+        // (#55). An already-set WGPU_BACKEND always wins.
+        if let Some(backend) = &args.backend {
+            std::env::set_var("WGPU_BACKEND", backend);
+        } else if args.safe_mode {
+            std::env::set_var("WGPU_BACKEND", "gl");
+        }
+        #[cfg(target_os = "windows")]
+        if std::env::var_os("WGPU_BACKEND").is_none() {
+            std::env::set_var("WGPU_BACKEND", "dx12,vulkan");
+        }
+
+        // Headless modes exit without ever creating a window.
+        if args.serve {
+            // `app::serve` reads --port itself from the raw args.
             app::serve();
             return Ok(());
         }
+        if let Some(io) = &args.export {
+            // clap enforces exactly two values for --export.
+            let code = app::export_headless(&io[0], &io[1]);
+            std::process::exit(code);
+        }
+
+        // GUI: stash the startup config for `app::boot` to pick up.
+        let script_lines = args
+            .script
+            .as_ref()
+            .map(|p| match std::fs::read_to_string(p) {
+                Ok(text) => text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(str::to_string)
+                    .collect(),
+                Err(e) => {
+                    eprintln!("--script: cannot read {}: {e}", p.display());
+                    Vec::new()
+                }
+            })
+            .unwrap_or_default();
+        let _ = cli::GUI_CONFIG.set(cli::GuiConfig {
+            file: if args.new { None } else { args.file },
+            new: args.new,
+            read_only: args.read_only,
+            script_lines,
+        });
         app::run()
     }
 }

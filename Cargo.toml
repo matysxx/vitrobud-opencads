@@ -39,6 +39,10 @@ truck-modeling = "0.6"
 truck-meshalgo = { version = "0.4", default-features = false, features = ["tessellation"], optional = true }
 truck-polymesh = "0.6"
 rfd = "0.17"
+# Command-line parsing: file arg, --serve/--export/--script and the headless flags.
+clap = { version = "4", features = ["derive"] }
+# Opt-in logging via --log / RUST_LOG (surfaces wgpu / iced / winit diagnostics).
+env_logger = "0.11"
 acadrust = "0.3.4"
 printpdf = "0.9.1"
 flate2 = "1"

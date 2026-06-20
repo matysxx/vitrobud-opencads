@@ -947,6 +947,11 @@ impl OpenCADStudio {
             Message::ObjImportPath(None) => Task::none(),
 
             Message::SaveFile => {
+                if self.read_only {
+                    self.command_line
+                        .push_error("Read-only session (--read-only): saving is disabled.");
+                    return Task::none();
+                }
                 let i = self.active_tab;
                 // Stamp the live grid/snap toggles onto the VPort so the file
                 // reflects them even if they came from settings with no
@@ -973,6 +978,11 @@ impl OpenCADStudio {
             }
 
             Message::SaveAs => {
+                if self.read_only {
+                    self.command_line
+                        .push_error("Read-only session (--read-only): saving is disabled.");
+                    return Task::none();
+                }
                 let i = self.active_tab;
                 self.save_dialog_for_unsaved = false;
                 self.open_save_dialog_window(i)
