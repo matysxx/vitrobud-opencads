@@ -198,9 +198,11 @@ fn build_face_group(
 /// boundary edges (circles) are sampled into line segments, which keeps the
 /// wire planar so `try_attach_plane` can fit the plane.
 fn plane_face(sat: &SatDocument, face: &SatFace) -> Option<Face> {
-    // Outer boundary first, then inner hole loops — `try_attach_plane` fits the
-    // plane from the outer wire and cuts the rest as holes, so a pierced face
-    // (e.g. a wall with a window opening) renders with the opening. (#123)
+    // A pierced face (e.g. a wall with a window opening) has one outer boundary
+    // loop plus an inner loop per hole. `try_attach_plane` fits the plane from
+    // the first wire and cuts the rest as holes, letting truck's mesher trim
+    // them. ACIS records no outer-vs-hole flag — the kernel classifies loops at
+    // runtime from geometry — so we derive the outer boundary here. (#123)
     let loops = collect_face_loops(sat, face, BOUNDARY_SEGS);
     if loops.is_empty() {
         return None;
@@ -239,9 +241,12 @@ fn plane_face(sat: &SatDocument, face: &SatFace) -> Option<Face> {
     if loops[outer_idx].len() < 3 {
         return None;
     }
-    // `try_attach_plane` only cuts an inner wire as a hole when it winds the
-    // *opposite* way to the outer boundary. ACIS doesn't guarantee that, so
-    // reverse any hole loop whose winding matches the outer's. (#123)
+    // `try_attach_plane` fits its plane normal from the first (outer) wire, so
+    // feeding the outer in its sampled order makes truck read it as CCW. truck
+    // then cuts an inner wire as a hole only when it winds the *opposite* way,
+    // so reverse any hole loop whose area normal agrees with the outer's. The
+    // outer normal has the largest magnitude (largest area), keeping the sign
+    // test robust against sampling noise on small holes. (#123)
     let outer_n = loop_normal(&loops[outer_idx]);
     let mut wires: Vec<Wire> = Vec::new();
     wires.push(build_wire(&loops[outer_idx], false)?);
