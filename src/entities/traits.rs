@@ -422,6 +422,7 @@ impl EntityTypeOps for EntityType {
                 Tolerance, Solid, Face3D, PolygonMesh, PolyfaceMesh, Mesh,
                 Table, MText, Point, Spline, Text, Viewport, Dimension,
                 Leader, MultiLeader, Underlay, Shape, Ole2Frame,
+                Solid3D, Region, Body, Surface,
             ],
             _ => {},
         )

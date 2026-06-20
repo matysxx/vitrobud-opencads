@@ -6,12 +6,35 @@
 // fallback stays in sync; the caller (scene/mod.rs apply_grip) translates
 // the MeshModel vertices to match.
 
-use acadrust::entities::{Body, Region, Solid3D};
+use acadrust::entities::{Body, Region, Solid3D, Surface};
 use glam::Vec3;
 
+use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, ro_prop as ro};
-use crate::entities::traits::{Grippable, PropertyEditable};
+use crate::entities::traits::{Grippable, PropertyEditable, Transformable};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
+
+/// Shared transform for the ACIS volume entities. Translate / rotate / scale
+/// delegate to acadrust (which composes the move into the solid's ACIS
+/// placement), and mirror delegates via a reflection transform. Without this
+/// the entity dispatcher treated solids as non-transformable, so a moved or
+/// pasted solid stayed at its original ACIS placement.
+macro_rules! impl_acis_transformable {
+    ($ty:ty) => {
+        impl Transformable for $ty {
+            fn apply_transform(&mut self, t: &EntityTransform) {
+                crate::scene::view::transform::apply_standard_entity_transform(self, t, |e, p1, p2| {
+                    let m = crate::scene::view::transform::reflection_about_xy_line(p1, p2);
+                    acadrust::Entity::apply_transform(e, &m);
+                });
+            }
+        }
+    };
+}
+impl_acis_transformable!(Solid3D);
+impl_acis_transformable!(Region);
+impl_acis_transformable!(Body);
+impl_acis_transformable!(Surface);
 
 // ── shared helpers ────────────────────────────────────────────────────────────
 

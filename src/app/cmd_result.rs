@@ -594,7 +594,19 @@ impl OpenCADStudio {
                 if self.clipboard.is_empty() {
                     self.command_line.push_error("Clipboard is empty.");
                 } else {
-                    let delta = base_pt - self.clipboard_centroid;
+                    // The centroid was measured in the source drawing's
+                    // offset-relative frame and `base_pt` is in this drawing's;
+                    // correct by the world_offset difference so a cross-drawing
+                    // paste lands at the cursor instead of drifting by the
+                    // offset gap. Zero for a same-drawing paste. (#135)
+                    let src_wo = self.clipboard_world_offset;
+                    let tgt_wo = self.tabs[i].scene.world_offset;
+                    let wo_corr = glam::Vec3::new(
+                        (tgt_wo[0] - src_wo[0]) as f32,
+                        (tgt_wo[1] - src_wo[1]) as f32,
+                        (tgt_wo[2] - src_wo[2]) as f32,
+                    );
+                    let delta = base_pt - self.clipboard_centroid + wo_corr;
                     let translate = crate::command::EntityTransform::Translate(delta);
                     self.push_undo_snapshot(i, "PASTECLIP");
                     // Recreate any layer / linetype / style the copied entities

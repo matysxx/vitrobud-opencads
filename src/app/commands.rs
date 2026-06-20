@@ -540,6 +540,7 @@ impl OpenCADStudio {
                     self.clipboard_centroid = super::helpers::entities_centroid(
                         &self.tabs[i].scene.wire_models_for(&handles),
                     );
+                    self.clipboard_world_offset = self.tabs[i].scene.world_offset;
                     self.clipboard = entities;
                     self.clipboard_deps = super::ClipboardDeps::capture(
                         &self.tabs[i].scene.document,
@@ -572,6 +573,7 @@ impl OpenCADStudio {
                     self.clipboard_centroid = super::helpers::entities_centroid(
                         &self.tabs[i].scene.wire_models_for(&handles),
                     );
+                    self.clipboard_world_offset = self.tabs[i].scene.world_offset;
                     let count = entities.len();
                     self.clipboard = entities;
                     self.clipboard_deps = super::ClipboardDeps::capture(
