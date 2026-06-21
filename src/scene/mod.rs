@@ -2310,6 +2310,97 @@ impl Scene {
         pick::hit_test::mesh_poly_hit(poly, crossing, iter, view_proj, bounds)
     }
 
+    /// Parent INSERT handles whose block-internal solid meshes fall in a
+    /// rectangular selection box. A block whose visible body is a solid has
+    /// no wires to catch, so box/lasso selection must test its instanced
+    /// meshes too.
+    pub fn block_mesh_box_hit(
+        &self,
+        a: iced::Point,
+        b: iced::Point,
+        crossing: bool,
+        view_proj: glam::Mat4,
+        bounds: iced::Rectangle,
+    ) -> Vec<Handle> {
+        if self.block_meshes.is_empty() {
+            return Vec::new();
+        }
+        let layout_block = self.current_layout_block_handle();
+        let woff = self.world_offset;
+        let mut out = Vec::new();
+        for e in self.document.entities() {
+            if e.common().owner_handle != layout_block {
+                continue;
+            }
+            let EntityType::Insert(ins) = e else { continue };
+            if !self.mesh_entity_visible(ins.common.handle) {
+                continue;
+            }
+            let mut sets = Vec::new();
+            self.expand_block_meshes(&ins.block_name, &ins.get_transform(), 0, woff, &mut sets);
+            let hit = sets.iter().any(|set| {
+                set.lods.first().map_or(false, |m| {
+                    !pick::hit_test::mesh_box_hit(
+                        a,
+                        b,
+                        crossing,
+                        std::iter::once((ins.common.handle, m)),
+                        view_proj,
+                        bounds,
+                    )
+                    .is_empty()
+                })
+            });
+            if hit {
+                out.push(ins.common.handle);
+            }
+        }
+        out
+    }
+
+    /// Parent INSERT handles whose block-internal solid meshes fall in a lasso.
+    pub fn block_mesh_poly_hit(
+        &self,
+        poly: &[iced::Point],
+        crossing: bool,
+        view_proj: glam::Mat4,
+        bounds: iced::Rectangle,
+    ) -> Vec<Handle> {
+        if self.block_meshes.is_empty() {
+            return Vec::new();
+        }
+        let layout_block = self.current_layout_block_handle();
+        let woff = self.world_offset;
+        let mut out = Vec::new();
+        for e in self.document.entities() {
+            if e.common().owner_handle != layout_block {
+                continue;
+            }
+            let EntityType::Insert(ins) = e else { continue };
+            if !self.mesh_entity_visible(ins.common.handle) {
+                continue;
+            }
+            let mut sets = Vec::new();
+            self.expand_block_meshes(&ins.block_name, &ins.get_transform(), 0, woff, &mut sets);
+            let hit = sets.iter().any(|set| {
+                set.lods.first().map_or(false, |m| {
+                    !pick::hit_test::mesh_poly_hit(
+                        poly,
+                        crossing,
+                        std::iter::once((ins.common.handle, m)),
+                        view_proj,
+                        bounds,
+                    )
+                    .is_empty()
+                })
+            });
+            if hit {
+                out.push(ins.common.handle);
+            }
+        }
+        out
+    }
+
     /// Tessellate all non-invisible entities owned by `block_handle`.
     fn wires_for_block(&self, block_handle: Handle) -> Vec<WireModel> {
         // Default culling is driven by the live `Scene::camera`. Multi-tile
