@@ -5589,6 +5589,10 @@ impl OpenCADStudio {
                 self.tabs[i].scene.deselect_all();
                 self.tabs[i].scene.restore_saved_camera();
                 self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
+                // Grid/snap are per-view: load the layout we just entered (its
+                // sheet viewport in paper space, the model tile in model space)
+                // so model and each layout keep independent grid state.
+                self.adopt_view_display(i);
                 // Paper-space tools live in the right-edge side toolbar now, so
                 // entering/leaving a layout no longer hijacks the ribbon tab.
                 let _ = going_to_paper;
@@ -6101,6 +6105,8 @@ impl OpenCADStudio {
                 // Clear paper-space selection before entering model space.
                 self.tabs[i].scene.deselect_all();
                 self.tabs[i].scene.active_viewport = Some(handle);
+                // Grid/snap follow the entered viewport.
+                self.adopt_view_display(i);
                 self.refresh_properties();
                 self.command_line.push_output("MSPACE");
                 Task::none()
@@ -6110,8 +6116,10 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 // Clear model-space selection before returning to paper space.
                 self.tabs[i].scene.deselect_all();
-                self.refresh_properties();
                 self.tabs[i].scene.active_viewport = None;
+                // Grid/snap return to the paper sheet's own state.
+                self.adopt_view_display(i);
+                self.refresh_properties();
                 self.command_line.push_output("PSPACE");
                 Task::none()
             }

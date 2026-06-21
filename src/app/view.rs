@@ -133,33 +133,25 @@ impl OpenCADStudio {
             // the correct place and scale.
             let vp_bounds = tab.scene.active_model_tile_bounds(vw, vh);
 
-            // Model layout: one grid per tile that has grid display on, drawn
-            // in its own bounds + camera so panes are independent and never
-            // flicker on hover. Paper layout: a single grid gated by show_grid.
-            let grid: Vec<overlay::GridParams> = if !is_paper {
-                tab.scene
-                    .model_tile_grid_views(vw, vh)
-                    .into_iter()
-                    .map(|(bounds, cam)| {
-                        let plane = grid_plane_from_camera(cam.pitch, cam.yaw);
-                        overlay::GridParams {
-                            view_proj: cam.view_proj(bounds),
-                            bounds,
-                            plane,
-                        }
-                    })
-                    .collect()
-            } else if self.show_grid {
-                let cam = tab.scene.camera.borrow();
-                let plane = grid_plane_from_camera(cam.pitch, cam.yaw);
-                vec![overlay::GridParams {
-                    view_proj: cam.view_proj(vp_bounds),
-                    bounds: vp_bounds,
-                    plane,
-                }]
+            // Each view draws its own grid, clipped to its own bounds, so they
+            // stay independent: model tiles in model space; the sheet plus each
+            // floating viewport (clipped to its rectangle) in paper space.
+            let grid_views = if !is_paper {
+                tab.scene.model_tile_grid_views(vw, vh)
             } else {
-                Vec::new()
+                tab.scene.paper_viewport_grid_views(vw, vh)
             };
+            let grid: Vec<overlay::GridParams> = grid_views
+                .into_iter()
+                .map(|(bounds, cam)| {
+                    let plane = grid_plane_from_camera(cam.pitch, cam.yaw);
+                    overlay::GridParams {
+                        view_proj: cam.view_proj(bounds),
+                        bounds,
+                        plane,
+                    }
+                })
+                .collect();
 
             let ucs_icon = if self.show_ucs_icon && !is_paper {
                 let cam = tab.scene.camera.borrow();

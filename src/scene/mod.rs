@@ -6276,9 +6276,26 @@ impl Scene {
         }
     }
 
-    /// Mirror the live grid/snap toggles onto the *active* model tile so the
-    /// save writes them to that viewport's VPort entry. (#121)
-    pub fn set_active_tile_grid_snap(&self, grid_on: bool, snap_on: bool) {
+    /// Mirror the live grid/snap toggles onto the active view's own store so the
+    /// state stays independent per viewport: a model tile in model space, the
+    /// layout's sheet viewport in paper space. (#121)
+    pub fn set_active_tile_grid_snap(&mut self, grid_on: bool, snap_on: bool) {
+        if self.current_layout != "Model" {
+            // Paper space: target the active floating viewport if the user is
+            // working inside one, otherwise the layout's sheet viewport. Each
+            // viewport keeps its own grid/snap (round-tripped via status flags).
+            let h = self
+                .active_viewport
+                .filter(|h| h.is_valid())
+                .unwrap_or_else(|| self.current_layout_sheet_viewport_handle());
+            if h.is_valid() {
+                if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(h) {
+                    vp.status.grid_on = grid_on;
+                    vp.status.snap_on = snap_on;
+                }
+            }
+            return;
+        }
         let mut tiles = self.model_tiles.borrow_mut();
         let active = self.active_model_tile.get().min(tiles.len().saturating_sub(1));
         if let Some(t) = tiles.get_mut(active) {
@@ -6287,10 +6304,22 @@ impl Scene {
         }
     }
 
-    /// The active model tile's grid display + grid-snap, adopted into the live
-    /// toggles on load and whenever the active viewport / tab changes. `None`
-    /// when there are no tiles. (#121)
+    /// The active view's grid display + grid-snap, adopted into the live toggles
+    /// on load and whenever the active viewport / tab / layout changes. Reads the
+    /// model tile in model space, the sheet viewport in paper space. (#121)
     pub fn active_tile_grid_snap(&self) -> Option<(bool, bool)> {
+        if self.current_layout != "Model" {
+            let h = self
+                .active_viewport
+                .filter(|h| h.is_valid())
+                .unwrap_or_else(|| self.current_layout_sheet_viewport_handle());
+            if h.is_valid() {
+                if let Some(EntityType::Viewport(vp)) = self.document.get_entity(h) {
+                    return Some((vp.status.grid_on, vp.status.snap_on));
+                }
+            }
+            return Some((false, false));
+        }
         let tiles = self.model_tiles.borrow();
         let active = self.active_model_tile.get().min(tiles.len().saturating_sub(1));
         tiles.get(active).map(|t| (t.grid_on, t.snap_on))
@@ -7131,6 +7160,47 @@ impl Scene {
                 (bounds, cam)
             })
             .collect()
+    }
+
+    /// Grid views for a paper-space layout: the sheet (paper) grid covers the
+    /// whole canvas under the paper camera; each floating viewport whose grid is
+    /// on draws the model grid through its own camera, clipped to its screen
+    /// rectangle so it never spills onto the paper. Mirrors model tiles. (#121)
+    pub fn paper_viewport_grid_views(&self, vw: f32, vh: f32) -> Vec<(iced::Rectangle, Camera)> {
+        if self.current_layout == "Model" {
+            return Vec::new();
+        }
+        let layout_block = self.current_layout_block_handle();
+        let sheet = self.current_layout_sheet_viewport_handle();
+        // Snapshot (handle, grid_on, is_sheet) so the later camera_for_viewport
+        // calls don't overlap this immutable borrow of the document.
+        let vps: Vec<(Handle, bool, bool)> = self
+            .document
+            .entities()
+            .filter_map(|e| {
+                let EntityType::Viewport(vp) = e else { return None };
+                if vp.common.owner_handle != layout_block {
+                    return None;
+                }
+                Some((vp.common.handle, vp.status.grid_on, vp.common.handle == sheet))
+            })
+            .collect();
+        let full = iced::Rectangle { x: 0.0, y: 0.0, width: vw, height: vh };
+        let mut out = Vec::new();
+        for (h, grid_on, is_sheet) in vps {
+            if !grid_on {
+                continue;
+            }
+            if is_sheet {
+                out.push((full, self.camera.borrow().clone()));
+            } else if let (Some(rect), Some(cam)) = (
+                self.viewport_screen_rect(h, (vw, vh)),
+                self.camera_for_viewport(h),
+            ) {
+                out.push((rect, cam));
+            }
+        }
+        out
     }
 
     pub fn active_model_tile_bounds(&self, vw: f32, vh: f32) -> iced::Rectangle {
