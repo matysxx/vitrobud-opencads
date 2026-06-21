@@ -183,3 +183,6 @@ fn make_poly_wipeout(pts: &[Vec3]) -> EntityType {
         .collect();
     EntityType::Wipeout(Wipeout::polygonal(&verts, z))
 }
+
+// ── Autocomplete registry ─────────────────────────────────
+inventory::submit!(crate::command::CommandRegistration { names: &["WIPEOUT", "WO"] });

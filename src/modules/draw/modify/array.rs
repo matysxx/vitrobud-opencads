@@ -1029,3 +1029,6 @@ impl CadCommand for Array3DCommand {
         vec![]
     }
 }
+
+// ── Autocomplete registry ─────────────────────────────────
+inventory::submit!(crate::command::CommandRegistration { names: &["ARRAY3D", "3DARRAY"] });

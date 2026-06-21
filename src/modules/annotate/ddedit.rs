@@ -64,3 +64,6 @@ impl CadCommand for DdeditCommand {
         CmdResult::Cancel
     }
 }
+
+// ── Autocomplete registry ─────────────────────────────────
+inventory::submit!(crate::command::CommandRegistration { names: &["DDEDIT", "ED"] });

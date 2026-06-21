@@ -176,3 +176,6 @@ pub fn apply_attedit(doc: &mut acadrust::CadDocument, handle: acadrust::Handle, 
         }
     }
 }
+
+// ── Autocomplete registry ─────────────────────────────────
+inventory::submit!(crate::command::CommandRegistration { names: &["ATTEDIT", "ATE"] });
