@@ -1270,11 +1270,15 @@ impl Scene {
         let mut vp = acadrust::entities::Viewport::new();
         vp.id = 1;
         vp.status = acadrust::entities::ViewportStatusFlags::default_on();
-        // Paper plane is (x, z) with y = 0 (same convention MVIEW uses).
+        // Paper-space center is a 2D (x, y) point with z = 0 — the same
+        // convention MVIEW uses for floating viewports. AutoCAD/TrueView read
+        // the viewport center as (x, y); putting the paper-height midpoint in z
+        // (with y = 0) left the sheet view centered at y = 0, shifting the whole
+        // layout half a page down. See issue #156.
         vp.center = acadrust::types::Vector3::new(
             (min_lim.0 + max_lim.0) / 2.0,
-            0.0,
             (min_lim.1 + max_lim.1) / 2.0,
+            0.0,
         );
         vp.width = pw;
         vp.height = ph;
