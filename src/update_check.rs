@@ -6,6 +6,7 @@
 // returns `Some(UpdateInfo)` when a newer release is available, or
 // `None` when up to date / on network failure / on parse error.
 
+#[cfg(not(target_arch = "wasm32"))]
 const RELEASES_API: &str =
     "https://api.github.com/repos/HakanSeven12/OpenCADStudio/releases/latest";
 pub const RELEASES_PAGE: &str =
@@ -16,6 +17,7 @@ pub const RELEASES_PAGE: &str =
 /// after a tag is pushed, so suppressing notifications for the first 30
 /// minutes prevents users from clicking through to a release page whose
 /// asset list is still empty.
+#[cfg(not(target_arch = "wasm32"))]
 const MIN_RELEASE_AGE_SECS: u64 = 30 * 60;
 
 /// What `check_for_update` reports when a newer release exists.
@@ -39,6 +41,7 @@ pub async fn check_for_update() -> Option<UpdateInfo> {
 /// On wasm there is no background thread or blocking HTTP client; the web build
 /// skips the self-update check (the page is always served fresh).
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub async fn check_for_update() -> Option<UpdateInfo> {
     None
 }
@@ -86,6 +89,7 @@ fn fetch_latest_if_outdated() -> Option<UpdateInfo> {
 /// Parse a GitHub timestamp like `2026-05-29T12:34:56Z` into UNIX seconds.
 /// Only handles the fixed `YYYY-MM-DDTHH:MM:SSZ` format the GitHub API
 /// emits; returns `None` for anything else.
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_iso8601_utc(s: &str) -> Option<u64> {
     let b = s.as_bytes();
     if b.len() != 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T'
@@ -132,6 +136,7 @@ fn parse_iso8601_utc(s: &str) -> Option<u64> {
 /// Avoids pulling in `serde_json` for two fields. Handles standard JSON
 /// string escapes (`\"`, `\\`, `\n`, `\r`, `\t`, `\/`) which are all the
 /// GitHub release body uses in practice.
+#[cfg(not(target_arch = "wasm32"))]
 fn extract_string_field(body: &str, field: &str) -> Option<String> {
     let key = format!("\"{}\":\"", field);
     let start = body.find(&key)? + key.len();

@@ -79,6 +79,7 @@ pub fn plugins_dir() -> Option<PathBuf> {
 
 /// Delete an installed package's folder. It stays loaded for the current
 /// session (the library is resident); the removal takes effect on next start.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn uninstall(id: &str) -> Result<(), String> {
     let dir = plugins_dir().ok_or("cannot locate the plugins folder")?.join(id);
     if dir.is_dir() {

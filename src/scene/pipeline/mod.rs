@@ -1001,7 +1001,7 @@ impl Pipeline {
         // O(highlighted), no per-wire string parse. Selection recolours blue,
         // hover orange. Drawn on top (depth-compare Always) over the base pass.
         let mut out: Vec<WireModel> = Vec::new();
-        let mut push = |handle_val: u64, color: [f32; 4], wires: &[WireModel], out: &mut Vec<WireModel>| {
+        let push = |handle_val: u64, color: [f32; 4], wires: &[WireModel], out: &mut Vec<WireModel>| {
             if let Some(idxs) = self.wire_handle_index.get(&handle_val) {
                 let mut slots = idxs.clone();
                 slots.sort_unstable();

@@ -205,6 +205,7 @@ fn shape_cache() -> &'static Mutex<ShapeCache> {
 
 /// Pixel font size the layout runs at. Positions and outlines are normalized
 /// out of pixel space afterwards, so the exact value only affects rounding.
+#[allow(dead_code)]
 const SHAPE_FS: f32 = 1000.0;
 
 /// Shared cosmic-text layout engine, loaded once with the system fonts. Held

@@ -2429,6 +2429,7 @@ impl Scene {
 
     /// Pick a meshed 3D solid by clicking on its shaded body (face), not just
     /// its thin projected edges. Returns the front-most mesh under `cursor`.
+    #[allow(dead_code)]
     pub fn mesh_click_hit(
         &self,
         cursor: iced::Point,

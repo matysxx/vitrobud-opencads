@@ -16,6 +16,7 @@ pub(crate) use registry::try_dispatch;
 /// the cdylib boundary — it does NOT contain genuine UB (a plugin that
 /// segfaults or violates memory safety via `unsafe` can still crash the host;
 /// only out-of-process isolation would). (#145)
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(v) => Some(v),
@@ -38,12 +39,14 @@ pub(crate) fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
 
 /// Process-wide queue of plugin-guard errors waiting to surface in the host's
 /// command-line history. Flushed by [`drain_errors`] from the app loop.
+#[cfg(not(target_arch = "wasm32"))]
 fn errors() -> &'static std::sync::Mutex<Vec<String>> {
     static E: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
     E.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
 /// Take and return every queued plugin-guard error since the last drain.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn drain_errors() -> Vec<String> {
     std::mem::take(&mut *errors().lock().unwrap())
 }

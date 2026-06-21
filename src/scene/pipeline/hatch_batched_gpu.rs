@@ -106,6 +106,7 @@ pub struct HatchBatchedVertex {
 }
 
 impl HatchBatchedVertex {
+    #[allow(dead_code)]
     pub fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<HatchBatchedVertex>() as u64,
@@ -450,6 +451,7 @@ impl HatchBatchedGpu {
     /// constructed once at startup. All four bindings are read-only
     /// storage and visible to both VS (AABB+visibility lookup) and FS
     /// (boundary / family / dash sampling).
+    #[allow(dead_code)]
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         let entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,

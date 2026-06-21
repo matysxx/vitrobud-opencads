@@ -159,6 +159,7 @@ pub(super) struct DocumentTab {
     /// rest of the code can treat it as a normal tab when reading.
     pub(super) is_start: bool,
     /// Per-plugin document state (`plugin::BuiltinPlugin` manifest id → state).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(super) plugin_state: HashMap<&'static str, Box<dyn Any + Send + Sync>>,
     pub(super) suspended_cmd: Option<Box<dyn CadCommand>>,
 }

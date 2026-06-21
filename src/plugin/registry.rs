@@ -15,6 +15,7 @@ pub fn all_ribbon_modules() -> Vec<Box<dyn CadModule>> {
 pub fn ribbon_modules_enabled(
     disabled: &rustc_hash::FxHashSet<String>,
 ) -> Vec<Box<dyn CadModule>> {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut core = core_registry::all_modules();
     // Dynamically-loaded external plugins contribute tabs (their libraries stay
     // resident for the session, so these vtables remain valid).

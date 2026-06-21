@@ -24,6 +24,7 @@
 
 use crate::scene::model::wire_model::WireModel;
 use iced::wgpu;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::par::prelude::*;
 
 /// Allocate a VERTEX buffer with `mapped_at_creation` and write `data` directly

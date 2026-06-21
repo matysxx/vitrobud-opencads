@@ -31,6 +31,7 @@ const PHASE_FINALIZING: u8 = 3;
 /// Show the file picker and return the chosen path plus its size in bytes.
 /// Returning size up-front lets the loading overlay display "47.3 MB" before
 /// the parser thread starts.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
     let handle = rfd::AsyncFileDialog::new()
         .set_title("Open CAD file")

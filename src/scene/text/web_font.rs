@@ -57,6 +57,7 @@ impl Script {
 /// 2 = Korean. Set from the active document's code page.
 static CJK_LANG: AtomicU8 = AtomicU8::new(0);
 
+#[cfg(target_arch = "wasm32")]
 fn cjk_lang() -> Script {
     match CJK_LANG.load(Ordering::Relaxed) {
         1 => Script::Japanese,
@@ -83,6 +84,7 @@ pub fn set_cjk_lang_from_codepage(code_page: &str) -> bool {
 
 /// The script font that covers `ch`, or `None` for control / uncovered code
 /// points. Ranges mirror the subset unicode ranges in `web/fonts/generate.sh`.
+#[cfg(target_arch = "wasm32")]
 pub fn script_of(ch: char) -> Option<Script> {
     Some(match ch as u32 {
         0x0000..=0x024F | 0x1E00..=0x1EFF | 0x2000..=0x206F => Script::Latin,
@@ -184,6 +186,8 @@ mod imp {
     use super::Script;
     use std::sync::Arc;
 
+    // Kept for parity with the wasm impl; only the wasm path has a caller.
+    #[allow(dead_code)]
     pub fn request(_script: Script) -> Option<Arc<Vec<u8>>> {
         None
     }
@@ -196,4 +200,7 @@ mod imp {
     }
 }
 
-pub use imp::{fetch, insert, request, take_pending};
+pub use imp::{fetch, insert, take_pending};
+// `request` only has a caller in the wasm font-fallback path.
+#[cfg(target_arch = "wasm32")]
+pub use imp::request;

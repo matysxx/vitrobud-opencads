@@ -38,6 +38,7 @@ impl std::fmt::Display for RenderModeChoice {
 }
 
 impl OpenCADStudio {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn view(&self, window_id: window::Id) -> Element<'_, Message> {
         // ── Floating panel windows ─────────────────────────────────────────
         // All dialogs are in-canvas modals now (Plan B); view_main stacks the
@@ -3893,6 +3894,7 @@ pub(super) fn start_page_view<'a>() -> Element<'a, Message> {
     .spacing(12)
     .align_y(iced::Center);
 
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut secondary_row = row![
         outline_btn(
             "Send Feedback",

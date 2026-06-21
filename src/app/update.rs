@@ -238,6 +238,7 @@ impl OpenCADStudio {
 
     /// Snapshot of disabled plugin ids — lets the registry skip them while it
     /// holds a `&mut` borrow of the app via `HostSession`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn disabled_plugin_ids(&self) -> rustc_hash::FxHashSet<String> {
         self.disabled_plugins.clone()
     }

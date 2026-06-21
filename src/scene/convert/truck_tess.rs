@@ -19,6 +19,7 @@ use truck_polymesh::PolygonMesh;
 // Chord-height tolerance used for adaptive curve sampling (world units).
 const CURVE_TOL: f64 = 0.005;
 // Triangle mesh tolerance (world units).
+#[allow(dead_code)]
 pub const MESH_TOL: f64 = 0.01;
 
 // ── Zoom-adaptive curve tolerance override ────────────────────────────────

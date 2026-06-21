@@ -11,6 +11,7 @@ mod history;
 mod layers;
 mod model_ops;
 mod mtext_editor;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_host;
 mod properties;
 mod settings;
@@ -819,6 +820,7 @@ pub enum ModalKind {
     DimStyle,
     Unsaved,
     SaveDialog,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     AssocPrompt,
     PointStyle,
 }
@@ -2020,6 +2022,7 @@ impl OpenCADStudio {
     /// open. Secondary manager windows are unavailable on the web for now.
     #[cfg(target_arch = "wasm32")]
     fn boot_web() -> (Self, Task<Message>) {
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut s = Self::new();
         let focus = s.focus_cmd_input();
         (s, focus)
