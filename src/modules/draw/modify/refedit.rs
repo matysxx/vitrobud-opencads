@@ -29,14 +29,12 @@ pub struct RefEditSession {
     pub br_handle: Handle,
     /// Handles of the temporary model-space entities added for editing.
     pub temp_handles: Vec<Handle>,
-    // ── INSERT transform (needed for inverse on SAVE) ──────────────────
-    pub insert_x: f64,
-    pub insert_y: f64,
-    pub insert_z: f64,
-    /// Rotation in degrees (stored as degrees in acadrust).
-    pub rotation_deg: f64,
-    /// Uniform scale factor (same for X/Y/Z after validation).
-    pub scale: f64,
+    // ── INSERT placement, as full affine transforms ───────────────────
+    /// Block-local → world (the INSERT's `get_transform`). Handles OCS,
+    /// rotation and non-uniform / mirrored scale in one matrix.
+    pub forward: acadrust::types::Transform,
+    /// World → block-local, applied on SAVE to bring edits back.
+    pub inverse: acadrust::types::Transform,
 }
 
 // ── REFEDIT pick command ───────────────────────────────────────────────────
@@ -124,87 +122,16 @@ impl CadCommand for RefCloseCommand {
 // ── Geometry helpers ───────────────────────────────────────────────────────
 
 /// Apply the INSERT's forward transform to a block-local entity so it
-/// appears at its correct world-space position.
-/// Order: scale → rotate (around origin) → translate.
+/// appears at its correct world-space position. The full affine handles
+/// OCS, rotation and non-uniform / mirrored scale at once.
 pub fn apply_insert_transform(entity: &mut EntityType, session: &RefEditSession) {
-    use crate::command::EntityTransform;
-    use crate::scene::view::dispatch;
-
-    let origin = Vec3::ZERO;
-
-    // 1. Uniform scale (if not 1.0)
-    if (session.scale - 1.0).abs() > 1e-10 {
-        dispatch::apply_transform(
-            entity,
-            &EntityTransform::Scale {
-                center: origin,
-                factor: session.scale as f32,
-            },
-        );
-    }
-
-    // 2. Rotate around origin
-    if session.rotation_deg.abs() > 1e-10 {
-        dispatch::apply_transform(
-            entity,
-            &EntityTransform::Rotate {
-                center: origin,
-                angle_rad: session.rotation_deg.to_radians() as f32,
-            },
-        );
-    }
-
-    // 3. Translate to insert position
-    dispatch::apply_transform(
-        entity,
-        &EntityTransform::Translate(Vec3::new(
-            session.insert_x as f32,
-            session.insert_y as f32,
-            session.insert_z as f32,
-        )),
-    );
+    entity.as_entity_mut().apply_transform(&session.forward);
 }
 
 /// Apply the INSERT's inverse transform to a world-space entity to bring it
 /// back to block-local coordinates.
-/// Order: un-translate → un-rotate → un-scale.
 pub fn apply_insert_inverse_transform(entity: &mut EntityType, session: &RefEditSession) {
-    use crate::command::EntityTransform;
-    use crate::scene::view::dispatch;
-
-    let origin = Vec3::ZERO;
-
-    // 1. Un-translate
-    dispatch::apply_transform(
-        entity,
-        &EntityTransform::Translate(Vec3::new(
-            -session.insert_x as f32,
-            -session.insert_y as f32,
-            -session.insert_z as f32,
-        )),
-    );
-
-    // 2. Un-rotate
-    if session.rotation_deg.abs() > 1e-10 {
-        dispatch::apply_transform(
-            entity,
-            &EntityTransform::Rotate {
-                center: origin,
-                angle_rad: -session.rotation_deg.to_radians() as f32,
-            },
-        );
-    }
-
-    // 3. Un-scale
-    if (session.scale - 1.0).abs() > 1e-10 && session.scale.abs() > 1e-12 {
-        dispatch::apply_transform(
-            entity,
-            &EntityTransform::Scale {
-                center: origin,
-                factor: (1.0 / session.scale) as f32,
-            },
-        );
-    }
+    entity.as_entity_mut().apply_transform(&session.inverse);
 }
 
 

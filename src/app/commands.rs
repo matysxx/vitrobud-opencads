@@ -2104,15 +2104,27 @@ impl OpenCADStudio {
                     }
                 };
 
-                // Validate: non-uniform scale is not supported.
+                // Build the INSERT's full placement transform (OCS + rotation +
+                // scale, including non-uniform / mirrored) and its inverse, so
+                // edits round-trip back to block-local coordinates on SAVE.
                 let sx = insert.x_scale();
                 let sy = insert.y_scale();
                 let sz = insert.z_scale();
-                if (sx - sy).abs() > 1e-6 || (sx - sz).abs() > 1e-6 {
-                    self.command_line
-                        .push_error("REFEDIT: non-uniform scale inserts are not supported.");
-                    return Task::none();
-                }
+                let forward = insert.get_transform();
+                let inverse = {
+                    use acadrust::types::{Matrix3, Matrix4, Transform};
+                    let ocs_t =
+                        Matrix4::from_matrix3(Matrix3::arbitrary_axis(insert.normal).transpose());
+                    let t_inv = Matrix4::translation(
+                        -insert.insert_point.x,
+                        -insert.insert_point.y,
+                        -insert.insert_point.z,
+                    );
+                    let r_inv = Matrix4::rotation_z(-insert.rotation);
+                    let s_inv = Matrix4::scaling(1.0 / sx, 1.0 / sy, 1.0 / sz);
+                    // inverse(OCS·T·R·S) = S⁻¹·R⁻¹·T⁻¹·OCSᵀ
+                    Transform::from_matrix(s_inv * r_inv * t_inv * ocs_t)
+                };
 
                 // Find the block record.
                 let br_handle = match self.tabs[i]
@@ -2162,11 +2174,8 @@ impl OpenCADStudio {
                     block_name: insert.block_name.clone(),
                     br_handle,
                     temp_handles: vec![],
-                    insert_x: insert.insert_point.x,
-                    insert_y: insert.insert_point.y,
-                    insert_z: insert.insert_point.z,
-                    rotation_deg: insert.rotation.to_degrees(),
-                    scale: sx,
+                    forward,
+                    inverse,
                 };
 
                 self.push_undo_snapshot(i, "REFEDIT");

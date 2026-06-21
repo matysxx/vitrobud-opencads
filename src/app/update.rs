@@ -4023,8 +4023,12 @@ impl OpenCADStudio {
                         };
                         let vp_mat = self.tabs[i].scene.camera.borrow().view_proj(bounds);
                         let all_wires = self.tabs[i].scene.hit_test_wires();
+                        // Resolve the double-clicked object — its wire, or (for a
+                        // block/solid with no wire under the cursor) its shaded
+                        // body, which maps to the parent INSERT.
                         let hit = scene::pick::hit_test::click_hit(p, &all_wires[..], vp_mat, bounds)
-                            .and_then(|s| Scene::handle_from_wire_name(s));
+                            .and_then(|s| Scene::handle_from_wire_name(s))
+                            .or_else(|| self.tabs[i].scene.solid_click_hit(p, vp_mat, bounds));
                         if let Some(handle) = hit {
                             // Any text-bearing entity opens its in-place editor
                             // (plain box or rich MText editor, per type). A
@@ -4039,6 +4043,19 @@ impl OpenCADStudio {
                                 });
                             if is_editable_text {
                                 return self.begin_text_edit(handle);
+                            }
+                            // Double-clicking a block reference enters in-place
+                            // block edit (REFEDIT), so its geometry can be edited
+                            // and the change reflects in every instance. (#136)
+                            let is_insert = matches!(
+                                self.tabs[i].scene.document.get_entity(handle),
+                                Some(AcadEntityType::Insert(_))
+                            );
+                            if is_insert && self.tabs[i].refedit_session.is_none() {
+                                return Task::done(Message::Command(format!(
+                                    "REFEDIT_BEGIN:{}",
+                                    handle.value()
+                                )));
                             }
                         }
                     }
