@@ -627,10 +627,18 @@ impl OpenCADStudio {
                     // each entity with fresh handles (top-level + inline subs)
                     // so a same-document paste can't duplicate handles. (#129)
                     self.merge_clipboard_deps(i);
+                    // …and any block definition the pasted INSERTs reference,
+                    // else a block reference renders empty in a drawing that
+                    // lacks the definition. (#135 / #158)
+                    self.merge_clipboard_blocks(i);
                     for entity in self.clipboard.clone() {
                         self.tabs[i].scene.add_entity_clone(entity);
                     }
+                    // Tessellate any pasted ACIS solids (top-level + inside a
+                    // recreated block) so they render instead of staying blank.
+                    self.tabs[i].scene.populate_meshes_from_document();
                     self.tabs[i].dirty = true;
+                    self.refresh_layer_panel();
                     self.refresh_properties();
                     self.command_line.push_output(&format!(
                         "PASTEORIG: {} object(s) pasted at original coordinates.",
@@ -648,6 +656,10 @@ impl OpenCADStudio {
                 } else {
                     self.push_undo_snapshot(i, "PASTEBLOCK");
                     self.merge_clipboard_deps(i);
+                    // Recreate any block definition the clipboard's INSERTs
+                    // reference, so nested blocks inside the new wrapper block
+                    // don't render empty. (#135 / #158)
+                    self.merge_clipboard_blocks(i);
                     let name = self.unique_block_name("Block");
                     let base = self.clipboard_centroid;
                     let entities = self.clipboard.clone();
@@ -661,6 +673,7 @@ impl OpenCADStudio {
                             // user picks the drop point (insertion uses the
                             // clipboard centroid as the block's base). The
                             // clipboard wires rubber-band under the cursor.
+                            self.tabs[i].scene.populate_meshes_from_document();
                             self.tabs[i].dirty = true;
                             let wires = self.tabs[i].scene.wires_for_entities(&self.clipboard);
                             use crate::modules::insert::insert_block::InsertBlockCommand;
