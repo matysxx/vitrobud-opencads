@@ -118,6 +118,17 @@ impl UcsXform {
     pub(super) fn axes(&self) -> (glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3) {
         (self.origin, self.x, self.y, self.z)
     }
+
+    /// UCS→world rotation matrix (columns = UCS axes). For consumers that take
+    /// a `Mat4` rotation directly (ViewCube, OTRACK ray directions).
+    pub(super) fn rotation_mat(&self) -> glam::Mat4 {
+        glam::Mat4::from_cols(
+            self.x.extend(0.0),
+            self.y.extend(0.0),
+            self.z.extend(0.0),
+            glam::Vec4::W,
+        )
+    }
 }
 
 // ── UCS ↔ WCS transforms (thin wrappers over `UcsXform`) ────────────────────

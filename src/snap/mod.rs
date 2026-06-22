@@ -263,6 +263,9 @@ impl Snapper {
         bounds: iced::Rectangle,
         polar_step_deg: Option<f32>,
         last_point: Option<Vec3>,
+        // UCS→world rotation: tracking rays run along the UCS axes, matching
+        // ortho/polar. Identity = world-aligned rays.
+        ucs: glam::Mat4,
     ) -> Option<OtrackHit> {
         if !self.otrack_enabled || self.tracking_points.is_empty() {
             return None;
@@ -307,7 +310,7 @@ impl Snapper {
                 let ar = adeg.to_radians();
                 rays.push(Ray {
                     origin: tp,
-                    dir: Vec3::new(ar.cos(), ar.sin(), 0.0),
+                    dir: ucs.transform_vector3(Vec3::new(ar.cos(), ar.sin(), 0.0)),
                     group: gi,
                 });
             }
@@ -322,7 +325,7 @@ impl Snapper {
                 let ar = a.to_radians();
                 rays.push(Ray {
                     origin: lp,
-                    dir: Vec3::new(ar.cos(), ar.sin(), 0.0),
+                    dir: ucs.transform_vector3(Vec3::new(ar.cos(), ar.sin(), 0.0)),
                     group: POLAR_GROUP,
                 });
                 a += step;

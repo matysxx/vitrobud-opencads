@@ -2839,12 +2839,14 @@ impl OpenCADStudio {
                             } else {
                                 None
                             };
+                            let ucs = self.tabs[i].scene.viewcube_ucs_mat();
                             self.snapper.otrack_snap(
                                 cursor_world,
                                 view_proj,
                                 bounds,
                                 step,
                                 self.last_point,
+                                ucs,
                             )
                         } else {
                             None
@@ -3464,8 +3466,9 @@ impl OpenCADStudio {
                             } else {
                                 None
                             };
+                            let ucs = self.tabs[i].scene.viewcube_ucs_mat();
                             self.snapper
-                                .otrack_snap(raw, vp_mat, bounds, step, self.last_point)
+                                .otrack_snap(raw, vp_mat, bounds, step, self.last_point, ucs)
                         } else {
                             None
                         };
