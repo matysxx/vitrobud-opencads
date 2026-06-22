@@ -55,13 +55,24 @@ pub fn resolve_text_style(style_name: &str, document: &CadDocument) -> ResolvedT
     }
 }
 
+pub struct TextLocalBounds {
+    /// Inked extent (glyph strokes only) — drives vertical alignment, where
+    /// the cap / baseline geometry is what matters.
+    pub ink_min: [f32; 2],
+    pub ink_max: [f32; 2],
+    /// Pen advance along the baseline, including leading / trailing spaces and
+    /// inter-glyph spacing. Drives horizontal alignment so spaces in the string
+    /// keep their width instead of collapsing to the first / last inked glyph.
+    pub advance: f32,
+}
+
 pub fn text_local_bounds(
     font_name: &str,
     text: &str,
     height: f32,
     width_factor: f32,
     oblique_angle: f32,
-) -> Option<([f32; 2], [f32; 2])> {
+) -> Option<TextLocalBounds> {
     if text.is_empty() || height <= 0.0 {
         return None;
     }
@@ -101,8 +112,16 @@ pub fn text_local_bounds(
         }
     }
 
+    // Pen advance is measured at the baseline, so oblique shear (which skews x
+    // only by gy) does not enter it. Valid even for an all-space string.
+    let advance = cursor_x * scale * wf;
+
     if min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite() {
-        Some(([min_x, min_y], [max_x, max_y]))
+        Some(TextLocalBounds {
+            ink_min: [min_x, min_y],
+            ink_max: [max_x, max_y],
+            advance,
+        })
     } else {
         None
     }

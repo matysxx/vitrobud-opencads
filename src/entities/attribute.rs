@@ -255,17 +255,19 @@ fn build_attr_truck(input: AttrTextInputs<'_>, document: &acadrust::CadDocument)
             oblique_angle,
         );
         let (anchor_local_x, anchor_local_y) =
-            if let Some(([min_x, min_y], [max_x, max_y])) = bounds {
+            if let Some(b) = bounds {
+                // Horizontal anchor uses the pen advance box so leading /
+                // trailing spaces keep their width.
                 let ax = match input.horizontal_alignment {
-                    AHA::Left => min_x,
-                    AHA::Center | AHA::Middle => (min_x + max_x) * 0.5,
-                    AHA::Right | AHA::Aligned | AHA::Fit => max_x,
+                    AHA::Left => 0.0,
+                    AHA::Center | AHA::Middle => b.advance * 0.5,
+                    AHA::Right | AHA::Aligned | AHA::Fit => b.advance,
                 };
                 let ay = match input.vertical_alignment {
                     AVA::Baseline => 0.0,
-                    AVA::Bottom => min_y,
-                    AVA::Middle => (min_y + max_y) * 0.5,
-                    AVA::Top => max_y,
+                    AVA::Bottom => b.ink_min[1],
+                    AVA::Middle => (b.ink_min[1] + b.ink_max[1]) * 0.5,
+                    AVA::Top => b.ink_max[1],
                 };
                 (ax, ay)
             } else {

@@ -87,15 +87,19 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
     } else {
         resolved_style.oblique_angle
     };
-    let anchor = match (
+    // Anchor stays f64: large coordinates (UTM etc.) lose ~0.5 units of
+    // precision when cast to f32, which snaps text baselines onto a coarse
+    // grid and makes adjacent rows collide. Only the small local offsets
+    // below are computed in f32.
+    let anchor: [f64; 2] = match (
         &t.horizontal_alignment,
         &t.vertical_alignment,
         &t.alignment_point,
     ) {
-        (HA::Aligned | HA::Middle | HA::Fit, _, Some(a)) => [a.x as f32, a.y as f32],
-        (HA::Center | HA::Right, _, Some(a)) => [a.x as f32, a.y as f32],
-        (_, VA::Bottom | VA::Middle | VA::Top, Some(a)) => [a.x as f32, a.y as f32],
-        _ => [t.insertion_point.x as f32, t.insertion_point.y as f32],
+        (HA::Aligned | HA::Middle | HA::Fit, _, Some(a)) => [a.x, a.y],
+        (HA::Center | HA::Right, _, Some(a)) => [a.x, a.y],
+        (_, VA::Bottom | VA::Middle | VA::Top, Some(a)) => [a.x, a.y],
+        _ => [t.insertion_point.x, t.insertion_point.y],
     };
     // Strip %%u/%%o for bounds (they add no width); resolve %%d/%%c/%%p for correct advance.
     let value_for_bounds = resolve_dxf_special_chars(&t.value);
@@ -106,17 +110,20 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
         width_factor,
         oblique_angle,
     );
-    let (anchor_local_x, anchor_local_y) = if let Some(([min_x, min_y], [max_x, max_y])) = bounds {
+    let (anchor_local_x, anchor_local_y) = if let Some(b) = bounds {
+        // Horizontal anchor uses the pen advance box [0, advance] so leading /
+        // trailing spaces keep their width instead of snapping to the inked glyphs.
         let ax = match t.horizontal_alignment {
-            HA::Left => min_x,
-            HA::Center | HA::Middle => (min_x + max_x) * 0.5,
-            HA::Right | HA::Aligned | HA::Fit => max_x,
+            HA::Left => 0.0,
+            HA::Center | HA::Middle => b.advance * 0.5,
+            HA::Right | HA::Aligned | HA::Fit => b.advance,
         };
+        // Vertical anchor uses the inked extent (cap / baseline geometry).
         let ay = match t.vertical_alignment {
             VA::Baseline => 0.0,
-            VA::Bottom => min_y,
-            VA::Middle => (min_y + max_y) * 0.5,
-            VA::Top => max_y,
+            VA::Bottom => b.ink_min[1],
+            VA::Middle => (b.ink_min[1] + b.ink_max[1]) * 0.5,
+            VA::Top => b.ink_max[1],
         };
         (ax, ay)
     } else {
@@ -125,7 +132,7 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
     let (cos_r, sin_r) = (rotation.cos() as f64, rotation.sin() as f64);
     // Keep origin as f64 — large coordinates (UTM etc.) must not be cast to
     // f32 here; world_offset subtraction happens later in tessellate.rs.
-    let anchor_f64 = [anchor[0] as f64, anchor[1] as f64];
+    let anchor_f64 = anchor;
     let origin: [f64; 2] = [
         anchor_f64[0] - (anchor_local_x as f64 * cos_r - anchor_local_y as f64 * sin_r),
         anchor_f64[1] - (anchor_local_x as f64 * sin_r + anchor_local_y as f64 * cos_r),

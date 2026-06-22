@@ -22,7 +22,17 @@ impl TruckConvertible for Table {
             return None;
         }
 
-        let origin = v3(&self.insertion_point);
+        // Lay the table out in a local frame with the origin at zero. The world
+        // insertion point is added back as f64 at the widening step below, so
+        // large coordinates (UTM etc.) keep full precision instead of snapping
+        // onto the coarse f32 grid — which would collide cell-text baselines and
+        // overflow the integer border-dedup keys.
+        let base = [
+            self.insertion_point.x,
+            self.insertion_point.y,
+            self.insertion_point.z,
+        ];
+        let origin = Vec3::ZERO;
         let h_raw = v3(&self.horizontal_direction);
         let h = if h_raw.length_squared() > 1e-10 {
             h_raw.normalize()
@@ -298,22 +308,22 @@ impl TruckConvertible for Table {
             }
         }
 
-        // Table currently does its layout in glam::Vec3 (f32). The world_offset
-        // subtraction in tessellate.rs needs f64, so widen at the boundary —
-        // precision is already limited by the f32 math above (separate fix-up).
+        // The layout above is in a local f32 frame (small magnitudes). Widen to
+        // f64 and add the world insertion so the absolute position carries full
+        // precision; tessellate.rs then applies world_offset.
         let pts_f64: Vec<[f64; 3]> = pts
             .into_iter()
             .map(|[x, y, z]| {
                 if x.is_nan() {
                     [f64::NAN, f64::NAN, f64::NAN]
                 } else {
-                    [x as f64, y as f64, z as f64]
+                    [x as f64 + base[0], y as f64 + base[1], z as f64 + base[2]]
                 }
             })
             .collect();
         Some(TruckEntity {
             object: TruckObject::Lines(pts_f64),
-            snap_pts: vec![(origin, SnapHint::Insertion)],
+            snap_pts: vec![(v3(&self.insertion_point), SnapHint::Insertion)],
             tangent_geoms: vec![],
             key_vertices: vec![],
             fill_tris: vec![],
