@@ -30,9 +30,10 @@ struct Uniforms {
 var<uniform> u: Uniforms;
 
 struct VertexIn {
-    @location(0) position: vec3<f32>,
-    @location(1) normal:   vec3<f32>,
-    @location(2) color:    vec4<f32>,
+    @location(0) position:     vec3<f32>,
+    @location(1) normal:       vec3<f32>,
+    @location(2) color:        vec4<f32>,
+    @location(3) position_low: vec3<f32>,
 };
 
 struct VertexOut {
@@ -45,7 +46,8 @@ struct VertexOut {
 @vertex
 fn vs_main(v: VertexIn) -> VertexOut {
     var out: VertexOut;
-    out.clip_pos  = u.view_rot * vec4<f32>((v.position - u.eye_high) - u.eye_low, 1.0);
+    let rel = (v.position - u.eye_high) + (v.position_low - u.eye_low);
+    out.clip_pos  = u.view_rot * vec4<f32>(rel, 1.0);
     out.color     = v.color;
     out.normal    = v.normal;
     out.world_pos = v.position;

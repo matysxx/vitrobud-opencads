@@ -78,9 +78,11 @@ pub enum TruckTessResult {
     /// returned as parallel double-single (high, low) f32 buffers so the GPU
     /// keeps sub-unit precision at UTM-scale coordinates.
     Lines(Vec<[f32; 3]>, Vec<[f32; 3]>),
-    /// A triangle mesh (from Face, Shell, or Solid).
+    /// A triangle mesh (from Face, Shell, or Solid). `verts` is the high half
+    /// of the double-single position; `verts_low` the paired residual.
     Mesh {
         verts: Vec<[f32; 3]>,
+        verts_low: Vec<[f32; 3]>,
         normals: Vec<[f32; 3]>,
         indices: Vec<u32>,
     },
@@ -177,6 +179,7 @@ pub fn tessellate_shell(s: &Shell, offset: [f64; 3]) -> TruckTessResult {
 pub fn tessellate_shell(_s: &Shell, _offset: [f64; 3]) -> TruckTessResult {
     TruckTessResult::Mesh {
         verts: Vec::new(),
+        verts_low: Vec::new(),
         normals: Vec::new(),
         indices: Vec::new(),
     }
@@ -197,6 +200,7 @@ pub fn tessellate_solid(s: &Solid, offset: [f64; 3]) -> TruckTessResult {
 pub fn tessellate_solid(_s: &Solid, _offset: [f64; 3]) -> TruckTessResult {
     TruckTessResult::Mesh {
         verts: Vec::new(),
+        verts_low: Vec::new(),
         normals: Vec::new(),
         indices: Vec::new(),
     }
@@ -206,11 +210,14 @@ pub fn tessellate_solid(_s: &Solid, _offset: [f64; 3]) -> TruckTessResult {
 
 #[cfg(feature = "solid3d")]
 fn polygon_to_result(mesh: PolygonMesh, offset: [f64; 3]) -> TruckTessResult {
-    let verts: Vec<[f32; 3]> = mesh
-        .positions()
-        .iter()
-        .map(|p| to_local(p.x, p.y, p.z, offset))
-        .collect();
+    let positions = mesh.positions();
+    let mut verts: Vec<[f32; 3]> = Vec::with_capacity(positions.len());
+    let mut verts_low: Vec<[f32; 3]> = Vec::with_capacity(positions.len());
+    for p in positions.iter() {
+        let hi = to_local(p.x, p.y, p.z, offset);
+        verts_low.push(to_local_low(p.x, p.y, p.z, offset, hi));
+        verts.push(hi);
+    }
 
     // Per-vertex normals: if the mesh has normals, map each triangle vertex's
     // normal index back to the normals array.  Fall back to empty if absent.
@@ -262,6 +269,7 @@ fn polygon_to_result(mesh: PolygonMesh, offset: [f64; 3]) -> TruckTessResult {
 
     TruckTessResult::Mesh {
         verts,
+        verts_low,
         normals,
         indices,
     }

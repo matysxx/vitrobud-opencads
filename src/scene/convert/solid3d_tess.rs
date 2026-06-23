@@ -125,6 +125,7 @@ fn tessellate_sat(
     Some(MeshModel {
         name,
         verts,
+        verts_low: Vec::new(),
         normals,
         indices,
         color,

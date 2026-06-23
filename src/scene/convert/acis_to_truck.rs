@@ -110,6 +110,7 @@ pub fn tessellate_sat_truck(
     let mut mesh = MeshModel {
         name: name.clone(),
         verts: Vec::new(),
+        verts_low: Vec::new(),
         normals: Vec::new(),
         indices: Vec::new(),
         color,

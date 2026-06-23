@@ -9,8 +9,11 @@
 pub struct MeshModel {
     /// Unique identifier (entity handle value as decimal string).
     pub name: String,
-    /// World-space vertex positions.
+    /// World-space vertex positions (high half of the double-single pair).
     pub verts: Vec<[f32; 3]>,
+    /// Low residual paired with `verts` so meshes stay precise at UTM scale.
+    /// Empty = all-zero (legacy / interactive meshes near the origin).
+    pub verts_low: Vec<[f32; 3]>,
     /// Per-vertex normals (may be empty if not available).
     pub normals: Vec<[f32; 3]>,
     /// Triangle indices into `verts` (every 3 values = one triangle).

@@ -103,6 +103,7 @@ pub fn parse_obj(src: &str, color: [f32; 4]) -> Option<MeshModel> {
     Some(MeshModel {
         name: String::new(),
         verts,
+        verts_low: Vec::new(),
         normals: norms,
         indices,
         color,

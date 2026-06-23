@@ -172,12 +172,14 @@ pub fn mesh_from_solid(solid: &Solid, color: [f32; 4]) -> Option<MeshLodSet> {
     match tessellate_solid(solid, [0.0; 3]) {
         TruckTessResult::Mesh {
             verts,
+            verts_low,
             normals,
             indices,
         } if !indices.is_empty() => {
             let mesh = MeshModel {
                 name: String::new(),
                 verts,
+                verts_low,
                 normals,
                 indices,
                 color,

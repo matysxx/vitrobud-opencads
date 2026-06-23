@@ -557,20 +557,31 @@ fn overlap_len(a: (f32, f32), b: (f32, f32)) -> f32 {
 /// uses the same space.
 fn offset_mesh_lod_set(mut set: MeshLodSet, world_offset: [f64; 3]) -> MeshLodSet {
     let [ox, oy, oz] = world_offset;
-    let (fx, fy, fz) = (ox as f32, oy as f32, oz as f32);
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     for lod in &mut set.lods {
-        for v in &mut lod.verts {
-            v[0] -= fx;
-            v[1] -= fy;
-            v[2] -= fz;
-            if v[0] < min_x { min_x = v[0]; }
-            if v[1] < min_y { min_y = v[1]; }
-            if v[0] > max_x { max_x = v[0]; }
-            if v[1] > max_y { max_y = v[1]; }
+        // Reconstruct the f64 absolute position from the double-single pair,
+        // subtract world_offset in f64, then re-split into (high, low) so the
+        // relative-to-eye shader keeps sub-unit precision at UTM scale.
+        let has_low = lod.verts_low.len() == lod.verts.len();
+        if !has_low {
+            lod.verts_low = vec![[0.0; 3]; lod.verts.len()];
+        }
+        for (v, vl) in lod.verts.iter_mut().zip(lod.verts_low.iter_mut()) {
+            let ax = v[0] as f64 + vl[0] as f64 - ox;
+            let ay = v[1] as f64 + vl[1] as f64 - oy;
+            let az = v[2] as f64 + vl[2] as f64 - oz;
+            let hx = ax as f32;
+            let hy = ay as f32;
+            let hz = az as f32;
+            *v = [hx, hy, hz];
+            *vl = [(ax - hx as f64) as f32, (ay - hy as f64) as f32, (az - hz as f64) as f32];
+            if hx < min_x { min_x = hx; }
+            if hy < min_y { min_y = hy; }
+            if hx > max_x { max_x = hx; }
+            if hy > max_y { max_y = hy; }
         }
     }
     if min_x.is_finite() {
@@ -596,15 +607,30 @@ fn transform_block_mesh_lod_set(
     let mut max_x = f32::NEG_INFINITY;
     let mut max_y = f32::NEG_INFINITY;
     for lod in &mut out.lods {
-        for v in &mut lod.verts {
-            let w = xform.apply(Vector3::new(v[0] as f64, v[1] as f64, v[2] as f64));
-            v[0] = (w.x - ox) as f32;
-            v[1] = (w.y - oy) as f32;
-            v[2] = (w.z - oz) as f32;
-            if v[0] < min_x { min_x = v[0]; }
-            if v[1] < min_y { min_y = v[1]; }
-            if v[0] > max_x { max_x = v[0]; }
-            if v[1] > max_y { max_y = v[1]; }
+        let has_low = lod.verts_low.len() == lod.verts.len();
+        if !has_low {
+            lod.verts_low = vec![[0.0; 3]; lod.verts.len()];
+        }
+        for (v, vl) in lod.verts.iter_mut().zip(lod.verts_low.iter_mut()) {
+            // Reconstruct the block-local f64, apply the INSERT transform and
+            // subtract world_offset in f64, then re-split into (high, low).
+            let w = xform.apply(Vector3::new(
+                v[0] as f64 + vl[0] as f64,
+                v[1] as f64 + vl[1] as f64,
+                v[2] as f64 + vl[2] as f64,
+            ));
+            let ax = w.x - ox;
+            let ay = w.y - oy;
+            let az = w.z - oz;
+            let hx = ax as f32;
+            let hy = ay as f32;
+            let hz = az as f32;
+            *v = [hx, hy, hz];
+            *vl = [(ax - hx as f64) as f32, (ay - hy as f64) as f32, (az - hz as f64) as f32];
+            if hx < min_x { min_x = hx; }
+            if hy < min_y { min_y = hy; }
+            if hx > max_x { max_x = hx; }
+            if hy > max_y { max_y = hy; }
         }
         for n in &mut lod.normals {
             let d = xform.apply_rotation(Vector3::new(n[0] as f64, n[1] as f64, n[2] as f64));

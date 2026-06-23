@@ -1274,11 +1274,13 @@ impl OpenCADStudio {
                                 match truck_tess::tessellate_solid(&solid, woff) {
                                     truck_tess::TruckTessResult::Mesh {
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                     } => Some(crate::scene::model::mesh_model::MeshModel {
                                         name: String::new(),
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                         color,
@@ -1352,11 +1354,13 @@ impl OpenCADStudio {
                         match truck_tess::tessellate_shell(&shell, woff) {
                             truck_tess::TruckTessResult::Mesh {
                                 verts,
+                                verts_low,
                                 normals,
                                 indices,
                             } => Some(crate::scene::model::mesh_model::MeshModel {
                                 name: String::new(),
                                 verts,
+                                verts_low,
                                 normals,
                                 indices,
                                 color,
@@ -1437,11 +1441,13 @@ impl OpenCADStudio {
                                 match truck_tess::tessellate_solid(&solid, woff) {
                                     truck_tess::TruckTessResult::Mesh {
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                     } => Some(crate::scene::model::mesh_model::MeshModel {
                                         name: String::new(),
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                         color,
@@ -1454,11 +1460,13 @@ impl OpenCADStudio {
                                 match truck_tess::tessellate_shell(&shell, woff) {
                                     truck_tess::TruckTessResult::Mesh {
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                     } => Some(crate::scene::model::mesh_model::MeshModel {
                                         name: String::new(),
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                         color,
@@ -1486,11 +1494,13 @@ impl OpenCADStudio {
                                 match truck_tess::tessellate_solid(&solid, woff) {
                                     truck_tess::TruckTessResult::Mesh {
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                     } => Some(crate::scene::model::mesh_model::MeshModel {
                                         name: String::new(),
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                         color,
@@ -1503,11 +1513,13 @@ impl OpenCADStudio {
                                 match truck_tess::tessellate_shell(&shell, woff) {
                                     truck_tess::TruckTessResult::Mesh {
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                     } => Some(crate::scene::model::mesh_model::MeshModel {
                                         name: String::new(),
                                         verts,
+                                        verts_low,
                                         normals,
                                         indices,
                                         color,
@@ -1593,11 +1605,13 @@ impl OpenCADStudio {
                     match truck_tess::tessellate_shell(&shell, woff) {
                         truck_tess::TruckTessResult::Mesh {
                             verts,
+                            verts_low,
                             normals,
                             indices,
                         } => Some(crate::scene::model::mesh_model::MeshModel {
                             name: String::new(),
                             verts,
+                            verts_low,
                             normals,
                             indices,
                             color,
