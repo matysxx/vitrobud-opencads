@@ -118,7 +118,6 @@ impl Camera {
     /// must already be expressed relative to the eye (done per-vertex with
     /// double-single precision in the shader), so the large eye translation
     /// never enters the f32 matrix and large-coordinate jitter disappears.
-    #[allow(dead_code)] // consumed by the RTE uniform / shaders (next phase)
     pub fn view_proj_rte(&self, bounds: Rectangle) -> Mat4 {
         let near = self.distance * 0.001;
         let far = self.distance * 1000.0;
@@ -140,10 +139,69 @@ impl Camera {
         OPENGL_TO_WGPU * proj * view
     }
 
+    /// Project a world point to screen pixels with full f64 precision: the
+    /// point is made eye-relative in f64 (small numbers near the view) before
+    /// the rotation-only projection, so it stays exact at large absolute
+    /// coordinates — the CPU equivalent of the GPU's relative-to-eye path.
+    /// Returns `None` for points at/behind the eye plane (w ≈ 0).
+    #[allow(dead_code)] // consumed by the world_offset-removal CPU migration
+    pub fn project_f64(&self, p: glam::DVec3, bounds: Rectangle) -> Option<glam::Vec2> {
+        let rel = (p - self.eye_f64()).as_vec3();
+        let clip = self.view_proj_rte(bounds) * rel.extend(1.0);
+        if clip.w.abs() < 1e-9 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        Some(glam::vec2(
+            (ndc.x * 0.5 + 0.5) * bounds.width,
+            (0.5 - ndc.y * 0.5) * bounds.height,
+        ))
+    }
+
+    /// Unproject a screen point onto an arbitrary world plane in f64. The ray
+    /// is built in eye-relative space (precise), intersected with the plane
+    /// expressed relative to the eye, then shifted back by the f64 eye — so the
+    /// returned world point keeps full precision at large absolute coordinates.
+    #[allow(dead_code)] // consumed by the world_offset-removal CPU migration
+    pub fn unproject_on_plane_f64(
+        &self,
+        screen: Point,
+        bounds: Rectangle,
+        plane_normal: Vec3,
+        plane_point: glam::DVec3,
+    ) -> glam::DVec3 {
+        let eye = self.eye_f64();
+        let ndc_x = (screen.x / bounds.width) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (screen.y / bounds.height) * 2.0;
+        let inv = self.view_proj_rte(bounds).inverse();
+        // Ray origin / direction in eye-relative space.
+        let (ray_origin, ray_dir) = match self.projection {
+            Projection::Perspective => {
+                let near_pt = inv.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
+                let far_pt = inv.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
+                (near_pt, (far_pt - near_pt).normalize())
+            }
+            Projection::Orthographic => {
+                let origin = inv.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
+                let forward = self.rotation * Vec3::NEG_Z;
+                (origin, forward)
+            }
+        };
+        // Plane point relative to the eye (small) for a precise intersection.
+        let plane_rel = (plane_point - eye).as_vec3();
+        let denom = ray_dir.dot(plane_normal);
+        let rel_hit = if denom.abs() < 1e-6 {
+            plane_rel
+        } else {
+            let t = (plane_rel - ray_origin).dot(plane_normal) / denom;
+            ray_origin + ray_dir * t
+        };
+        eye + rel_hit.as_dvec3()
+    }
+
     /// Eye position split into two f32 (high + low) emulating f64, for the
     /// double-single relative-to-eye shaders. `high + low ≈ eye` to ~f64
     /// precision; the shader subtracts these from each vertex's own high/low.
-    #[allow(dead_code)] // consumed by the RTE uniform (next phase)
     pub fn eye_high_low(&self) -> ([f32; 3], [f32; 3]) {
         let e = self.eye_f64();
         let high = [e.x as f32, e.y as f32, e.z as f32];
