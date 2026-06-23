@@ -224,6 +224,7 @@ pub fn apply_along(
             plinegen: true,
             vp_scissor: None,
             fill_tris: vec![],
+            fill_tris_low: Vec::new(),
         })
         .collect()
 }

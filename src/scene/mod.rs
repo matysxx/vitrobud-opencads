@@ -8210,6 +8210,7 @@ fn tessellate_entity(
             plinegen: true,
             vp_scissor: None,
             fill_tris: vec![],
+            fill_tris_low: Vec::new(),
         };
 
         if let Some(cache) = block_cache {
@@ -8422,6 +8423,7 @@ fn tessellate_entity(
                     plinegen: true,
                     vp_scissor: None,
                     fill_tris: vec![],
+                    fill_tris_low: Vec::new(),
                 }];
             }
             if h_px < 5.0 && aabb != WireModel::UNBOUNDED_AABB {
@@ -8460,6 +8462,7 @@ fn tessellate_entity(
                     plinegen: true,
                     vp_scissor: None,
                     fill_tris,
+                    fill_tris_low: Vec::new(),
                 }];
             }
         }
@@ -8569,6 +8572,7 @@ fn lod_stub_wire(
         plinegen: true,
         vp_scissor: None,
         fill_tris: vec![],
+        fill_tris_low: Vec::new(),
     }
 }
 
@@ -8628,6 +8632,7 @@ fn lod_stub_wire_3d(
         plinegen: true,
         vp_scissor: None,
         fill_tris: vec![],
+        fill_tris_low: Vec::new(),
     }
 }
 

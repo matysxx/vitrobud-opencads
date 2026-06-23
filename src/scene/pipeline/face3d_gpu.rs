@@ -33,30 +33,40 @@ pub struct Face3DVertex {
     /// applied as a small clip-z bias in the shader. 0.0 for true 3D mesh
     /// faces (PolyfaceMesh / PolygonMesh) so their real depth is preserved.
     pub draw_depth: f32,
+    /// Double-single low residual of `position` so fills stay precise at
+    /// UTM-scale coordinates (zero for 3DFACE quads built from key_vertices,
+    /// which don't carry a residual).
+    pub position_low: [f32; 3],
 }
 
 impl Face3DVertex {
     pub fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
+        const ATTRS: &[wgpu::VertexAttribute] = &[
+            wgpu::VertexAttribute {
+                offset: std::mem::offset_of!(Face3DVertex, position) as u64,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+            wgpu::VertexAttribute {
+                offset: std::mem::offset_of!(Face3DVertex, color) as u64,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Float32x4,
+            },
+            wgpu::VertexAttribute {
+                offset: std::mem::offset_of!(Face3DVertex, draw_depth) as u64,
+                shader_location: 2,
+                format: wgpu::VertexFormat::Float32,
+            },
+            wgpu::VertexAttribute {
+                offset: std::mem::offset_of!(Face3DVertex, position_low) as u64,
+                shader_location: 3,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+        ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Face3DVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: 12,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 28,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32,
-                },
-            ],
+            attributes: ATTRS,
         }
     }
 }
@@ -120,6 +130,7 @@ impl Face3DGpu {
                     position: p[i],
                     color: fill_color,
                     draw_depth: depth,
+                    position_low: [0.0; 3],
                 };
                 verts_3d.push(v(0));
                 verts_3d.push(v(1));
@@ -153,21 +164,23 @@ impl Face3DGpu {
                 let fill_color = [r * 0.45, g * 0.45, b * 0.45, a];
                 // True 3D surface: keep real depth (no draw-order bias) so
                 // hidden-surface shading is preserved.
-                for &position in &wire.fill_tris {
+                for (i, &position) in wire.fill_tris.iter().enumerate() {
                     verts_3d.push(Face3DVertex {
                         position,
                         color: fill_color,
                         draw_depth: 0.0,
+                        position_low: wire.fill_tris_low.get(i).copied().unwrap_or([0.0; 3]),
                     });
                 }
             } else {
                 let fill_color = [r, g, b, a];
                 let depth = depth_of(wire);
-                for &position in &wire.fill_tris {
+                for (i, &position) in wire.fill_tris.iter().enumerate() {
                     verts_2d.push(Face3DVertex {
                         position,
                         color: fill_color,
                         draw_depth: depth,
+                        position_low: wire.fill_tris_low.get(i).copied().unwrap_or([0.0; 3]),
                     });
                 }
             }

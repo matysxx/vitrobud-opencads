@@ -1130,6 +1130,7 @@ impl Batches {
                     plinegen: b.plinegen,
                     vp_scissor: None,
                     fill_tris: b.fill_tris,
+                    fill_tris_low: Vec::new(),
                 }
             })
             .collect()

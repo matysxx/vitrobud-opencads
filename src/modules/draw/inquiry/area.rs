@@ -80,6 +80,7 @@ impl CadCommand for AreaCommand {
             plinegen: true,
             vp_scissor: None,
             fill_tris: vec![],
+            fill_tris_low: Vec::new(),
         })
     }
 }

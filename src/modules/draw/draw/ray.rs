@@ -90,6 +90,7 @@ impl CadCommand for RayCommand {
             plinegen: true,
             vp_scissor: None,
             fill_tris: vec![],
+            fill_tris_low: Vec::new(),
         })
     }
 }
@@ -172,6 +173,7 @@ impl CadCommand for XLineCommand {
             plinegen: true,
             vp_scissor: None,
             fill_tris: vec![],
+            fill_tris_low: Vec::new(),
         })
     }
 }

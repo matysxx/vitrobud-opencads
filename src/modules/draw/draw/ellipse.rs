@@ -627,6 +627,7 @@ fn line_wire(from: Vec3, to: Vec3) -> WireModel {
         plinegen: true,
         vp_scissor: None,
         fill_tris: vec![],
+        fill_tris_low: Vec::new(),
     }
 }
 

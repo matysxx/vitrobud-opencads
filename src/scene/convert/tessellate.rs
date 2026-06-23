@@ -239,6 +239,7 @@ pub fn tessellate(
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: vec![],
+                        fill_tris_low: Vec::new(),
                     }];
                 }
 
@@ -278,6 +279,7 @@ pub fn tessellate(
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: vec![],
+                        fill_tris_low: Vec::new(),
                     });
                 }
                 return out;
@@ -324,6 +326,7 @@ pub fn tessellate(
                             plinegen: true,
                             vp_scissor: None,
                             fill_tris: vec![],
+                            fill_tris_low: Vec::new(),
                         }];
                     }
                     _ => {}
@@ -358,6 +361,7 @@ pub fn tessellate(
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: vec![],
+                        fill_tris_low: Vec::new(),
                     }];
                 }
             }
@@ -390,6 +394,7 @@ pub fn tessellate(
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: vec![],
+                        fill_tris_low: Vec::new(),
                     }];
                 }
             }
@@ -409,11 +414,7 @@ pub fn tessellate(
                     .into_iter()
                     .map(|[x, y, z]| [(x - ox) as f32, (y - oy) as f32, (z - oz) as f32])
                     .collect();
-                let fill_tris: Vec<[f32; 3]> = te
-                    .fill_tris
-                    .into_iter()
-                    .map(|[x, y, z]| [(x - ox) as f32, (y - oy) as f32, (z - oz) as f32])
-                    .collect();
+                let (fill_tris, fill_tris_low) = offset_to_ds(te.fill_tris, world_offset);
                 return vec![WireModel {
                     name,
                     points: local_pts,
@@ -431,6 +432,7 @@ pub fn tessellate(
                     plinegen: true,
                     vp_scissor: None,
                     fill_tris,
+                    fill_tris_low,
                 }];
             }
 
@@ -460,6 +462,7 @@ pub fn tessellate(
                     vp_scissor: None,
                     aabb: WireModel::UNBOUNDED_AABB,
                     fill_tris: vec![],
+                    fill_tris_low: Vec::new(),
                 }];
             }
 
@@ -501,6 +504,7 @@ pub fn tessellate(
         plinegen: true,
         vp_scissor: None,
         fill_tris: vec![],
+        fill_tris_low: Vec::new(),
     }]
 }
 

@@ -116,6 +116,7 @@ fn preview_wire(points: Vec<Vec3>) -> WireModel {
         plinegen: true,
         vp_scissor: None,
         fill_tris: vec![],
+        fill_tris_low: Vec::new(),
     }
 }
 

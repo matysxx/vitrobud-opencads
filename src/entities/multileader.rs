@@ -1309,6 +1309,7 @@ impl MultiLeaderTess for MultiLeader {
             plinegen: true,
             vp_scissor: None,
             fill_tris: arrow_fill,
+            fill_tris_low: Vec::new(),
         });
 
         // ── Block content ───────────────────────────────────────────────────────
@@ -1556,6 +1557,7 @@ impl MultiLeaderTess for MultiLeader {
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: vec![],
+                        fill_tris_low: Vec::new(),
                     });
                 }
             } else if lod_mode == 1 {
@@ -1597,6 +1599,7 @@ impl MultiLeaderTess for MultiLeader {
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: greek_tris,
+                        fill_tris_low: Vec::new(),
                     });
                 }
             } else {
@@ -1636,6 +1639,7 @@ impl MultiLeaderTess for MultiLeader {
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: vec![],
+                        fill_tris_low: Vec::new(),
                     });
                 }
             }
@@ -1694,6 +1698,7 @@ impl MultiLeaderTess for MultiLeader {
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris,
+                        fill_tris_low: Vec::new(),
                     });
                 }
 
@@ -1723,6 +1728,7 @@ impl MultiLeaderTess for MultiLeader {
                         plinegen: true,
                         vp_scissor: None,
                         fill_tris: vec![],
+                        fill_tris_low: Vec::new(),
                     });
                 }
             }

@@ -108,6 +108,7 @@ impl CadCommand for AlignedDimensionCommand {
             plinegen: true,
             vp_scissor: None,
             fill_tris: vec![],
+            fill_tris_low: Vec::new(),
         })
     }
 }
@@ -149,6 +150,7 @@ fn preview_aligned(p1: Vec3, p2: Vec3, dim_pt: Vec3) -> WireModel {
         plinegen: true,
         vp_scissor: None,
         fill_tris: vec![],
+        fill_tris_low: Vec::new(),
     }
 }
 

@@ -79,6 +79,9 @@ pub struct WireModel {
     /// Pre-triangulated solid fill: flat vertex list, 3 per triangle (world-offset applied).
     /// Non-empty only for PolyfaceMesh / PolygonMesh entities.
     pub fill_tris: Vec<[f32; 3]>,
+    /// Low residual paired with [`fill_tris`] (double-single). Empty = all-zero;
+    /// tessellation from CAD f64 fills it so fills stay precise at UTM scale.
+    pub fill_tris_low: Vec<[f32; 3]>,
 }
 
 impl WireModel {
@@ -114,6 +117,7 @@ impl WireModel {
             plinegen: true,
             vp_scissor: None,
             fill_tris: vec![],
+            fill_tris_low: Vec::new(),
         }
     }
 
@@ -237,6 +241,7 @@ impl Default for WireModel {
             plinegen: true,
             vp_scissor: None,
             fill_tris: Vec::new(),
+            fill_tris_low: Vec::new(),
         }
     }
 }

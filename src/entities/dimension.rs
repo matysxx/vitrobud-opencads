@@ -1172,6 +1172,7 @@ fn tessellate_dimension_inner(
                     plinegen: true,
                     vp_scissor: None,
                     fill_tris: vec![],
+                    fill_tris_low: Vec::new(),
                 });
             }
             if !ext2.is_empty() {
@@ -1192,6 +1193,7 @@ fn tessellate_dimension_inner(
                     plinegen: true,
                     vp_scissor: None,
                     fill_tris: vec![],
+                    fill_tris_low: Vec::new(),
                 });
             }
         } else {
@@ -1212,6 +1214,7 @@ fn tessellate_dimension_inner(
                 plinegen: true,
                 vp_scissor: None,
                 fill_tris: vec![],
+                fill_tris_low: Vec::new(),
             });
         }
     }
@@ -1233,6 +1236,7 @@ fn tessellate_dimension_inner(
         plinegen: true,
         vp_scissor: None,
         fill_tris: geom.arrow_fill,
+        fill_tris_low: Vec::new(),
     });
 
     // DIMTFILL: 0=none, 1=drawing background (mask), 2=DIMTFILLCLR.
@@ -1265,6 +1269,7 @@ fn tessellate_dimension_inner(
                     plinegen: true,
                     vp_scissor: None,
                     fill_tris: rect,
+                    fill_tris_low: Vec::new(),
                 });
             }
         }

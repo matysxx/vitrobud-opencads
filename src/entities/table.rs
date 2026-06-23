@@ -716,6 +716,7 @@ pub fn tessellate_table(
                 plinegen: true,
                 vp_scissor: None,
                 fill_tris,
+                fill_tris_low: Vec::new(),
             }
         };
 

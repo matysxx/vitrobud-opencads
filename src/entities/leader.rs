@@ -617,6 +617,7 @@ impl LeaderTess for Leader {
                 plinegen: true,
                 vp_scissor: None,
                 fill_tris: vec![],
+                fill_tris_low: Vec::new(),
             };
         }
 
@@ -716,6 +717,7 @@ impl LeaderTess for Leader {
             plinegen: true,
             vp_scissor: None,
             fill_tris,
+            fill_tris_low: Vec::new(),
         }
     }
 }

@@ -164,6 +164,7 @@ impl CadCommand for TableCommand {
                 plinegen: true,
                 vp_scissor: None,
                 fill_tris: vec![],
+                fill_tris_low: Vec::new(),
             })
         } else {
             None
