@@ -4433,7 +4433,7 @@ impl OpenCADStudio {
                 if self.tabs[i].scene.active_viewport.is_some() {
                     self.tabs[i]
                         .scene
-                        .snap_active_viewport_to_direction(eye_dir);
+                        .snap_active_viewport_to_direction(eye_dir, r_ucs);
                 } else {
                     let mut cam = self.tabs[i].scene.camera.borrow_mut();
                     cam.snap_to_direction(eye_dir, r_ucs);

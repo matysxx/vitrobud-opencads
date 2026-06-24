@@ -3832,19 +3832,46 @@ impl Scene {
     /// vector from target toward camera). Twist angle is left at its
     /// current value so the up-sense is preserved across successive
     /// snaps. No-op when there is no active viewport or it is locked.
-    pub fn snap_active_viewport_to_direction(&mut self, eye_dir: glam::Vec3) {
+    pub fn snap_active_viewport_to_direction(&mut self, eye_dir: glam::Vec3, ucs: glam::Mat4) {
         let vp_handle = match self.active_viewport {
             Some(h) => h,
             None => return,
         };
-        let eye = eye_dir.normalize_or(glam::Vec3::Z);
+        // Build the full UCS-aligned orientation exactly as the model snap does
+        // (snap_to_direction picks the in-plane roll from the UCS axes), seeded
+        // from the viewport's current camera so the "best up" stays stable, then
+        // decode it back to the stored (view_direction, twist_angle). Writing
+        // only view_direction loses the roll and the rebuilt camera snaps to
+        // WCS-up instead of the UCS the clicked cube was drawn in.
+        let mut tmp = self.camera_for_viewport(vp_handle).unwrap_or_default();
+        tmp.snap_to_direction(eye_dir, ucs);
+        let dir = (tmp.rotation * glam::Vec3::Z).normalize_or(glam::Vec3::Z);
+        let desired_up = (tmp.rotation * glam::Vec3::Y).normalize_or(glam::Vec3::Y);
+
+        // camera_from_view rebuilds the rotation with its OWN yaw convention
+        // (atan2(x, -y)) and applies roll = -twist, which is *not* the camera's
+        // internal yaw/roll convention — so `-tmp.roll()` does not round-trip.
+        // Instead reproduce the decoder's zero-twist basis here, then measure
+        // the signed roll about the view axis that carries its up onto the
+        // desired UCS up. Store twist = -roll (the decoder negates it back).
+        let pitch = dir.z.clamp(-1.0, 1.0).asin();
+        let yaw = if dir.x.abs() < 1e-6 && dir.y.abs() < 1e-6 {
+            0.0
+        } else {
+            dir.x.atan2(-dir.y)
+        };
+        let up0 = (view::camera::yaw_pitch_to_quat(yaw, pitch, 0.0) * glam::Vec3::Y)
+            .normalize_or(glam::Vec3::Y);
+        let roll = up0.cross(desired_up).dot(dir).atan2(up0.dot(desired_up));
+        let twist = -roll as f64;
         if let Some(acadrust::EntityType::Viewport(vp)) = self.document.get_entity_mut(vp_handle) {
             if vp.status.locked {
                 return;
             }
-            vp.view_direction.x = eye.x as f64;
-            vp.view_direction.y = eye.y as f64;
-            vp.view_direction.z = eye.z as f64;
+            vp.view_direction.x = dir.x as f64;
+            vp.view_direction.y = dir.y as f64;
+            vp.view_direction.z = dir.z as f64;
+            vp.twist_angle = twist;
         }
     }
 
