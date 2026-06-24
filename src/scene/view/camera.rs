@@ -69,17 +69,10 @@ pub const OPENGL_TO_WGPU: Mat4 = glam::mat4(
 impl Camera {
     // ── Eye position ───────────────────────────────────────────────────────
 
-    pub fn eye(&self) -> Vec3 {
-        // The canonical eye direction is +Z (looking at origin from above).
-        // The rotation maps that canonical pose to the current orientation.
-        let eye_dir = self.rotation * Vec3::Z;
-        self.target.as_vec3() + eye_dir * self.distance
-    }
-
-    /// Eye position in full f64 precision (offset-relative world space). Used
-    /// by the relative-to-eye render path; the f32 [`eye`] stays for ray/pick
-    /// math that operates at human scale.
-    pub fn eye_f64(&self) -> DVec3 {
+    /// Eye position in full f64 precision (world space). The whole pipeline is
+    /// relative-to-eye, so this is the canonical eye; direction-only callers
+    /// (view-matrix basis, ray casts) take `.as_vec3()`.
+    pub fn eye(&self) -> DVec3 {
         let eye_dir = (self.rotation * Vec3::Z).as_dvec3();
         self.target + eye_dir * self.distance as f64
     }
@@ -114,7 +107,7 @@ impl Camera {
         let aspect = bounds.width / bounds.height;
         let up_dir = self.rotation * Vec3::Y;
 
-        let mut view = Mat4::look_at_rh(self.eye(), self.target.as_vec3(), up_dir);
+        let mut view = Mat4::look_at_rh(self.eye().as_vec3(), self.target.as_vec3(), up_dir);
         // Zero the translation column → pure rotation (world→view basis).
         view.w_axis = glam::vec4(0.0, 0.0, 0.0, 1.0);
 
@@ -138,7 +131,7 @@ impl Camera {
     /// coordinates — the CPU equivalent of the GPU's relative-to-eye path.
     /// Returns `None` for points at/behind the eye plane (w ≈ 0).
     pub fn project(&self, p: glam::DVec3, bounds: Rectangle) -> Option<glam::Vec2> {
-        let rel = (p - self.eye_f64()).as_vec3();
+        let rel = (p - self.eye()).as_vec3();
         let clip = self.view_proj_rte(bounds) * rel.extend(1.0);
         if clip.w.abs() < 1e-9 {
             return None;
@@ -161,7 +154,7 @@ impl Camera {
         plane_normal: Vec3,
         plane_point: glam::DVec3,
     ) -> glam::DVec3 {
-        let eye = self.eye_f64();
+        let eye = self.eye();
         let ndc_x = (screen.x / bounds.width) * 2.0 - 1.0;
         let ndc_y = 1.0 - (screen.y / bounds.height) * 2.0;
         let inv = self.view_proj_rte(bounds).inverse();
@@ -194,7 +187,7 @@ impl Camera {
     /// double-single relative-to-eye shaders. `high + low ≈ eye` to ~f64
     /// precision; the shader subtracts these from each vertex's own high/low.
     pub fn eye_high_low(&self) -> ([f32; 3], [f32; 3]) {
-        let e = self.eye_f64();
+        let e = self.eye();
         let high = [e.x as f32, e.y as f32, e.z as f32];
         let low = [
             (e.x - high[0] as f64) as f32,
@@ -222,7 +215,7 @@ impl Camera {
 
     /// Project a screen point onto the plane through the orbit target.
     pub fn pick_on_target_plane(&self, screen: Point, bounds: Rectangle) -> glam::DVec3 {
-        let forward = (self.target.as_vec3() - self.eye()).normalize_or(Vec3::NEG_Z);
+        let forward = (self.target.as_vec3() - self.eye().as_vec3()).normalize_or(Vec3::NEG_Z);
         self.unproject_on_plane(screen, bounds, forward, self.target)
     }
 

@@ -102,7 +102,7 @@ impl OpenCADStudio {
                         grips_to_screen_rte(
                             &tab.selected_grips,
                             cam.view_proj_rte(bounds),
-                            cam.eye_f64(),
+                            cam.eye(),
                             bounds,
                         )
                     } else if is_paper {
@@ -185,7 +185,7 @@ impl OpenCADStudio {
                     let plane = grid_plane_from_camera(cam.pitch, cam.yaw);
                     overlay::GridParams {
                         view_rot: cam.view_proj_rte(bounds),
-                        eye: cam.eye_f64(),
+                        eye: cam.eye(),
                         bounds,
                         plane,
                         origin,
@@ -227,7 +227,7 @@ impl OpenCADStudio {
             let ost_points: Vec<overlay::OstTrackPoint> = if self.snapper.otrack_enabled {
                 let (view_rot, eye) = {
                     let cam = tab.scene.camera.borrow();
-                    (cam.view_proj_rte(vp_bounds), cam.eye_f64())
+                    (cam.view_proj_rte(vp_bounds), cam.eye())
                 };
                 self.snapper
                     .tracking_points
