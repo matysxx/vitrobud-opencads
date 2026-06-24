@@ -483,10 +483,7 @@ mod tests {
             let _ = app.apply_cmd_result(r);
         }
         assert_eq!(app.tabs[0].scene.document.entities().count(), 1);
-        assert!(
-            app.tabs[0].active_cmd.is_none(),
-            "command should have ended"
-        );
+        assert!(app.tabs[0].active_cmd.is_none(), "command should have ended");
     }
 
     /// A plugin command that picks an existing object, then marks it.
