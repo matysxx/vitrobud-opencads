@@ -183,7 +183,7 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
             centers.push(c);
         }
     }
-    let (_world_offset, local_extent_max) = world_offset_from_centers(centers, &doc.header);
+    let local_extent_max = cluster_extent_from_centers(centers, &doc.header);
 
     // Default bg adaptation target at load: the model background (paper
     // bg is only relevant after the user enters a paper layout, and
@@ -273,7 +273,7 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
 
 /// Mirrors `cache::block_cache::SANE_EXTENT` — wire coords past this magnitude
 /// are treated as corruption rather than precision-relevant geometry.
-const WORLD_OFFSET_SANE_EXTENT: f64 = 1.0e8;
+const CLUSTER_SANE_EXTENT: f64 = 1.0e8;
 
 /// MSPACE-membership prep shared by the world-offset centroid scan.
 ///
@@ -378,7 +378,7 @@ fn offset_centroid(
     if !cx.is_finite() || !cy.is_finite() || !cz.is_finite() {
         return None;
     }
-    if cx.abs() > WORLD_OFFSET_SANE_EXTENT || cy.abs() > WORLD_OFFSET_SANE_EXTENT {
+    if cx.abs() > CLUSTER_SANE_EXTENT || cy.abs() > CLUSTER_SANE_EXTENT {
         return None;
     }
     Some([cx, cy, cz])
@@ -391,17 +391,16 @@ fn offset_centroid(
 /// `$EXTMIN/$EXTMAX` only as a fallback when the entity scan found nothing.
 /// `centers` is gathered by the caller's single entity walk (see
 /// [`build_derived_caches`]) so no separate AABB pass is needed.
-fn world_offset_from_centers(
+fn cluster_extent_from_centers(
     centers: Vec<[f64; 3]>,
     header: &acadrust::document::HeaderVariables,
-) -> ([f64; 3], f32) {
-    const SANE_EXTENT: f64 = WORLD_OFFSET_SANE_EXTENT;
+) -> f32 {
+    const SANE_EXTENT: f64 = CLUSTER_SANE_EXTENT;
     let entity_ok = !centers.is_empty();
 
-    // Median of per-entity centroids → robust drawing center.
-    // For local_extent_max: 95th-percentile distance from the median × 2
-    // gives the half-span of the dense cluster while leaving room for
-    // legitimate outliers (sparse leaders, dimensions, scattered annotations).
+    // 95th-percentile distance from the median × 2 gives the half-span of the
+    // dense cluster while leaving room for legitimate outliers (sparse leaders,
+    // dimensions, scattered annotations).
     let median = |v: &mut Vec<f64>| -> f64 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         v[v.len() / 2]
@@ -411,19 +410,17 @@ fn world_offset_from_centers(
         let i = ((v.len() as f64 - 1.0) * frac).round() as usize;
         v[i]
     };
-    let (ecx, ecy, ecz, espan_max) = if entity_ok {
+    let espan_max = if entity_ok {
         let mut xs: Vec<f64> = centers.iter().map(|c| c[0]).collect();
         let mut ys: Vec<f64> = centers.iter().map(|c| c[1]).collect();
-        let mut zs: Vec<f64> = centers.iter().map(|c| c[2]).collect();
         let mx = median(&mut xs);
         let my = median(&mut ys);
-        let mz = median(&mut zs);
         let mut dx: Vec<f64> = centers.iter().map(|c| (c[0] - mx).abs()).collect();
         let mut dy: Vec<f64> = centers.iter().map(|c| (c[1] - my).abs()).collect();
         let p95 = percentile(&mut dx, 0.95).max(percentile(&mut dy, 0.95));
-        (mx, my, mz, (p95 * 2.0).max(1.0) as f32)
+        (p95 * 2.0).max(1.0) as f32
     } else {
-        (0.0, 0.0, 0.0, 0.0)
+        0.0
     };
 
     // ── Header extents (fallback only) ───────────────────────────────────
@@ -436,25 +433,18 @@ fn world_offset_from_centers(
         && hmin.y.abs() < SANE_EXTENT
         && hmax.y.abs() < SANE_EXTENT;
 
-    // Entity-derived offset is preferred whenever it's available — the
-    // median-of-centroids ignores Ray/orphan/duplicate-block-defn outliers
-    // that the header EXTMIN/EXTMAX (a min/max midpoint) bakes in. Header
-    // is the fallback only when the entity scan found nothing.
-    // world_offset is being retired: geometry now reaches the GPU as absolute
-    // coordinates and the double-single relative-to-eye path keeps it precise
-    // even at UTM scale, so there's no longer a coarse origin to subtract.
-    // Always return a zero offset; only `local_extent_max` (camera/cull span)
-    // is still derived from the content.
-    let _ = (ecx, ecy, ecz);
+    // Geometry reaches the GPU as absolute coordinates (the double-single
+    // relative-to-eye path keeps it precise at UTM scale), so only the
+    // cluster span — for camera fit and cull — is derived from the content.
     if entity_ok {
-        ([0.0; 3], espan_max)
+        espan_max
     } else if header_ok {
         let hw = ((hmax.x - hmin.x) * 0.5) as f32;
         let hh = ((hmax.y - hmin.y) * 0.5) as f32;
         let hz = ((hmax.z - hmin.z) * 0.5).max(1.0) as f32;
-        ([0.0; 3], hw.max(hh).max(hz) * 10.0)
+        hw.max(hh).max(hz) * 10.0
     } else {
-        ([0.0; 3], 1e9_f32)
+        1e9_f32
     }
 }
 
