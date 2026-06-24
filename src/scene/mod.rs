@@ -7561,6 +7561,18 @@ impl Scene {
         let saved_h = vp.view_height.abs();
         let aspect_d = (vp.width / vp.height.max(1.0)).max(1e-9);
         let cluster_half = self.local_extent_max.max(1.0) as f64;
+        // Absolute drawing centre. Geometry now reaches the scene at absolute
+        // (UTM) coordinates — the old code centred the overlap test and the
+        // auto-fit on the origin, which was right only while world_offset
+        // re-centred the model there. Without it a UTM drawing sits ~5.7e6 away,
+        // so a stale `(0,0,0)` saved view failed the overlap test AND the
+        // auto-fit aimed at empty origin → blank viewports.
+        let (cx, cy) = self
+            .model_space_extents()
+            .map(|(mn, mx)| {
+                (((mn.x + mx.x) * 0.5) as f64, ((mn.y + mx.y) * 0.5) as f64)
+            })
+            .unwrap_or((0.0, 0.0));
 
         if let Some(cam) = self.camera_from_view(
             vp.view_direction,
@@ -7576,20 +7588,20 @@ impl Scene {
             let half_h = saved_h * 0.5;
             let half_w = half_h * aspect_d;
             let (tx, ty) = (cam.target.x as f64, cam.target.y as f64);
-            let overlaps = tx + half_w >= -cluster_half
-                && tx - half_w <= cluster_half
-                && ty + half_h >= -cluster_half
-                && ty - half_h <= cluster_half;
+            let overlaps = tx + half_w >= cx - cluster_half
+                && tx - half_w <= cx + cluster_half
+                && ty + half_h >= cy - cluster_half
+                && ty - half_h <= cy + cluster_half;
             if overlaps {
                 return Some(cam);
             }
         }
 
-        // Auto-fit: aim at the content cluster, drop the stale view_center.
+        // Auto-fit: aim at the content cluster centre, drop the stale view_center.
         let fit_h = cluster_half * 2.0 * 1.05;
         let tgt = acadrust::types::Vector3 {
-            x: [0.0_f64; 3][0],
-            y: [0.0_f64; 3][1],
+            x: cx,
+            y: cy,
             z: vp.view_target.z,
         };
         self.camera_from_view(
