@@ -30,6 +30,11 @@ pub fn click_hit<'a>(
     eye: glam::DVec3,
     bounds: Rectangle,
 ) -> Option<&'a str> {
+    // A click outside the pane rectangle (e.g. on the paper around a floating
+    // viewport) must not reach geometry scissored out of the viewport.
+    if cursor.x < 0.0 || cursor.x > bounds.width || cursor.y < 0.0 || cursor.y > bounds.height {
+        return None;
+    }
     let mut best_dist = CLICK_THRESHOLD_PX;
     let mut best: Option<&str> = None;
 
@@ -98,6 +103,9 @@ pub fn click_hits_all<'a>(
     eye: glam::DVec3,
     bounds: Rectangle,
 ) -> Vec<&'a str> {
+    if cursor.x < 0.0 || cursor.x > bounds.width || cursor.y < 0.0 || cursor.y > bounds.height {
+        return Vec::new();
+    }
     let mut hits: Vec<(f32, &str)> = Vec::new();
     for wire in wires {
         let mut prev: Option<Point> = None;
@@ -305,12 +313,15 @@ pub fn box_hit<'a>(
     eye: glam::DVec3,
     bounds: Rectangle,
 ) -> Vec<&'a str> {
-    let min_x = corner_a.x.min(corner_b.x);
-    let max_x = corner_a.x.max(corner_b.x);
-    let min_y = corner_a.y.min(corner_b.y);
-    let max_y = corner_a.y.max(corner_b.y);
+    // Clamp the selection box to the pane rectangle so it can't reach geometry
+    // the GPU scissored out of a floating viewport (the hit-test wire set runs
+    // past the visible rect). No-op in model space, where bounds is the canvas.
+    let min_x = corner_a.x.min(corner_b.x).max(0.0);
+    let max_x = corner_a.x.max(corner_b.x).min(bounds.width);
+    let min_y = corner_a.y.min(corner_b.y).max(0.0);
+    let max_y = corner_a.y.max(corner_b.y).min(bounds.height);
 
-    // Ignore zero-area boxes.
+    // Ignore zero-area boxes (including a box clamped entirely off-pane).
     if (max_x - min_x) < 1.0 || (max_y - min_y) < 1.0 {
         return vec![];
     }
@@ -457,6 +468,13 @@ pub fn poly_hit<'a>(
                     continue;
                 }
                 let sp = world_to_screen(wp64([px, py, pz], low, i), view_rot, eye, bounds);
+                // Reject points the GPU scissored out of a floating viewport so
+                // the lasso can't reach clipped geometry. No-op in model space.
+                if sp.x < 0.0 || sp.x > bounds.width || sp.y < 0.0 || sp.y > bounds.height {
+                    all_inside = false;
+                    prev = None;
+                    continue;
+                }
                 if crossing {
                     if point_in_polygon(sp, poly) {
                         hit = true;
@@ -643,6 +661,11 @@ fn hatch_contains_screen_point(
     eye: glam::DVec3,
     bounds: Rectangle,
 ) -> bool {
+    // A cursor outside the pane rectangle can't pick a hatch scissored out of a
+    // floating viewport. No-op in model space (bounds is the canvas).
+    if cursor.x < 0.0 || cursor.x > bounds.width || cursor.y < 0.0 || cursor.y > bounds.height {
+        return false;
+    }
     // boundary verts are stored as small f32 offsets from
     // `world_origin` (f64). Reconstruct offset-rel WCS before
     // projecting to screen.

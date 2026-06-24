@@ -490,6 +490,16 @@ impl Snapper {
         let mut best_rank = u8::MAX;
         let mut best_d2 = f32::MAX;
 
+        // Reject candidates projecting outside the pane rectangle. The GPU
+        // scissors viewport content to exactly `bounds`, but the hit-test wire
+        // set reaches past it (the cull keeps a margin and lines run beyond the
+        // rect), so without this a snap could land on geometry clipped out of
+        // the viewport. `bounds` is the full canvas in model space, so this is a
+        // no-op there.
+        let in_bounds = |s: Point| -> bool {
+            s.x >= 0.0 && s.x <= bounds.width && s.y >= 0.0 && s.y <= bounds.height
+        };
+
         // ── Grid snap — a SEPARATE system from object snap ───────────────────
         // Grid snap has its own toggle (`grid_snap_on`) and is independent of
         // the object-snap master (`snap_enabled`) and the object-snap mode set.
@@ -511,7 +521,7 @@ impl Snapper {
                 let gp = origin + ax * ux + ay * uy + az * uz;
                 let screen = world_to_screen(gp, view_rot, eye, bounds);
                 let d2 = dist2(screen, cursor_screen);
-                if d2 < radius2 {
+                if d2 < radius2 && in_bounds(screen) {
                     best = Some(SnapResult {
                         world: gp,
                         screen,
@@ -570,6 +580,9 @@ impl Snapper {
 
         let mut try_pt = |world: glam::DVec3, snap_type: SnapType| {
             let screen = world_to_screen(world, view_rot, eye, bounds);
+            if !in_bounds(screen) {
+                return;
+            }
             let d2 = dist2(screen, cursor_screen);
             // `!(d2 < radius2)` (not `d2 >= radius2`) so a NaN distance from
             // degenerate geometry is rejected: with priority selection a NaN
@@ -855,10 +868,13 @@ impl Snapper {
                         }
                     };
                     let rank = snap_priority(SnapType::Tangent);
-                    if d2 < radius2 && (rank < best_rank || (rank == best_rank && d2 < best_d2)) {
+                    let screen_pt = world_to_screen(world_pt.as_dvec3(), view_rot, eye, bounds);
+                    if d2 < radius2
+                        && in_bounds(screen_pt)
+                        && (rank < best_rank || (rank == best_rank && d2 < best_d2))
+                    {
                         best_rank = rank;
                         best_d2 = d2;
-                        let screen_pt = world_to_screen(world_pt.as_dvec3(), view_rot, eye, bounds);
                         let tangent_obj = match tg {
                             TangentGeom::Line { p1, p2 } => TangentObject::Line {
                                 p1: glam::DVec3::new(p1[0] as f64, p1[1] as f64, p1[2] as f64),
