@@ -7,15 +7,34 @@
 //
 // The function is async so the UI remains responsive while the job is queued.
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::io::pdf_export;
 use crate::io::plot_style::PlotStyleTable;
 use crate::scene::model::hatch_model::HatchModel;
 use crate::scene::WireModel;
 
+// Printing routes through the native PDF pipeline + the OS print command, so it
+// is native-only; the web build gets a stub so the call site still compiles.
+#[cfg(target_arch = "wasm32")]
+pub async fn print_wires(
+    _wires: Vec<WireModel>,
+    _hatches: Vec<HatchModel>,
+    _wipeouts: Vec<HatchModel>,
+    _paper_w: f64,
+    _paper_h: f64,
+    _offset_x: f32,
+    _offset_y: f32,
+    _rotation_deg: i32,
+    _plot_style: Option<PlotStyleTable>,
+) -> Result<String, String> {
+    Err("Printing is not available in the web version.".into())
+}
+
 /// Render `wires` (plus hatch / wipeout fills) to a temp PDF and dispatch it
 /// to the default system printer.
 ///
 /// Returns `Ok(printer_name)` on success or `Err(message)` on failure.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn print_wires(
     wires: Vec<WireModel>,
     hatches: Vec<HatchModel>,
@@ -47,6 +66,7 @@ pub async fn print_wires(
 }
 
 /// Platform-specific dispatch of a PDF path to the system printer.
+#[cfg(not(target_arch = "wasm32"))]
 fn dispatch_to_printer(path: &std::path::Path) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {

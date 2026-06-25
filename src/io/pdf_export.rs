@@ -9,14 +9,42 @@
 // drawing origin at the paper origin.
 
 use crate::io::plot_style::PlotStyleTable;
-use crate::scene::model::hatch_model::{HatchModel, HatchPattern};
+use crate::scene::model::hatch_model::HatchModel;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::scene::model::hatch_model::HatchPattern;
 use crate::scene::WireModel;
+#[cfg(not(target_arch = "wasm32"))]
 use printpdf::{
     Color, Line, LineCapStyle, LineJoinStyle, LinePoint, Mm, Op, PaintMode, PdfDocument, PdfPage,
     PdfSaveOptions, Point, Polygon, PolygonRing, Pt, Rgb, WindingOrder,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 use std::path::Path;
+
+// The web build has no `printpdf` (it pulls a wasm-incompatible `memchr` via
+// lopdf → nom_locate) and no filesystem, so PDF export is native-only; the web
+// build gets these stubs so the call sites still compile.
+#[cfg(target_arch = "wasm32")]
+pub fn export_pdf(
+    _wires: &[WireModel],
+    _hatches: &[HatchModel],
+    _wipeouts: &[HatchModel],
+    _paper_w: f64,
+    _paper_h: f64,
+    _offset_x: f32,
+    _offset_y: f32,
+    _rotation_deg: i32,
+    _path: &Path,
+    _plot_style: Option<&PlotStyleTable>,
+) -> Result<(), String> {
+    Err("PDF export is not available in the web version.".into())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn pick_pdf_path_owned(_stem: String) -> Option<std::path::PathBuf> {
+    None
+}
 
 // ── Public entry point ────────────────────────────────────────────────────
 
@@ -26,6 +54,7 @@ use std::path::Path;
 /// - `offset_x` / `offset_y`: added to every wire coordinate so the drawing
 ///   origin maps to the bottom-left corner of the page.
 /// - `rotation_deg`: 0 | 90 | 180 | 270 — rotates the entire drawing on the page.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn export_pdf(
     wires: &[WireModel],
     hatches: &[HatchModel],
@@ -54,6 +83,7 @@ pub fn export_pdf(
 }
 
 /// Show a PDF save-file dialog and return the chosen path (or None if cancelled).
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn pick_pdf_path_owned(stem: String) -> Option<std::path::PathBuf> {
     rfd::AsyncFileDialog::new()
         .set_title("Export as PDF")
@@ -67,6 +97,7 @@ pub async fn pick_pdf_path_owned(stem: String) -> Option<std::path::PathBuf> {
 
 // ── PDF builder ───────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn build_pdf(
     wires: &[WireModel],
     hatches: &[HatchModel],
@@ -235,6 +266,7 @@ fn build_pdf(
     doc.save(&PdfSaveOptions::default(), &mut warnings)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn flush_line(ops: &mut Vec<Op>, pts: &[LinePoint]) {
     if pts.len() < 2 {
         return;
@@ -252,6 +284,7 @@ fn flush_line(ops: &mut Vec<Op>, pts: &[LinePoint]) {
 /// rings so islands and holes render correctly under the even-odd rule.
 /// Mirrors `scene::paper_canvas::draw_hatch`: solid → fill, pattern → outline,
 /// gradient → solid fill of the averaged colour.
+#[cfg(not(target_arch = "wasm32"))]
 fn emit_hatch(ops: &mut Vec<Op>, hatch: &HatchModel, ox: f32, oy: f32) {
     if hatch.boundary.is_empty() {
         return;
