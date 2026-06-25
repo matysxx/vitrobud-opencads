@@ -158,6 +158,11 @@ pub(super) struct DocumentTab {
     /// of the model-space shader. The scene is still constructed so the
     /// rest of the code can treat it as a normal tab when reading.
     pub(super) is_start: bool,
+    /// Interactive PAN mode (the PAN command / tool). While active, a left-
+    /// button drag pans the view instead of selecting — the only pan path on a
+    /// device with no middle mouse button (a trackpad / web client). Exited
+    /// with Esc or by starting another command.
+    pub(super) pan_mode: bool,
     /// Per-plugin document state (`plugin::BuiltinPlugin` manifest id → state).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(super) plugin_state: HashMap<&'static str, Box<dyn Any + Send + Sync>>,
@@ -377,6 +382,7 @@ impl DocumentTab {
             active_mleader_style: "Standard".to_string(),
             last_synced_camera_gen: 0,
             is_start: false,
+            pan_mode: false,
             plugin_state: HashMap::new(),
             suspended_cmd: None,
         }

@@ -1835,6 +1835,18 @@ impl OpenCADStudio {
                     self.text_inline_cancel();
                     return self.post_editor_closed(false);
                 }
+                // Leave interactive PAN mode (and end any in-flight pan drag).
+                if self.tabs[self.active_tab].pan_mode {
+                    let i = self.active_tab;
+                    self.tabs[i].pan_mode = false;
+                    {
+                        let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                        sel.middle_down = false;
+                        sel.middle_last_pos = None;
+                    }
+                    self.command_line.push_output("PAN ended.");
+                    return Task::none();
+                }
                 // Grip popup intercepts Escape — dismisses the menu
                 // without doing anything else.
                 if self.grip_popup.take().is_some() {
@@ -3217,6 +3229,16 @@ impl OpenCADStudio {
                 };
                 let (vw, vh) = vp_size;
 
+                // PAN mode: a left press begins a pan drag. Reuse the middle-
+                // button pan path (the move handler pans whenever `middle_down`),
+                // so no selection/pick logic runs while panning.
+                if self.tabs[i].pan_mode {
+                    let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                    sel.middle_down = true;
+                    sel.middle_last_pos = Some(p);
+                    return Task::none();
+                }
+
                 if vw > 1.0 && vh > 1.0 {
                     let rot = self.tabs[i].scene.active_view_rotation_mat();
                     // Map the cursor into whichever area owns the cube (active
@@ -3381,6 +3403,15 @@ impl OpenCADStudio {
 
             Message::ViewportLeftRelease => {
                 let i = self.active_tab;
+
+                // PAN mode: end the pan drag but stay in pan mode for the next
+                // drag (exit is Esc / another command). Mirror of the press.
+                if self.tabs[i].pan_mode {
+                    let mut sel = self.tabs[i].scene.selection.borrow_mut();
+                    sel.middle_down = false;
+                    sel.middle_last_pos = None;
+                    return Task::none();
+                }
 
                 // End an in-flight tile-divider drag. Any tile that fell
                 // below the minimum (viewcube fits comfortably) gets

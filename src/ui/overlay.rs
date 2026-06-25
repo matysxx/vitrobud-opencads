@@ -129,6 +129,7 @@ pub fn selection_overlay<'a>(
     cursor_screen: Point,
     show_viewcube: bool,
     tile_edges: Vec<crate::scene::TileEdge>,
+    pan_mode: bool,
 ) -> Element<'a, Message> {
     canvas(SelectionCanvas {
         selection,
@@ -140,6 +141,7 @@ pub fn selection_overlay<'a>(
         cursor_screen,
         show_viewcube,
         tile_edges,
+        pan_mode,
     })
     .width(Length::Fill)
     .height(Length::Fill)
@@ -156,6 +158,9 @@ struct SelectionCanvas {
     cursor_screen: Point,
     show_viewcube: bool,
     tile_edges: Vec<crate::scene::TileEdge>,
+    /// Interactive PAN mode: the crosshair is hidden and the cursor becomes a
+    /// hand so the viewport reads as a draggable surface.
+    pan_mode: bool,
 }
 
 impl SelectionCanvas {
@@ -207,6 +212,15 @@ impl canvas::Program<Message> for SelectionCanvas {
         bounds: iced::Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        // PAN mode owns the whole viewport: an open hand when hovering, a
+        // closed hand while dragging.
+        if self.pan_mode && cursor.is_over(bounds) {
+            return if self.selection.middle_down {
+                mouse::Interaction::Grabbing
+            } else {
+                mouse::Interaction::Grab
+            };
+        }
         if self.show_viewcube {
             if let Some(pos) = cursor.position_in(bounds) {
                 use crate::scene::{VIEWCUBE_DRAW_PX, VIEWCUBE_PAD};
@@ -757,7 +771,8 @@ impl canvas::Program<Message> for SelectionCanvas {
         // arrow (see `mouse_interaction`); drawing the CAD crosshair on
         // top of it would double up the visual feedback.
         let over_divider = self.tile_edge_under(cursor, bounds).is_some();
-        if !over_viewcube && !over_divider {
+        // PAN mode replaces the crosshair with a hand cursor.
+        if !over_viewcube && !over_divider && !self.pan_mode {
             if let Some(cp) = self.selection.last_move_pos {
                 let color = Color {
                     r: 0.85,

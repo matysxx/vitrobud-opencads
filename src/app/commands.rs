@@ -29,6 +29,9 @@ impl OpenCADStudio {
             self.tabs[i].scene.clear_preview_wire();
             self.tabs[i].active_cmd = None;
         }
+        // Starting any command leaves interactive PAN mode (the PAN arm below
+        // re-enables it).
+        self.tabs[i].pan_mode = false;
         // Reset the last committed point so the first click of the new command
         // is not constrained by ortho/polar relative to a previous command's endpoint.
         self.last_point = None;
@@ -5148,6 +5151,14 @@ impl OpenCADStudio {
                 self.command_line.push_output("Display regenerated.");
             }
 
+            // Interactive pan: left-drag pans the view until Esc. The only pan
+            // path when there is no middle mouse button (trackpad / web).
+            "PAN" | "P" => {
+                self.tabs[i].pan_mode = true;
+                self.command_line
+                    .push_output("PAN: drag with the left mouse button. Press Esc to exit.");
+            }
+
             // ── TABLE cell editing ─────────────────────────────────────────────
             // TABLE CELL <row> <col> <text> — set text for a cell in the selected Table
             cmd if cmd.starts_with("TABLE ") => {
@@ -5972,7 +5983,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "LAYER", "LAYERS", "LAYISO", "LAYON", "LAYOUTMANAGER", "LAYOUTPANEL", "LAYOUTTAB", "LAYTHW",
         "LAYUNISO", "LI", "LINETYPE", "LIST", "LTSCALE", "LWDISPLAY", "MASSPROP", "MLEADERSTYLE",
         "MLSTYLE", "MS", "MSPACE", "NAVVCUBE", "NEW", "OBJIMPORT", "OPEN", "ORTHO",
-        "PAGESETUP", "PERF", "PERSP", "PLOT", "PLOTSTYLE", "PLOTSTYLEEDITOR", "PLOTSTYLEPANEL", "PR",
+        "P", "PAN", "PAGESETUP", "PERF", "PERSP", "PLOT", "PLOTSTYLE", "PLOTSTYLEEDITOR",
+        "PLOTSTYLEPANEL", "PR",
         "PRINT", "PROPERTIES", "PROPS", "PSPACE", "PURGE", "QS", "QSAVE", "QSELECT",
         "QUIT", "REDO", "REDRAW", "REDRWALL", "REGEN", "REGENALL", "RENAME", "REPORT",
         "SA", "SAVE", "SAVEAS", "SCALETEXT", "SELECTALL", "SELECTSIMILAR", "SELSIM", "SHEETSET",

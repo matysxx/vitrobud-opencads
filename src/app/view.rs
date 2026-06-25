@@ -263,6 +263,7 @@ impl OpenCADStudio {
                 tab.last_cursor_screen,
                 !is_paper && self.show_viewcube,
                 tile_edges,
+                tab.pan_mode,
             )
         };
 
