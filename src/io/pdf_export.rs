@@ -15,8 +15,8 @@ use crate::scene::model::hatch_model::HatchPattern;
 use crate::scene::WireModel;
 #[cfg(not(target_arch = "wasm32"))]
 use printpdf::{
-    Color, Line, LineCapStyle, LineJoinStyle, LinePoint, Mm, Op, PaintMode, PdfDocument, PdfPage,
-    PdfSaveOptions, Point, Polygon, PolygonRing, Pt, Rgb, WindingOrder,
+    Color, Line, LineCapStyle, LineDashPattern, LineJoinStyle, LinePoint, Mm, Op, PaintMode,
+    PdfDocument, PdfPage, PdfSaveOptions, Point, Polygon, PolygonRing, Pt, Rgb, WindingOrder,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
@@ -163,8 +163,12 @@ fn build_pdf(
 
     // mm to PDF points (1 mm = 2.834645 pt).
     const MM_TO_PT: f32 = 2.834645;
-    // Screen px to PDF points (approximate at 96 dpi).
-    const PX_TO_PT: f32 = 0.35278;
+    // `wire.line_weight_px` is the on-screen pixel weight: mm × (96/25.4) × 2.0,
+    // where the ×2 is a screen-legibility boost (see render.rs). Print wants the
+    // true physical weight, so undo both the 96-dpi scaling and the boost before
+    // converting to points — otherwise weights export ~2× too heavy in pixels
+    // (and the old `× 0.35278` left them inconsistent with the physical mm).
+    const LW_PX_TO_PT: f32 = MM_TO_PT / ((96.0 / 25.4) * 2.0);
 
     // ── Hatch / wipeout fills (rendered before wires so wires draw on top,
     //    matching paper_canvas ordering). Each `emit_hatch` sets its own
@@ -175,6 +179,9 @@ fn build_pdf(
 
     let mut last_color: Option<[f32; 3]> = None;
     let mut last_lw: Option<f32> = None;
+    // Current PDF dash array (empty = solid). Tracked so the dash op is only
+    // re-emitted when it actually changes between wires.
+    let mut last_dash: Option<Vec<i64>> = None;
 
     for wire in wires {
         let [mut r, mut g, mut b, a] = wire.color;
@@ -233,10 +240,23 @@ fn build_pdf(
         }
 
         // Line weight: CTB override (in pt) or screen px → points.
-        let lw_pt = lw_override.unwrap_or_else(|| (wire.line_weight_px * PX_TO_PT).max(0.1));
+        let lw_pt = lw_override.unwrap_or_else(|| (wire.line_weight_px * LW_PX_TO_PT).max(0.1));
         if last_lw.map(|l| (l - lw_pt).abs() > 0.01).unwrap_or(true) {
             ops.push(Op::SetOutlineThickness { pt: Pt(lw_pt) });
             last_lw = Some(lw_pt);
+        }
+
+        // Linetype dash pattern. Without this every wire exported as a solid
+        // line regardless of its linetype (dashed / centre / dash-dot). (#155)
+        let dash_arr = dash_array_from_pattern(wire.pattern_length, &wire.pattern, MM_TO_PT);
+        if last_dash.as_deref() != Some(dash_arr.as_slice()) {
+            let dash = if dash_arr.is_empty() {
+                LineDashPattern::default()
+            } else {
+                LineDashPattern::from_array(&dash_arr, 0)
+            };
+            ops.push(Op::SetLineDashPattern { dash });
+            last_dash = Some(dash_arr);
         }
 
         // Emit segments (NaN = pen-up).
@@ -264,6 +284,31 @@ fn build_pdf(
 
     let mut warnings = Vec::new();
     doc.save(&PdfSaveOptions::default(), &mut warnings)
+}
+
+/// Build a PDF dash array (in points) from a WireModel linetype pattern.
+///
+/// `pattern` holds the linetype run lengths in paper-mm: positive = dash,
+/// negative = gap, exactly 0 = a dot, and trailing zeros are padding — so the
+/// real length is the index of the last non-zero element + 1 (same convention
+/// the wire shader uses). Returns an empty vec for a solid line. printpdf's
+/// `LineDashPattern` holds at most six entries, so longer patterns are
+/// truncated to three dash/gap pairs.
+#[cfg(not(target_arch = "wasm32"))]
+fn dash_array_from_pattern(pattern_length: f32, pattern: &[f32; 8], mm_to_pt: f32) -> Vec<i64> {
+    if pattern_length <= 1e-6 {
+        return Vec::new();
+    }
+    let count = match pattern.iter().rposition(|&v| v != 0.0) {
+        Some(i) => (i + 1).min(6),
+        None => return Vec::new(),
+    };
+    pattern[..count]
+        .iter()
+        // Round to whole points (printpdf dash entries are integers) and keep a
+        // 1 pt floor so a zero-length dot still prints as a short mark.
+        .map(|&v| (((v.abs() * mm_to_pt).round()) as i64).max(1))
+        .collect()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
