@@ -152,21 +152,68 @@ fn offset_lwpolyline(p: &LwPolyline, dist: f64, side_pt: Vec3) -> Option<EntityT
 
     let n_segs = if p.is_closed { n } else { n - 1 };
 
-    // Determine offset sign from the first non-degenerate segment.
-    let sign: f64 = (0..n_segs).find_map(|i| {
-        let v0 = &p.vertices[i];
-        let v1 = &p.vertices[(i + 1) % n];
-        let dx = v1.location.x - v0.location.x;
-        let dy = v1.location.y - v0.location.y;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 1e-12 {
-            return None;
+    // Determine the offset sign (which side the left normal `(-dy, dx)` is
+    // scaled toward).
+    let sign: f64 = if p.is_closed {
+        // For a closed loop the side is unambiguous: a pick inside the loop
+        // offsets inward, outside offsets outward. Decide that with a
+        // point-in-polygon test and map it to the normal via the winding —
+        // the left normal points inward for a CCW loop. (The first-segment
+        // heuristic used for open paths misreads a pick placed *beside* the
+        // shape: it is outside the loop yet on the inner half-plane of the
+        // first edge's infinite line, so a CCW rectangle offset outward by a
+        // side pick wrongly collapsed inward.)
+        let pts: Vec<[f64; 2]> = p
+            .vertices
+            .iter()
+            .map(|v| [v.location.x, v.location.y])
+            .collect();
+        // Signed area ×2: > 0 ⇒ counter-clockwise.
+        let mut area2 = 0.0;
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = pts[(i + 1) % pts.len()];
+            area2 += a[0] * b[1] - b[0] * a[1];
         }
-        let vx = side_pt.x as f64 - v0.location.x;
-        let vy = side_pt.y as f64 - v0.location.y;
-        let cross = dx * vy - dy * vx;
-        Some(if cross >= 0.0 { 1.0 } else { -1.0 })
-    })?;
+        let ccw = area2 > 0.0;
+        // Ray-cast point-in-polygon for the pick point.
+        let (sx, sy) = (side_pt.x as f64, side_pt.y as f64);
+        let mut inside = false;
+        let mut j = pts.len() - 1;
+        for i in 0..pts.len() {
+            let (xi, yi) = (pts[i][0], pts[i][1]);
+            let (xj, yj) = (pts[j][0], pts[j][1]);
+            if ((yi > sy) != (yj > sy))
+                && (sx < (xj - xi) * (sy - yi) / (yj - yi) + xi)
+            {
+                inside = !inside;
+            }
+            j = i;
+        }
+        // left normal inward ⇔ CCW; want inward ⇔ pick is inside.
+        if inside == ccw {
+            1.0
+        } else {
+            -1.0
+        }
+    } else {
+        // Open path: no inside/outside, so use the side of the first
+        // non-degenerate segment relative to the pick.
+        (0..n_segs).find_map(|i| {
+            let v0 = &p.vertices[i];
+            let v1 = &p.vertices[(i + 1) % n];
+            let dx = v1.location.x - v0.location.x;
+            let dy = v1.location.y - v0.location.y;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-12 {
+                return None;
+            }
+            let vx = side_pt.x as f64 - v0.location.x;
+            let vy = side_pt.y as f64 - v0.location.y;
+            let cross = dx * vy - dy * vx;
+            Some(if cross >= 0.0 { 1.0 } else { -1.0 })
+        })?
+    };
 
     // Offset each segment.  A segment may be degenerate (zero length) → None.
     struct OffSeg {
@@ -770,3 +817,61 @@ impl CadCommand for OffsetCommand {
 
 // ── Autocomplete registry ─────────────────────────────────
 inventory::submit!(crate::command::CommandRegistration { names: &["O", "OFFSET"] });  // OffsetCommand
+
+#[cfg(test)]
+mod offset_tests {
+    use super::*;
+    use acadrust::types::Vector2;
+
+    fn rect(corners: &[[f64; 2]]) -> LwPolyline {
+        LwPolyline {
+            vertices: corners
+                .iter()
+                .map(|&[x, y]| LwVertex::new(Vector2::new(x, y)))
+                .collect(),
+            is_closed: true,
+            ..Default::default()
+        }
+    }
+
+    /// Offset `corners` by 10 toward `side` and return the result's XY bounds.
+    fn offset_bbox(corners: &[[f64; 2]], side: Vec3) -> [f64; 4] {
+        let out = offset_lwpolyline(&rect(corners), 10.0, side);
+        let Some(EntityType::LwPolyline(r)) = out else {
+            panic!("offset did not return an lwpolyline");
+        };
+        let (mut minx, mut miny, mut maxx, mut maxy) =
+            (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for v in &r.vertices {
+            minx = minx.min(v.location.x);
+            miny = miny.min(v.location.y);
+            maxx = maxx.max(v.location.x);
+            maxy = maxy.max(v.location.y);
+        }
+        [minx, miny, maxx, maxy]
+    }
+
+    fn approx(a: [f64; 4], b: [f64; 4]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6)
+    }
+
+    // A pick *outside* the loop must offset outward and a pick *inside* must
+    // offset inward, regardless of the rectangle's winding. Regression for the
+    // first-segment sign heuristic, which sent a CCW rectangle inward when the
+    // outward pick sat beside it (issue 166).
+    #[test]
+    fn rect_offset_direction_is_winding_independent() {
+        let ccw = [[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]];
+        let cw = [[0.0, 0.0], [0.0, 60.0], [100.0, 60.0], [100.0, 0.0]];
+        let out = [-10.0, -10.0, 110.0, 70.0];
+        let inn = [10.0, 10.0, 90.0, 50.0];
+        // Pick beside the rectangle (outside, mid-height) → outward, both windings.
+        assert!(approx(offset_bbox(&ccw, Vec3::new(-10.0, 30.0, 0.0)), out));
+        assert!(approx(offset_bbox(&cw, Vec3::new(-10.0, 30.0, 0.0)), out));
+        // Pick inside → inward, both windings.
+        assert!(approx(offset_bbox(&ccw, Vec3::new(50.0, 30.0, 0.0)), inn));
+        assert!(approx(offset_bbox(&cw, Vec3::new(50.0, 30.0, 0.0)), inn));
+        // Pick clearly outside below → outward (the case that worked before).
+        assert!(approx(offset_bbox(&ccw, Vec3::new(50.0, -10.0, 0.0)), out));
+    }
+}
