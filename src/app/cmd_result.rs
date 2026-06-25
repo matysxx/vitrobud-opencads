@@ -33,6 +33,114 @@ impl OpenCADStudio {
         }
     }
 
+    /// Run one whole command-line string. A single word or an inline-argument
+    /// command (`PDMODE 3`, `LAYER Walls`, `UCS Z 90` pasted as one line)
+    /// dispatches as-is; for a multi-token line whose first word starts an
+    /// interactive tool (`LINE 0,0 10,10`) the first word starts the tool and the
+    /// remaining tokens are fed as points / option keywords, then the command is
+    /// terminated as if Enter were pressed. Shared by the GUI command line and
+    /// the headless automation feeder so both behave identically.
+    pub(super) fn run_command_line(&mut self, cmd: &str) -> Task<Message> {
+        let i = self.active_tab;
+        let tokens: Vec<&str> = cmd.split_whitespace().collect();
+        if tokens.len() <= 1 {
+            return self.dispatch_command(cmd);
+        }
+        // Plugin commands parse their own inline arguments from the whole line
+        // (e.g. `HC_PIPE 2B 2C 1.25 0.013`), so offer the full command to plugin
+        // dispatch first. A built-in interactive tool matches only its bare name
+        // (`LINE`), so the full line is not a plugin command and falls through to
+        // the first-word + fed-tokens path below. (#162)
+        if crate::plugin::try_dispatch(self, i, cmd) {
+            let toks: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
+            self.finish_active_command(&toks);
+            return Task::none();
+        }
+        let _ = self.dispatch_command(tokens[0]);
+        if self.tabs[i].active_cmd.is_none() {
+            // Not an interactive tool — an inline-argument command (`PDMODE 3`).
+            return self.dispatch_command(cmd);
+        }
+        let toks: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
+        self.finish_active_command(&toks);
+        Task::none()
+    }
+
+    /// Feed `tokens[1..]` to the active interactive command as points / option
+    /// keywords, then terminate it as if Enter were pressed. No-op when no
+    /// command is active.
+    pub(super) fn finish_active_command(&mut self, tokens: &[String]) {
+        let i = self.active_tab;
+        if self.tabs[i].active_cmd.is_none() {
+            return;
+        }
+        self.last_point = None;
+        for tok in &tokens[1..] {
+            if self.tabs[i].active_cmd.is_none() {
+                break;
+            }
+            self.feed_active_cmd(tok);
+        }
+        let _ = self.feed_command(StepInput::Enter);
+    }
+
+    /// Classify one typed token into a [`StepInput`] and route it through the
+    /// shared [`Self::feed_command`]. An object-pick step takes a hex handle; a
+    /// coordinate is parsed (and, like the GUI command line, interpreted in the
+    /// active UCS); anything else is an option keyword / value. Used by both the
+    /// GUI command line and headless automation.
+    pub(super) fn feed_active_cmd(&mut self, token: &str) {
+        let i = self.active_tab;
+        // Object-pick step: the token is a handle (as returned by `query`).
+        if self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|c| c.needs_entity_pick())
+        {
+            if let Ok(v) = u64::from_str_radix(token.trim_start_matches("0x"), 16) {
+                let handle = Handle::new(v);
+                let pt = self.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(handle)
+                    .map(|e| {
+                        let bb = e.as_entity().bounding_box();
+                        glam::Vec3::new(
+                            ((bb.min.x + bb.max.x) * 0.5) as f32,
+                            ((bb.min.y + bb.max.y) * 0.5) as f32,
+                            0.0,
+                        )
+                    })
+                    .unwrap_or(glam::Vec3::ZERO);
+                let _ = self.feed_command(StepInput::EntityPick(handle, pt.as_dvec3()));
+            }
+            return;
+        }
+        if let Some((coord, kind)) = super::helpers::parse_coord(token) {
+            // Match the GUI command line: typed coordinates are in the active
+            // UCS (relative offsets are rotated by the UCS axes), so a multi-
+            // token `LINE 0,0 10,10` under a rotated UCS lands correctly.
+            let ucs = self.tabs[i].active_ucs.clone();
+            let wcs = match (matches!(kind, super::helpers::CoordKind::Relative), self.last_point) {
+                (true, Some(base)) => {
+                    base + match &ucs {
+                        Some(u) => super::helpers::ucs_rotate_vec(coord, u),
+                        None => coord,
+                    }
+                }
+                _ => match &ucs {
+                    Some(u) => super::helpers::ucs_to_wcs(coord, u),
+                    None => coord,
+                },
+            };
+            self.last_point = Some(wcs);
+            self.push_ucs_to_cmd(i);
+            let _ = self.feed_command(StepInput::Point(wcs.as_dvec3()));
+        } else {
+            let _ = self.feed_command(StepInput::Text(token.to_string()));
+        }
+    }
+
     pub(super) fn apply_cmd_result(&mut self, result: CmdResult) -> Task<Message> {
         let i = self.active_tab;
         match result {

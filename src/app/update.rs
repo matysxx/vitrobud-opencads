@@ -1413,21 +1413,11 @@ impl OpenCADStudio {
             }
 
             Message::CommandInput(s) => {
-                // Space submits the current input the same way Enter does
-                // (CAD convention) — unless the active command is collecting
-                // free-form text (TEXT / MTEXT / DDEDIT / attribute value
-                // prompts) where Space must reach the buffer as a literal
-                // character. `wants_text_with_spaces()` flags those prompts.
-                let i = self.active_tab;
-                let allow_literal_space = self.tabs[i]
-                    .active_cmd
-                    .as_ref()
-                    .map(|c| c.wants_text_input() && c.wants_text_with_spaces())
-                    .unwrap_or(false);
-                if !allow_literal_space && s.ends_with(' ') {
-                    self.command_line.input = s.trim_end_matches(' ').to_string();
-                    return Task::done(Message::CommandSubmit);
-                }
+                // Space is a literal character so a whole command line — `UCS Z
+                // 90`, `LINE 0,0 10,10`, `PDMODE 3` — can be typed before Enter.
+                // CommandSubmit (Enter) tokenises and runs the line through the
+                // shared runner. (Unfocused Space still repeats the last command
+                // via CommandSpace.)
                 self.command_line.input = s;
                 // Typing invalidates the previous arrow-key cursor —
                 // the matches list has likely changed.
@@ -1637,6 +1627,36 @@ impl OpenCADStudio {
                     }
                 }
                 let i = self.active_tab;
+                // A whole multi-token command line (`UCS Z 90`, `LINE 0,0
+                // 10,10`, `PDMODE 3`) — typable now that Space is literal — is
+                // processed as one unit: feed the tokens to a running command,
+                // or start a new one through the shared runner that the headless
+                // automation feeder uses too.
+                {
+                    // Skip token-splitting when the active command collects
+                    // free-form text with spaces (TEXT / MTEXT / a name) — it
+                    // wants the whole line as one input.
+                    let wants_spaces = self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.wants_text_input() && c.wants_text_with_spaces())
+                        .unwrap_or(false);
+                    let raw = self.command_line.input.clone();
+                    let toks: Vec<String> = raw.split_whitespace().map(String::from).collect();
+                    if toks.len() > 1 && !wants_spaces {
+                        self.command_line.input.clear();
+                        if self.tabs[i].active_cmd.is_some() {
+                            for tok in &toks {
+                                if self.tabs[i].active_cmd.is_none() {
+                                    break;
+                                }
+                                self.feed_active_cmd(tok);
+                            }
+                            return Task::none();
+                        }
+                        return self.run_command_line(&raw);
+                    }
+                }
                 // With the command line empty, a typed dynamic-input value
                 // commits as a point pick instead of an empty submit.
                 if self.tabs[i].active_cmd.is_some() && self.command_line.input.trim().is_empty() {
@@ -8584,7 +8604,7 @@ impl OpenCADStudio {
     /// Hand the active command the current UCS (as a UCS→wire affine) so
     /// axis-aligned constructions build square to the user's coordinate system.
     /// No-op for commands that don't override `set_ucs`.
-    fn push_ucs_to_cmd(&mut self, i: usize) {
+    pub(super) fn push_ucs_to_cmd(&mut self, i: usize) {
         let ucs = self.tabs[i].ucs_wire_affine();
         if let Some(c) = self.tabs[i].active_cmd.as_mut() {
             c.set_ucs(ucs);
