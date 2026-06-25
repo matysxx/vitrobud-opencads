@@ -567,6 +567,13 @@ impl Ribbon {
             return self.prop_lw_overlay();
         }
 
+        // Style combo dropdowns (annotate tab) float as overlays so the list
+        // isn't clipped by the fixed ribbon-row height, the way the Draw-tab
+        // dropdowns already are. (#153)
+        if let Some(ov) = self.style_combo_overlay(open_id) {
+            return Some(ov);
+        }
+
         let module = self.modules.get(self.active)?;
         let groups = module.ribbon_groups();
         let mut items_list: Option<Vec<(&'static str, &'static str, IconKind)>> = None;
@@ -786,6 +793,131 @@ impl Ribbon {
         let top_offset = 28.0 + TOOL_BAR_H;
         let groups = self.modules.get(self.active)?.ribbon_groups();
         let left_offset = compute_layer_combo_left(&groups);
+        let positioned = container(panel)
+            .align_left(Fill)
+            .align_top(Fill)
+            .padding(Padding {
+                top: top_offset,
+                left: left_offset,
+                ..Default::default()
+            })
+            .width(Fill)
+            .height(Fill);
+
+        Some(
+            mouse_area(positioned)
+                .on_press(Message::CloseRibbonDropdown)
+                .into(),
+        )
+    }
+
+    /// Floating popup for an annotate-tab style combo (text / dimension /
+    /// multileader / table style). Returns `None` when `open_id` is not a
+    /// style combo. Built as an overlay — like the layer combo and the
+    /// Draw-tab dropdowns — so the list grows to fit its entries instead of
+    /// being clipped to the ribbon-row height. (#153)
+    fn style_combo_overlay(&self, open_id: &str) -> Option<Element<'_, Message>> {
+        let groups = self.modules.get(self.active)?.ribbon_groups();
+
+        // Locate the open style combo; capture its style key + manager command.
+        let mut found: Option<(crate::modules::StyleKey, Option<&'static str>)> = None;
+        'outer: for group in &groups {
+            for item in &group.tools {
+                if let RibbonItem::StyleComboGroup {
+                    style_key,
+                    combo_id,
+                    manager_cmd,
+                    ..
+                } = item
+                {
+                    if *combo_id == open_id {
+                        found = Some((*style_key, *manager_cmd));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        let (style_key, manager_cmd) = found?;
+
+        let ctx = StyleContext {
+            text_style_names: self.text_style_names.clone(),
+            active_text_style: self.active_text_style.clone(),
+            dim_style_names: self.dim_style_names.clone(),
+            active_dim_style: self.active_dim_style.clone(),
+            mleader_style_names: self.mleader_style_names.clone(),
+            active_mleader_style: self.active_mleader_style.clone(),
+            table_style_names: self.table_style_names.clone(),
+            active_table_style: self.active_table_style.clone(),
+        };
+        let active = ctx.active_for(style_key).to_string();
+
+        let row_style = |_: &Theme, status: button::Status| button::Style {
+            background: Some(Background::Color(match status {
+                button::Status::Hovered | button::Status::Pressed => ROW_HOVER,
+                _ => Color::TRANSPARENT,
+            })),
+            ..Default::default()
+        };
+
+        let mut rows: Vec<Element<Message>> = ctx
+            .names_for(style_key)
+            .iter()
+            .map(|name| {
+                let is_sel = name.as_str() == active.as_str();
+                let n = name.clone();
+                let checkmark: Element<Message> = container(if is_sel {
+                    crate::ui::icons::tinted(crate::ui::icons::CHECK, 11.0, CHECK_COLOR)
+                } else {
+                    iced::widget::Space::new().width(0).into()
+                })
+                .width(Length::Fixed(14.0))
+                .into();
+                button(
+                    row![
+                        checkmark,
+                        text(name.clone())
+                            .size(11)
+                            .color(if is_sel { LABEL_ON } else { LABEL_OFF }),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Center),
+                )
+                .on_press(Message::RibbonStyleChanged {
+                    key: style_key,
+                    name: n,
+                })
+                .style(row_style)
+                .width(Fill)
+                .padding([4, 10])
+                .into()
+            })
+            .collect();
+
+        if let Some(mgr) = manager_cmd {
+            rows.push(
+                button(text("Manage…").size(11).color(LABEL_ON))
+                    .on_press(Message::Command(mgr.to_string()))
+                    .style(row_style)
+                    .width(Fill)
+                    .padding([4, 10])
+                    .into(),
+            );
+        }
+
+        let panel = container(column(rows))
+            .style(|_: &Theme| container::Style {
+                background: Some(Background::Color(PANEL_BG)),
+                border: Border {
+                    color: PANEL_BORDER,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+            })
+            .width(Length::Fixed(LARGE_W * 2.3));
+
+        let top_offset = 28.0 + TOOL_BAR_H;
+        let left_offset = compute_dropdown_left(&groups, open_id);
         let positioned = container(panel)
             .align_left(Fill)
             .align_top(Fill)

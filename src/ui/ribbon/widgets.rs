@@ -8,7 +8,7 @@ use acadrust::types::{Color as AcadColor, LineWeight};
 // Ribbon tooltips anchor to the right of their button so the cursor — which
 // rests on the button itself — never covers the tip text. (#143)
 use iced::widget::tooltip::Position as TipPos;
-use iced::widget::{button, column, container, row, scrollable, svg, text, tooltip};
+use iced::widget::{button, column, container, row, svg, text, tooltip};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use crate::app::Message;
@@ -177,7 +177,7 @@ pub(super) struct StyleContext {
 }
 
 impl StyleContext {
-    fn names_for(&self, key: StyleKey) -> &[String] {
+    pub(super) fn names_for(&self, key: StyleKey) -> &[String] {
         match key {
             StyleKey::TextStyle => &self.text_style_names,
             StyleKey::DimStyle => &self.dim_style_names,
@@ -185,7 +185,7 @@ impl StyleContext {
             StyleKey::TableStyle => &self.table_style_names,
         }
     }
-    fn active_for(&self, key: StyleKey) -> &str {
+    pub(super) fn active_for(&self, key: StyleKey) -> &str {
         match key {
             StyleKey::TextStyle => &self.active_text_style,
             StyleKey::DimStyle => &self.active_dim_style,
@@ -859,11 +859,10 @@ pub(super) fn render_large<'a>(
         RibbonItem::StyleComboGroup {
             style_key,
             combo_id,
-            manager_cmd,
             rows,
+            ..
         } => {
             const STYLE_COMBO_W: f32 = LARGE_W * 2.3;
-            let names: Vec<String> = style_ctx.names_for(style_key).to_vec();
             let active: String = style_ctx.active_for(style_key).to_string();
             let is_open = open_dd.as_deref() == Some(combo_id);
 
@@ -933,133 +932,11 @@ pub(super) fn render_large<'a>(
             .padding([3, 8])
             .width(Fill);
 
-            // ── style items panel (when open) ──
-            let items_panel: Element<Message> = if is_open {
-                let items_col: Vec<Element<Message>> = names
-                    .into_iter()
-                    .map(|name| {
-                        let is_sel = name.as_str() == active.as_str();
-                        let n = name.clone();
-                        let key = style_key;
-                        button(
-                            row![
-                                container(if is_sel {
-                                    icons::tinted(
-                                        icons::CHECK,
-                                        10.0,
-                                        Color {
-                                            r: 0.2,
-                                            g: 0.8,
-                                            b: 0.4,
-                                            a: 1.0,
-                                        },
-                                    )
-                                } else {
-                                    iced::widget::Space::new().width(0).into()
-                                })
-                                .width(12),
-                                text(name).size(11).color(Color::WHITE),
-                            ]
-                            .spacing(6)
-                            .align_y(iced::Center),
-                        )
-                        .on_press(Message::RibbonStyleChanged { key, name: n })
-                        .style(move |_: &Theme, status| button::Style {
-                            background: Some(Background::Color(match status {
-                                button::Status::Hovered | button::Status::Pressed => Color {
-                                    r: 0.28,
-                                    g: 0.28,
-                                    b: 0.28,
-                                    a: 1.0,
-                                },
-                                _ if is_sel => Color {
-                                    r: 0.20,
-                                    g: 0.35,
-                                    b: 0.55,
-                                    a: 1.0,
-                                },
-                                _ => Color {
-                                    r: 0.16,
-                                    g: 0.16,
-                                    b: 0.16,
-                                    a: 1.0,
-                                },
-                            })),
-                            ..Default::default()
-                        })
-                        .padding([4, 10])
-                        .width(Fill)
-                        .into()
-                    })
-                    .collect();
-
-                // Optional "Open Manager…" row
-                let mut full_col = items_col;
-                if let Some(mgr_cmd) = manager_cmd {
-                    full_col.push(
-                        button(text(format!("Manage…")).size(10).color(Color {
-                            r: 0.5,
-                            g: 0.8,
-                            b: 1.0,
-                            a: 1.0,
-                        }))
-                        .on_press(Message::Command(mgr_cmd.to_string()))
-                        .style(|_: &Theme, status| button::Style {
-                            background: Some(Background::Color(match status {
-                                button::Status::Hovered => Color {
-                                    r: 0.24,
-                                    g: 0.24,
-                                    b: 0.24,
-                                    a: 1.0,
-                                },
-                                _ => Color {
-                                    r: 0.13,
-                                    g: 0.13,
-                                    b: 0.13,
-                                    a: 1.0,
-                                },
-                            })),
-                            ..Default::default()
-                        })
-                        .padding([4, 10])
-                        .width(Fill)
-                        .into(),
-                    );
-                }
-
-                container(
-                    scrollable(
-                        container(column(full_col).spacing(1))
-                            .width(Fill)
-                            .padding(4),
-                    )
-                    .height(Length::Shrink),
-                )
-                .max_height(180.0)
-                .width(Length::Fixed(STYLE_COMBO_W))
-                .style(|_: &Theme| container::Style {
-                    background: Some(Background::Color(Color {
-                        r: 0.14,
-                        g: 0.14,
-                        b: 0.14,
-                        a: 0.98,
-                    })),
-                    border: Border {
-                        color: Color {
-                            r: 0.35,
-                            g: 0.35,
-                            b: 0.35,
-                            a: 1.0,
-                        },
-                        width: 1.0,
-                        radius: 4.0.into(),
-                    },
-                    ..Default::default()
-                })
-                .into()
-            } else {
-                iced::widget::Space::new().width(0).height(0).into()
-            };
+            // The open style list renders as a floating overlay
+            // (`Ribbon::style_combo_overlay`) so it isn't clipped by the fixed
+            // ribbon-row height — matching the Draw-tab dropdowns. (#153)
+            let items_panel: Element<Message> =
+                iced::widget::Space::new().width(0).height(0).into();
 
             // ── tool rows below combo ──
             let make_tool_row = |tools: Vec<ToolDef>| -> Element<Message> {
