@@ -523,9 +523,16 @@ pub(in crate::scene) fn render_style_for(
             _ => ew,
         };
         const MM_TO_PX: f32 = 96.0 / 25.4;
+        // CAD apps display model-space lineweights larger than their true
+        // physical size so the gradations stay legible on screen — at true
+        // scale a 0.5 mm line is ~2 px and is indistinguishable from thinner
+        // weights (which all floor to 1 px). Apply the same legibility boost so
+        // weights are pronounced and tell apart, matching other DWG editors.
+        // (#147)
+        const LWT_DISPLAY_BOOST: f32 = 2.0;
         resolved
             .millimeters()
-            .map(|mm| (mm as f32 * MM_TO_PX).max(1.0))
+            .map(|mm| (mm as f32 * MM_TO_PX * LWT_DISPLAY_BOOST).max(1.0))
             .unwrap_or(1.0)
     };
 
