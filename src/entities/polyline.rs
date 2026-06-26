@@ -682,13 +682,17 @@ impl Transformable for Polyline3D {
     }
 }
 /// Generate solid-fill boundary polygons for each wide segment of a Polyline2D.
-pub(crate) fn wide_fills(pl: &acadrust::entities::Polyline2D) -> Vec<Vec<[f32; 2]>> {
+/// Solid-fill bands for a wide Polyline2D, plus the `world_origin` they are
+/// relative to (the first vertex). See `lwpolyline::wide_fills` — offsets are
+/// f32 from `origin` so the band stays precise at UTM-scale coordinates.
+pub(crate) fn wide_fills(pl: &acadrust::entities::Polyline2D) -> ([f64; 2], Vec<Vec<[f32; 2]>>) {
     let hw_default = (pl.start_width.max(pl.end_width) / 2.0) as f32;
     let verts = &pl.vertices;
     let n = verts.len();
     if n < 2 {
-        return vec![];
+        return ([0.0; 2], vec![]);
     }
+    let origin = [verts[0].location.x, verts[0].location.y];
     let seg_count = if pl.is_closed() { n } else { n - 1 };
     let mut out = Vec::new();
     for i in 0..seg_count {
@@ -707,13 +711,19 @@ pub(crate) fn wide_fills(pl: &acadrust::entities::Polyline2D) -> Vec<Vec<[f32; 2
         if hw0 < 1e-6 && hw1 < 1e-6 {
             continue;
         }
-        let p0 = [v0.location.x as f32, v0.location.y as f32];
-        let p1 = [v1.location.x as f32, v1.location.y as f32];
+        let p0 = [
+            (v0.location.x - origin[0]) as f32,
+            (v0.location.y - origin[1]) as f32,
+        ];
+        let p1 = [
+            (v1.location.x - origin[0]) as f32,
+            (v1.location.y - origin[1]) as f32,
+        ];
         if let Some(poly) =
             crate::entities::common::polyline_segment_fill(p0, p1, hw0, hw1, v0.bulge as f32)
         {
             out.push(poly);
         }
     }
-    out
+    (origin, out)
 }

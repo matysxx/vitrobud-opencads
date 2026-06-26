@@ -4763,9 +4763,15 @@ impl Scene {
 
         // Wide LWPolyline and Polyline2D fills
         for entity in self.document.entities() {
-            let (common, fills) = match entity {
-                EntityType::LwPolyline(pl) => (&pl.common, crate::entities::lwpolyline::wide_fills(pl)),
-                EntityType::Polyline2D(pl) => (&pl.common, crate::entities::polyline::wide_fills(pl)),
+            let (common, fill_origin, fills) = match entity {
+                EntityType::LwPolyline(pl) => {
+                    let (o, f) = crate::entities::lwpolyline::wide_fills(pl);
+                    (&pl.common, o, f)
+                }
+                EntityType::Polyline2D(pl) => {
+                    let (o, f) = crate::entities::polyline::wide_fills(pl);
+                    (&pl.common, o, f)
+                }
                 _ => continue,
             };
             if fills.is_empty() {
@@ -4792,7 +4798,7 @@ impl Scene {
                     color,
                     angle_offset: 0.0,
                     scale: 1.0,
-                    world_origin: [0.0; 2],
+                    world_origin: fill_origin,
                     vp_scissor: None,
                     draw_depth: depth_map.get(&common.handle.value()).copied().unwrap_or(0.0),
                 });
