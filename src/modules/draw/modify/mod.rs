@@ -5,7 +5,6 @@ pub mod break_cmd;
 pub mod copy;
 pub mod delete;
 pub mod explode;
-mod extend;
 pub mod fillet;
 pub mod join;
 pub mod lengthen;
