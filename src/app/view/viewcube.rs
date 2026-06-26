@@ -70,9 +70,9 @@ pub(super) fn viewcube_nav_controls<'a>() -> Element<'a, Message> {
     let r = VIEWCUBE_REGION_PX;
     let c = r * 0.5;
     let cube_half = VIEWCUBE_PX as f32 * 0.36; // VIEWCUBE_PX * VIEWCUBE_SCALE
-    let nr = cube_half + 8.0; // nudge triangle distance from centre
-    const BTN: f32 = 18.0;
-    const TRI: f32 = 13.0;
+    let nr = cube_half + 6.0; // nudge triangle distance from centre
+    const BTN: f32 = 16.0;
+    const TRI: f32 = 9.0;
     let ctr = |cx: f32, cy: f32, s: f32| (cx - s * 0.5, cy - s * 0.5);
 
     // Home top-left, roll arrows top-right.
@@ -101,23 +101,23 @@ pub(super) fn viewcube_nav_controls<'a>() -> Element<'a, Message> {
         vc_place(
             3.0,
             3.0,
-            vc_btn(icons::home(15.0, tint), BTN, Message::ViewCubeHome)
+            vc_btn(icons::home(13.0, tint), BTN, Message::ViewCubeHome)
         ),
         vc_place(
             rax,
             ray,
-            vc_btn(icons::undo(14.0, tint), BTN, Message::ViewCubeRoll(false))
+            vc_btn(icons::undo(12.0, tint), BTN, Message::ViewCubeRoll(false))
         ),
         vc_place(
             rbx,
             rby,
-            vc_btn(icons::redo(14.0, tint), BTN, Message::ViewCubeRoll(true))
+            vc_btn(icons::redo(12.0, tint), BTN, Message::ViewCubeRoll(true))
         ),
         vc_place(
             tux,
             tuy,
             vc_btn(
-                icons::arrow_down(11.0, tint),
+                icons::arrow_down(8.0, tint),
                 TRI,
                 Message::ViewCubeNudge(NudgeDir::Up)
             )
@@ -126,7 +126,7 @@ pub(super) fn viewcube_nav_controls<'a>() -> Element<'a, Message> {
             tdx,
             tdy,
             vc_btn(
-                icons::arrow_up(11.0, tint),
+                icons::arrow_up(8.0, tint),
                 TRI,
                 Message::ViewCubeNudge(NudgeDir::Down)
             )
@@ -135,7 +135,7 @@ pub(super) fn viewcube_nav_controls<'a>() -> Element<'a, Message> {
             tlx,
             tly,
             vc_btn(
-                icons::arrow_right(11.0, tint),
+                icons::arrow_right(8.0, tint),
                 TRI,
                 Message::ViewCubeNudge(NudgeDir::Left)
             )
@@ -144,7 +144,7 @@ pub(super) fn viewcube_nav_controls<'a>() -> Element<'a, Message> {
             trx,
             try_,
             vc_btn(
-                icons::arrow_left(11.0, tint),
+                icons::arrow_left(8.0, tint),
                 TRI,
                 Message::ViewCubeNudge(NudgeDir::Right)
             )
@@ -156,6 +156,9 @@ pub(super) fn viewcube_nav_controls<'a>() -> Element<'a, Message> {
         .height(iced::Length::Fixed(r))
         .into()
 }
+
+/// Fixed width of the UCS picker, so it can be centred under the cube.
+pub(super) const UCS_PICKER_W: f32 = 84.0;
 
 /// The WCS / named-UCS selector shown under the cube.
 pub(super) fn viewcube_ucs_picker<'a>(current: String, names: Vec<String>) -> Element<'a, Message> {
@@ -175,6 +178,9 @@ pub(super) fn viewcube_ucs_picker<'a>(current: String, names: Vec<String>) -> El
     pick_list(options, Some(selected), Message::SetViewcubeUcs)
         .text_size(11)
         .padding([2, 6])
+        // Fixed width so the caller can centre it under the cube centre with a
+        // simple half-width offset (content-sized width would drift off-centre).
+        .width(iced::Length::Fixed(UCS_PICKER_W))
         .style(move |_: &Theme, _| iced::widget::pick_list::Style {
             background: Background::Color(Color {
                 r: 0.16,

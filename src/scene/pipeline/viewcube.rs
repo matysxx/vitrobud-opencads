@@ -15,14 +15,15 @@ use iced::wgpu;
 use iced::{Rectangle, Size};
 
 // ── ViewCube layout ───────────────────────────────────────────────────────
-pub const VIEWCUBE_PX: u32 = 120;
+pub const VIEWCUBE_PX: u32 = 84; // 30% smaller cube (was 120)
 pub const VIEWCUBE_SCALE: f32 = 0.36;
 pub const VIEWCUBE_DRAW_PX: f32 = VIEWCUBE_PX as f32 * VIEWCUBE_SCALE * 2.0;
 pub const VIEWCUBE_PAD: f32 = 12.0;
 /// The cube centre is inset from the screen corner by this multiple of the
 /// cube half-size, leaving room for the compass ring and the nav controls
-/// (home / roll / nudge) drawn around it.
-pub const NAV_INSET_F: f32 = 2.2;
+/// (home / roll / nudge) drawn around it. Tighter than before so the controls
+/// hug the cube in the corner instead of floating in a large dead region.
+pub const NAV_INSET_F: f32 = 2.0;
 /// Side of the whole nav widget (cube + compass ring + controls) in pixels.
 pub const VIEWCUBE_REGION_PX: f32 = VIEWCUBE_DRAW_PX * NAV_INSET_F;
 /// Z height of the compass ring + cardinals in cube-local space. The cube

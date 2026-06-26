@@ -23,7 +23,7 @@ use overlay::{
     layout_context_menu_overlay, mtext_editor_overlay, position_canvas_overlay, qselect_overlay,
     text_inline_overlay, viewport_context_menu_overlay,
 };
-use viewcube::{viewcube_nav_controls, viewcube_ucs_picker};
+use viewcube::{viewcube_nav_controls, viewcube_ucs_picker, UCS_PICKER_W};
 
 // Re-export the text-input element ids so sibling modules can address them at
 // the `view::` path as before the split.
@@ -587,10 +587,10 @@ impl OpenCADStudio {
                     .filter(|n| !n.is_empty())
                     .collect();
                 let picker = column![
-                    Space::new().height(iced::Length::Fixed(cube_y + VIEWCUBE_HIT_SIZE - 8.0)),
+                    Space::new().height(iced::Length::Fixed(cube_y + VIEWCUBE_HIT_SIZE + 6.0)),
                     row![
                         Space::new()
-                            .width(iced::Length::Fixed(cube_x + VIEWCUBE_HIT_SIZE * 0.5 - 42.0)),
+                            .width(iced::Length::Fixed(cube_x + VIEWCUBE_HIT_SIZE * 0.5 - UCS_PICKER_W * 0.5)),
                         iced::widget::opaque(viewcube_ucs_picker(ucs_current, ucs_names)),
                     ],
                 ]
@@ -636,9 +636,9 @@ impl OpenCADStudio {
                 .filter(|n| !n.is_empty())
                 .collect();
             let picker = column![
-                Space::new().height(iced::Length::Fixed(cube_y + VIEWCUBE_HIT_SIZE - 8.0)),
+                Space::new().height(iced::Length::Fixed(cube_y + VIEWCUBE_HIT_SIZE + 6.0)),
                 row![
-                    Space::new().width(iced::Length::Fixed(cube_x + VIEWCUBE_HIT_SIZE * 0.5 - 42.0)),
+                    Space::new().width(iced::Length::Fixed(cube_x + VIEWCUBE_HIT_SIZE * 0.5 - UCS_PICKER_W * 0.5)),
                     iced::widget::opaque(viewcube_ucs_picker(ucs_current, ucs_names)),
                 ],
             ]
