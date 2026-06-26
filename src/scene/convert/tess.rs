@@ -1,5 +1,5 @@
 // Auto-split from scene/mod.rs. Pure text-move; behaviour unchanged.
-use super::*;
+use super::super::*;
 
 // ── Parallel tessellation free function ──────────────────────────────────────
 //

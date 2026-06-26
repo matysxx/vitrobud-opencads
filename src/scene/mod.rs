@@ -25,11 +25,11 @@ mod paper;
 mod preview;
 mod project;
 mod selection;
-mod tess;
 
-// Free functions moved into `tess` but still referenced unqualified by this
-// root and by sibling topic modules (each does `use super::*`).
-pub(crate) use tess::{
+// Parallel tessellation free functions live in `convert::tess` (alongside the
+// other tessellation code); re-exported here so this root and sibling topic
+// modules (each does `use super::*`) keep referencing them unqualified.
+pub(crate) use convert::tess::{
     entity_aabb, entity_world_aabb_f64, is_unindexable_entity, tessellate_entity,
     tessellate_entity_dim_text,
 };
