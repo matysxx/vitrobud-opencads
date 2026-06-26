@@ -11,6 +11,9 @@ pub mod print_to_printer;
 pub mod step;
 pub mod stl;
 pub mod xref;
+pub mod linetypes;
+pub mod patterns;
+pub mod update_check;
 
 use crate::scene::DerivedCaches;
 use acadrust::entities::{Dimension, EntityType};
@@ -879,7 +882,7 @@ mod layer_roundtrip_tests {
     // round-trip through `ext`, and return whether every one survived.
     fn roundtrip_layers(ext: &str, count: usize) -> bool {
         let mut doc = CadDocument::new();
-        crate::linetypes::populate_document(&mut doc);
+        crate::io::linetypes::populate_document(&mut doc);
         let names: Vec<String> = (0..count).map(|n| format!("Layer{}", n + 1)).collect();
         for name in &names {
             let mut dl = DocLayer::new(name);

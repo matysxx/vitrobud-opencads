@@ -1,6 +1,6 @@
 use super::helpers::{entity_type_key, entity_type_label, title_case_word};
 use super::{OpenCADStudio, VARIES_LABEL};
-use crate::linetypes;
+use crate::io::linetypes;
 use crate::scene::view::dispatch;
 use crate::ui;
 use acadrust::{EntityType, Handle};

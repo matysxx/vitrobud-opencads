@@ -69,7 +69,7 @@ pub fn complex_lt(name: &str) -> Option<&'static ComplexLt> {
         .get(&name.to_ascii_uppercase())
 }
 
-const LIN_SOURCE: &str = include_str!("../assets/linetypes/OpenCADStudio.lin");
+const LIN_SOURCE: &str = include_str!("../../assets/linetypes/OpenCADStudio.lin");
 
 // ── Pattern art extraction ────────────────────────────────────────────────
 

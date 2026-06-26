@@ -1476,7 +1476,7 @@ pub enum Message {
     Noop,
     /// GitHub releases API returned a result. `Some(version)` means a
     /// newer release exists; we open the update-notice window.
-    UpdateCheckResult(Option<crate::update_check::UpdateInfo>),
+    UpdateCheckResult(Option<crate::io::update_check::UpdateInfo>),
     /// User dismissed the update-notice window.
     UpdateNoticeClose,
     /// First-launch default-association prompt: user accepted — register this
@@ -2072,7 +2072,7 @@ impl OpenCADStudio {
         s.main_window = Some(id);
         let open_main = open_task.map(|_| Message::Noop);
         let check_update = Task::perform(
-            crate::update_check::check_for_update(),
+            crate::io::update_check::check_for_update(),
             Message::UpdateCheckResult,
         );
         let focus_cmd = s.focus_cmd_input();

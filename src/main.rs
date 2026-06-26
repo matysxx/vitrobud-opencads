@@ -10,16 +10,13 @@ mod cli;
 mod command;
 mod entities;
 mod io;
-mod linetypes;
 mod modules;
 mod plugin;
-mod patterns;
 mod scene;
 mod snap;
 mod ui;
 mod par;
 mod sys;
-mod update_check;
 
 fn main() -> iced::Result {
     // Web (wasm) uses the single-window entry; native uses the multi-window

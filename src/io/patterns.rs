@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-const PAT_SRC: &str = include_str!("../assets/patterns/OpenCADStudio.pat");
+const PAT_SRC: &str = include_str!("../../assets/patterns/OpenCADStudio.pat");
 
 // ── Public types ──────────────────────────────────────────────────────────
 

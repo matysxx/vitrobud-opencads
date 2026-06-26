@@ -60,7 +60,7 @@ impl OpenCADStudio {
                 } else {
                     lt.name.clone()
                 };
-                let art = crate::linetypes::extract_pattern(&lt.description);
+                let art = crate::io::linetypes::extract_pattern(&lt.description);
                 ui::properties::LinetypeItem { name, art }
             })
             .collect();

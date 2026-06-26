@@ -665,7 +665,7 @@ pub(crate) fn tessellate_entity(
     // linetype assigned, so we only consult the first wire here — multi-wire
     // returns come exclusively from MTEXT colour splits which can't trigger
     // this path.
-    if let Some(clt) = crate::linetypes::complex_lt(lt_name) {
+    if let Some(clt) = crate::io::linetypes::complex_lt(lt_name) {
         if let Some(base) = bases.first() {
             let mut wires = text::complex_lt::apply_along(
                 &base.name,

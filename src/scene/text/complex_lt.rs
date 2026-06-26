@@ -7,7 +7,7 @@
 //! Shape X → along the linetype direction; Shape Y → perpendicular in XZ.
 
 use crate::entities::text_support::resolve_dxf_special_chars;
-use crate::linetypes::{ComplexLt, LtSegment};
+use crate::io::linetypes::{ComplexLt, LtSegment};
 use crate::scene::text::lff;
 use crate::scene::model::wire_model::WireModel;
 

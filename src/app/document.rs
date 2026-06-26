@@ -1,5 +1,5 @@
 use crate::command::CadCommand;
-use crate::linetypes;
+use crate::io::linetypes;
 use crate::modules::draw::modify::refedit::RefEditSession;
 use crate::scene::pick::grip::GripEdit;
 use crate::scene::GripDef;

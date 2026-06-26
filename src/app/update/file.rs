@@ -341,7 +341,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.tabs[i].scene.selected = rustc_hash::FxHashSet::default();
                 self.tabs[i].scene.preview_wires = vec![];
                 self.tabs[i].scene.current_layout = "Model".to_string();
-                crate::linetypes::populate_document(&mut self.tabs[i].scene.document);
+                crate::io::linetypes::populate_document(&mut self.tabs[i].scene.document);
                 self.tabs[i].properties = PropertiesPanel::empty();
                 // Seed the current table / multileader style from the file's
                 // header so the ✓ marks the right one (text/dim/mline come from
