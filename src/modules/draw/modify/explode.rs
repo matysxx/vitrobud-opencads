@@ -334,47 +334,69 @@ fn dim_seg(a: Vector3, b: Vector3, common: &acadrust::entities::EntityCommon) ->
     })
 }
 
-/// Open (two-stroke) arrowhead with its tip at `tip`, strokes pointing back
-/// along the unit vector `(dx,dy)` (from the tip toward the dimension line),
-/// sized `size`. Simple, valid in any reader, and far better than a bare line.
-fn dim_arrowhead(
+/// A dimension-line terminator at `tip`, body extending back along the unit
+/// vector `(dx,dy)` (toward the dim line). When DIMTSZ>0 it's an oblique 45°
+/// tick; otherwise a closed *filled* arrowhead (DXF SOLID) of length DIMASZ —
+/// matching the style so a baked block keeps the original arrow type rather
+/// than a generic open stroke.
+fn dim_terminator(
     tip: Vector3,
     dx: f64,
     dy: f64,
-    size: f64,
+    dimasz: f64,
+    dimtsz: f64,
     common: &acadrust::entities::EntityCommon,
 ) -> Vec<EntityType> {
-    let ang = dy.atan2(dx);
-    let wing = 18f64.to_radians();
-    let mk = |a: f64| Vector3::new(tip.x + size * a.cos(), tip.y + size * a.sin(), tip.z);
-    vec![
-        dim_seg(tip, mk(ang + wing), common),
-        dim_seg(tip, mk(ang - wing), common),
-    ]
+    if dimtsz > 1e-9 {
+        // 45° oblique tick centred on the tip (architectural style).
+        let c = std::f64::consts::FRAC_1_SQRT_2;
+        let (tx, ty) = ((dx - dy) * c, (dx + dy) * c);
+        return vec![dim_seg(
+            Vector3::new(tip.x - tx * dimtsz, tip.y - ty * dimtsz, tip.z),
+            Vector3::new(tip.x + tx * dimtsz, tip.y + ty * dimtsz, tip.z),
+            common,
+        )];
+    }
+    // Closed filled arrowhead: a triangle from the tip to a base DIMASZ back
+    // along the dim line, half-width ~DIMASZ/6 (the standard arrow proportion).
+    let (bx, by) = (tip.x + dx * dimasz, tip.y + dy * dimasz);
+    let hw = dimasz / 6.0;
+    let (px, py) = (-dy, dx);
+    let c1 = Vector3::new(bx + px * hw, by + py * hw, tip.z);
+    let c2 = Vector3::new(bx - px * hw, by - py * hw, tip.z);
+    let mut sol = acadrust::entities::Solid::triangle(tip, c1, c2);
+    sol.common = common.clone();
+    sol.common.handle = Handle::NULL;
+    vec![EntityType::Solid(sol)]
 }
 
 /// Center-mark cross at `center`, arm length |DIMCEN|. Empty when DIMCEN == 0.
 fn dim_center_mark(
     center: Vector3,
     dimcen: f64,
+    radius: f64,
     common: &acadrust::entities::EntityCommon,
 ) -> Vec<EntityType> {
-    let s = dimcen.abs();
-    if s < 1e-9 {
+    let mag = dimcen.abs();
+    if mag < 1e-9 {
         return Vec::new();
     }
-    vec![
-        dim_seg(
-            Vector3::new(center.x - s, center.y, center.z),
-            Vector3::new(center.x + s, center.y, center.z),
-            common,
-        ),
-        dim_seg(
-            Vector3::new(center.x, center.y - s, center.z),
-            Vector3::new(center.x, center.y + s, center.z),
-            common,
-        ),
-    ]
+    let v = |x: f64, y: f64| Vector3::new(x, y, center.z);
+    // Central "+" mark.
+    let mut out = vec![
+        dim_seg(v(center.x - mag, center.y), v(center.x + mag, center.y), common),
+        dim_seg(v(center.x, center.y - mag), v(center.x, center.y + mag), common),
+    ];
+    // Negative DIMCEN adds centre LINES: four radial strokes spanning the edge.
+    if dimcen < 0.0 && radius > mag + 1e-6 {
+        let inner = (radius - mag).max(0.0);
+        let outer = radius + mag;
+        out.push(dim_seg(v(center.x + inner, center.y), v(center.x + outer, center.y), common));
+        out.push(dim_seg(v(center.x - inner, center.y), v(center.x - outer, center.y), common));
+        out.push(dim_seg(v(center.x, center.y + inner), v(center.x, center.y + outer), common));
+        out.push(dim_seg(v(center.x, center.y - inner), v(center.x, center.y - outer), common));
+    }
+    out
 }
 
 /// Arc from angle `a1` to `a2` (radians, swept the short way) at `radius` about
@@ -391,7 +413,9 @@ fn dim_arc_segs(
     while sweep > PI {
         sweep -= 2.0 * PI;
     }
-    while sweep < -PI {
+    // Half-open at -PI so an exact 180° span sweeps the same way as the
+    // terminator code and the live render (CCW), not the opposite semicircle.
+    while sweep <= -PI {
         sweep += 2.0 * PI;
     }
     let steps = 12usize.max((sweep.abs() / (PI / 36.0)).ceil() as usize);
@@ -406,8 +430,32 @@ fn dim_arc_segs(
     out
 }
 
-/// (DIMASZ, DIMCEN), DIMSCALE-applied, resolved from the dimension's style.
-fn dim_metrics(dim: &Dimension, doc: &CadDocument) -> (f64, f64) {
+/// Resolved, DIMSCALE-applied dimension metrics for baking.
+struct DimMetrics {
+    dimasz: f64,
+    dimcen: f64,
+    dimexo: f64,
+    dimexe: f64,
+    dimtsz: f64,
+    dimdle: f64,
+    dimse1: bool,
+    dimse2: bool,
+    dimsd1: bool,
+    dimsd2: bool,
+    dimclrd: i16,
+    dimclre: i16,
+    dimclrt: i16,
+    dimlwd: i16,
+    dimlwe: i16,
+}
+
+/// Metrics from the dim's style, mirroring what the live renderer applies, so a
+/// baked block reproduces the same gaps, arrow type, suppression, colours and
+/// lineweights: DIMASZ (arrow), DIMCEN (centre mark), DIMEXO/DIMEXE (extension
+/// gap/overshoot), DIMTSZ (oblique tick; >0 = ticks not arrows), DIMDLE (dim
+/// line overshoot past ticks), DIMSE1/2 + DIMSD1/2 (extension / dim-line
+/// suppression), DIMCLRD/E/T (colours) and DIMLWD/E (lineweights).
+fn dim_metrics(dim: &Dimension, doc: &CadDocument) -> DimMetrics {
     let name = dim.base().style_name.as_str();
     let style = doc.dim_styles.iter().find(|s| {
         s.name.eq_ignore_ascii_case(name)
@@ -416,55 +464,123 @@ fn dim_metrics(dim: &Dimension, doc: &CadDocument) -> (f64, f64) {
     let scale = style
         .map(|s| if s.dimscale > 1e-6 { s.dimscale } else { 1.0 })
         .unwrap_or(1.0);
-    let dimasz = style.map(|s| s.dimasz * scale).unwrap_or(0.18 * scale).max(1e-6);
-    let dimcen = style.map(|s| s.dimcen * scale).unwrap_or(0.09 * scale);
-    (dimasz, dimcen)
+    DimMetrics {
+        dimasz: style.map(|s| s.dimasz * scale).unwrap_or(0.18 * scale).max(1e-6),
+        dimcen: style.map(|s| s.dimcen * scale).unwrap_or(0.09 * scale),
+        dimexo: style.map(|s| s.dimexo * scale).unwrap_or(0.0),
+        dimexe: style.map(|s| s.dimexe * scale).unwrap_or(0.0),
+        dimtsz: style.map(|s| s.dimtsz * scale).unwrap_or(0.0),
+        dimdle: style.map(|s| s.dimdle * scale).unwrap_or(0.0),
+        dimse1: style.map(|s| s.dimse1).unwrap_or(false),
+        dimse2: style.map(|s| s.dimse2).unwrap_or(false),
+        dimsd1: style.map(|s| s.dimsd1).unwrap_or(false),
+        dimsd2: style.map(|s| s.dimsd2).unwrap_or(false),
+        dimclrd: style.map(|s| s.dimclrd).unwrap_or(0),
+        dimclre: style.map(|s| s.dimclre).unwrap_or(0),
+        dimclrt: style.map(|s| s.dimclrt).unwrap_or(0),
+        dimlwd: style.map(|s| s.dimlwd).unwrap_or(-2),
+        dimlwe: style.map(|s| s.dimlwe).unwrap_or(-2),
+    }
 }
 
-/// Baked geometry for an angular dimension: an extension line along each ray
-/// out to the dimension arc, plus the swept arc itself (which is what makes it
-/// read as an angle rather than two crossing lines — #181 / DIM-022).
+/// A baked sub-entity common with a per-element dimension colour / lineweight.
+/// A DIMCLR* of 0 (ByBlock) or 256 (ByLayer) keeps the dimension's own colour
+/// so the block inherits it; a specific ACI overrides. DIMLW* < 0 (ByBlock /
+/// ByLayer) keeps the dimension's lineweight.
+fn dim_common(base: &acadrust::entities::EntityCommon, clr: i16, lw: i16) -> acadrust::entities::EntityCommon {
+    let mut c = base.clone();
+    c.handle = Handle::NULL;
+    if clr != 0 && clr != 256 {
+        c.color = acadrust::types::Color::from_index(clr);
+    }
+    if lw >= 0 {
+        c.line_weight = acadrust::types::LineWeight::from_value(lw);
+    }
+    c
+}
+
+/// Baked geometry for an angular dimension, matching the live render exactly:
+/// an extension line from each measured ray point flush out to the dimension
+/// arc, the swept arc, and a terminator at each arc end. (The live angular path
+/// applies neither DIMEXO/DIMEXE nor DIMSE suppression, so the bake mustn't
+/// either, or the dim would shift on reload. Adding those to both is tracked as
+/// a separate live-render enhancement.) #181 / DIM-022.
 fn angular_block_segs(
     vertex: Vector3,
     p1: Vector3,
     p2: Vector3,
     arc_loc: Vector3,
-    common: &acadrust::entities::EntityCommon,
+    met: &DimMetrics,
+    ext_c: &acadrust::entities::EntityCommon,
+    dim_c: &acadrust::entities::EntityCommon,
 ) -> Vec<EntityType> {
+    use std::f64::consts::PI;
     let a1 = (p1.y - vertex.y).atan2(p1.x - vertex.x);
     let a2 = (p2.y - vertex.y).atan2(p2.x - vertex.x);
     let radius = ((arc_loc.x - vertex.x).powi(2) + (arc_loc.y - vertex.y).powi(2)).sqrt();
     let mut out = Vec::new();
     if radius < 1e-9 {
-        out.push(dim_seg(p1, vertex, common));
-        out.push(dim_seg(p2, vertex, common));
+        out.push(dim_seg(p1, vertex, ext_c));
+        out.push(dim_seg(p2, vertex, ext_c));
         return out;
     }
-    let e1 = Vector3::new(
-        vertex.x + a1.cos() * radius,
-        vertex.y + a1.sin() * radius,
-        vertex.z,
-    );
-    let e2 = Vector3::new(
-        vertex.x + a2.cos() * radius,
-        vertex.y + a2.sin() * radius,
-        vertex.z,
-    );
-    // Extension lines run from each measured ray point out to the arc.
-    out.push(dim_seg(p1, e1, common));
-    out.push(dim_seg(p2, e2, common));
-    out.extend(dim_arc_segs(vertex, radius, a1, a2, common));
+    // Extension lines run flush from each measured ray point out to the arc.
+    let e1 = Vector3::new(vertex.x + a1.cos() * radius, vertex.y + a1.sin() * radius, vertex.z);
+    let e2 = Vector3::new(vertex.x + a2.cos() * radius, vertex.y + a2.sin() * radius, vertex.z);
+    out.push(dim_seg(p1, e1, ext_c));
+    out.push(dim_seg(p2, e2, ext_c));
+    out.extend(dim_arc_segs(vertex, radius, a1, a2, dim_c));
+    // Terminators tangent to the arc at each end, pointing along the sweep.
+    let mut sweep = a2 - a1;
+    while sweep > PI {
+        sweep -= 2.0 * PI;
+    }
+    while sweep <= -PI {
+        sweep += 2.0 * PI;
+    }
+    let sgn = if sweep >= 0.0 { 1.0 } else { -1.0 };
+    out.extend(dim_terminator(e1, -a1.sin() * sgn, a1.cos() * sgn, met.dimasz, met.dimtsz, dim_c));
+    out.extend(dim_terminator(e2, a2.sin() * sgn, -a2.cos() * sgn, met.dimasz, met.dimtsz, dim_c));
     out
 }
 
+/// The text anchor for a radial leader: the saved text middle point when set,
+/// else the midpoint of `a` and `b` — mirroring the live `dimension_text_position`.
+fn dim_text_anchor(
+    base: &acadrust::entities::dimension::DimensionBase,
+    a: Vector3,
+    b: Vector3,
+) -> Vector3 {
+    let p = base.text_middle_point;
+    if p.x * p.x + p.y * p.y + p.z * p.z > 1e-8 {
+        p
+    } else {
+        Vector3::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5)
+    }
+}
+
+/// Normalise `(dx,dy)`, falling back to `(fx,fy)` when it is ~zero length.
+fn norm2(dx: f64, dy: f64, fx: f64, fy: f64) -> (f64, f64) {
+    let m = (dx * dx + dy * dy).sqrt();
+    if m > 1e-9 {
+        (dx / m, dy / m)
+    } else {
+        (fx, fy)
+    }
+}
+
 fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
-    use acadrust::entities::Text;
 
     let base = dim.base();
-    let common = base.common.clone();
+    let met = dim_metrics(dim, doc);
+    // Per-element commons so a baked block keeps the style's colours/lineweights:
+    // extension lines (DIMCLRE/DIMLWE), dimension line + arrows + centre mark
+    // (DIMCLRD/DIMLWD), text (DIMCLRT).
+    let ext_c = dim_common(&base.common, met.dimclre, met.dimlwe);
+    let dim_c = dim_common(&base.common, met.dimclrd, met.dimlwd);
     let mut result: Vec<EntityType> = Vec::new();
 
-    // Helper: make a line segment
+    // Helper: make a line segment with a given common.
     let make_seg = |a: &Vector3, b: &Vector3, common: &EntityCommon| -> EntityType {
         let mut c = common.clone();
         c.handle = Handle::NULL;
@@ -478,35 +594,55 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
 
     let v3 = |x: f64, y: f64, z: f64| Vector3::new(x, y, z);
 
+    // Dimension line for a linear/aligned dim, between d1 and d2 with the unit
+    // direction (ux,uy): DIMDLE overshoot when ticks are used, omitted when both
+    // halves are suppressed. Terminators are always placed at the origins.
+    let push_dim_line = |result: &mut Vec<EntityType>, d1: Vector3, d2: Vector3, ux: f64, uy: f64| {
+        if !(met.dimsd1 && met.dimsd2) {
+            let dle = if met.dimtsz > 1e-9 { met.dimdle } else { 0.0 };
+            let a = v3(d1.x - ux * dle, d1.y - uy * dle, d1.z);
+            let b = v3(d2.x + ux * dle, d2.y + uy * dle, d2.z);
+            result.push(make_seg(&a, &b, &dim_c));
+        }
+        result.extend(dim_terminator(d1, ux, uy, met.dimasz, met.dimtsz, &dim_c));
+        result.extend(dim_terminator(d2, -ux, -uy, met.dimasz, met.dimtsz, &dim_c));
+    };
+
     match dim {
         Dimension::Aligned(d) => {
             let fx = d.first_point.x;
             let fy = d.first_point.y;
             let sx = d.second_point.x;
             let sy = d.second_point.y;
-            let dx_s = sx - fx;
-            let dy_s = sy - fy;
-            let len = (dx_s * dx_s + dy_s * dy_s).sqrt().max(1e-12);
-            let axis_angle = dy_s.atan2(dx_s);
+            let axis_angle = (sy - fy).atan2(sx - fx);
             let perp_x = -(axis_angle.sin());
             let perp_y = axis_angle.cos();
             let offset =
                 (d.definition_point.x - fx) * perp_x + (d.definition_point.y - fy) * perp_y;
             let d1 = v3(fx + perp_x * offset, fy + perp_y * offset, d.first_point.z);
             let d2 = v3(sx + perp_x * offset, sy + perp_y * offset, d.second_point.z);
-            result.push(make_seg(&d.first_point, &d1, &common));
-            result.push(make_seg(&d.second_point, &d2, &common));
-            result.push(make_seg(&d1, &d2, &common));
-            let (asz, _) = dim_metrics(dim, doc);
+            let s = if offset >= 0.0 { 1.0 } else { -1.0 };
+            // DIMEDIT "Oblique": extension lines slant by ext_line_rotation (the
+            // dim line itself stays on the unrotated perp). DIM-EXT-OBLIQUE.
+            let (es, ec) = d.ext_line_rotation.sin_cos();
+            let edx = perp_x * ec - perp_y * es;
+            let edy = perp_x * es + perp_y * ec;
+            let e1a = v3(fx + edx * (s * met.dimexo), fy + edy * (s * met.dimexo), d.first_point.z);
+            let e1b = v3(d1.x + edx * (s * met.dimexe), d1.y + edy * (s * met.dimexe), d1.z);
+            let e2a = v3(sx + edx * (s * met.dimexo), sy + edy * (s * met.dimexo), d.second_point.z);
+            let e2b = v3(d2.x + edx * (s * met.dimexe), d2.y + edy * (s * met.dimexe), d2.z);
+            if !met.dimse1 {
+                result.push(make_seg(&e1a, &e1b, &ext_c));
+            }
+            if !met.dimse2 {
+                result.push(make_seg(&e2a, &e2b, &ext_c));
+            }
             let ml = ((d2.x - d1.x).powi(2) + (d2.y - d1.y).powi(2)).sqrt().max(1e-12);
             let (ux, uy) = ((d2.x - d1.x) / ml, (d2.y - d1.y) / ml);
-            result.extend(dim_arrowhead(d1, ux, uy, asz, &common));
-            result.extend(dim_arrowhead(d2, -ux, -uy, asz, &common));
-            let _ = len;
+            push_dim_line(&mut result, d1, d2, ux, uy);
         }
         Dimension::Linear(d) => {
-            // `rotation` is the dimension-line angle, already in radians (the
-            // same convention the live renderer uses) — do not convert again.
+            // `rotation` is the dimension-line angle, already in radians.
             let angle = d.rotation;
             let perp_x = -(angle.sin());
             let perp_y = angle.cos();
@@ -514,59 +650,85 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
             let fy = d.first_point.y;
             let sx = d.second_point.x;
             let sy = d.second_point.y;
-            // The dimension line passes through `definition_point` at `rotation`.
-            // Project each extension origin onto that line *independently*: a
-            // point's landing offset is (def - point)·perp. A single shared
-            // offset only lands both origins on the line when they are level;
-            // for sloped origins (e.g. a DIMCONTINUE chain over non-level
-            // points) it tilts the dimension line — issue #181.
+            // Project each extension origin onto the dim line independently — a
+            // shared offset tilts the line over non-level origins (#181).
             let dperp = d.definition_point.x * perp_x + d.definition_point.y * perp_y;
             let off1 = dperp - (fx * perp_x + fy * perp_y);
             let off2 = dperp - (sx * perp_x + sy * perp_y);
             let d1 = v3(fx + perp_x * off1, fy + perp_y * off1, d.first_point.z);
             let d2 = v3(sx + perp_x * off2, sy + perp_y * off2, d.second_point.z);
-            result.push(make_seg(&d.first_point, &d1, &common));
-            result.push(make_seg(&d.second_point, &d2, &common));
-            result.push(make_seg(&d1, &d2, &common));
-            let (asz, _) = dim_metrics(dim, doc);
+            // Extension lines: DIMEXO start gap from the point, DIMEXE overshoot
+            // past the dim line, in the perp direction toward it. #181 / DIM-023.
+            let s1 = if off1 >= 0.0 { 1.0 } else { -1.0 };
+            let s2 = if off2 >= 0.0 { 1.0 } else { -1.0 };
+            // DIMEDIT "Oblique": extension lines slant by ext_line_rotation.
+            let (es, ec) = d.ext_line_rotation.sin_cos();
+            let edx = perp_x * ec - perp_y * es;
+            let edy = perp_x * es + perp_y * ec;
+            let e1a = v3(fx + edx * (s1 * met.dimexo), fy + edy * (s1 * met.dimexo), d.first_point.z);
+            let e1b = v3(d1.x + edx * (s1 * met.dimexe), d1.y + edy * (s1 * met.dimexe), d1.z);
+            let e2a = v3(sx + edx * (s2 * met.dimexo), sy + edy * (s2 * met.dimexo), d.second_point.z);
+            let e2b = v3(d2.x + edx * (s2 * met.dimexe), d2.y + edy * (s2 * met.dimexe), d2.z);
+            if !met.dimse1 {
+                result.push(make_seg(&e1a, &e1b, &ext_c));
+            }
+            if !met.dimse2 {
+                result.push(make_seg(&e2a, &e2b, &ext_c));
+            }
             let ml = ((d2.x - d1.x).powi(2) + (d2.y - d1.y).powi(2)).sqrt().max(1e-12);
             let (ux, uy) = ((d2.x - d1.x) / ml, (d2.y - d1.y) / ml);
-            result.extend(dim_arrowhead(d1, ux, uy, asz, &common));
-            result.extend(dim_arrowhead(d2, -ux, -uy, asz, &common));
+            push_dim_line(&mut result, d1, d2, ux, uy);
         }
         Dimension::Radius(d) => {
-            // center -> point on circle, arrowhead at the point toward centre,
-            // plus the centre mark.
             let (center, point) = (d.angle_vertex, d.definition_point);
-            result.push(make_seg(&center, &point, &common));
-            let (asz, cen) = dim_metrics(dim, doc);
-            let m = ((center.x - point.x).powi(2) + (center.y - point.y).powi(2))
+            result.push(make_seg(&center, &point, &dim_c));
+            let len = ((center.x - point.x).powi(2) + (center.y - point.y).powi(2))
                 .sqrt()
                 .max(1e-12);
-            result.extend(dim_arrowhead(
+            result.extend(dim_terminator(
                 point,
-                (center.x - point.x) / m,
-                (center.y - point.y) / m,
-                asz,
-                &common,
+                (center.x - point.x) / len,
+                (center.y - point.y) / len,
+                met.dimasz,
+                met.dimtsz,
+                &dim_c,
             ));
-            result.extend(dim_center_mark(center, cen, &common));
+            // Leader from the arrow tip toward the text — to the text anchor when
+            // leader_length is 0, else that far along the text direction (matches
+            // the live radius render). DIM-RAD-LEADER.
+            let anchor = dim_text_anchor(base, center, point);
+            let ld = norm2(anchor.x - point.x, anchor.y - point.y, 1.0, 0.0);
+            let leader = if d.leader_length.abs() > 1e-9 {
+                v3(point.x + ld.0 * d.leader_length, point.y + ld.1 * d.leader_length, point.z)
+            } else {
+                anchor
+            };
+            result.push(make_seg(&point, &leader, &dim_c));
+            result.extend(dim_center_mark(center, met.dimcen, len, &dim_c));
         }
         Dimension::Diameter(d) => {
-            // Full diameter line through the centre (far edge -> near edge),
-            // inward arrows at both edges, plus the centre mark. angle_vertex is
-            // the centre and definition_point the point on the circle.
+            // Full diameter through the centre (far edge -> near edge), inward
+            // terminators at both edges, plus the centre mark.
             let (center, edge) = (d.angle_vertex, d.definition_point);
             let far = v3(2.0 * center.x - edge.x, 2.0 * center.y - edge.y, edge.z);
-            result.push(make_seg(&far, &edge, &common));
-            let (asz, cen) = dim_metrics(dim, doc);
-            let m = ((edge.x - far.x).powi(2) + (edge.y - far.y).powi(2))
+            result.push(make_seg(&far, &edge, &dim_c));
+            let len = ((edge.x - far.x).powi(2) + (edge.y - far.y).powi(2))
                 .sqrt()
                 .max(1e-12);
-            let (ux, uy) = ((edge.x - far.x) / m, (edge.y - far.y) / m);
-            result.extend(dim_arrowhead(edge, -ux, -uy, asz, &common));
-            result.extend(dim_arrowhead(far, ux, uy, asz, &common));
-            result.extend(dim_center_mark(center, cen, &common));
+            let (ux, uy) = ((edge.x - far.x) / len, (edge.y - far.y) / len);
+            result.extend(dim_terminator(edge, -ux, -uy, met.dimasz, met.dimtsz, &dim_c));
+            result.extend(dim_terminator(far, ux, uy, met.dimasz, met.dimtsz, &dim_c));
+            // Optional leader past the near edge toward the text. DIM-DIA-LEADER.
+            if d.leader_length.abs() > 1e-9 {
+                let anchor = dim_text_anchor(base, center, edge);
+                let ld = norm2(anchor.x - edge.x, anchor.y - edge.y, ux, uy);
+                result.push(make_seg(
+                    &edge,
+                    &v3(edge.x + ld.0 * d.leader_length, edge.y + ld.1 * d.leader_length, edge.z),
+                    &dim_c,
+                ));
+            }
+            result.extend(dim_center_mark(center, met.dimcen, len * 0.5, &dim_c));
         }
         Dimension::Angular2Ln(d) => {
             result.extend(angular_block_segs(
@@ -574,7 +736,9 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
                 d.first_point,
                 d.second_point,
                 d.dimension_arc,
-                &common,
+                &met,
+                &ext_c,
+                &dim_c,
             ));
         }
         Dimension::Angular3Pt(d) => {
@@ -583,30 +747,27 @@ fn explode_dimension(dim: &Dimension, doc: &CadDocument) -> Vec<EntityType> {
                 d.first_point,
                 d.second_point,
                 d.definition_point,
-                &common,
+                &met,
+                &ext_c,
+                &dim_c,
             ));
         }
         Dimension::Ordinate(d) => {
-            result.push(make_seg(&d.feature_location, &d.definition_point, &common));
-            result.push(make_seg(&d.definition_point, &d.leader_endpoint, &common));
+            result.push(make_seg(&d.feature_location, &d.definition_point, &dim_c));
+            result.push(make_seg(&d.definition_point, &d.leader_endpoint, &dim_c));
         }
     }
 
-    // Measurement text: value, position, height and rotation are all taken
-    // from the SAME live-render path (style-resolved formatting incl.
-    // DIMDEC/DIMLFAC/DIMPOST/units/`<>` and DIMTAD/DIMGAP placement), so the
-    // baked block matches the on-screen dimension and nothing changes when the
-    // file is saved and reopened — the reload renders from this block. A `None`
-    // means the text is suppressed (user_text " "), so bake no Text. #181.
-    if let Some((value, text_pos, text_h, text_rot)) =
-        crate::entities::dimension::baked_dimension_text(dim, doc, 1.0)
-    {
-        let mut text = Text::with_value(value, text_pos)
-            .with_height(text_h.max(0.1))
-            .with_rotation(text_rot);
-        text.common = common.clone();
-        text.common.handle = Handle::NULL;
-        result.push(EntityType::Text(text));
+    // Measurement text is the live render's own Text/MText entity (value,
+    // position, height, rotation, alignment, text style, MText handling all
+    // shared), so the baked block matches the on-screen dimension and the label
+    // doesn't shift when the file is saved and reopened. `None` = suppressed.
+    if let Some(mut tent) = crate::entities::dimension::baked_dimension_text_entity(dim, doc, 1.0) {
+        // Apply the text colour / lineweight (DIMCLRT) onto the entity.
+        let tc = dim_common(&base.common, met.dimclrt, -2);
+        tent.common_mut().color = tc.color;
+        tent.common_mut().line_weight = tc.line_weight;
+        result.push(tent);
     }
 
     result
@@ -854,6 +1015,30 @@ mod tests {
             "dimension line must be level at y=8, got {:?}",
             dim_line
         );
+    }
+
+    // A linear dimension bakes closed FILLED arrowheads (SOLID entities), not
+    // generic open strokes — so a saved+reloaded dim keeps the style's arrow
+    // type. (Default style: DIMTSZ=0 -> arrows, two of them.)
+    #[test]
+    fn linear_dim_bakes_filled_arrowheads() {
+        let mut doc = CadDocument::new();
+        let mut d = DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        d.definition_point = Vector3::new(0.0, 5.0, 0.0);
+        let handle = doc
+            .add_entity(EntityType::Dimension(Dimension::Linear(d)))
+            .unwrap();
+        bake_dimension_blocks(&mut doc);
+        let name = match doc.get_entity(handle) {
+            Some(EntityType::Dimension(d)) => d.base().block_name.clone(),
+            _ => panic!("dimension missing"),
+        };
+        let rec = doc.block_records.get(&name).expect("block");
+        let solids = doc
+            .entities()
+            .filter(|e| matches!(e, EntityType::Solid(s) if s.common.owner_handle == rec.handle))
+            .count();
+        assert_eq!(solids, 2, "expected 2 filled (SOLID) arrowheads, got {solids}");
     }
 
     // An angular dimension must bake its swept ARC (not just two rays), else a

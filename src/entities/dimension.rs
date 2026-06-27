@@ -2803,31 +2803,35 @@ fn perp_sign_default() -> f64 {
     1.0
 }
 
-/// Text placement (position, height, rotation) the live renderer uses for
-/// `dim`, resolving its dimension style from `document`. Shared with the
-/// dimension-block baking on save so a baked `*D` block places its measurement
-/// text exactly where OCS draws it on screen — otherwise the text jumps when
-/// the file is saved and reopened (the reload renders from the baked block).
-/// `anno_scale` is the annotative scale (1.0 for a plain model-space bake).
-pub(crate) fn baked_dimension_text(
+/// The measurement-text entity (Text or MText) for a baked `*D` block, built
+/// through the SAME `dimension_text_entity` the live renderer uses — so the
+/// baked text matches the on-screen value, position, height, rotation,
+/// alignment, text style and MText handling, and nothing shifts when the file
+/// is saved and reopened (the reload renders from the block). Returns `None`
+/// when the text is suppressed (`user_text` is a single space). `anno_scale` is
+/// the annotative scale (1.0 for a plain model-space bake).
+pub(crate) fn baked_dimension_text_entity(
     dim: &Dimension,
     document: &CadDocument,
     anno_scale: f64,
-) -> Option<(String, Vector3, f64, f64)> {
+) -> Option<EntityType> {
     let style_name = dim.base().style_name.as_str();
     let style = document.dim_styles.iter().find(|s| {
         s.name.eq_ignore_ascii_case(style_name)
             || (style_name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
     });
-    // None => the dimension's text is suppressed (user_text " "): bake no Text.
-    let value = dimension_text_value(dim, style)?;
     let dim_scale = style
         .map(|s| if s.dimscale > 1e-6 { s.dimscale } else { anno_scale })
         .unwrap_or(1.0);
     let dim_txt = style.map(|s| s.dimtxt * dim_scale).unwrap_or(2.5 * dim_scale);
-    let pos = dimension_text_pos_f64(dim, style, dim_txt, dim_scale);
-    let rot = dimension_text_rotation(dim, style);
-    Some((value, pos, dim_txt, rot))
+    let mut ent = dimension_text_entity(dim, dim_txt, style, document, dim_scale)?;
+    // For a non-default-aligned Text, pin the DXF alignment point (group 11) to
+    // the insertion point so other CAD programs anchor the centred text where
+    // OCS does, not at the world origin.
+    if let EntityType::Text(t) = &mut ent {
+        t.alignment_point = Some(t.insertion_point);
+    }
+    Some(ent)
 }
 
 #[cfg(test)]
