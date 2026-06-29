@@ -387,6 +387,8 @@ pub(super) struct OpenCADStudio {
     update_notice_body: Option<String>,
     /// In-memory clipboard: cloned entities waiting to be pasted.
     clipboard: Vec<acadrust::EntityType>,
+    /// Entities removed by the most recent ERASE, kept so OOPS can restore them.
+    oops_cache: Vec<acadrust::EntityType>,
     /// Centroid of the clipboard entities (world XY plane).
     clipboard_centroid: glam::DVec3,
     /// Table records (layer / linetype / text + dim style) the clipboard
@@ -718,9 +720,7 @@ impl ClipboardDeps {
             BTreeSet::new(),
         );
         let is_special = |n: &str| {
-            n.is_empty()
-                || n.eq_ignore_ascii_case("ByLayer")
-                || n.eq_ignore_ascii_case("ByBlock")
+            n.is_empty() || n.eq_ignore_ascii_case("ByLayer") || n.eq_ignore_ascii_case("ByBlock")
         };
         // Scan the copied entities AND the entities inside every captured
         // block definition, so a block-internal object's layer / linetype /
@@ -778,10 +778,22 @@ impl ClipboardDeps {
         }
 
         ClipboardDeps {
-            layers: layers.iter().filter_map(|n| doc.layers.get(n).cloned()).collect(),
-            linetypes: ltypes.iter().filter_map(|n| doc.line_types.get(n).cloned()).collect(),
-            text_styles: tstyles.iter().filter_map(|n| doc.text_styles.get(n).cloned()).collect(),
-            dim_styles: dstyles.iter().filter_map(|n| doc.dim_styles.get(n).cloned()).collect(),
+            layers: layers
+                .iter()
+                .filter_map(|n| doc.layers.get(n).cloned())
+                .collect(),
+            linetypes: ltypes
+                .iter()
+                .filter_map(|n| doc.line_types.get(n).cloned())
+                .collect(),
+            text_styles: tstyles
+                .iter()
+                .filter_map(|n| doc.text_styles.get(n).cloned())
+                .collect(),
+            dim_styles: dstyles
+                .iter()
+                .filter_map(|n| doc.dim_styles.get(n).cloned())
+                .collect(),
             blocks,
             ext_objects,
         }
@@ -828,7 +840,10 @@ impl ClipboardDeps {
     /// Snapshot every block definition the `entities` reference through an
     /// INSERT, walking nested INSERTs transitively. Model/paper space and
     /// xref blocks are skipped — those aren't portable definitions.
-    fn capture_blocks(doc: &acadrust::CadDocument, entities: &[acadrust::EntityType]) -> Vec<BlockDef> {
+    fn capture_blocks(
+        doc: &acadrust::CadDocument,
+        entities: &[acadrust::EntityType],
+    ) -> Vec<BlockDef> {
         use acadrust::EntityType;
         use rustc_hash::FxHashSet;
         let mut seen: FxHashSet<String> = FxHashSet::default();
@@ -995,7 +1010,10 @@ pub enum Message {
     /// fetched yet (#141). Native: never emitted.
     PollWebFonts,
     /// Web: a per-script font finished fetching — `Ok(bytes)` or `Err(reason)`.
-    WebFontLoaded(crate::scene::text::web_font::Script, Result<Vec<u8>, String>),
+    WebFontLoaded(
+        crate::scene::text::web_font::Script,
+        Result<Vec<u8>, String>,
+    ),
     /// Ctrl+V. Routed by `update`: into the open text/MText editor (via an async
     /// system-clipboard read, which is the only paste path that works on the
     /// web) or, with no editor open, the entity paste command.
@@ -1869,6 +1887,7 @@ impl OpenCADStudio {
             update_notice_version: None,
             update_notice_body: None,
             clipboard: Vec::new(),
+            oops_cache: Vec::new(),
             clipboard_centroid: glam::DVec3::ZERO,
             clipboard_deps: ClipboardDeps::default(),
             shift_down: false,
@@ -2053,8 +2072,7 @@ impl OpenCADStudio {
                         .push_error(&format!("Plugin '{id}' failed to load: {e}"));
                 }
             }
-            app.loaded_plugin_ids =
-                crate::plugin::external::loaded_ids().into_iter().collect();
+            app.loaded_plugin_ids = crate::plugin::external::loaded_ids().into_iter().collect();
             app.rebuild_ribbon_modules();
         }
         app.last_saved_settings = Some(app.current_settings());

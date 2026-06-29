@@ -74,6 +74,197 @@ impl OpenCADStudio {
                 }
             }
 
+            // LAYDEL <name> — delete a layer and erase the objects on it.
+            cmd if cmd == "LAYDEL" || cmd.starts_with("LAYDEL ") => {
+                let name = cmd.trim_start_matches("LAYDEL").trim();
+                if name.is_empty() {
+                    self.command_line.push_info("Usage: LAYDEL <layer name>");
+                    return Some(Task::none());
+                }
+                let resolved = self.tabs[i]
+                    .scene
+                    .document
+                    .layers
+                    .names()
+                    .find(|k| k.eq_ignore_ascii_case(name))
+                    .map(|s| s.to_string());
+                let Some(layer) = resolved else {
+                    self.command_line
+                        .push_error(&format!("LAYDEL: no layer named \"{name}\"."));
+                    return Some(Task::none());
+                };
+                if layer == "0" {
+                    self.command_line
+                        .push_error("LAYDEL: layer \"0\" cannot be deleted.");
+                    return Some(Task::none());
+                }
+                if layer.eq_ignore_ascii_case(&self.tabs[i].active_layer) {
+                    self.command_line.push_error(
+                        "LAYDEL: cannot delete the current layer. Make another layer current first.",
+                    );
+                    return Some(Task::none());
+                }
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .filter(|e| e.common().layer == layer)
+                    .map(|e| e.common().handle)
+                    .collect();
+                self.push_undo_snapshot(i, "LAYDEL");
+                let n = handles.len();
+                if !handles.is_empty() {
+                    self.tabs[i].scene.erase_entities(&handles);
+                }
+                self.tabs[i].scene.document.layers.remove(&layer);
+                self.tabs[i].scene.bump_geometry();
+                self.tabs[i].dirty = true;
+                self.refresh_layer_panel();
+                self.command_line.push_output(&format!(
+                    "LAYDEL: deleted layer \"{layer}\" and {n} object(s)."
+                ));
+            }
+
+            // LAYMRG <source> <target> — move every object from <source> onto
+            // <target>, then delete the emptied <source> layer.
+            cmd if cmd == "LAYMRG" || cmd.starts_with("LAYMRG ") => {
+                let rest = cmd.trim_start_matches("LAYMRG").trim();
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if parts.len() != 2 {
+                    self.command_line
+                        .push_info("Usage: LAYMRG <source layer> <target layer>");
+                    return Some(Task::none());
+                }
+                let keys: Vec<String> = self.tabs[i]
+                    .scene
+                    .document
+                    .layers
+                    .names()
+                    .map(|s| s.to_string())
+                    .collect();
+                let src = keys
+                    .iter()
+                    .find(|k| k.eq_ignore_ascii_case(parts[0]))
+                    .cloned();
+                let dst = keys
+                    .iter()
+                    .find(|k| k.eq_ignore_ascii_case(parts[1]))
+                    .cloned();
+                let (Some(src), Some(dst)) = (src, dst) else {
+                    self.command_line
+                        .push_error("LAYMRG: source and target layers must both exist.");
+                    return Some(Task::none());
+                };
+                if src == dst {
+                    self.command_line
+                        .push_error("LAYMRG: source and target are the same layer.");
+                    return Some(Task::none());
+                }
+                if src == "0" {
+                    self.command_line
+                        .push_error("LAYMRG: layer \"0\" cannot be merged away.");
+                    return Some(Task::none());
+                }
+                if src.eq_ignore_ascii_case(&self.tabs[i].active_layer) {
+                    self.command_line.push_error(
+                        "LAYMRG: cannot merge the current layer. Make another layer current first.",
+                    );
+                    return Some(Task::none());
+                }
+                self.push_undo_snapshot(i, "LAYMRG");
+                let mut moved = 0usize;
+                for e in self.tabs[i].scene.document.entities_mut() {
+                    if e.common().layer == src {
+                        e.common_mut().layer = dst.clone();
+                        moved += 1;
+                    }
+                }
+                self.tabs[i].scene.document.layers.remove(&src);
+                self.tabs[i].scene.bump_geometry();
+                self.tabs[i].dirty = true;
+                self.refresh_layer_panel();
+                self.command_line.push_output(&format!(
+                    "LAYMRG: merged \"{src}\" into \"{dst}\" ({moved} object(s))."
+                ));
+            }
+
+            // LAYERSTATE — save / restore named snapshots of all layer states
+            // (on/off, freeze, lock, colour, linetype, lineweight).
+            // LAYERSTATE SAVE <name> | RESTORE <name> | DELETE <name> | ? (list)
+            cmd if cmd == "LAYERSTATE"
+                || cmd == "LAS"
+                || cmd == "LMAN"
+                || cmd.starts_with("LAYERSTATE ")
+                || cmd.starts_with("LAS ")
+                || cmd.starts_with("LMAN ") =>
+            {
+                let rest = cmd
+                    .trim_start_matches("LAYERSTATE")
+                    .trim_start_matches("LMAN")
+                    .trim_start_matches("LAS")
+                    .trim();
+                let mut parts = rest.splitn(2, char::is_whitespace);
+                let sub = parts.next().unwrap_or("").to_uppercase();
+                let arg = parts.next().unwrap_or("").trim();
+                match sub.as_str() {
+                    "" | "?" | "LIST" => {
+                        let states = &self.tabs[i].layer_states;
+                        if states.is_empty() {
+                            self.command_line.push_info(
+                                "LAYERSTATE: no saved states. Use LAYERSTATE SAVE <name>.",
+                            );
+                        } else {
+                            let mut names: Vec<&str> = states.keys().map(|s| s.as_str()).collect();
+                            names.sort_unstable();
+                            self.command_line
+                                .push_output(&format!("Saved layer states: {}", names.join(", ")));
+                        }
+                    }
+                    "SAVE" | "S" => {
+                        if arg.is_empty() {
+                            self.command_line.push_info("Usage: LAYERSTATE SAVE <name>");
+                        } else {
+                            self.tabs[i].save_layer_state(arg);
+                            self.command_line
+                                .push_output(&format!("LAYERSTATE: saved \"{arg}\"."));
+                        }
+                    }
+                    "RESTORE" | "R" => {
+                        if arg.is_empty() {
+                            self.command_line
+                                .push_info("Usage: LAYERSTATE RESTORE <name>");
+                        } else if !self.tabs[i].layer_states.contains_key(arg) {
+                            self.command_line.push_error(&format!(
+                                "LAYERSTATE: no saved state named \"{arg}\"."
+                            ));
+                        } else {
+                            self.push_undo_snapshot(i, "LAYERSTATE");
+                            let n = self.tabs[i].restore_layer_state(arg).unwrap_or(0);
+                            self.tabs[i].scene.bump_geometry();
+                            self.tabs[i].dirty = true;
+                            self.refresh_layer_panel();
+                            self.command_line.push_output(&format!(
+                                "LAYERSTATE: restored \"{arg}\" ({n} layer(s))."
+                            ));
+                        }
+                    }
+                    "DELETE" | "D" => {
+                        if self.tabs[i].layer_states.remove(arg).is_some() {
+                            self.command_line
+                                .push_output(&format!("LAYERSTATE: deleted \"{arg}\"."));
+                        } else {
+                            self.command_line.push_error(&format!(
+                                "LAYERSTATE: no saved state named \"{arg}\"."
+                            ));
+                        }
+                    }
+                    _ => {
+                        self.command_line
+                            .push_info("Usage: LAYERSTATE SAVE|RESTORE|DELETE <name> | ? (list)");
+                    }
+                }
+            }
+
             "LAYLCK" => {
                 let handles: Vec<_> = self.tabs[i]
                     .scene
@@ -339,7 +530,8 @@ impl OpenCADStudio {
                     self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 } else {
-                    let auto_name = super::super::helpers::next_group_auto_name(&self.tabs[i].scene);
+                    let auto_name =
+                        super::super::helpers::next_group_auto_name(&self.tabs[i].scene);
                     use crate::modules::draw::groups::group::GroupCommand;
                     let cmd = GroupCommand::new(handles, auto_name);
                     self.command_line.push_info(&cmd.prompt());

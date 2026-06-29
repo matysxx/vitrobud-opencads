@@ -358,7 +358,7 @@ impl OpenCADStudio {
 
             // 2D filled solid. Reached via SO / SOLID2D — the bare SOLID verb is
             // currently the shaded-display toggle (token collision tracked).
-            "SO" | "SOLID2D" => {
+            "SO" | "SOLID" | "SOLID2D" => {
                 use crate::modules::draw::draw::solid2d::Solid2dCommand;
                 let new_cmd = Solid2dCommand::new();
                 self.command_line.push_info(&new_cmd.prompt());
@@ -375,6 +375,13 @@ impl OpenCADStudio {
             "TRACE" => {
                 use crate::modules::draw::draw::trace::TraceCommand;
                 let new_cmd = TraceCommand::new();
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
+            "CENTERLINE" => {
+                use crate::modules::draw::draw::centerline::CenterLineCommand;
+                let new_cmd = CenterLineCommand::new();
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -408,7 +415,9 @@ impl OpenCADStudio {
             }
 
             // ── Modify commands ────────────────────────────────────────────
-            "MOVE" | "M" => {
+            // MOVE works from picked points, so it already relocates entities
+            // in 3D; 3DMOVE is the same operation.
+            "MOVE" | "M" | "3DMOVE" => {
                 let handles: Vec<_> = self.tabs[i]
                     .scene
                     .selected_entities()
@@ -487,7 +496,14 @@ impl OpenCADStudio {
                     use crate::modules::draw::modify::torient::TorientCommand;
                     let entities: Vec<_> = handles
                         .iter()
-                        .filter_map(|&h| self.tabs[i].scene.document.get_entity(h).cloned().map(|e| (h, e)))
+                        .filter_map(|&h| {
+                            self.tabs[i]
+                                .scene
+                                .document
+                                .get_entity(h)
+                                .cloned()
+                                .map(|e| (h, e))
+                        })
                         .collect();
                     let cam_rot = self.tabs[i].scene.camera.borrow().rotation;
                     let right = cam_rot * glam::Vec3::X;
@@ -654,6 +670,11 @@ impl OpenCADStudio {
                 } else {
                     let n = handles.len();
                     self.push_undo_snapshot(i, "ERASE");
+                    // Stash the erased entities so OOPS can restore them.
+                    self.oops_cache = handles
+                        .iter()
+                        .filter_map(|h| self.tabs[i].scene.document.get_entity(*h).cloned())
+                        .collect();
                     self.tabs[i].scene.erase_entities(&handles);
                     self.tabs[i].dirty = true;
                     self.refresh_properties();
@@ -675,6 +696,174 @@ impl OpenCADStudio {
                 use crate::modules::model::boolean_cmd::BoolOp;
                 if let Some(op) = BoolOp::from_id(cmd) {
                     return Some(self.solid_boolean(op));
+                }
+            }
+
+            // INTERFERE — non-destructive intersect: solid from the overlap.
+            "INTERFERE" | "INF" => {
+                return Some(self.solid_interfere());
+            }
+
+            // POLYSOLID <width> <height> — extrude a selected polyline into a
+            // wall-like solid.
+            cmd if cmd == "POLYSOLID" || cmd.starts_with("POLYSOLID ") => {
+                let nums: Vec<f64> = cmd
+                    .split_whitespace()
+                    .skip(1)
+                    .filter_map(|s| s.parse::<f64>().ok())
+                    .collect();
+                if nums.len() >= 2 && nums[0] > 0.0 && nums[1] > 0.0 {
+                    return Some(self.solid_polysolid(nums[0], nums[1]));
+                }
+                self.command_line
+                    .push_info("Usage: POLYSOLID <width> <height>   (select a polyline first)");
+            }
+
+            // SPLINEFIT — fit a smooth spline through the selected polyline's points.
+            "SPLINEFIT" | "FITSPLINE" => {
+                return Some(self.fit_spline());
+            }
+
+            // PYRAMID <radius> <height> [sides] — create an n-sided pyramid mesh.
+            cmd if cmd == "PYRAMID"
+                || cmd.starts_with("PYRAMID ")
+                || cmd == "PYR"
+                || cmd.starts_with("PYR ") =>
+            {
+                let nums: Vec<f64> = cmd
+                    .split_whitespace()
+                    .skip(1)
+                    .filter_map(|s| s.parse::<f64>().ok())
+                    .collect();
+                if nums.len() >= 2 && nums[0] > 0.0 && nums[1] > 0.0 {
+                    let sides = nums.get(2).map(|s| *s as usize).unwrap_or(4);
+                    return Some(self.solid_pyramid(nums[0], nums[1], sides));
+                }
+                self.command_line
+                    .push_info("Usage: PYRAMID <radius> <height> [sides]   (default 4 sides)");
+            }
+
+            // SECTION [X|Y|Z] <value> — draw the cross-section outline of the solid.
+            cmd if cmd == "SECTION" || cmd.starts_with("SECTION ") => {
+                let parts: Vec<String> = cmd
+                    .split_whitespace()
+                    .skip(1)
+                    .map(|s| s.to_uppercase())
+                    .collect();
+                let (axis, val_idx) = match parts.first().map(String::as_str) {
+                    Some("X") => (0, 1),
+                    Some("Y") => (1, 1),
+                    Some("Z") => (2, 1),
+                    _ => (2, 0),
+                };
+                match parts.get(val_idx).and_then(|s| s.parse::<f64>().ok()) {
+                    Some(v) => return Some(self.solid_section(axis, v)),
+                    None => self.command_line.push_info(
+                        "Usage: SECTION [X|Y|Z] <value>   (cross-sections the selected solid)",
+                    ),
+                }
+            }
+
+            // 3DALIGN <18 numbers> — align the selected solid by 3 source→3 dest points.
+            cmd if cmd == "3DALIGN"
+                || cmd == "ALIGN3D"
+                || cmd.starts_with("3DALIGN ")
+                || cmd.starts_with("ALIGN3D ") =>
+            {
+                let n: Vec<f64> = cmd
+                    .split_whitespace()
+                    .skip(1)
+                    .filter_map(|s| s.parse::<f64>().ok())
+                    .collect();
+                if n.len() >= 18 {
+                    let src = [[n[0], n[1], n[2]], [n[3], n[4], n[5]], [n[6], n[7], n[8]]];
+                    let dst = [
+                        [n[9], n[10], n[11]],
+                        [n[12], n[13], n[14]],
+                        [n[15], n[16], n[17]],
+                    ];
+                    return Some(self.solid_align3d(src, dst));
+                }
+                self.command_line.push_info(
+                    "Usage: 3DALIGN <sx1 sy1 sz1 … sx3 sy3 sz3  dx1 dy1 dz1 … dx3 dy3 dz3>  (18 numbers: 3 source then 3 destination points)",
+                );
+            }
+
+            // 3DMIRROR [X|Y|Z] — add a mirror of the selected solid across a plane.
+            cmd if cmd == "3DMIRROR"
+                || cmd == "MIRROR3D"
+                || cmd.starts_with("3DMIRROR ")
+                || cmd.starts_with("MIRROR3D ") =>
+            {
+                let parts: Vec<String> = cmd
+                    .split_whitespace()
+                    .skip(1)
+                    .map(|s| s.to_uppercase())
+                    .collect();
+                let axis = match parts.first().map(String::as_str) {
+                    Some("X") => 0,
+                    Some("Y") => 1,
+                    Some("Z") => 2,
+                    _ => {
+                        self.command_line.push_info(
+                            "Usage: 3DMIRROR [X|Y|Z]   (mirrors the selected solid across that plane)",
+                        );
+                        return None;
+                    }
+                };
+                return Some(self.solid_mirror3d(axis));
+            }
+
+            // 3DROTATE [X|Y|Z] <angle> — rotate the selected solid about an axis.
+            cmd if cmd == "3DROTATE"
+                || cmd == "ROTATE3D"
+                || cmd.starts_with("3DROTATE ")
+                || cmd.starts_with("ROTATE3D ") =>
+            {
+                let parts: Vec<String> = cmd
+                    .split_whitespace()
+                    .skip(1)
+                    .map(|s| s.to_uppercase())
+                    .collect();
+                let axis = match parts.first().map(String::as_str) {
+                    Some("X") => 0,
+                    Some("Y") => 1,
+                    _ => 2,
+                };
+                let angle: Option<f64> = parts.iter().find_map(|s| s.parse::<f64>().ok());
+                match angle {
+                    Some(a) => return Some(self.solid_rotate3d(axis, a)),
+                    None => self.command_line.push_info(
+                        "Usage: 3DROTATE [X|Y|Z] <angle>   (rotates the selected solid)",
+                    ),
+                }
+            }
+
+            // SLICE [X|Y|Z] <value> [TOP|BOTTOM] — cut the selected solid with an
+            // axis-aligned plane, keeping the lower half by default.
+            cmd if cmd == "SLICE"
+                || cmd == "SL"
+                || cmd.starts_with("SLICE ")
+                || cmd.starts_with("SL ") =>
+            {
+                let parts: Vec<String> = cmd
+                    .split_whitespace()
+                    .skip(1)
+                    .map(|s| s.to_uppercase())
+                    .collect();
+                let (axis, val_idx) = match parts.first().map(String::as_str) {
+                    Some("X") => (0, 1),
+                    Some("Y") => (1, 1),
+                    Some("Z") => (2, 1),
+                    _ => (2, 0), // default Z plane
+                };
+                let value: Option<f64> = parts.get(val_idx).and_then(|s| s.parse().ok());
+                let keep_low = !parts.iter().any(|s| s == "TOP");
+                match value {
+                    Some(v) => return Some(self.solid_slice(axis, v, keep_low)),
+                    None => self.command_line.push_info(
+                        "Usage: SLICE [X|Y|Z] <value> [TOP|BOTTOM]   (cuts the selected solid)",
+                    ),
                 }
             }
 
@@ -719,8 +908,13 @@ impl OpenCADStudio {
 
             "TEXTEDIT" | "TEDIT" => {
                 use crate::modules::annotate::textedit::TexteditCommand;
-                let mode_str = if self.texteditmode { "Single" } else { "Multiple" };
-                self.command_line.push_output(&format!("Current settings: Edit mode = {}", mode_str));
+                let mode_str = if self.texteditmode {
+                    "Single"
+                } else {
+                    "Multiple"
+                };
+                self.command_line
+                    .push_output(&format!("Current settings: Edit mode = {}", mode_str));
                 let new_cmd = TexteditCommand::new(self.texteditmode);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));

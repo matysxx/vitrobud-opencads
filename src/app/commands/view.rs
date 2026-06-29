@@ -46,22 +46,14 @@ impl OpenCADStudio {
                     .unwrap_or_else(|| "(unsaved)".to_string());
                 self.command_line
                     .push_output(&format!("Drawing: {}", path_label));
-                self.command_line.push_output(&format!(
-                    "  Created (Julian):  {:.6}",
-                    h.create_date_julian
-                ));
-                self.command_line.push_output(&format!(
-                    "  Updated (Julian):  {:.6}",
-                    h.update_date_julian
-                ));
-                self.command_line.push_output(&format!(
-                    "  Total edit time:   {:.4}",
-                    h.total_editing_time
-                ));
-                self.command_line.push_output(&format!(
-                    "  User elapsed:      {:.4}",
-                    h.user_elapsed_time
-                ));
+                self.command_line
+                    .push_output(&format!("  Created (Julian):  {:.6}", h.create_date_julian));
+                self.command_line
+                    .push_output(&format!("  Updated (Julian):  {:.6}", h.update_date_julian));
+                self.command_line
+                    .push_output(&format!("  Total edit time:   {:.4}", h.total_editing_time));
+                self.command_line
+                    .push_output(&format!("  User elapsed:      {:.4}", h.user_elapsed_time));
                 self.command_line.push_output(&format!(
                     "  Last saved by:     {}",
                     if h.last_saved_by.is_empty() {
@@ -127,12 +119,14 @@ impl OpenCADStudio {
                 self.command_line.push_output(&format!(
                     "  Measurement:       {} ({})",
                     h.measurement,
-                    if h.measurement == 1 { "Metric" } else { "Imperial" }
+                    if h.measurement == 1 {
+                        "Metric"
+                    } else {
+                        "Imperial"
+                    }
                 ));
-                self.command_line.push_output(&format!(
-                    "  Proxy graphics:    {}",
-                    h.proxy_graphics
-                ));
+                self.command_line
+                    .push_output(&format!("  Proxy graphics:    {}", h.proxy_graphics));
                 self.command_line
                     .push_output(&format!("  Tree depth:        {}", h.tree_depth));
                 self.command_line.push_output(&format!(
@@ -177,11 +171,9 @@ impl OpenCADStudio {
                                 _ => h.user_real5 = val,
                             }
                             self.tabs[i].dirty = true;
-                            self.command_line
-                                .push_output(&format!("USERR{n} = {val}"));
+                            self.command_line.push_output(&format!("USERR{n} = {val}"));
                         } else {
-                            self.command_line
-                                .push_info("Usage: USERR <1-5> <real>");
+                            self.command_line.push_info("Usage: USERR <1-5> <real>");
                         }
                     }
                     (Some(n @ 1..=5), v, false) => {
@@ -194,11 +186,9 @@ impl OpenCADStudio {
                                 _ => h.user_int5 = val,
                             }
                             self.tabs[i].dirty = true;
-                            self.command_line
-                                .push_output(&format!("USERI{n} = {val}"));
+                            self.command_line.push_output(&format!("USERI{n} = {val}"));
                         } else {
-                            self.command_line
-                                .push_info("Usage: USERI <1-5> <integer>");
+                            self.command_line.push_info("Usage: USERI <1-5> <integer>");
                         }
                     }
                     _ => self
@@ -242,6 +232,71 @@ impl OpenCADStudio {
             // shortcuts panel, so route the customization verbs there.
             "CUI" | "ALIASEDIT" => {
                 return Some(Task::done(Message::ShortcutsPanelOpen));
+            }
+
+            // CUIEXPORT <path> — write the keyboard-shortcut customizations
+            // (the drawing-independent CUI data) to a plain "KEY COMMAND" file.
+            cmd if cmd == "CUIEXPORT" || cmd.starts_with("CUIEXPORT ") => {
+                let path = cmd.trim_start_matches("CUIEXPORT").trim();
+                if path.is_empty() {
+                    self.command_line.push_info(
+                        "Usage: CUIEXPORT <path> — save the keyboard shortcuts to a file.",
+                    );
+                    return Some(Task::none());
+                }
+                let mut keys: Vec<(&String, &String)> = self.shortcut_overrides.iter().collect();
+                keys.sort_by(|a, b| a.0.cmp(b.0));
+                let text: String = keys.iter().map(|(k, v)| format!("{k} {v}\n")).collect();
+                let count = self.shortcut_overrides.len();
+                match std::fs::write(path, text) {
+                    Ok(()) => self.command_line.push_output(&format!(
+                        "CUIEXPORT: wrote {count} shortcut(s) to \"{path}\"."
+                    )),
+                    Err(e) => self
+                        .command_line
+                        .push_error(&format!("CUIEXPORT: cannot write \"{path}\": {e}")),
+                }
+            }
+
+            // CUIIMPORT / CUILOAD <path> — load shortcut customizations from a
+            // "KEY COMMAND" file (lines starting with # are ignored).
+            cmd if cmd == "CUIIMPORT"
+                || cmd == "CUILOAD"
+                || cmd.starts_with("CUIIMPORT ")
+                || cmd.starts_with("CUILOAD ") =>
+            {
+                let path = cmd
+                    .trim_start_matches("CUIIMPORT")
+                    .trim_start_matches("CUILOAD")
+                    .trim();
+                if path.is_empty() {
+                    self.command_line.push_info(
+                        "Usage: CUIIMPORT <path> — load keyboard shortcuts from a file.",
+                    );
+                    return Some(Task::none());
+                }
+                match std::fs::read_to_string(path) {
+                    Ok(text) => {
+                        let mut n = 0usize;
+                        for line in text.lines() {
+                            let line = line.trim();
+                            if line.is_empty() || line.starts_with('#') {
+                                continue;
+                            }
+                            if let Some((k, v)) = line.split_once(char::is_whitespace) {
+                                self.shortcut_overrides
+                                    .insert(k.trim().to_uppercase(), v.trim().to_uppercase());
+                                n += 1;
+                            }
+                        }
+                        self.command_line.push_output(&format!(
+                            "CUIIMPORT: loaded {n} shortcut(s) from \"{path}\"."
+                        ));
+                    }
+                    Err(e) => self
+                        .command_line
+                        .push_error(&format!("CUIIMPORT: cannot read \"{path}\": {e}")),
+                }
             }
 
             // ── Keyboard Shortcuts panel ──────────────────────────────────
@@ -396,9 +451,7 @@ impl OpenCADStudio {
                     };
                     let config: Option<(C<usize>, usize)> = match sub.as_str() {
                         "SINGLE" | "SI" | "1" => Some((C::Pane(0), 1)),
-                        "2H" | "2" => {
-                            Some((split(Axis::Horizontal, C::Pane(0), C::Pane(1)), 2))
-                        }
+                        "2H" | "2" => Some((split(Axis::Horizontal, C::Pane(0), C::Pane(1)), 2)),
                         "2V" => Some((split(Axis::Vertical, C::Pane(0), C::Pane(1)), 2)),
                         "4" => Some((
                             split(
@@ -664,6 +717,40 @@ impl OpenCADStudio {
             }
 
             // ── Draw Order ────────────────────────────────────────────────
+            // TEXTTOFRONT / TEXTTOBACK — move every text and dimension object to
+            // the front (or back) of the draw order via the DRAWORDER machinery.
+            "TEXTTOFRONT" | "TEXTTOBACK" => {
+                let to_front = cmd.ends_with("FRONT");
+                let handles: rustc_hash::FxHashSet<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            acadrust::EntityType::Text(_)
+                                | acadrust::EntityType::MText(_)
+                                | acadrust::EntityType::Dimension(_)
+                        )
+                    })
+                    .map(|e| e.common().handle)
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line
+                        .push_info(&format!("{cmd}: no text or dimension objects."));
+                    return Some(Task::none());
+                }
+                self.tabs[i].scene.selected = handles;
+                return self.dispatch_view(
+                    if to_front {
+                        "DRAWORDER FRONT"
+                    } else {
+                        "DRAWORDER BACK"
+                    },
+                    i,
+                );
+            }
+
             cmd if cmd.starts_with("DRAWORDER") => {
                 use acadrust::objects::{ObjectType, SortEntitiesTable};
                 let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -851,6 +938,54 @@ impl OpenCADStudio {
                         );
                     }
                 }
+            }
+
+            // SYNCPVIEWPORTS — copy the first selected viewport's display settings
+            // (view direction/target, scale, snap/grid, frozen layers) to the rest.
+            "SYNCPVIEWPORTS" | "VPSYNC" => {
+                let vps: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .filter(|(_, e)| matches!(e, acadrust::EntityType::Viewport(_)))
+                    .map(|(h, _)| *h)
+                    .collect();
+                if vps.len() < 2 {
+                    self.command_line.push_error(
+                        "SYNCPVIEWPORTS: select two or more viewports (the first is the master).",
+                    );
+                    return Some(Task::none());
+                }
+                let src = match self.tabs[i].scene.document.get_entity(vps[0]) {
+                    Some(acadrust::EntityType::Viewport(vp)) => vp.clone(),
+                    _ => {
+                        self.command_line
+                            .push_error("SYNCPVIEWPORTS: master is not a viewport.");
+                        return Some(Task::none());
+                    }
+                };
+                self.push_undo_snapshot(i, "SYNCPVIEWPORTS");
+                let mut n = 0usize;
+                for h in &vps[1..] {
+                    if let Some(acadrust::EntityType::Viewport(vp)) =
+                        self.tabs[i].scene.document.get_entity_mut(*h)
+                    {
+                        vp.view_direction = src.view_direction;
+                        vp.view_target = src.view_target;
+                        vp.view_height = src.view_height;
+                        vp.snap_base = src.snap_base;
+                        vp.snap_spacing = src.snap_spacing;
+                        vp.snap_angle = src.snap_angle;
+                        vp.grid_spacing = src.grid_spacing;
+                        vp.grid_major = src.grid_major;
+                        vp.frozen_layers = src.frozen_layers.clone();
+                        n += 1;
+                    }
+                }
+                self.tabs[i].dirty = true;
+                self.command_line.push_output(&format!(
+                    "SYNCPVIEWPORTS: synced {n} viewport(s) to the master."
+                ));
             }
 
             _ => return None,

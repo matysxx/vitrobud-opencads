@@ -391,6 +391,15 @@ impl OpenCADStudio {
             }
 
             // ── Named Views (VIEW command) ────────────────────────────────
+            // PLAN — look straight down at the drawing (top view). The optional
+            // World/Ucs/Current keyword is accepted; all map to the world top
+            // view for now.
+            cmd if cmd == "PLAN" || cmd.starts_with("PLAN ") => {
+                return Some(Task::done(Message::ViewCubeSnapWorld(
+                    crate::scene::CubeRegion::Face(crate::scene::pipeline::viewcube::FACE_TOP),
+                )));
+            }
+
             cmd if cmd == "VIEW" || cmd.starts_with("VIEW ") => {
                 let parts: Vec<&str> = cmd.splitn(3, ' ').collect();
                 let sub = parts.get(1).map(|s| s.to_uppercase()).unwrap_or_default();
@@ -450,6 +459,28 @@ impl OpenCADStudio {
                                     .push_error(&format!("View '{}' not found.", name));
                             }
                         }
+                    }
+                    // Standard orientation presets — snap the camera to a world
+                    // axis view (these names take precedence over a same-named
+                    // saved view, matching the standard orientation behaviour).
+                    "TOP" | "FRONT" | "BACK" | "LEFT" | "RIGHT" | "BOTTOM" => {
+                        use crate::scene::pipeline::viewcube::{
+                            FACE_BACK, FACE_BOTTOM, FACE_FRONT, FACE_LEFT, FACE_RIGHT, FACE_TOP,
+                        };
+                        let face = match sub.as_str() {
+                            "TOP" => FACE_TOP,
+                            "BOTTOM" => FACE_BOTTOM,
+                            "FRONT" => FACE_FRONT,
+                            "BACK" => FACE_BACK,
+                            "RIGHT" => FACE_RIGHT,
+                            _ => FACE_LEFT,
+                        };
+                        return Some(Task::done(Message::ViewCubeSnapWorld(
+                            crate::scene::CubeRegion::Face(face),
+                        )));
+                    }
+                    "ISO" | "ISOMETRIC" | "SWISO" => {
+                        return Some(Task::done(Message::ViewCubeHome));
                     }
                     // VIEW <name> shortcut for restore
                     _ => {

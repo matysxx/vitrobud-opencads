@@ -39,8 +39,25 @@ impl OpenCADStudio {
                 self.refresh_properties();
             }
 
-            "QSELECT" | "QS" => {
+            // QSELECT builds a selection set by object type / property; FILTER is
+            // the same criteria-based selection.
+            "QSELECT" | "QS" | "FILTER" | "FI" => {
                 return Some(Task::done(Message::QSelectOpen));
+            }
+
+            // CAL <expression> — evaluate an arithmetic expression
+            //   (+ - * /, parentheses, unary minus, decimals).
+            cmd if cmd == "CAL" || cmd.starts_with("CAL ") => {
+                let expr = cmd.trim_start_matches("CAL").trim();
+                if expr.is_empty() {
+                    self.command_line
+                        .push_info("Usage: CAL <expression>   e.g. CAL (2+3)*4");
+                } else {
+                    match arith_eval(expr) {
+                        Ok(v) => self.command_line.push_output(&format!("= {v}")),
+                        Err(e) => self.command_line.push_error(&format!("CAL: {e}")),
+                    }
+                }
             }
 
             // ── LIST — entity info ────────────────────────────────────────
@@ -101,12 +118,12 @@ impl OpenCADStudio {
                             .index()
                             .map(|c| c.to_string())
                             .unwrap_or_else(|| "ByLayer".to_string());
-                        let linetype =
-                            if common.linetype.is_empty() || common.linetype == "ByLayer" {
-                                "ByLayer".to_string()
-                            } else {
-                                common.linetype.clone()
-                            };
+                        let linetype = if common.linetype.is_empty() || common.linetype == "ByLayer"
+                        {
+                            "ByLayer".to_string()
+                        } else {
+                            common.linetype.clone()
+                        };
                         let details = entity_list_details(entity);
                         format!(
                             "{type_name}  Handle:{:X}  Layer:{}  Color:{}  LT:{}{}",
@@ -123,7 +140,8 @@ impl OpenCADStudio {
                     })
                     .collect();
                 if lines.is_empty() {
-                    self.command_line.push_info("DBLIST: drawing has no entities.");
+                    self.command_line
+                        .push_info("DBLIST: drawing has no entities.");
                 } else {
                     let count = lines.len();
                     for l in lines {
@@ -668,7 +686,8 @@ impl OpenCADStudio {
                         .document
                         .entities()
                         .filter_map(|e| {
-                            use crate::entities::traits::EntityTypeOps; let txt = e.text_content()?;
+                            use crate::entities::traits::EntityTypeOps;
+                            let txt = e.text_content()?;
                             if txt.to_lowercase().contains(&search_lc) {
                                 Some(e.common().handle)
                             } else {
@@ -691,7 +710,9 @@ impl OpenCADStudio {
                             self.push_undo_snapshot(i, "FIND/REPLACE");
                             for h in &targets {
                                 if let Some(e) = self.tabs[i].scene.document.get_entity_mut(*h) {
-                                    crate::entities::traits::EntityTypeOps::replace_text(e, search, rep);
+                                    crate::entities::traits::EntityTypeOps::replace_text(
+                                        e, search, rep,
+                                    );
                                     count += 1;
                                 }
                             }
@@ -710,7 +731,8 @@ impl OpenCADStudio {
                         } else {
                             for h in &handles {
                                 if let Some(e) = self.tabs[i].scene.document.get_entity(*h) {
-                                    use crate::entities::traits::EntityTypeOps; let txt = e.text_content().unwrap_or_default();
+                                    use crate::entities::traits::EntityTypeOps;
+                                    let txt = e.text_content().unwrap_or_default();
                                     self.command_line.push_output(&format!(
                                         "  Handle {:X}: \"{}\"",
                                         h.value(),
@@ -885,7 +907,6 @@ fn build_data_extraction_csv(doc: &acadrust::CadDocument) -> String {
     out
 }
 
-
 /// Return a short geometry summary for CSV ExtraInfo column.
 fn entity_extra_info(entity: &acadrust::EntityType) -> String {
     use acadrust::EntityType;
@@ -928,5 +949,107 @@ fn csv_escape(s: &str) -> String {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
+    }
+}
+
+// ── CAL — arithmetic expression evaluator ──────────────────────────────────
+// A small recursive-descent parser for `+ - * /`, parentheses, unary signs and
+// decimal numbers. Self-contained (no external dependency).
+fn arith_eval(expr: &str) -> Result<f64, String> {
+    let mut p = ArithParser {
+        chars: expr.chars().filter(|c| !c.is_whitespace()).collect(),
+        pos: 0,
+    };
+    let v = p.expr()?;
+    if p.pos != p.chars.len() {
+        return Err(format!("unexpected '{}'", p.chars[p.pos]));
+    }
+    Ok(v)
+}
+
+struct ArithParser {
+    chars: Vec<char>,
+    pos: usize,
+}
+
+impl ArithParser {
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    // expr = term (('+' | '-') term)*
+    fn expr(&mut self) -> Result<f64, String> {
+        let mut v = self.term()?;
+        while let Some(op) = self.peek() {
+            if op == '+' || op == '-' {
+                self.pos += 1;
+                let rhs = self.term()?;
+                v = if op == '+' { v + rhs } else { v - rhs };
+            } else {
+                break;
+            }
+        }
+        Ok(v)
+    }
+
+    // term = factor (('*' | '/') factor)*
+    fn term(&mut self) -> Result<f64, String> {
+        let mut v = self.factor()?;
+        while let Some(op) = self.peek() {
+            if op == '*' || op == '/' {
+                self.pos += 1;
+                let rhs = self.factor()?;
+                if op == '/' {
+                    if rhs == 0.0 {
+                        return Err("division by zero".into());
+                    }
+                    v /= rhs;
+                } else {
+                    v *= rhs;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(v)
+    }
+
+    // factor = ('+' | '-') factor | '(' expr ')' | number
+    fn factor(&mut self) -> Result<f64, String> {
+        match self.peek() {
+            Some('+') => {
+                self.pos += 1;
+                self.factor()
+            }
+            Some('-') => {
+                self.pos += 1;
+                Ok(-self.factor()?)
+            }
+            Some('(') => {
+                self.pos += 1;
+                let v = self.expr()?;
+                if self.peek() != Some(')') {
+                    return Err("missing ')'".into());
+                }
+                self.pos += 1;
+                Ok(v)
+            }
+            Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
+            Some(c) => Err(format!("unexpected '{c}'")),
+            None => Err("unexpected end of expression".into()),
+        }
+    }
+
+    fn number(&mut self) -> Result<f64, String> {
+        let start = self.pos;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() || c == '.' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        let s: String = self.chars[start..self.pos].iter().collect();
+        s.parse::<f64>().map_err(|_| format!("bad number '{s}'"))
     }
 }

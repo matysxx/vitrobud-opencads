@@ -25,12 +25,24 @@ impl OpenCADStudio {
                         let is_paper = self.tabs[i].scene.current_layout != "Model";
                         self.push_undo_snapshot(i, "BASE");
                         if is_paper {
-                            self.tabs[i].scene.document.header.paper_space_insertion_base = pt;
+                            self.tabs[i]
+                                .scene
+                                .document
+                                .header
+                                .paper_space_insertion_base = pt;
                         } else {
-                            self.tabs[i].scene.document.header.model_space_insertion_base = pt;
+                            self.tabs[i]
+                                .scene
+                                .document
+                                .header
+                                .model_space_insertion_base = pt;
                         }
                         self.tabs[i].dirty = true;
-                        let space = if is_paper { "paper space" } else { "model space" };
+                        let space = if is_paper {
+                            "paper space"
+                        } else {
+                            "model space"
+                        };
                         self.command_line.push_output(&format!(
                             "Base point ({}, {}, {}) set for {space}.",
                             nums[0], nums[1], z
@@ -69,6 +81,62 @@ impl OpenCADStudio {
                     self.command_line.push_info(&format!(
                         "{} object(s) copied to clipboard.",
                         self.clipboard.len()
+                    ));
+                }
+            }
+
+            // COPYBASE — copy the selection to the clipboard with a picked base
+            // point (vs COPYCLIP, which uses the selection centroid).
+            "COPYBASE" => {
+                let handles: Vec<_> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .map(|(h, _)| h)
+                    .collect();
+                if handles.is_empty() {
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    let cmd = SelectObjectsCommand::new("COPYBASE");
+                    self.command_line.push_info(&cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                } else {
+                    use crate::modules::draw::clipboard::copy_base::CopyBaseCommand;
+                    let cmd = CopyBaseCommand::new();
+                    self.command_line.push_info(&cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                }
+            }
+
+            // Internal: the base point picked by COPYBASE — perform the copy.
+            cmd if cmd.starts_with("COPYBASE_AT ") => {
+                let coords: Vec<f64> = cmd
+                    .trim_start_matches("COPYBASE_AT")
+                    .split_whitespace()
+                    .filter_map(|s| s.parse::<f64>().ok())
+                    .collect();
+                let handles: Vec<_> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .map(|(h, _)| h)
+                    .collect();
+                if coords.len() == 3 && !handles.is_empty() {
+                    let base = glam::DVec3::new(coords[0], coords[1], coords[2]);
+                    let entities: Vec<_> = handles
+                        .iter()
+                        .filter_map(|&h| self.tabs[i].scene.document.get_entity(h).cloned())
+                        .collect();
+                    self.clipboard_centroid = base;
+                    self.clipboard = entities;
+                    self.clipboard_deps = super::super::ClipboardDeps::capture(
+                        &self.tabs[i].scene.document,
+                        &self.clipboard,
+                    );
+                    self.command_line.push_info(&format!(
+                        "{} object(s) copied to clipboard (base {:.3},{:.3}).",
+                        self.clipboard.len(),
+                        base.x,
+                        base.y
                     ));
                 }
             }
@@ -169,8 +237,7 @@ impl OpenCADStudio {
                             e.common_mut().xdictionary_handle = Some(root);
                         }
                     }
-                    match self
-                        .tabs[i]
+                    match self.tabs[i]
                         .scene
                         .define_block_from_owned_entities(entities, &name, base)
                     {
@@ -183,7 +250,8 @@ impl OpenCADStudio {
                             self.tabs[i].dirty = true;
                             let wires = self.tabs[i].scene.wires_for_entities(&self.clipboard);
                             use crate::modules::insert::insert_block::InsertBlockCommand;
-                            let cmd = InsertBlockCommand::new_for_block(name, wires, base.as_vec3());
+                            let cmd =
+                                InsertBlockCommand::new_for_block(name, wires, base.as_vec3());
                             self.command_line.push_info(&cmd.prompt());
                             self.tabs[i].active_cmd = Some(Box::new(cmd));
                         }
@@ -222,6 +290,187 @@ impl OpenCADStudio {
                     let cmd = InsertBlockCommand::new(blocks);
                     self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
+                }
+            }
+
+            "MINSERT" => {
+                let blocks = self.tabs[i].scene.custom_block_names();
+                if blocks.is_empty() {
+                    self.command_line
+                        .push_error("No user-defined blocks found in this drawing.");
+                } else {
+                    use crate::modules::insert::minsert::MinsertCommand;
+                    let cmd = MinsertCommand::new(blocks);
+                    self.command_line.push_info(&cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                }
+            }
+
+            // ATTSYNC <block> — reconcile every insert of <block> against the
+            // block's current attribute definitions: drop attributes whose tag
+            // no longer exists and add any newly-defined ones (keeping the values
+            // of attributes that remain).
+            cmd if cmd == "ATTSYNC" || cmd.starts_with("ATTSYNC ") => {
+                let arg = cmd.trim_start_matches("ATTSYNC").trim();
+                let blocks = self.tabs[i].scene.custom_block_names();
+                if arg.is_empty() {
+                    self.command_line.push_info(&format!(
+                        "Usage: ATTSYNC <block name>.  Blocks: {}",
+                        if blocks.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            blocks.join(", ")
+                        }
+                    ));
+                    return Some(Task::none());
+                }
+                let Some(block) = blocks.iter().find(|b| b.eq_ignore_ascii_case(arg)).cloned()
+                else {
+                    self.command_line
+                        .push_error(&format!("ATTSYNC: no block named \"{arg}\"."));
+                    return Some(Task::none());
+                };
+                // Gather the block's attribute definitions (tag, default value).
+                let doc = &self.tabs[i].scene.document;
+                let attdefs: Vec<(String, String)> = doc
+                    .block_records
+                    .get(&block)
+                    .map(|br| {
+                        br.entity_handles
+                            .iter()
+                            .filter_map(|h| doc.get_entity(*h))
+                            .filter_map(|e| match e {
+                                acadrust::EntityType::AttributeDefinition(a) => {
+                                    Some((a.tag.clone(), a.default_value.clone()))
+                                }
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.push_undo_snapshot(i, "ATTSYNC");
+                let mut synced = 0usize;
+                for e in self.tabs[i].scene.document.entities_mut() {
+                    if let acadrust::EntityType::Insert(ins) = e {
+                        if ins.block_name.eq_ignore_ascii_case(&block) {
+                            ins.attributes.retain(|a| {
+                                attdefs.iter().any(|(t, _)| t.eq_ignore_ascii_case(&a.tag))
+                            });
+                            for (tag, default) in &attdefs {
+                                if !ins
+                                    .attributes
+                                    .iter()
+                                    .any(|a| a.tag.eq_ignore_ascii_case(tag))
+                                {
+                                    ins.attributes
+                                        .push(acadrust::entities::AttributeEntity::new(
+                                            tag.clone(),
+                                            default.clone(),
+                                        ));
+                                }
+                            }
+                            synced += 1;
+                        }
+                    }
+                }
+                self.tabs[i].scene.bump_geometry();
+                self.tabs[i].dirty = true;
+                self.command_line.push_output(&format!(
+                    "ATTSYNC: synchronised {synced} insert(s) of \"{block}\" against {} attribute definition(s).",
+                    attdefs.len()
+                ));
+            }
+
+            // ADCENTER / CONTENTBROWSER — report the drawing's named content
+            // (blocks and layers) from the command line in place of the browser
+            // panel.
+            "ADCENTER" | "CONTENTBROWSER" | "ADC" => {
+                let blocks = self.tabs[i].scene.custom_block_names();
+                let layers: Vec<String> = self.tabs[i]
+                    .scene
+                    .document
+                    .layers
+                    .names()
+                    .map(|s| s.to_string())
+                    .collect();
+                self.command_line.push_output(&format!(
+                    "Blocks ({}): {}",
+                    blocks.len(),
+                    if blocks.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        blocks.join(", ")
+                    }
+                ));
+                self.command_line.push_output(&format!(
+                    "Layers ({}): {}",
+                    layers.len(),
+                    layers.join(", ")
+                ));
+            }
+
+            // BLOCKPALETTE — list the blocks available to insert.
+            "BLOCKPALETTE" | "BLOCKSPALETTE" => {
+                let blocks = self.tabs[i].scene.custom_block_names();
+                if blocks.is_empty() {
+                    self.command_line.push_info(
+                        "No user-defined blocks. Define one with BLOCK, then INSERT it.",
+                    );
+                } else {
+                    self.command_line.push_output(&format!(
+                        "Blocks ({}) — insert with INSERT <name>:  {}",
+                        blocks.len(),
+                        blocks.join(", ")
+                    ));
+                }
+            }
+
+            // ATTMAN — list the attribute definitions of each block (or one named
+            // block). The full graphical manager is not built; this reports the
+            // same information from the command line.
+            cmd if cmd == "ATTMAN" || cmd == "BATTMAN" || cmd.starts_with("ATTMAN ") => {
+                let arg = cmd.trim_start_matches("ATTMAN").trim();
+                let blocks = self.tabs[i].scene.custom_block_names();
+                let targets: Vec<String> = if arg.is_empty() {
+                    blocks
+                } else {
+                    blocks
+                        .into_iter()
+                        .filter(|b| b.eq_ignore_ascii_case(arg))
+                        .collect()
+                };
+                if targets.is_empty() {
+                    self.command_line
+                        .push_info("ATTMAN: no matching block.  Usage: ATTMAN [block name]");
+                } else {
+                    let doc = &self.tabs[i].scene.document;
+                    let mut lines: Vec<String> = Vec::new();
+                    for block in &targets {
+                        let attdefs: Vec<String> = doc
+                            .block_records
+                            .get(block)
+                            .map(|br| {
+                                br.entity_handles
+                                    .iter()
+                                    .filter_map(|h| doc.get_entity(*h))
+                                    .filter_map(|e| match e {
+                                        acadrust::EntityType::AttributeDefinition(a) => {
+                                            Some(format!("{}={}", a.tag, a.default_value))
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        lines.push(if attdefs.is_empty() {
+                            format!("  {block}: no attributes.")
+                        } else {
+                            format!("  {block}: {}", attdefs.join(", "))
+                        });
+                    }
+                    for l in lines {
+                        self.command_line.push_output(&l);
+                    }
                 }
             }
 
@@ -314,6 +563,41 @@ impl OpenCADStudio {
                     self.command_line
                         .push_error("XREF  Save the drawing first to resolve relative XREF paths.");
                 }
+            }
+
+            // NCOPY — copy the nested objects of the selected block reference(s)
+            // into model space, keeping the block (a non-destructive extraction;
+            // every nested object is copied — the block is not exploded).
+            "NCOPY" | "NCOPYALL" => {
+                use crate::modules::draw::modify::explode::explode_entity;
+                let inserts: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .filter(|(_, e)| matches!(e, acadrust::EntityType::Insert(_)))
+                    .map(|(h, _)| *h)
+                    .collect();
+                if inserts.is_empty() {
+                    self.command_line
+                        .push_error("NCOPY: select a block reference first.");
+                    return Some(Task::none());
+                }
+                self.push_undo_snapshot(i, "NCOPY");
+                let mut n = 0usize;
+                for h in &inserts {
+                    let nested = match self.tabs[i].scene.document.get_entity(*h).cloned() {
+                        Some(ins) => explode_entity(&ins, &self.tabs[i].scene.document),
+                        None => Vec::new(),
+                    };
+                    for e in nested {
+                        self.tabs[i].scene.add_entity(e);
+                        n += 1;
+                    }
+                }
+                self.tabs[i].dirty = true;
+                self.command_line.push_output(&format!(
+                    "NCOPY: copied {n} nested object(s) into model space (blocks kept)."
+                ));
             }
 
             _ => return None,

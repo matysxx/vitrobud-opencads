@@ -57,7 +57,6 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-
 mod command;
 mod dialog;
 mod dynamic;
@@ -162,7 +161,6 @@ impl OpenCADStudio {
         self.snapper.clear_tracking();
         self.otrack_active = None;
     }
-
 
     fn update_inner(&mut self, msg: Message) -> Task<Message> {
         match msg {
@@ -270,7 +268,9 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::FileOpened(Ok((name, path, doc, caches))) => self.on_file_opened(name, path, doc, caches),
+            Message::FileOpened(Ok((name, path, doc, caches))) => {
+                self.on_file_opened(name, path, doc, caches)
+            }
 
             Message::FileOpened(Err(e)) => {
                 // If the user cancelled, the overlay was already cleared and
@@ -363,7 +363,9 @@ impl OpenCADStudio {
                 )
             }
 
-            Message::WblockSaveResult(block_name, Some(path)) => self.on_wblock_save_result_some(block_name, path),
+            Message::WblockSaveResult(block_name, Some(path)) => {
+                self.on_wblock_save_result_some(block_name, path)
+            }
 
             Message::WblockSaveResult(_, None) => Task::none(),
 
@@ -585,7 +587,9 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::RibbonToolClick { tool_id, event } => self.on_ribbon_tool_click(tool_id, event),
+            Message::RibbonToolClick { tool_id, event } => {
+                self.on_ribbon_tool_click(tool_id, event)
+            }
             Message::PluginFileDialogResult { command, path } => {
                 if let Some(path) = path {
                     // Dispatch "<command> <path>" with original case intact —
@@ -888,7 +892,9 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::LayerToggleVpFreeze(layer_idx, vp_col_idx) => self.on_layer_toggle_vp_freeze(layer_idx, vp_col_idx),
+            Message::LayerToggleVpFreeze(layer_idx, vp_col_idx) => {
+                self.on_layer_toggle_vp_freeze(layer_idx, vp_col_idx)
+            }
 
             Message::LayerNew => self.on_layer_new(),
 
@@ -1220,9 +1226,7 @@ impl OpenCADStudio {
                 if name.is_empty() || name == "WCS" {
                     self.tabs[i].active_ucs = None;
                     self.command_line.push_output("UCS: World");
-                } else if let Some(named) =
-                    self.tabs[i].scene.document.ucss.get(&name).cloned()
-                {
+                } else if let Some(named) = self.tabs[i].scene.document.ucss.get(&name).cloned() {
                     self.tabs[i].active_ucs = Some(named);
                     self.command_line.push_output(&format!("UCS: {}", name));
                 }
@@ -1515,6 +1519,11 @@ impl OpenCADStudio {
                 let handles: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
                 if !handles.is_empty() {
                     self.push_undo_snapshot(i, "ERASE");
+                    // Stash the erased entities so OOPS can restore them.
+                    self.oops_cache = handles
+                        .iter()
+                        .filter_map(|h| self.tabs[i].scene.document.get_entity(*h).cloned())
+                        .collect();
                     self.tabs[i].scene.erase_entities(&handles);
                     self.tabs[i].dirty = true;
                     self.refresh_properties();
@@ -1861,7 +1870,9 @@ impl OpenCADStudio {
                     self.push_undo_snapshot(i, "CHPROP");
                     for &handle in &handles {
                         if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_common_prop(entity, "layer", &layer);
+                            crate::scene::view::dispatch::apply_common_prop(
+                                entity, "layer", &layer,
+                            );
                         }
                     }
                     self.invalidate_property_targets(i, &handles);
@@ -1914,7 +1925,9 @@ impl OpenCADStudio {
                     self.push_undo_snapshot(i, "CHPROP");
                     for &handle in &handles {
                         if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_common_prop(entity, "linetype", &lt);
+                            crate::scene::view::dispatch::apply_common_prop(
+                                entity, "linetype", &lt,
+                            );
                         }
                     }
                     self.invalidate_property_targets(i, &handles);
@@ -1934,10 +1947,12 @@ impl OpenCADStudio {
                     for &handle in &handles {
                         if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
                             match field {
-                                "invisible" => crate::scene::view::dispatch::toggle_invisible(entity),
-                                _ => {
-                                    crate::scene::view::dispatch::apply_geom_prop(entity, field, "toggle")
+                                "invisible" => {
+                                    crate::scene::view::dispatch::toggle_invisible(entity)
                                 }
+                                _ => crate::scene::view::dispatch::apply_geom_prop(
+                                    entity, field, "toggle",
+                                ),
                             }
                         }
                     }
@@ -1948,7 +1963,9 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::PropGeomChoiceChanged { field, value } => self.on_prop_geom_choice_changed(field, value),
+            Message::PropGeomChoiceChanged { field, value } => {
+                self.on_prop_geom_choice_changed(field, value)
+            }
 
             Message::PropGeomInput { field, value } => {
                 self.tabs[self.active_tab]
@@ -2334,8 +2351,7 @@ impl OpenCADStudio {
                         .entry(repo.clone())
                         .or_insert_with(|| first.clone());
                 }
-                self.marketplace_status =
-                    format!("{repo}: {} installable release(s)", tags.len());
+                self.marketplace_status = format!("{repo}: {} installable release(s)", tags.len());
                 self.repo_release_tags.insert(repo, tags);
                 Task::none()
             }
@@ -2496,7 +2512,9 @@ impl OpenCADStudio {
 
             Message::UnsavedDialogSave => self.on_unsaved_dialog_save(),
 
-            Message::UnsavedPickedSavePath(Some(path)) => self.on_unsaved_picked_save_path_some(path),
+            Message::UnsavedPickedSavePath(Some(path)) => {
+                self.on_unsaved_picked_save_path_some(path)
+            }
 
             Message::UnsavedPickedSavePath(None) => {
                 // User cancelled the save-as dialog — re-open the confirmation dialog.
@@ -3196,8 +3214,12 @@ impl OpenCADStudio {
                 };
                 Task::none()
             }
-            Message::MLeaderStyleSetEnum { field, value } => self.on_mleader_style_set_enum(field, value),
-            Message::MLeaderStyleSetHandle { field, value } => self.on_mleader_style_set_handle(field, value),
+            Message::MLeaderStyleSetEnum { field, value } => {
+                self.on_mleader_style_set_enum(field, value)
+            }
+            Message::MLeaderStyleSetHandle { field, value } => {
+                self.on_mleader_style_set_handle(field, value)
+            }
             Message::MLeaderStyleApply => self.on_mleader_style_apply(),
 
             // ── DimStyle Dialog ───────────────────────────────────────────────

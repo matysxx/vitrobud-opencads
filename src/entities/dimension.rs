@@ -805,7 +805,11 @@ impl Grippable for Dimension {
         }
     }
 
-    fn apply_grip_menu(&mut self, grip_id: usize, action: crate::scene::model::object::GripMenuAction) {
+    fn apply_grip_menu(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+    ) {
         use crate::scene::model::object::GripMenuAction as A;
         let (_dim_line_grip, text_grip) = match self {
             Dimension::Linear(_) | Dimension::Aligned(_) => (2, 3),
@@ -1035,9 +1039,7 @@ fn tessellate_dimension_inner(
     // draws 2D fills under all wires, so the line is gapped rather than masked.
     let dimgap_local = style.map(|s| (s.dimgap * dim_scale) as f32).unwrap_or(0.09);
     let text_break = {
-        let tp = vec3_local(
-            dimension_text_pos_f64(dim, style, dim_txt, dim_scale),
-        );
+        let tp = vec3_local(dimension_text_pos_f64(dim, style, dim_txt, dim_scale));
         let tw = dimension_text_value(dim, style)
             .map(|t| t.chars().count() as f32 * dim_txt as f32 * 0.6)
             .unwrap_or(0.0);
@@ -1576,7 +1578,29 @@ fn dimension_geometry(
             let center = lv(d.angle_vertex);
             let point = lv(d.definition_point);
             let text = dimension_text_position(dim);
-            add_segment(&mut g.dim_lines, center, point);
+            // A jogged radius dim (marked via XData) replaces the straight radial
+            // leader with a foreshortened zig-zag at ~45° near its midpoint.
+            let jogged = dim
+                .base()
+                .common
+                .extended_data
+                .get_record("OCS_JOGGED")
+                .is_some();
+            if jogged {
+                let delta = point - center;
+                let dist = delta.length();
+                let u = normalized_or(delta, Vec3::X);
+                let perp = Vec3::new(-u.y, u.x, 0.0);
+                let half = (dist * 0.06).max(1e-3);
+                let mid = center + u * (dist * 0.5);
+                let a = mid - u * half + perp * half;
+                let b = mid + u * half - perp * half;
+                add_segment(&mut g.dim_lines, center, a);
+                add_segment(&mut g.dim_lines, a, b);
+                add_segment(&mut g.dim_lines, b, point);
+            } else {
+                add_segment(&mut g.dim_lines, center, point);
+            }
             // Honour leader_length: extend from the arrow tip past it
             // toward the text by that distance along (text - point).
             let leader_dir = normalized_or(text - point, Vec3::X);
@@ -1877,13 +1901,7 @@ fn append_angular_dimension(
 }
 
 fn dimension_snap_pts(dim: &Dimension) -> Vec<(glam::DVec3, SnapHint)> {
-    let lv = |v: acadrust::types::Vector3| {
-        glam::DVec3::new(
-            v.x,
-            v.y,
-            v.z,
-        )
-    };
+    let lv = |v: acadrust::types::Vector3| glam::DVec3::new(v.x, v.y, v.z);
     let node = |v: acadrust::types::Vector3| (lv(v), SnapHint::Node);
     match dim {
         Dimension::Linear(d) => vec![
@@ -2831,9 +2849,17 @@ pub(crate) fn baked_dimension_text_entity(
             || (style_name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
     });
     let dim_scale = style
-        .map(|s| if s.dimscale > 1e-6 { s.dimscale } else { anno_scale })
+        .map(|s| {
+            if s.dimscale > 1e-6 {
+                s.dimscale
+            } else {
+                anno_scale
+            }
+        })
         .unwrap_or(1.0);
-    let dim_txt = style.map(|s| s.dimtxt * dim_scale).unwrap_or(2.5 * dim_scale);
+    let dim_txt = style
+        .map(|s| s.dimtxt * dim_scale)
+        .unwrap_or(2.5 * dim_scale);
     let mut ent = dimension_text_entity(dim, dim_txt, style, document, dim_scale)?;
     // For a non-default-aligned Text, pin the DXF alignment point (group 11) to
     // the insertion point so other CAD programs anchor the centred text where
@@ -2859,14 +2885,11 @@ mod dimtad_tests {
     fn above_is_up_regardless_of_direction() {
         let (first, second, defpt) = (v(0.0, 10.0), v(20.0, 10.0), v(0.0, 0.0));
         let perp = 5.0;
-        let fwd =
-            text_on_dim_line(first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 1.0, false, 1);
-        let rev =
-            text_on_dim_line(first, second, defpt, -1.0, 0.0, 0, perp, 0.0, 1.0, false, 1);
+        let fwd = text_on_dim_line(first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 1.0, false, 1);
+        let rev = text_on_dim_line(first, second, defpt, -1.0, 0.0, 0, perp, 0.0, 1.0, false, 1);
         assert!(fwd.y > 0.0, "above must be +Y, got {}", fwd.y);
         assert!(rev.y > 0.0, "above must be +Y even reversed, got {}", rev.y);
-        let below =
-            text_on_dim_line(first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 1.0, false, 4);
+        let below = text_on_dim_line(first, second, defpt, 1.0, 0.0, 0, perp, 0.0, 1.0, false, 4);
         assert!(below.y < 0.0, "below must be -Y, got {}", below.y);
     }
 
@@ -2877,13 +2900,41 @@ mod dimtad_tests {
         let perp = 5.0;
         // Object at y=0, dim line above it (y=10): away → further above.
         let above = text_on_dim_line(
-            v(0.0, 0.0), v(20.0, 0.0), v(0.0, 10.0), 1.0, 0.0, 0, perp, 0.0, 1.0, false, 2,
+            v(0.0, 0.0),
+            v(20.0, 0.0),
+            v(0.0, 10.0),
+            1.0,
+            0.0,
+            0,
+            perp,
+            0.0,
+            1.0,
+            false,
+            2,
         );
-        assert!(above.y > 10.0, "outside must clear the object side, got {}", above.y);
+        assert!(
+            above.y > 10.0,
+            "outside must clear the object side, got {}",
+            above.y
+        );
         // Object at y=0, dim line below it (y=-10): away → further below.
         let below = text_on_dim_line(
-            v(0.0, 0.0), v(20.0, 0.0), v(0.0, -10.0), 1.0, 0.0, 0, perp, 0.0, 1.0, false, 2,
+            v(0.0, 0.0),
+            v(20.0, 0.0),
+            v(0.0, -10.0),
+            1.0,
+            0.0,
+            0,
+            perp,
+            0.0,
+            1.0,
+            false,
+            2,
         );
-        assert!(below.y < -10.0, "outside must clear the object side, got {}", below.y);
+        assert!(
+            below.y < -10.0,
+            "outside must clear the object side, got {}",
+            below.y
+        );
     }
 }

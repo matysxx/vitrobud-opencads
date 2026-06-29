@@ -6,6 +6,56 @@ impl OpenCADStudio {
             "NEW" => return Some(Task::done(Message::TabNew)),
             "OPEN" => return Some(Task::done(Message::OpenFile)),
             "SAVE" | "QSAVE" => return Some(Task::done(Message::SaveFile)),
+            // SAVEALL — write every open drawing that already has a file path.
+            // Tabs without a path (never saved) are skipped with a note.
+            "SAVEALL" => {
+                if self.read_only {
+                    self.command_line
+                        .push_error("Read-only session (--read-only): saving is disabled.");
+                    return Some(Task::none());
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let mut saved = 0usize;
+                    let mut skipped = 0usize;
+                    for t in 0..self.tabs.len() {
+                        if self.tabs[t].is_start {
+                            continue;
+                        }
+                        self.sync_vport_display(t);
+                        if let Some(path) = self.tabs[t].current_path.clone() {
+                            self.tabs[t].scene.document.header.user_real1 =
+                                self.tabs[t].scene.annotation_scale as f64;
+                            match crate::io::save(&self.tabs[t].scene.document, &path) {
+                                Ok(()) => {
+                                    self.tabs[t].dirty = false;
+                                    saved += 1;
+                                }
+                                Err(e) => self.command_line.push_error(&format!(
+                                    "SAVEALL: {} failed: {e}",
+                                    path.display()
+                                )),
+                            }
+                        } else {
+                            skipped += 1;
+                        }
+                    }
+                    self.command_line.push_output(&format!(
+                        "SAVEALL: saved {saved} drawing(s){}.",
+                        if skipped > 0 {
+                            format!("; {skipped} need SAVEAS (no file path yet)")
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.command_line
+                        .push_info("SAVEALL: save each tab individually in the web build.");
+                }
+                return Some(Task::none());
+            }
             "SAVEAS" => return Some(Task::done(Message::SaveAs)),
             // UNDO <n> — step back n operations at once; bare UNDO / U is one step.
             cmd if cmd.starts_with("UNDO ") => {
@@ -22,9 +72,71 @@ impl OpenCADStudio {
             }
             "UNDO" | "U" => return Some(Task::done(Message::Undo)),
             "REDO" => return Some(Task::done(Message::Redo)),
+            // OOPS — restore the objects removed by the most recent ERASE,
+            // without undoing any work done since.
+            "OOPS" => {
+                if self.oops_cache.is_empty() {
+                    self.command_line.push_info("OOPS: nothing to restore.");
+                } else {
+                    self.push_undo_snapshot(i, "OOPS");
+                    let restored = std::mem::take(&mut self.oops_cache);
+                    let n = restored.len();
+                    for e in restored {
+                        self.tabs[i].scene.add_entity_clone(e);
+                    }
+                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].dirty = true;
+                    self.refresh_properties();
+                    self.command_line
+                        .push_output(&format!("OOPS: restored {n} object(s)."));
+                }
+            }
             "CLEAR" | "CLR" => return Some(Task::done(Message::ClearScene)),
             "WIREFRAME" | "VW" => return Some(Task::done(Message::SetWireframe(true))),
-            "SOLID" | "VS" => return Some(Task::done(Message::SetWireframe(false))),
+            // Visual-style commands. OCS renders either a wireframe or a shaded
+            // view; the named styles map onto the closest of the two and the
+            // chosen style is reported so the mapping is explicit. (`SOLID` is
+            // intentionally NOT a visual-style verb — it is the 2D filled-polygon
+            // draw command; the shaded ribbon button drives `SetWireframe`.)
+            cmd if cmd == "VS"
+                || cmd == "VSCURRENT"
+                || cmd == "SHADEMODE"
+                || cmd == "HIDDENLINE"
+                || cmd == "XRAY"
+                || cmd == "REALISTIC"
+                || cmd == "CONCEPTUAL"
+                || cmd == "2DWIREFRAME"
+                || cmd == "3DWIREFRAME"
+                || cmd.starts_with("VSCURRENT ")
+                || cmd.starts_with("SHADEMODE ")
+                || cmd.starts_with("VS ") =>
+            {
+                let style = match cmd {
+                    "VS" | "VSCURRENT" | "SHADEMODE" => String::new(),
+                    s if s.starts_with("VS ")
+                        || s.starts_with("VSCURRENT ")
+                        || s.starts_with("SHADEMODE ") =>
+                    {
+                        cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase()
+                    }
+                    other => other.to_string(),
+                };
+                let (wireframe, label) = match style.as_str() {
+                    "" | "SHADED" | "S" | "REALISTIC" | "CONCEPTUAL" => (false, "Shaded"),
+                    "2DWIREFRAME" | "3DWIREFRAME" | "WIREFRAME" | "W" => (true, "Wireframe"),
+                    "HIDDENLINE" | "HIDDEN" | "H" => (false, "Hidden (shown shaded)"),
+                    "XRAY" | "X" => (true, "X-Ray (shown as wireframe)"),
+                    _ => {
+                        self.command_line.push_error(
+                            "Usage: VSCURRENT <2dwireframe|wireframe|hidden|realistic|conceptual|shaded|xray>",
+                        );
+                        return Some(Task::none());
+                    }
+                };
+                self.command_line
+                    .push_output(&format!("Visual style: {label}."));
+                return Some(Task::done(Message::SetWireframe(wireframe)));
+            }
             "EXIT" | "QUIT" => {
                 // Funnel through the OS close path so the unsaved-changes
                 // dialog runs before `iced::exit()`. Falls back to a hard
@@ -110,7 +222,12 @@ impl OpenCADStudio {
                     );
                 }
             }
-            "ORTHO" => return Some(Task::done(Message::SetProjection(true))),
+            // ORTHO toggles the orthogonal cursor constraint — the standard
+            // drafting aid, the same state the status-bar pill drives. Camera
+            // projection is a separate concern: PARALLEL / PERSP, driven by the
+            // Projection ribbon group.
+            "ORTHO" => return Some(Task::done(Message::ToggleOrtho)),
+            "PARALLEL" => return Some(Task::done(Message::SetProjection(true))),
             "PERSP" => return Some(Task::done(Message::SetProjection(false))),
             "LAYERS" | "LA" => return Some(Task::done(Message::ToggleLayers)),
 
@@ -164,9 +281,7 @@ impl OpenCADStudio {
 ///   * a named preset: WHITE / BLACK / GRAY|GREY / DARKGRAY|DARKGREY / LTGRAY
 /// Returns `None` if the arguments don't match either form.
 fn parse_background_color(args: &[&str]) -> Option<[f32; 4]> {
-    let to_rgba = |[r, g, b]: [u8; 3]| {
-        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
-    };
+    let to_rgba = |[r, g, b]: [u8; 3]| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
     // Single token: a named preset.
     if args.len() == 1 {
         let preset = match args[0].to_ascii_uppercase().as_str() {

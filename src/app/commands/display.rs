@@ -160,9 +160,14 @@ impl OpenCADStudio {
             "POLAR" => {
                 return Some(Task::done(Message::TogglePolar));
             }
-            // DSETTINGS / OSNAP — open the drafting-settings (object snap) popup.
-            "DSETTINGS" | "OSNAP" => {
+            // DSETTINGS / OSNAP / OPTIONS — open the drafting-settings popup, which
+            // is OCS's settings surface (the persisted DYN/ORTHO/POLAR/OSNAP prefs).
+            "DSETTINGS" | "OSNAP" | "OPTIONS" | "OP" => {
                 return Some(Task::done(Message::ToggleSnapPopup));
+            }
+            // UNITS — open the drawing-units picker (linear / angular format).
+            "UNITS" | "UN" | "DDUNITS" => {
+                return Some(Task::done(Message::ToggleUnitsPopup));
             }
 
             // ── CLEANSCREEN — collapse the surrounding panels for a full canvas ──
@@ -290,7 +295,10 @@ impl OpenCADStudio {
             // Model-tab primitive command above (with truck boolean caching).
 
             // ── EXTRUDE ────────────────────────────────────────────────────
-            "EXTRUDE" | "EXT" => {
+            // PRESSPULL on a closed boundary creates a solid by extruding it to a
+            // height — the same operation as EXTRUDE. THICKEN turns a closed planar
+            // profile into a solid of the given thickness, which is also an extrude.
+            "EXTRUDE" | "EXT" | "PRESSPULL" | "THICKEN" => {
                 use crate::modules::insert::solid3d_cmds::ExtrudeCommand;
                 // If a single entity is already selected, skip the pick step.
                 let selected: Vec<_> = self.tabs[i].scene.selected_entities().into_iter().collect();
@@ -521,12 +529,267 @@ impl OpenCADStudio {
             // still being built. Acknowledge them with an honest status so the
             // button responds instead of reporting an unknown command; each is
             // replaced by its real handler as the feature lands.
-            "ADCENTER" | "CONTENTBROWSER" | "BLOCKPALETTE" | "DATALINK"
-            | "LANDXMLIMPORT" | "POINTCLOUDATTACH" | "RECAP" | "SYNCPVIEWPORTS"
-            | "UNDERLAYLAYERS" | "ADJUST" | "ANNOSCALE" | "OBJECTSCALE"
-            | "SCALELISTEDIT" | "UOSNAP" | "ATTSYNC"
-            | "ATTMAN" | "HIDDENLINE" | "XRAY" | "OPTIONS"
-            | "COLOR" | "BYLAYER" | "CUILOAD" | "CUIIMPORT" | "CUIEXPORT" => {
+            // OBJECTSCALE — mark the selected objects annotative by attaching the
+            // AcAnnotativeData XData record the tessellator already honours, so
+            // they scale with the current annotation scale.
+            cmd if cmd == "OBJECTSCALE" || cmd.starts_with("OBJECTSCALE ") => {
+                use acadrust::xdata::{ExtendedDataRecord, XDataValue};
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .map(|(h, _)| *h)
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line
+                        .push_error("OBJECTSCALE: select objects first.");
+                    return Some(Task::none());
+                }
+                self.push_undo_snapshot(i, "OBJECTSCALE");
+                let mut n = 0usize;
+                for h in &handles {
+                    if let Some(e) = self.tabs[i].scene.document.get_entity_mut(*h) {
+                        let xd = &mut e.common_mut().extended_data;
+                        if xd.get_record("AcAnnotativeData").is_none() {
+                            let mut rec = ExtendedDataRecord::new("AcAnnotativeData");
+                            rec.add_value(XDataValue::String("1".to_string()));
+                            xd.add_record(rec);
+                        }
+                        n += 1;
+                    }
+                }
+                self.tabs[i].scene.bump_geometry();
+                self.tabs[i].dirty = true;
+                self.command_line.push_output(&format!(
+                    "OBJECTSCALE: marked {n} object(s) annotative (they scale with the annotation scale)."
+                ));
+                return Some(Task::none());
+            }
+
+            // ADJUST — set brightness / contrast / fade on selected raster images
+            //   ADJUST BRIGHTNESS|CONTRAST|FADE <0-100>
+            cmd if cmd == "ADJUST" || cmd.starts_with("ADJUST ") => {
+                let rest = cmd.trim_start_matches("ADJUST").trim();
+                let parts: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+                let action = parts.first().map(|s| s.to_uppercase()).unwrap_or_default();
+                let arg = parts.get(1).copied().unwrap_or("").trim();
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .map(|(h, _)| *h)
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line
+                        .push_error("ADJUST: select raster image(s) first.");
+                } else if action.is_empty() {
+                    self.command_line
+                        .push_info("Usage: ADJUST BRIGHTNESS|CONTRAST|FADE <0-100>");
+                } else if let Ok(v) = arg.parse::<u8>() {
+                    let v = v.min(100);
+                    self.push_undo_snapshot(i, "ADJUST");
+                    let mut changed = 0usize;
+                    for h in &handles {
+                        if let Some(acadrust::EntityType::RasterImage(img)) = self.tabs[i]
+                            .scene
+                            .document
+                            .entities_mut()
+                            .find(|e| e.common().handle == *h)
+                        {
+                            match action.as_str() {
+                                "BRIGHTNESS" => {
+                                    img.brightness = v;
+                                    changed += 1;
+                                }
+                                "CONTRAST" => {
+                                    img.contrast = v;
+                                    changed += 1;
+                                }
+                                "FADE" => {
+                                    img.fade = v;
+                                    changed += 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if changed > 0 {
+                        self.tabs[i].dirty = true;
+                        self.tabs[i].scene.bump_geometry();
+                        self.command_line
+                            .push_output(&format!("ADJUST: {action} = {v} on {changed} image(s)."));
+                    } else {
+                        self.command_line.push_error(
+                            "ADJUST: no raster images selected, or unknown property (use BRIGHTNESS|CONTRAST|FADE).",
+                        );
+                    }
+                } else {
+                    self.command_line.push_error("ADJUST: value must be 0-100.");
+                }
+            }
+
+            // ANNOSCALE / CANNOSCALE <ratio> — set the current annotation scale
+            // (e.g. 1:50, 2:1, or a plain factor). Drives annotative-object size
+            // in model space and is written to the drawing header.
+            cmd if cmd == "ANNOSCALE"
+                || cmd == "CANNOSCALE"
+                || cmd.starts_with("ANNOSCALE ")
+                || cmd.starts_with("CANNOSCALE ") =>
+            {
+                let arg = cmd
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if arg.is_empty() {
+                    let name = self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .current_annotation_scale
+                        .clone();
+                    self.command_line
+                        .push_output(&format!("Current annotation scale: {name}"));
+                    return Some(Task::none());
+                }
+                // anno multiplier = denominator / numerator: 1:50 → 50, 2:1 → 0.5.
+                let anno = if let Some((a, b)) = arg.split_once(':') {
+                    match (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
+                        (Ok(a), Ok(b)) if a != 0.0 => Some((b / a) as f32),
+                        _ => None,
+                    }
+                } else {
+                    arg.parse::<f32>().ok()
+                };
+                match anno {
+                    Some(v) if v > 0.0 => {
+                        self.tabs[i].scene.annotation_scale = v;
+                        let hdr = &mut self.tabs[i].scene.document.header;
+                        hdr.current_annotation_scale = arg.clone();
+                        hdr.annotation_scale_value = 1.0 / v as f64;
+                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].dirty = true;
+                        self.command_line
+                            .push_output(&format!("Annotation scale: {arg}"));
+                    }
+                    _ => self
+                        .command_line
+                        .push_error("Usage: ANNOSCALE <ratio>  e.g. 1:50, 2:1, or a factor"),
+                }
+            }
+
+            // SCALELISTEDIT — list the drawing's annotation scales.
+            cmd if cmd == "SCALELISTEDIT" || cmd.starts_with("SCALELISTEDIT ") => {
+                let names: Vec<String> = self.tabs[i]
+                    .scene
+                    .scale_list()
+                    .into_iter()
+                    .map(|(n, _, _)| n)
+                    .collect();
+                if names.is_empty() {
+                    self.command_line.push_info("No annotation scales defined.");
+                } else {
+                    self.command_line
+                        .push_output(&format!("Annotation scales: {}", names.join(", ")));
+                }
+            }
+
+            // DATALINK <path.csv> — import a CSV file into a table placed at the
+            // origin (one-time import; a live re-reading link is future work).
+            cmd if cmd == "DATALINK" || cmd.starts_with("DATALINK ") => {
+                let path = cmd.trim_start_matches("DATALINK").trim();
+                if path.is_empty() {
+                    self.command_line.push_info(
+                        "Usage: DATALINK <path-to-.csv>  — imports the CSV into a table at the origin.",
+                    );
+                    return Some(Task::none());
+                }
+                match std::fs::read_to_string(path) {
+                    Ok(text) => {
+                        let rows_data: Vec<Vec<String>> = text
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|line| line.split(',').map(|s| s.trim().to_string()).collect())
+                            .collect();
+                        let nrows = rows_data.len();
+                        let ncols = rows_data.iter().map(|r| r.len()).max().unwrap_or(0);
+                        if nrows == 0 || ncols == 0 {
+                            self.command_line
+                                .push_error("DATALINK: the CSV file is empty.");
+                            return Some(Task::none());
+                        }
+                        use acadrust::entities::TableBuilder;
+                        use acadrust::types::Vector3;
+                        let mut table = TableBuilder::new(nrows, ncols)
+                            .at(Vector3::new(0.0, 0.0, 0.0))
+                            .row_height(0.5)
+                            .column_width(2.0)
+                            .build();
+                        for (r, row) in rows_data.iter().enumerate() {
+                            for (c, cell) in row.iter().enumerate() {
+                                table.set_cell_text(r, c, cell);
+                            }
+                        }
+                        self.push_undo_snapshot(i, "DATALINK");
+                        self.tabs[i]
+                            .scene
+                            .add_entity_clone(acadrust::EntityType::Table(table));
+                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(&format!(
+                            "DATALINK: imported {nrows}×{ncols} cells into a table at the origin."
+                        ));
+                    }
+                    Err(e) => {
+                        self.command_line
+                            .push_error(&format!("DATALINK: cannot read \"{path}\": {e}"));
+                    }
+                }
+            }
+
+            // LANDXMLIMPORT <path> — import survey points (LandXML <CgPoint>
+            // elements) as Point objects. Reads the coordinate text content
+            // (northing easting elevation) → Point at (easting, northing, elev).
+            cmd if cmd == "LANDXMLIMPORT" || cmd.starts_with("LANDXMLIMPORT ") => {
+                let path = cmd.trim_start_matches("LANDXMLIMPORT").trim();
+                if path.is_empty() {
+                    self.command_line.push_info(
+                        "Usage: LANDXMLIMPORT <path-to-.xml>  (imports CgPoint survey points)",
+                    );
+                    return Some(Task::none());
+                }
+                match std::fs::read_to_string(path) {
+                    Ok(xml) => {
+                        let pts = parse_landxml_cgpoints(&xml);
+                        if pts.is_empty() {
+                            self.command_line
+                                .push_info("LANDXMLIMPORT: no <CgPoint> survey points found.");
+                            return Some(Task::none());
+                        }
+                        self.push_undo_snapshot(i, "LANDXMLIMPORT");
+                        for [x, y, z] in &pts {
+                            let mut p = acadrust::entities::Point::new();
+                            p.location = acadrust::types::Vector3::new(*x, *y, *z);
+                            self.tabs[i]
+                                .scene
+                                .add_entity_clone(acadrust::EntityType::Point(p));
+                        }
+                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(&format!(
+                            "LANDXMLIMPORT: imported {} survey point(s). Use ZOOM EXTENTS to view.",
+                            pts.len()
+                        ));
+                    }
+                    Err(e) => self
+                        .command_line
+                        .push_error(&format!("LANDXMLIMPORT: cannot read \"{path}\": {e}")),
+                }
+            }
+
+            "POINTCLOUDATTACH" | "RECAP" | "SYNCPVIEWPORTS" | "UNDERLAYLAYERS" | "OBJECTSCALE"
+            | "UOSNAP" | "OPTIONS" => {
                 self.command_line
                     .push_info(&format!("{cmd}: not yet implemented."));
             }
@@ -535,4 +798,40 @@ impl OpenCADStudio {
         }
         Some(self.finish_dispatch(cmd))
     }
+}
+
+// Scan LandXML text for <CgPoint> survey points. Each element's text content is
+// "northing easting elevation"; returned as [easting, northing, elevation] so it
+// maps to a Point at (X=easting, Y=northing, Z=elevation). Tolerant manual scan
+// (no XML dependency); handles the standard text-content form.
+// (landxml cgpoint scan)
+fn parse_landxml_cgpoints(xml: &str) -> Vec<[f64; 3]> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(open) = rest.find("<CgPoint") {
+        let after = &rest[open + "<CgPoint".len()..];
+        // Skip the container element "<CgPoints>".
+        if !matches!(
+            after.chars().next(),
+            Some(' ') | Some('>') | Some('\t') | Some('\n') | Some('\r')
+        ) {
+            rest = after;
+            continue;
+        }
+        let Some(gt) = after.find('>') else { break };
+        let body = &after[gt + 1..];
+        let Some(close) = body.find("</CgPoint>") else {
+            break;
+        };
+        let text = &body[..close];
+        let nums: Vec<f64> = text
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if nums.len() >= 3 {
+            out.push([nums[1], nums[0], nums[2]]);
+        }
+        rest = &body[close + "</CgPoint>".len()..];
+    }
+    out
 }

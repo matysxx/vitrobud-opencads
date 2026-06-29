@@ -11,6 +11,7 @@ mod design_center;
 mod edit_block;
 pub(crate) mod insert_block;
 mod landxml;
+pub mod minsert;
 mod mview_block;
 mod open_obj;
 mod pc_attach;

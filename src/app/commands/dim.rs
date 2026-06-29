@@ -45,11 +45,338 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
-            "LEADER" | "LE" => {
+            // LEADER draws a leader line with an annotation; QLEADER is the same
+            // quick leader-plus-annotation operation.
+            "LEADER" | "LE" | "QLEADER" | "QL" => {
                 use crate::modules::annotate::leader_cmd::LeaderCommand;
                 let new_cmd = LeaderCommand::new();
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
+            // JUSTIFYTEXT <option> — change the justification of selected text and
+            // multiline-text objects.
+            cmd if cmd == "JUSTIFYTEXT" || cmd.starts_with("JUSTIFYTEXT ") => {
+                let opt = cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase();
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .map(|(h, _)| *h)
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line
+                        .push_error("JUSTIFYTEXT: select text objects first.");
+                    return Some(Task::none());
+                }
+                if opt.is_empty() {
+                    self.command_line.push_info(
+                        "Usage: JUSTIFYTEXT <Left|Center|Right|Middle|TL|TC|TR|ML|MC|MR|BL|BC|BR>",
+                    );
+                    return Some(Task::none());
+                }
+                use acadrust::entities::{AttachmentPoint as AP, TextHorizontalAlignment as TH};
+                let text_align = match opt.as_str() {
+                    "L" | "LEFT" | "TL" | "ML" | "BL" => Some(TH::Left),
+                    "C" | "CENTER" | "TC" | "BC" => Some(TH::Center),
+                    "R" | "RIGHT" | "TR" | "MR" | "BR" => Some(TH::Right),
+                    "M" | "MIDDLE" | "MC" => Some(TH::Middle),
+                    "A" | "ALIGN" | "ALIGNED" => Some(TH::Aligned),
+                    "F" | "FIT" => Some(TH::Fit),
+                    _ => None,
+                };
+                let mtext_ap = match opt.as_str() {
+                    "TL" => Some(AP::TopLeft),
+                    "TC" => Some(AP::TopCenter),
+                    "TR" => Some(AP::TopRight),
+                    "ML" | "L" | "LEFT" => Some(AP::MiddleLeft),
+                    "MC" | "M" | "MIDDLE" | "C" | "CENTER" => Some(AP::MiddleCenter),
+                    "MR" | "R" | "RIGHT" => Some(AP::MiddleRight),
+                    "BL" => Some(AP::BottomLeft),
+                    "BC" => Some(AP::BottomCenter),
+                    "BR" => Some(AP::BottomRight),
+                    _ => None,
+                };
+                if text_align.is_none() && mtext_ap.is_none() {
+                    self.command_line
+                        .push_error("JUSTIFYTEXT: unknown justification option.");
+                    return Some(Task::none());
+                }
+                self.push_undo_snapshot(i, "JUSTIFYTEXT");
+                let mut n = 0usize;
+                for h in &handles {
+                    if let Some(e) = self.tabs[i]
+                        .scene
+                        .document
+                        .entities_mut()
+                        .find(|e| e.common().handle == *h)
+                    {
+                        match e {
+                            acadrust::EntityType::Text(t) => {
+                                if let Some(a) = text_align {
+                                    t.horizontal_alignment = a;
+                                    n += 1;
+                                }
+                            }
+                            acadrust::EntityType::MText(m) => {
+                                if let Some(a) = mtext_ap {
+                                    m.attachment_point = a;
+                                    n += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.bump_geometry();
+                self.command_line
+                    .push_output(&format!("JUSTIFYTEXT: updated {n} text object(s)."));
+            }
+
+            // TCASE <Upper|Lower|Sentence|Title> — change the case of the text in
+            // selected text and multiline-text objects.
+            cmd if cmd == "TCASE" || cmd.starts_with("TCASE ") => {
+                let opt = cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase();
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .map(|(h, _)| *h)
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line
+                        .push_error("TCASE: select text objects first.");
+                    return Some(Task::none());
+                }
+                if !matches!(
+                    opt.as_str(),
+                    "U" | "UPPER"
+                        | "UPPERCASE"
+                        | "L"
+                        | "LOWER"
+                        | "LOWERCASE"
+                        | "S"
+                        | "SENTENCE"
+                        | "T"
+                        | "TITLE"
+                ) {
+                    self.command_line
+                        .push_info("Usage: TCASE <Upper|Lower|Sentence|Title>");
+                    return Some(Task::none());
+                }
+                let conv = move |s: &str| -> String {
+                    match opt.as_str() {
+                        "U" | "UPPER" | "UPPERCASE" => s.to_uppercase(),
+                        "L" | "LOWER" | "LOWERCASE" => s.to_lowercase(),
+                        "S" | "SENTENCE" => sentence_case(s),
+                        _ => title_case(s),
+                    }
+                };
+                self.push_undo_snapshot(i, "TCASE");
+                let mut n = 0usize;
+                for h in &handles {
+                    if let Some(e) = self.tabs[i]
+                        .scene
+                        .document
+                        .entities_mut()
+                        .find(|e| e.common().handle == *h)
+                    {
+                        match e {
+                            acadrust::EntityType::Text(t) => {
+                                t.value = conv(&t.value);
+                                n += 1;
+                            }
+                            acadrust::EntityType::MText(m) => {
+                                m.value = conv(&m.value);
+                                n += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.bump_geometry();
+                self.command_line
+                    .push_output(&format!("TCASE: updated {n} text object(s)."));
+            }
+
+            // TEXTMASK — place a wipeout mask sized to each selected text object's
+            // extent and bring the text in front, so the mask hides whatever is
+            // underneath while the text stays readable. (Same world-XY coordinate
+            // space the WIPEOUT command uses.)
+            cmd if cmd == "TEXTMASK" || cmd.starts_with("TEXTMASK ") => {
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .filter(|(_, e)| {
+                        matches!(
+                            e,
+                            acadrust::EntityType::Text(_) | acadrust::EntityType::MText(_)
+                        )
+                    })
+                    .map(|(h, _)| *h)
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line
+                        .push_error("TEXTMASK: select text objects first.");
+                    return Some(Task::none());
+                }
+                self.push_undo_snapshot(i, "TEXTMASK");
+                let mut n = 0usize;
+                for h in &handles {
+                    let wires = self.tabs[i].scene.wire_models_for(&[*h]);
+                    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for w in &wires {
+                        for p in &w.points {
+                            for k in 0..3 {
+                                min[k] = min[k].min(p[k]);
+                                max[k] = max[k].max(p[k]);
+                            }
+                        }
+                    }
+                    if min[0] > max[0] {
+                        continue; // no geometry for this object
+                    }
+                    let pad = ((max[1] - min[1]) * 0.15).max(0.0);
+                    let c1 = acadrust::types::Vector3::new(
+                        (min[0] - pad) as f64,
+                        (min[1] - pad) as f64,
+                        min[2] as f64,
+                    );
+                    let c2 = acadrust::types::Vector3::new(
+                        (max[0] + pad) as f64,
+                        (max[1] + pad) as f64,
+                        min[2] as f64,
+                    );
+                    self.tabs[i]
+                        .scene
+                        .add_entity_clone(acadrust::EntityType::Wipeout(
+                            acadrust::entities::Wipeout::from_corners(c1, c2),
+                        ));
+                    n += 1;
+                }
+                // Draw the text in front of its newly-added masks.
+                self.tabs[i].scene.selected = handles.iter().cloned().collect();
+                self.tabs[i].dirty = true;
+                self.command_line
+                    .push_output(&format!("TEXTMASK: masked {n} text object(s)."));
+                return self.dispatch_view("DRAWORDER FRONT", i);
+            }
+
+            // (text width fit)
+            // TEXTFIT <width> — adjust the width factor of selected single-line
+            // text so its rendered width matches the target.
+            cmd if cmd == "TEXTFIT" || cmd.starts_with("TEXTFIT ") => {
+                let target: f64 = match cmd.split_whitespace().nth(1).and_then(|s| s.parse().ok()) {
+                    Some(v) if v > 0.0 => v,
+                    _ => {
+                        self.command_line.push_info(
+                            "Usage: TEXTFIT <target width>   (fits selected text to that width)",
+                        );
+                        return Some(Task::none());
+                    }
+                };
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .filter(|(_, e)| matches!(e, acadrust::EntityType::Text(_)))
+                    .map(|(h, _)| *h)
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line
+                        .push_error("TEXTFIT: select single-line text first.");
+                    return Some(Task::none());
+                }
+                self.push_undo_snapshot(i, "TEXTFIT");
+                let mut n = 0usize;
+                for h in &handles {
+                    let wires = self.tabs[i].scene.wire_models_for(&[*h]);
+                    let (mut minx, mut maxx) = (f32::MAX, f32::MIN);
+                    for w in &wires {
+                        for p in &w.points {
+                            minx = minx.min(p[0]);
+                            maxx = maxx.max(p[0]);
+                        }
+                    }
+                    let cur_w = (maxx - minx) as f64;
+                    if cur_w <= 1e-9 {
+                        continue;
+                    }
+                    if let Some(acadrust::EntityType::Text(t)) = self.tabs[i]
+                        .scene
+                        .document
+                        .entities_mut()
+                        .find(|e| e.common().handle == *h)
+                    {
+                        let old = if t.width_factor.abs() > 1e-9 {
+                            t.width_factor
+                        } else {
+                            1.0
+                        };
+                        t.width_factor = old * target / cur_w;
+                        n += 1;
+                    }
+                }
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.bump_geometry();
+                self.command_line.push_output(&format!(
+                    "TEXTFIT: fitted {n} text object(s) to width {target}."
+                ));
+            }
+
+            // (text sequential numbering)
+            // TCOUNT [start] — prefix selected single-line text with sequential
+            // numbers in reading order (top-to-bottom, then left-to-right).
+            cmd if cmd == "TCOUNT" || cmd.starts_with("TCOUNT ") => {
+                let start: i64 = cmd
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1);
+                let mut texts: Vec<(acadrust::Handle, f64, f64)> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .filter_map(|(h, e)| match e {
+                        acadrust::EntityType::Text(t) => {
+                            Some((*h, t.insertion_point.x, t.insertion_point.y))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if texts.is_empty() {
+                    self.command_line
+                        .push_error("TCOUNT: select single-line text first.");
+                    return Some(Task::none());
+                }
+                // Reading order: higher Y first, then smaller X.
+                texts.sort_by(|a, b| {
+                    b.2.partial_cmp(&a.2)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                });
+                self.push_undo_snapshot(i, "TCOUNT");
+                let mut num = start;
+                for (h, _, _) in &texts {
+                    if let Some(acadrust::EntityType::Text(t)) = self.tabs[i]
+                        .scene
+                        .document
+                        .entities_mut()
+                        .find(|e| e.common().handle == *h)
+                    {
+                        t.value = format!("{num} {}", t.value);
+                        num += 1;
+                    }
+                }
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.bump_geometry();
+                self.command_line.push_output(&format!(
+                    "TCOUNT: numbered {} text object(s) from {start}.",
+                    texts.len()
+                ));
             }
 
             "MLEADER" | "MLD" => {
@@ -148,12 +475,12 @@ impl OpenCADStudio {
                 }
                 // Choose the dimension axis from the points' spread: a wider X
                 // span dimensions horizontally (ordered by X), else vertically.
-                let (minx, maxx) = pts.iter().fold((f32::MAX, f32::MIN), |(a, b), p| {
-                    (a.min(p.x), b.max(p.x))
-                });
-                let (miny, maxy) = pts.iter().fold((f32::MAX, f32::MIN), |(a, b), p| {
-                    (a.min(p.y), b.max(p.y))
-                });
+                let (minx, maxx) = pts
+                    .iter()
+                    .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.x), b.max(p.x)));
+                let (miny, maxy) = pts
+                    .iter()
+                    .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
                 let horizontal = (maxx - minx) >= (maxy - miny);
                 if horizontal {
                     pts.sort_by(|a, b| a.x.total_cmp(&b.x));
@@ -168,7 +495,9 @@ impl OpenCADStudio {
                     return Some(Task::none());
                 }
                 self.push_undo_snapshot(i, "QDIM");
-                let v = |p: glam::Vec3| acadrust::types::Vector3::new(p.x as f64, p.y as f64, p.z as f64);
+                let v = |p: glam::Vec3| {
+                    acadrust::types::Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+                };
                 let mut made = 0usize;
                 for w in pts.windows(2) {
                     let (p1, p2) = (w[0], w[1]);
@@ -579,6 +908,104 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
+            // DIMJOGGED <DJO> — create a jogged radius dimension on the selected
+            // arc/circle: a standard radius dim carrying an OCS_JOGGED XData marker
+            // that the geometry generator renders with a foreshortened zig-zag.
+            "DIMJOGGED" | "DJO" | "DIMJOG" => {
+                use acadrust::entities::{Dimension, DimensionRadius};
+                use acadrust::types::Vector3;
+                use acadrust::xdata::{ExtendedDataRecord, XDataValue};
+                let found =
+                    self.tabs[i]
+                        .scene
+                        .selected_entities()
+                        .iter()
+                        .find_map(|(_, e)| match e {
+                            acadrust::EntityType::Arc(a) => Some((a.center, a.radius)),
+                            acadrust::EntityType::Circle(c) => Some((c.center, c.radius)),
+                            _ => None,
+                        });
+                let Some((center, radius)) = found else {
+                    self.command_line
+                        .push_error("DIMJOGGED: select an arc or circle first.");
+                    return None;
+                };
+                if radius <= 0.0 {
+                    self.command_line.push_error("DIMJOGGED: invalid radius.");
+                    return None;
+                }
+                let k = std::f64::consts::FRAC_1_SQRT_2;
+                let arc_point =
+                    Vector3::new(center.x + radius * k, center.y + radius * k, center.z);
+                let mut dim = DimensionRadius::new(center, arc_point);
+                dim.base.common.layer = self.tabs[i].active_layer.clone();
+                let mut rec = ExtendedDataRecord::new("OCS_JOGGED");
+                rec.add_value(XDataValue::String("1".to_string()));
+                dim.base.common.extended_data.add_record(rec);
+                self.push_undo_snapshot(i, "DIMJOGGED");
+                self.tabs[i]
+                    .scene
+                    .add_entity(acadrust::EntityType::Dimension(Dimension::Radius(dim)));
+                self.tabs[i].dirty = true;
+                self.command_line
+                    .push_output("DIMJOGGED: created a jogged radius dimension.");
+            }
+
+            // ARCTEXT <text> — lay the text out as one Text entity per character
+            // along the selected arc, each rotated to follow the tangent.
+            cmd if cmd == "ARCTEXT" || cmd.starts_with("ARCTEXT ") => {
+                use acadrust::entities::Text;
+                use acadrust::types::Vector3;
+                let text = cmd.strip_prefix("ARCTEXT").unwrap_or("").trim().to_string();
+                if text.is_empty() {
+                    self.command_line.push_info(
+                        "Usage: ARCTEXT <text>   (select an arc first; the text follows it)",
+                    );
+                    return None;
+                }
+                let arc =
+                    self.tabs[i]
+                        .scene
+                        .selected_entities()
+                        .iter()
+                        .find_map(|(_, e)| match e {
+                            acadrust::EntityType::Arc(a) => Some(a.clone()),
+                            _ => None,
+                        });
+                let Some(arc) = arc else {
+                    self.command_line
+                        .push_error("ARCTEXT: select an arc first.");
+                    return None;
+                };
+                let chars: Vec<char> = text.chars().filter(|c| !c.is_control()).collect();
+                if chars.is_empty() {
+                    self.command_line.push_error("ARCTEXT: no printable text.");
+                    return None;
+                }
+                let n = chars.len();
+                let mut span = arc.end_angle - arc.start_angle;
+                if span <= 0.0 {
+                    span += std::f64::consts::TAU;
+                }
+                let height = (arc.radius * 0.12).max(0.1);
+                self.push_undo_snapshot(i, "ARCTEXT");
+                for (k, ch) in chars.iter().enumerate() {
+                    let ang = arc.start_angle + span * (k as f64 + 0.5) / n as f64;
+                    let pos = Vector3::new(
+                        arc.center.x + arc.radius * ang.cos(),
+                        arc.center.y + arc.radius * ang.sin(),
+                        arc.center.z,
+                    );
+                    let t = Text::with_value(ch.to_string(), pos)
+                        .with_height(height)
+                        .with_rotation(ang + std::f64::consts::FRAC_PI_2);
+                    self.tabs[i].scene.add_entity(acadrust::EntityType::Text(t));
+                }
+                self.tabs[i].dirty = true;
+                self.command_line
+                    .push_output(&format!("ARCTEXT: placed {n} character(s) along the arc."));
+            }
+
             _ => return None,
         }
         Some(self.finish_dispatch(cmd))
@@ -686,4 +1113,26 @@ fn qdim_collect_points(e: &acadrust::EntityType, out: &mut Vec<glam::Vec3>) {
         }
         _ => {}
     }
+}
+
+// ── TCASE helpers ──────────────────────────────────────────────────────────
+fn sentence_case(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+        None => String::new(),
+    }
+}
+
+fn title_case(s: &str) -> String {
+    s.split(' ')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

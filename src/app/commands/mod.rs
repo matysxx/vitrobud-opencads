@@ -28,7 +28,13 @@ impl OpenCADStudio {
         let mut n = 1;
         loop {
             let name = format!("{prefix}{n}");
-            if self.tabs[i].scene.document.block_records.get(&name).is_none() {
+            if self.tabs[i]
+                .scene
+                .document
+                .block_records
+                .get(&name)
+                .is_none()
+            {
                 return name;
             }
             n += 1;
@@ -69,7 +75,11 @@ impl OpenCADStudio {
         self.last_point = None;
         // Starting a command restarts the right-click cycle, so its first
         // right-click acts as Enter rather than opening the context menu.
-        self.tabs[i].scene.selection.borrow_mut().right_click_entered = false;
+        self.tabs[i]
+            .scene
+            .selection
+            .borrow_mut()
+            .right_click_entered = false;
         // A fresh command starts at the polar/cartesian default — clear
         // any `,`-driven reshape from a previous command (#35).
         self.dyn_user_reshaped = false;
@@ -87,8 +97,17 @@ impl OpenCADStudio {
         if self.tabs[i].is_start
             && !matches!(
                 cmd,
-                "NEW" | "OPEN" | "EXIT" | "QUIT" | "REPORT" | "CHANGELOG" | "ABOUT"
-                    | "PLUGINS" | "PLUGINMANAGER" | "DONATE" | "WEBVERSION"
+                "NEW"
+                    | "OPEN"
+                    | "EXIT"
+                    | "QUIT"
+                    | "REPORT"
+                    | "CHANGELOG"
+                    | "ABOUT"
+                    | "PLUGINS"
+                    | "PLUGINMANAGER"
+                    | "DONATE"
+                    | "WEBVERSION"
             )
         {
             self.command_line
@@ -126,7 +145,10 @@ impl OpenCADStudio {
         // command completes on Enter (`BAC` → `BACKGROUND`). The verb's own
         // input was already cleared, so rank against `cmd` directly.
         if allow_suggest {
-            if let Some(top) = crate::ui::command_line::ranked_matches(cmd).first().copied() {
+            if let Some(top) = crate::ui::command_line::ranked_matches(cmd)
+                .first()
+                .copied()
+            {
                 if !top.eq_ignore_ascii_case(cmd) {
                     return self.dispatch_command_inner(top, false);
                 }
@@ -190,7 +212,6 @@ impl OpenCADStudio {
     }
 }
 
-
 // ── Autocomplete registry — one-shot commands ──────────────────────────────
 // These commands dispatch a single action (file ops, view, layer/style
 // managers, undo/redo, …) rather than installing an interactive `CadCommand`,
@@ -202,36 +223,327 @@ inventory::submit!(crate::command::CommandRegistration {
     names: &[
         // Drafting-aid / display toggles + customization entry points wired in the
         // dispatch families (no interactive command module of their own).
-        "ALIASEDIT", "CLEANSCREEN", "CUI", "DSETTINGS", "GRID", "OSNAP", "POLAR",
-        "QUICKPROPERTIES", "SNAP",
+        "ALIASEDIT",
+        "CLEANSCREEN",
+        "CUI",
+        "DSETTINGS",
+        "GRID",
+        "OSNAP",
+        "POLAR",
+        "QUICKPROPERTIES",
+        "SNAP",
+        "OPTIONS",
+        "OP",
+        "SYNCPVIEWPORTS",
+        "VPSYNC",
         // Viewport-arrangement shortcuts (delegate to VPORTS configurations).
-        "CASCADE", "HORIZONTAL", "VERTICAL", "VPJOIN",
+        "CASCADE",
+        "HORIZONTAL",
+        "VERTICAL",
+        "VPJOIN",
         // Standard aliases for existing commands.
-        "BMAKE", "EXPORTPDF", "DDIM",
+        "BMAKE",
+        "EXPORTPDF",
+        "DDIM",
         // Inquiry: list the whole drawing database.
         "DBLIST",
+        // Layer management.
+        "LAYDEL",
+        "LAYMRG",
+        "LAYERSTATE",
+        "LAS",
+        "LMAN",
+        // 3D move (same operation as MOVE, which already works in 3D).
+        "3DMOVE",
+        // Quick leader (same as LEADER).
+        "QLEADER",
+        "QL",
+        // Restore the last-erased objects.
+        "OOPS",
+        // Plan (top) view.
+        "PLAN",
+        // Current object colour (CECOLOR).
+        "COLOR",
+        "COLOUR",
+        "CECOLOR",
+        "DDCOLOR",
+        "BYLAYER",
+        // Synchronise block attributes.
+        "ATTSYNC",
+        // Drawing units picker.
+        "UNITS",
+        "UN",
+        "DDUNITS",
+        // Visual styles (mapped to the wireframe / shaded view).
+        "VSCURRENT",
+        "SHADEMODE",
+        "HIDDENLINE",
+        "XRAY",
+        "REALISTIC",
+        "CONCEPTUAL",
+        "2DWIREFRAME",
+        "3DWIREFRAME",
+        // Raster image brightness / contrast / fade.
+        "ADJUST",
+        // Block list + block-attribute list (command-line forms).
+        "BLOCKPALETTE",
+        "BLOCKSPALETTE",
+        "ATTMAN",
+        "BATTMAN",
+        // Drawing-content overview.
+        "ADCENTER",
+        "CONTENTBROWSER",
+        "ADC",
+        // Annotation scale.
+        "ANNOSCALE",
+        "CANNOSCALE",
+        "SCALELISTEDIT",
+        // Import CSV into a table + LandXML survey points.
+        "DATALINK",
+        "LANDXMLIMPORT",
+        // Keyboard-shortcut (CUI) export / import.
+        "CUIEXPORT",
+        "CUIIMPORT",
+        "CUILOAD",
+        // Save every open drawing.
+        "SAVEALL",
+        // Draw-order: all text/dims to front or back.
+        "TEXTTOFRONT",
+        "TEXTTOBACK",
+        // Criteria-based selection (same as QSELECT) + copy with picked base.
+        "FILTER",
+        "FI",
+        "COPYBASE",
+        // Change justification of selected text/mtext.
+        "JUSTIFYTEXT",
+        // Command-line arithmetic calculator.
+        "CAL",
+        // Text tools: case, mask, width fit, sequential numbering, arc layout.
+        "TCASE",
+        "TEXTMASK",
+        "TEXTFIT",
+        "TCOUNT",
+        "ARCTEXT",
+        // Jogged radius dimension.
+        "DIMJOGGED",
+        "DJO",
+        "DIMJOG",
+        // Mark objects annotative.
+        "OBJECTSCALE",
+        // Copy nested objects out of a block.
+        "NCOPY",
+        "NCOPYALL",
+        // Slice/section + interference + press-pull/thicken + 3D transforms + wall/pyramid.
+        "SLICE",
+        "SL",
+        "INTERFERE",
+        "INF",
+        "PRESSPULL",
+        "THICKEN",
+        "3DROTATE",
+        "ROTATE3D",
+        "POLYSOLID",
+        "3DMIRROR",
+        "MIRROR3D",
+        "3DALIGN",
+        "ALIGN3D",
+        "SECTION",
+        "PYRAMID",
+        "PYR",
+        "SPLINEFIT",
+        "FITSPLINE",
+        // System variables (typeable directly).
+        "MIRRTEXT",
+        "ATTREQ",
+        "ATTDIA",
+        "DIMASSOC",
+        "ANGBASE",
+        "ANGDIR",
+        "REGENMODE",
+        "BLIPMODE",
+        "SPLFRAME",
+        "DELOBJ",
+        "PLINEGEN",
+        "PSLTSCALE",
+        "DISPSILH",
+        "WORLDVIEW",
+        "LIMCHECK",
+        "DRAGMODE",
+        "LUNITS",
+        "LUPREC",
+        "AUNITS",
+        "AUPREC",
+        "THICKNESS",
+        "ELEVATION",
+        "INSUNITS",
+        "SPLINETYPE",
+        "ISOLINES",
+        "DIMASO",
+        "DIMSHO",
+        "QTEXTMODE",
+        "PLIMCHECK",
+        "VISRETAIN",
+        "USRTIMER",
+        "ATTMODE",
+        "COORDS",
+        "OSMODE",
+        "PICKSTYLE",
+        "SPLINESEGS",
+        "SURFU",
+        "SURFV",
+        "SURFTYPE",
+        "SHADEDGE",
+        "MAXACTVP",
+        "CMLJUST",
+        "TEXTQLTY",
+        "SORTENTS",
+        "XCLIPFRAME",
+        "HALOGAP",
+        "TRACEWID",
+        "SKETCHINC",
         // Reset selected entities' overrides to follow their layer.
         "SETBYLAYER",
         // Remove duplicate objects; set drawing base point; audit integrity;
         // read/write system variables.
-        "OVERKILL", "BASE", "AUDIT", "SETVAR", "SCRIPT", "SCR", "FINDNONPURGEABLE",
-        "3DORBIT", "3O", "ABOUT", "ATTDISP", "ATTEXT", "BACKGROUND", "CDIMSTY", "CELTSCALE",
-        "CHANGELOG", "CHPROP", "CLAYER", "CLEAR", "CLR", "COLORSCHEME", "COUNT", "DATAEXTRACTION",
-        "DE", "DESELALL", "DESELECT", "DIMSTYLE", "DONATE", "DRAWORDER", "DWGPROP", "DWGPROPS",
-        "EATTEXT", "EXIT", "EXPORT", "EXPORTSTEP", "EXPORTSTL", "FILETAB", "FIND", "FLATTEN",
-        "HELP", "HIDEOBJECTS", "IM", "IMAGE", "IMAGEATTACH", "IMPORTOBJ", "ISOLATEOBJECTS", "LA",
-        "LAYER", "LAYERS", "LAYISO", "LAYON", "LAYOUTMANAGER", "LAYOUTPANEL", "LAYOUTTAB", "LAYTHW",
-        "LAYUNISO", "LI", "LINETYPE", "LIST", "LTSCALE", "LWDISPLAY", "MASSPROP", "MLEADERSTYLE",
-        "MLSTYLE", "MS", "MSPACE", "NAVVCUBE", "NEW", "OBJIMPORT", "OPEN", "ORTHO",
-        "P", "PAN", "PAGESETUP", "PERF", "PERSP", "PLOT", "PLOTSTYLE", "PLOTSTYLEEDITOR",
-        "PLOTSTYLEPANEL", "PR",
-        "PRINT", "PROPERTIES", "PROPS", "PSPACE", "PURGE", "QS", "QSAVE", "QSELECT",
-        "QUIT", "REDO", "REDRAW", "REDRWALL", "REGEN", "REGENALL", "RENAME", "REPORT",
-        "SA", "SAVE", "SAVEAS", "SCALETEXT", "SELECTALL", "SELECTSIMILAR", "SELSIM", "SHEETSET",
-        "SHORTCUTS", "SOLID", "SSM", "STEPOUT", "STLOUT", "STPOUT", "STYLE", "STYLESMANAGER",
-        "TABLESTYLE", "TOOLPALETTES", "TP", "TS", "U", "UCS", "UCSICON", "UNDERLAY",
-        "UNDO", "UNISOLATEOBJECTS", "USERI", "USERR", "VIEW", "VPORTS", "VS", "VW",
-        "WB", "WBLOCK", "WEBVERSION", "WIREFRAME", "XA", "XATTACH", "XDATA", "XR",
-        "XREF", "XRELOAD", "ZOOM", "ZS",
+        "OVERKILL",
+        "BASE",
+        "AUDIT",
+        "SETVAR",
+        "SCRIPT",
+        "SCR",
+        "FINDNONPURGEABLE",
+        "3DORBIT",
+        "3O",
+        "ABOUT",
+        "ATTDISP",
+        "ATTEXT",
+        "BACKGROUND",
+        "CDIMSTY",
+        "CELTSCALE",
+        "CHANGELOG",
+        "CHPROP",
+        "CLAYER",
+        "CLEAR",
+        "CLR",
+        "COLORSCHEME",
+        "COUNT",
+        "DATAEXTRACTION",
+        "DE",
+        "DESELALL",
+        "DESELECT",
+        "DIMSTYLE",
+        "DONATE",
+        "DRAWORDER",
+        "DWGPROP",
+        "DWGPROPS",
+        "EATTEXT",
+        "EXIT",
+        "EXPORT",
+        "EXPORTSTEP",
+        "EXPORTSTL",
+        "FILETAB",
+        "FIND",
+        "FLATTEN",
+        "HELP",
+        "HIDEOBJECTS",
+        "IM",
+        "IMAGE",
+        "IMAGEATTACH",
+        "IMPORTOBJ",
+        "ISOLATEOBJECTS",
+        "LA",
+        "LAYER",
+        "LAYERS",
+        "LAYISO",
+        "LAYON",
+        "LAYOUTMANAGER",
+        "LAYOUTPANEL",
+        "LAYOUTTAB",
+        "LAYTHW",
+        "LAYUNISO",
+        "LI",
+        "LINETYPE",
+        "LIST",
+        "LTSCALE",
+        "LWDISPLAY",
+        "MASSPROP",
+        "MLEADERSTYLE",
+        "MLSTYLE",
+        "MS",
+        "MSPACE",
+        "NAVVCUBE",
+        "NEW",
+        "OBJIMPORT",
+        "OPEN",
+        "ORTHO",
+        "P",
+        "PAN",
+        "PAGESETUP",
+        "PERF",
+        "PERSP",
+        "PLOT",
+        "PLOTSTYLE",
+        "PLOTSTYLEEDITOR",
+        "PLOTSTYLEPANEL",
+        "PR",
+        "PRINT",
+        "PROPERTIES",
+        "PROPS",
+        "PSPACE",
+        "PURGE",
+        "QS",
+        "QSAVE",
+        "QSELECT",
+        "QUIT",
+        "REDO",
+        "REDRAW",
+        "REDRWALL",
+        "REGEN",
+        "REGENALL",
+        "RENAME",
+        "REPORT",
+        "SA",
+        "SAVE",
+        "SAVEAS",
+        "SCALETEXT",
+        "SELECTALL",
+        "SELECTSIMILAR",
+        "SELSIM",
+        "SHEETSET",
+        "SHORTCUTS",
+        "SSM",
+        "STEPOUT",
+        "STLOUT",
+        "STPOUT",
+        "STYLE",
+        "STYLESMANAGER",
+        "TABLESTYLE",
+        "TOOLPALETTES",
+        "TP",
+        "TS",
+        "U",
+        "UCS",
+        "UCSICON",
+        "UNDERLAY",
+        "UNDO",
+        "UNISOLATEOBJECTS",
+        "USERI",
+        "USERR",
+        "VIEW",
+        "VPORTS",
+        "VS",
+        "VW",
+        "WB",
+        "WBLOCK",
+        "WEBVERSION",
+        "WIREFRAME",
+        "XA",
+        "XATTACH",
+        "XDATA",
+        "XR",
+        "XREF",
+        "XRELOAD",
+        "ZOOM",
+        "ZS",
     ]
 });

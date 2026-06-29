@@ -97,6 +97,60 @@ fn default_role_for(component: DynComponent) -> crate::command::DynRole {
 
 // ── Per-document tab state ─────────────────────────────────────────────────
 
+/// One layer's display state, captured and restored by LAYERSTATE.
+#[derive(Clone)]
+pub(super) struct LayerSnap {
+    pub name: String,
+    pub off: bool,
+    pub frozen: bool,
+    pub locked: bool,
+    pub color: acadrust::types::Color,
+    pub line_type: String,
+    pub line_weight: acadrust::types::LineWeight,
+}
+
+impl DocumentTab {
+    /// Snapshot every layer's current display state under `name` (overwrites
+    /// any existing state of that name).
+    pub(super) fn save_layer_state(&mut self, name: &str) {
+        let snaps: Vec<LayerSnap> = self
+            .scene
+            .document
+            .layers
+            .iter()
+            .map(|l| LayerSnap {
+                name: l.name.clone(),
+                off: l.flags.off,
+                frozen: l.flags.frozen,
+                locked: l.flags.locked,
+                color: l.color.clone(),
+                line_type: l.line_type.clone(),
+                line_weight: l.line_weight.clone(),
+            })
+            .collect();
+        self.layer_states.insert(name.to_string(), snaps);
+    }
+
+    /// Reapply the saved state `name` to the matching layers; returns the number
+    /// of layers updated, or `None` if no such state exists.
+    pub(super) fn restore_layer_state(&mut self, name: &str) -> Option<usize> {
+        let snaps = self.layer_states.get(name)?.clone();
+        let mut applied = 0usize;
+        for s in &snaps {
+            if let Some(l) = self.scene.document.layers.get_mut(&s.name) {
+                l.flags.off = s.off;
+                l.flags.frozen = s.frozen;
+                l.flags.locked = s.locked;
+                l.color = s.color.clone();
+                l.line_type = s.line_type.clone();
+                l.line_weight = s.line_weight.clone();
+                applied += 1;
+            }
+        }
+        Some(applied)
+    }
+}
+
 pub(super) struct DocumentTab {
     pub(super) scene: Scene,
     pub(super) current_path: Option<PathBuf>,
@@ -141,6 +195,8 @@ pub(super) struct DocumentTab {
     pub(super) dyn_active: usize,
     pub(super) history: HistoryState,
     pub(super) active_layer: String,
+    /// Named layer-state snapshots saved by LAYERSTATE (name → per-layer state).
+    pub(super) layer_states: std::collections::HashMap<String, Vec<LayerSnap>>,
     /// Currently active UCS. `None` means WCS (identity transform).
     pub(super) active_ucs: Option<Ucs>,
     /// Custom model-space background color.  `None` = default dark grey.
@@ -257,8 +313,7 @@ impl DocumentTab {
                 Some(u) => (u.origin, u.x_axis, u.y_axis, true),
                 None => (Vector3::ZERO, Vector3::UNIT_X, Vector3::UNIT_Y, false),
             };
-            if let Some(acadrust::EntityType::Viewport(vp)) =
-                self.scene.document.get_entity_mut(h)
+            if let Some(acadrust::EntityType::Viewport(vp)) = self.scene.document.get_entity_mut(h)
             {
                 vp.ucs_origin = o;
                 vp.ucs_x_axis = x;
@@ -303,11 +358,7 @@ impl DocumentTab {
             return glam::Mat4::IDENTITY;
         }
         let (o, x, y, z) = self.ucs_xform().axes();
-        let origin = glam::Vec3::new(
-            o.x as f32,
-            o.y as f32,
-            o.z as f32,
-        );
+        let origin = glam::Vec3::new(o.x as f32, o.y as f32, o.z as f32);
         glam::Mat4::from_cols(
             x.extend(0.0),
             y.extend(0.0),
@@ -335,11 +386,7 @@ impl DocumentTab {
         }
         let xf = self.ucs_xform();
         let (o, ..) = xf.axes();
-        let origin = glam::Vec3::new(
-            o.x as f32,
-            o.y as f32,
-            o.z as f32,
-        );
+        let origin = glam::Vec3::new(o.x as f32, o.y as f32, o.z as f32);
         (origin, xf.rotation_mat())
     }
 
@@ -385,6 +432,7 @@ impl DocumentTab {
             dyn_active: 0,
             history: HistoryState::default(),
             active_layer: "0".to_string(),
+            layer_states: std::collections::HashMap::new(),
             active_ucs: None,
             bg_color: None,
             paper_bg_color: None,

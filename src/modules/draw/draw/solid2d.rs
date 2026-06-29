@@ -108,4 +108,6 @@ impl CadCommand for Solid2dCommand {
 }
 
 // ── Autocomplete registry ─────────────────────────────────
-inventory::submit!(crate::command::CommandRegistration { names: &["SO", "SOLID2D"] });  // Solid2dCommand
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["SO", "SOLID", "SOLID2D"]
+}); // Solid2dCommand

@@ -3,6 +3,64 @@ use super::*;
 impl OpenCADStudio {
     pub(super) fn dispatch_styleprops(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
         match cmd {
+            // COLOR <ByLayer|ByBlock|1-255|name> — the colour applied to new
+            // objects (CECOLOR). Bare COLOR reports the current value.
+            cmd if cmd == "COLOR"
+                || cmd == "COLOUR"
+                || cmd == "CECOLOR"
+                || cmd == "DDCOLOR"
+                || cmd == "BYLAYER"
+                || cmd.starts_with("COLOR ")
+                || cmd.starts_with("COLOUR ")
+                || cmd.starts_with("CECOLOR ")
+                || cmd.starts_with("DDCOLOR ") =>
+            {
+                use acadrust::types::Color;
+                let describe = |c: &Color| match c {
+                    Color::ByLayer => "ByLayer".to_string(),
+                    Color::ByBlock => "ByBlock".to_string(),
+                    Color::Index(n) => format!("index {n}"),
+                    _ => "(custom)".to_string(),
+                };
+                let arg = if cmd == "BYLAYER" {
+                    "BYLAYER".to_string()
+                } else {
+                    cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase()
+                };
+                let color = match arg.as_str() {
+                    "" => {
+                        let c = self.tabs[i].scene.document.header.current_entity_color;
+                        self.command_line
+                            .push_output(&format!("Current object colour: {}", describe(&c)));
+                        return Some(Task::none());
+                    }
+                    "BYLAYER" => Some(Color::ByLayer),
+                    "BYBLOCK" => Some(Color::ByBlock),
+                    "RED" => Some(Color::Index(1)),
+                    "YELLOW" => Some(Color::Index(2)),
+                    "GREEN" => Some(Color::Index(3)),
+                    "CYAN" => Some(Color::Index(4)),
+                    "BLUE" => Some(Color::Index(5)),
+                    "MAGENTA" => Some(Color::Index(6)),
+                    "WHITE" => Some(Color::Index(7)),
+                    n => n.parse::<i16>().ok().map(Color::from_index),
+                };
+                match color {
+                    Some(c) => {
+                        self.tabs[i].scene.document.header.current_entity_color = c;
+                        self.ribbon.active_color = c;
+                        self.tabs[i].dirty = true;
+                        self.command_line
+                            .push_output(&format!("Object colour set to {}.", describe(&c)));
+                    }
+                    None => {
+                        self.command_line.push_error(
+                            "Usage: COLOR <ByLayer|ByBlock|1-255|red|yellow|green|cyan|blue|magenta|white>",
+                        );
+                    }
+                }
+            }
+
             // ── LINETYPE management ───────────────────────────────────────
             cmd if cmd == "LINETYPE"
                 || cmd == "LT"
@@ -342,7 +400,9 @@ impl OpenCADStudio {
                     .scene
                     .document
                     .entities()
-                    .filter(|e| selected.is_empty() || selected.contains(&e.common().handle.value()))
+                    .filter(|e| {
+                        selected.is_empty() || selected.contains(&e.common().handle.value())
+                    })
                     .map(|e| {
                         let key = crate::entities::names::dxf_name(e).to_string();
                         let mut norm = e.clone();
@@ -382,6 +442,63 @@ impl OpenCADStudio {
             // Numeric / boolean variables are settable; current-layer/linetype/
             // style names are read-only here (use their own commands to change
             // them, which validate the name).
+            // System variables typeable directly (e.g. `MIRRTEXT 1`) as well as
+            // through SETVAR. (LTSCALE/PDMODE/PDSIZE have their own commands.)
+            cmd if matches!(
+                cmd.split_whitespace().next().unwrap_or(""),
+                "MIRRTEXT"
+                    | "ATTREQ"
+                    | "ATTDIA"
+                    | "DIMASSOC"
+                    | "ANGBASE"
+                    | "ANGDIR"
+                    | "REGENMODE"
+                    | "BLIPMODE"
+                    | "SPLFRAME"
+                    | "DELOBJ"
+                    | "PLINEGEN"
+                    | "PSLTSCALE"
+                    | "DISPSILH"
+                    | "WORLDVIEW"
+                    | "LIMCHECK"
+                    | "DRAGMODE"
+                    | "LUNITS"
+                    | "LUPREC"
+                    | "AUNITS"
+                    | "AUPREC"
+                    | "THICKNESS"
+                    | "ELEVATION"
+                    | "INSUNITS"
+                    | "SPLINETYPE"
+                    | "ISOLINES"
+                    | "DIMASO"
+                    | "DIMSHO"
+                    | "QTEXTMODE"
+                    | "PLIMCHECK"
+                    | "VISRETAIN"
+                    | "USRTIMER"
+                    | "ATTMODE"
+                    | "COORDS"
+                    | "OSMODE"
+                    | "PICKSTYLE"
+                    | "SPLINESEGS"
+                    | "SURFU"
+                    | "SURFV"
+                    | "SURFTYPE"
+                    | "SHADEDGE"
+                    | "MAXACTVP"
+                    | "CMLJUST"
+                    | "TEXTQLTY"
+                    | "SORTENTS"
+                    | "XCLIPFRAME"
+                    | "HALOGAP"
+                    | "TRACEWID"
+                    | "SKETCHINC"
+            ) =>
+            {
+                return self.dispatch_styleprops(&format!("SETVAR {cmd}"), i);
+            }
+
             cmd if cmd == "SETVAR" || cmd.starts_with("SETVAR ") => {
                 let rest = cmd.strip_prefix("SETVAR").unwrap_or("").trim();
                 let mut it = rest.splitn(2, char::is_whitespace);
@@ -389,7 +506,7 @@ impl OpenCADStudio {
                 let value = it.next().map(|s| s.trim().to_string());
                 if name.is_empty() || name == "?" {
                     self.command_line.push_info(
-                        "SETVAR: LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE | CLAYER CELTYPE TEXTSTYLE (read-only)",
+                        "SETVAR: LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT ATTREQ ATTDIA DIMASSOC ANGBASE ANGDIR | CLAYER CELTYPE TEXTSTYLE (read-only)",
                     );
                 } else {
                     // Parse a boolean given as 0/1 or ON/OFF.
@@ -402,44 +519,612 @@ impl OpenCADStudio {
                         let h = &mut self.tabs[i].scene.document.header;
                         match name.as_str() {
                             "LTSCALE" => match &value {
-                                Some(v) => v.parse::<f64>().map(|x| { h.linetype_scale = x; (format!("LTSCALE = {x}"), true) }).map_err(|_| "SETVAR: numeric value required.".into()),
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.linetype_scale = x;
+                                        (format!("LTSCALE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
                                 None => Ok((format!("LTSCALE = {}", h.linetype_scale), false)),
                             },
                             "CELTSCALE" => match &value {
-                                Some(v) => v.parse::<f64>().map(|x| { h.current_entity_linetype_scale = x; (format!("CELTSCALE = {x}"), true) }).map_err(|_| "SETVAR: numeric value required.".into()),
-                                None => Ok((format!("CELTSCALE = {}", h.current_entity_linetype_scale), false)),
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.current_entity_linetype_scale = x;
+                                        (format!("CELTSCALE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
+                                None => Ok((
+                                    format!("CELTSCALE = {}", h.current_entity_linetype_scale),
+                                    false,
+                                )),
                             },
                             "PDSIZE" => match &value {
-                                Some(v) => v.parse::<f64>().map(|x| { h.point_display_size = x; (format!("PDSIZE = {x}"), true) }).map_err(|_| "SETVAR: numeric value required.".into()),
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.point_display_size = x;
+                                        (format!("PDSIZE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
                                 None => Ok((format!("PDSIZE = {}", h.point_display_size), false)),
                             },
                             "TEXTSIZE" => match &value {
-                                Some(v) => v.parse::<f64>().map(|x| { h.text_height = x; (format!("TEXTSIZE = {x}"), true) }).map_err(|_| "SETVAR: numeric value required.".into()),
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.text_height = x;
+                                        (format!("TEXTSIZE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
                                 None => Ok((format!("TEXTSIZE = {}", h.text_height), false)),
                             },
                             "PDMODE" => match &value {
-                                Some(v) => v.parse::<i16>().map(|x| { h.point_display_mode = x; (format!("PDMODE = {x}"), true) }).map_err(|_| "SETVAR: integer value required.".into()),
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.point_display_mode = x;
+                                        (format!("PDMODE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
                                 None => Ok((format!("PDMODE = {}", h.point_display_mode), false)),
                             },
                             "ORTHOMODE" => match &value {
-                                Some(v) => parse_bool(v).map(|b| { h.ortho_mode = b; (format!("ORTHOMODE = {}", b as i32), true) }).ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.ortho_mode = b;
+                                        (format!("ORTHOMODE = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
                                 None => Ok((format!("ORTHOMODE = {}", h.ortho_mode as i32), false)),
                             },
                             "FILLMODE" => match &value {
-                                Some(v) => parse_bool(v).map(|b| { h.fill_mode = b; (format!("FILLMODE = {}", b as i32), true) }).ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.fill_mode = b;
+                                        (format!("FILLMODE = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
                                 None => Ok((format!("FILLMODE = {}", h.fill_mode as i32), false)),
                             },
+                            "MIRRTEXT" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.mirror_text = b;
+                                        (format!("MIRRTEXT = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((format!("MIRRTEXT = {}", h.mirror_text as i32), false)),
+                            },
+                            "ATTREQ" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.attribute_request = b;
+                                        (format!("ATTREQ = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => {
+                                    Ok((format!("ATTREQ = {}", h.attribute_request as i32), false))
+                                }
+                            },
+                            "ATTDIA" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.attribute_dialog = b;
+                                        (format!("ATTDIA = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => {
+                                    Ok((format!("ATTDIA = {}", h.attribute_dialog as i32), false))
+                                }
+                            },
+                            "DIMASSOC" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.dimension_associativity = x;
+                                        (format!("DIMASSOC = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => {
+                                    Ok((format!("DIMASSOC = {}", h.dimension_associativity), false))
+                                }
+                            },
+                            "ANGBASE" => match &value {
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.angle_base = x;
+                                        (format!("ANGBASE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
+                                None => Ok((format!("ANGBASE = {}", h.angle_base), false)),
+                            },
+                            "ANGDIR" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.angle_direction = x;
+                                        (format!("ANGDIR = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("ANGDIR = {}", h.angle_direction), false)),
+                            },
+                            "REGENMODE" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.regen_mode = b;
+                                        (format!("REGENMODE = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((format!("REGENMODE = {}", h.regen_mode as i32), false)),
+                            },
+                            "BLIPMODE" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.blip_mode = b;
+                                        (format!("BLIPMODE = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((format!("BLIPMODE = {}", h.blip_mode as i32), false)),
+                            },
+                            "SPLFRAME" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.spline_frame = b;
+                                        (format!("SPLFRAME = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => {
+                                    Ok((format!("SPLFRAME = {}", h.spline_frame as i32), false))
+                                }
+                            },
+                            "DELOBJ" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.delete_objects = b;
+                                        (format!("DELOBJ = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => {
+                                    Ok((format!("DELOBJ = {}", h.delete_objects as i32), false))
+                                }
+                            },
+                            "PLINEGEN" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.polyline_linetype_generation = b;
+                                        (format!("PLINEGEN = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!("PLINEGEN = {}", h.polyline_linetype_generation as i32),
+                                    false,
+                                )),
+                            },
+                            "PSLTSCALE" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.paper_space_linetype_scaling = b;
+                                        (format!("PSLTSCALE = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!(
+                                        "PSLTSCALE = {}",
+                                        h.paper_space_linetype_scaling as i32
+                                    ),
+                                    false,
+                                )),
+                            },
+                            "DISPSILH" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.display_silhouette = b;
+                                        (format!("DISPSILH = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!("DISPSILH = {}", h.display_silhouette as i32),
+                                    false,
+                                )),
+                            },
+                            "WORLDVIEW" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.world_view = b;
+                                        (format!("WORLDVIEW = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((format!("WORLDVIEW = {}", h.world_view as i32), false)),
+                            },
+                            "LIMCHECK" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.limit_check = b;
+                                        (format!("LIMCHECK = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((format!("LIMCHECK = {}", h.limit_check as i32), false)),
+                            },
+                            "DRAGMODE" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.drag_mode = x;
+                                        (format!("DRAGMODE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("DRAGMODE = {}", h.drag_mode), false)),
+                            },
+                            "LUNITS" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.linear_unit_format = x;
+                                        (format!("LUNITS = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("LUNITS = {}", h.linear_unit_format), false)),
+                            },
+                            "LUPREC" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.linear_unit_precision = x;
+                                        (format!("LUPREC = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => {
+                                    Ok((format!("LUPREC = {}", h.linear_unit_precision), false))
+                                }
+                            },
+                            "AUNITS" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.angular_unit_format = x;
+                                        (format!("AUNITS = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("AUNITS = {}", h.angular_unit_format), false)),
+                            },
+                            "AUPREC" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.angular_unit_precision = x;
+                                        (format!("AUPREC = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => {
+                                    Ok((format!("AUPREC = {}", h.angular_unit_precision), false))
+                                }
+                            },
+                            "THICKNESS" => match &value {
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.thickness = x;
+                                        (format!("THICKNESS = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
+                                None => Ok((format!("THICKNESS = {}", h.thickness), false)),
+                            },
+                            "ELEVATION" => match &value {
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.elevation = x;
+                                        (format!("ELEVATION = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
+                                None => Ok((format!("ELEVATION = {}", h.elevation), false)),
+                            },
+                            "INSUNITS" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.insertion_units = x;
+                                        (format!("INSUNITS = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("INSUNITS = {}", h.insertion_units), false)),
+                            },
+                            "SPLINETYPE" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.spline_type = x;
+                                        (format!("SPLINETYPE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("SPLINETYPE = {}", h.spline_type), false)),
+                            },
+                            "ISOLINES" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.isolines = x;
+                                        (format!("ISOLINES = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("ISOLINES = {}", h.isolines), false)),
+                            },
+                            "DIMASO" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.associate_dimensions = b;
+                                        (format!("DIMASO = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!("DIMASO = {}", h.associate_dimensions as i32),
+                                    false,
+                                )),
+                            },
+                            "DIMSHO" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.update_dimensions_while_dragging = b;
+                                        (format!("DIMSHO = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!(
+                                        "DIMSHO = {}",
+                                        h.update_dimensions_while_dragging as i32
+                                    ),
+                                    false,
+                                )),
+                            },
+                            "QTEXTMODE" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.quick_text_mode = b;
+                                        (format!("QTEXTMODE = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => {
+                                    Ok((format!("QTEXTMODE = {}", h.quick_text_mode as i32), false))
+                                }
+                            },
+                            "PLIMCHECK" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.paper_space_limit_check = b;
+                                        (format!("PLIMCHECK = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!("PLIMCHECK = {}", h.paper_space_limit_check as i32),
+                                    false,
+                                )),
+                            },
+                            "VISRETAIN" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.retain_xref_visibility = b;
+                                        (format!("VISRETAIN = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!("VISRETAIN = {}", h.retain_xref_visibility as i32),
+                                    false,
+                                )),
+                            },
+                            "USRTIMER" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        h.user_timer = b;
+                                        (format!("USRTIMER = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((format!("USRTIMER = {}", h.user_timer as i32), false)),
+                            },
+                            "ATTMODE" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.attribute_visibility = x;
+                                        (format!("ATTMODE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => {
+                                    Ok((format!("ATTMODE = {}", h.attribute_visibility), false))
+                                }
+                            },
+                            "COORDS" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.coords_mode = x;
+                                        (format!("COORDS = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("COORDS = {}", h.coords_mode), false)),
+                            },
+                            "OSMODE" => match &value {
+                                Some(v) => v
+                                    .parse::<i32>()
+                                    .map(|x| {
+                                        h.object_snap_mode = x;
+                                        (format!("OSMODE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("OSMODE = {}", h.object_snap_mode), false)),
+                            },
+                            "PICKSTYLE" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.pick_style = x;
+                                        (format!("PICKSTYLE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("PICKSTYLE = {}", h.pick_style), false)),
+                            },
+                            "SPLINESEGS" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.spline_segments = x;
+                                        (format!("SPLINESEGS = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("SPLINESEGS = {}", h.spline_segments), false)),
+                            },
+                            "SURFU" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.surface_u_density = x;
+                                        (format!("SURFU = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("SURFU = {}", h.surface_u_density), false)),
+                            },
+                            "SURFV" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.surface_v_density = x;
+                                        (format!("SURFV = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("SURFV = {}", h.surface_v_density), false)),
+                            },
+                            "SURFTYPE" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.surface_type = x;
+                                        (format!("SURFTYPE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("SURFTYPE = {}", h.surface_type), false)),
+                            },
+                            "SHADEDGE" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.shade_edge = x;
+                                        (format!("SHADEDGE = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("SHADEDGE = {}", h.shade_edge), false)),
+                            },
+                            "MAXACTVP" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.max_active_viewports = x;
+                                        (format!("MAXACTVP = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => {
+                                    Ok((format!("MAXACTVP = {}", h.max_active_viewports), false))
+                                }
+                            },
+                            "CMLJUST" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.multiline_justification = x;
+                                        (format!("CMLJUST = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => {
+                                    Ok((format!("CMLJUST = {}", h.multiline_justification), false))
+                                }
+                            },
+                            "TEXTQLTY" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.text_quality = x;
+                                        (format!("TEXTQLTY = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("TEXTQLTY = {}", h.text_quality), false)),
+                            },
+                            "SORTENTS" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.sort_entities = x;
+                                        (format!("SORTENTS = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("SORTENTS = {}", h.sort_entities), false)),
+                            },
+                            "XCLIPFRAME" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.xclip_frame = x;
+                                        (format!("XCLIPFRAME = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("XCLIPFRAME = {}", h.xclip_frame), false)),
+                            },
+                            "HALOGAP" => match &value {
+                                Some(v) => v
+                                    .parse::<i16>()
+                                    .map(|x| {
+                                        h.halo_gap = x;
+                                        (format!("HALOGAP = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                None => Ok((format!("HALOGAP = {}", h.halo_gap), false)),
+                            },
+                            "TRACEWID" => match &value {
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.trace_width = x;
+                                        (format!("TRACEWID = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
+                                None => Ok((format!("TRACEWID = {}", h.trace_width), false)),
+                            },
+                            "SKETCHINC" => match &value {
+                                Some(v) => v
+                                    .parse::<f64>()
+                                    .map(|x| {
+                                        h.sketch_increment = x;
+                                        (format!("SKETCHINC = {x}"), true)
+                                    })
+                                    .map_err(|_| "SETVAR: numeric value required.".into()),
+                                None => Ok((format!("SKETCHINC = {}", h.sketch_increment), false)),
+                            },
                             "CLAYER" => match &value {
-                                Some(_) => Err("SETVAR: CLAYER is read-only here — use the CLAYER command.".into()),
+                                Some(_) => Err(
+                                    "SETVAR: CLAYER is read-only here — use the CLAYER command."
+                                        .into(),
+                                ),
                                 None => Ok((format!("CLAYER = {}", h.current_layer_name), false)),
                             },
                             "CELTYPE" => match &value {
-                                Some(_) => Err("SETVAR: CELTYPE is read-only here — use LINETYPE SET.".into()),
-                                None => Ok((format!("CELTYPE = {}", h.current_linetype_name), false)),
+                                Some(_) => {
+                                    Err("SETVAR: CELTYPE is read-only here — use LINETYPE SET."
+                                        .into())
+                                }
+                                None => {
+                                    Ok((format!("CELTYPE = {}", h.current_linetype_name), false))
+                                }
                             },
                             "TEXTSTYLE" => match &value {
-                                Some(_) => Err("SETVAR: TEXTSTYLE is read-only here — use the STYLE command.".into()),
-                                None => Ok((format!("TEXTSTYLE = {}", h.current_text_style_name), false)),
+                                Some(_) => Err(
+                                    "SETVAR: TEXTSTYLE is read-only here — use the STYLE command."
+                                        .into(),
+                                ),
+                                None => Ok((
+                                    format!("TEXTSTYLE = {}", h.current_text_style_name),
+                                    false,
+                                )),
                             },
                             _ => Err(format!("SETVAR: unknown variable \"{name}\".")),
                         }
@@ -750,7 +1435,8 @@ impl OpenCADStudio {
                 let val_str = cmd.trim_start_matches("TEXTEDITMODE").trim().to_lowercase();
                 if val_str.is_empty() {
                     let v = if self.texteditmode { 1 } else { 0 };
-                    self.command_line.push_output(&format!("TEXTEDITMODE = {v}"));
+                    self.command_line
+                        .push_output(&format!("TEXTEDITMODE = {v}"));
                 } else if let Some(v) =
                     crate::modules::annotate::textedit::parse_texteditmode(&val_str)
                 {
@@ -782,7 +1468,8 @@ impl OpenCADStudio {
                     self.tabs[i].scene.document.header.point_display_size = v;
                     self.tabs[i].scene.bump_geometry();
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output(&format!("PDSIZE set to {v:.4}"));
+                    self.command_line
+                        .push_output(&format!("PDSIZE set to {v:.4}"));
                 } else {
                     self.command_line.push_error(
                         "Usage: PDSIZE [value]  (>0 absolute size, <0 percent of viewport, 0 default)",
@@ -800,33 +1487,26 @@ impl OpenCADStudio {
             }
             cmd if cmd == "LWDISPLAY" || cmd.starts_with("LWDISPLAY ") => {
                 let val_str = cmd.trim_start_matches("LWDISPLAY").trim();
-                let parsed: Result<Option<bool>, ()> =
-                    match val_str.to_ascii_uppercase().as_str() {
-                        "" => Ok(None),
-                        "ON" | "1" | "TRUE" => Ok(Some(true)),
-                        "OFF" | "0" | "FALSE" => Ok(Some(false)),
-                        _ => Err(()),
-                    };
+                let parsed: Result<Option<bool>, ()> = match val_str.to_ascii_uppercase().as_str() {
+                    "" => Ok(None),
+                    "ON" | "1" | "TRUE" => Ok(Some(true)),
+                    "OFF" | "0" | "FALSE" => Ok(Some(false)),
+                    _ => Err(()),
+                };
                 match parsed {
-                    Err(_) => self
-                        .command_line
-                        .push_error("Usage: LWDISPLAY [ON|OFF]"),
+                    Err(_) => self.command_line.push_error("Usage: LWDISPLAY [ON|OFF]"),
                     Ok(Some(v)) => {
                         self.push_undo_snapshot(i, "LWDISPLAY");
                         self.tabs[i].scene.document.header.lineweight_display = v;
                         // No retessellate — the wire shader honours the flag via uniforms.
                         self.tabs[i].dirty = true;
-                        self.command_line.push_output(&format!(
-                            "LWDISPLAY {}",
-                            if v { "ON" } else { "OFF" }
-                        ));
+                        self.command_line
+                            .push_output(&format!("LWDISPLAY {}", if v { "ON" } else { "OFF" }));
                     }
                     Ok(None) => {
                         let v = self.tabs[i].scene.document.header.lineweight_display;
-                        self.command_line.push_output(&format!(
-                            "LWDISPLAY = {}",
-                            if v { "ON" } else { "OFF" }
-                        ));
+                        self.command_line
+                            .push_output(&format!("LWDISPLAY = {}", if v { "ON" } else { "OFF" }));
                     }
                 }
             }
