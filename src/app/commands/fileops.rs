@@ -143,6 +143,67 @@ impl OpenCADStudio {
                 return Some(Task::done(Message::TabClose(self.active_tab)));
             }
 
+            // ARCHIVE / ETRANSMIT — package the drawing and its referenced files
+            // (xrefs + raster images) into a sibling "<name>_archive" folder.
+            "ARCHIVE" | "ETRANSMIT" => {
+                use std::path::PathBuf;
+                if let Some(src) = self.tabs[i].current_path.clone() {
+                    let stem = src
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "drawing".into());
+                    let parent = src
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    let folder = parent.join(format!("{stem}_archive"));
+                    match std::fs::create_dir_all(&folder) {
+                        Ok(()) => {
+                            let mut copied = 0usize;
+                            if let Some(fname) = src.file_name() {
+                                if std::fs::copy(&src, folder.join(fname)).is_ok() {
+                                    copied += 1;
+                                }
+                            }
+                            let mut deps: Vec<String> = Vec::new();
+                            for br in self.tabs[i].scene.document.block_records.iter() {
+                                if !br.xref_path.trim().is_empty() {
+                                    deps.push(br.xref_path.clone());
+                                }
+                            }
+                            for e in self.tabs[i].scene.document.entities() {
+                                if let acadrust::EntityType::RasterImage(img) = e {
+                                    if !img.file_path.trim().is_empty() {
+                                        deps.push(img.file_path.clone());
+                                    }
+                                }
+                            }
+                            for d in deps {
+                                let dp = PathBuf::from(&d);
+                                let resolved = if dp.is_absolute() { dp } else { parent.join(&dp) };
+                                if resolved.exists() {
+                                    if let Some(fname) = resolved.file_name() {
+                                        if std::fs::copy(&resolved, folder.join(fname)).is_ok() {
+                                            copied += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            self.command_line.push_output(&format!(
+                                "{cmd}: packaged {copied} file(s) into {}",
+                                folder.display()
+                            ));
+                        }
+                        Err(e) => self
+                            .command_line
+                            .push_error(&format!("{cmd}: cannot create folder ({e}).")),
+                    }
+                } else {
+                    self.command_line
+                        .push_error("ARCHIVE: save the drawing first (it has no file path yet).");
+                }
+            }
+
             "EXIT" | "QUIT" => {
                 // Funnel through the OS close path so the unsaved-changes
                 // dialog runs before `iced::exit()`. Falls back to a hard

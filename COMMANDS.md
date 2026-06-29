@@ -313,8 +313,8 @@ Status of every standard CAD command in Open CAD Studio:
 | `QUIT` | — | Exit application | ✅ |
 | `RECOVER` | — | Recover damaged drawing | ❌ |
 | `CLOSE` | — | Close drawing | ✅ |
-| `ARCHIVE` | — | Archive drawing set | ❌ |
-| `ETRANSMIT` | — | Transmit drawing package | ❌ |
+| `ARCHIVE` | — | Package drawing + references into a folder | ✅ |
+| `ETRANSMIT` | — | Transmittal package (folder) | ✅ |
 
 ---
 
@@ -360,9 +360,9 @@ Status of every standard CAD command in Open CAD Studio:
 | 3D Modeling | 27 | 23 | 0 | 4 |
 | View & Navigation | 32 | 15 | 8 | 9 |
 | Inquiry | 12 | 12 | 0 | 0 |
-| File & Plot | 17 | 14 | 0 | 3 |
+| File & Plot | 17 | 16 | 0 | 1 |
 | Manage & Customize | 22 | 13 | 3 | 6 |
-| **Total** | **262** | **215** | **15** | **32** |
+| **Total** | **262** | **217** | **15** | **30** |
 
 > Counts include commands listed under more than one category (e.g. `SLICE`, `HELIX`,
 > `MINSERT`, `SUBTRACT`/`UNION`/`INTERSECT` appear in both their 2D and 3D groups).

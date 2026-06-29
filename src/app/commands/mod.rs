@@ -344,6 +344,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "XOPEN",
         "REGION",
         "REG",
+        "ARCHIVE",
+        "ETRANSMIT",
         // Slice/section + interference + press-pull/thicken + 3D transforms + wall/pyramid.
         "SLICE",
         "SL",
