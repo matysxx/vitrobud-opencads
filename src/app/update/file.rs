@@ -550,6 +550,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                             self.command_line
                                 .push_output(&format!("Saved: {}", path.display()));
                             self.tabs[i].dirty = false;
+                            // A clean save supersedes any autosave recovery copy.
+                            let _ = std::fs::remove_file(path.with_extension("sv$"));
                         }
                         Err(e) => self.command_line.push_error(&format!("Save failed: {e}")),
                     }
@@ -615,6 +617,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                                 .push_output(&format!("Saved: {}", path.display()));
                             self.tabs[i].current_path = Some(path.clone());
                             self.tabs[i].dirty = false;
+                            // A clean save supersedes any autosave recovery copy.
+                            let _ = std::fs::remove_file(path.with_extension("sv$"));
                             if self.save_dialog_for_unsaved {
                                 let next = self.update(Message::UnsavedPickedSavePath(Some(path)));
                                 return Task::batch([close, next]);
@@ -710,6 +714,23 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
     #[cfg(target_arch = "wasm32")]
     pub(super) fn on_autosave(&mut self) -> Task<Message> {
         Task::none()
+    }
+
+    /// Delete the `.sv$` autosave recovery files for all open drawings. They
+    /// exist only to survive a crash, so a clean save or exit removes them.
+    pub(in crate::app) fn cleanup_autosaves(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        for t in &self.tabs {
+            if let Some(path) = &t.current_path {
+                let _ = std::fs::remove_file(path.with_extension("sv$"));
+            }
+        }
+    }
+
+    /// Remove the autosave recovery files, then quit the application.
+    pub(in crate::app) fn exit_app(&self) -> Task<Message> {
+        self.cleanup_autosaves();
+        iced::exit()
     }
 
     pub(super) fn on_page_setup_commit(&mut self) -> Task<Message> {

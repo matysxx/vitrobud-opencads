@@ -211,7 +211,7 @@ impl OpenCADStudio {
                 if let Some(id) = self.main_window {
                     return Some(Task::done(Message::WindowCloseRequested(id)));
                 }
-                return Some(iced::exit());
+                return Some(self.exit_app());
             }
 
             // ── Frame-budget HUD (Phase 5.3) ───────────────────────────────

@@ -186,7 +186,7 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
                             self.pending_close = Some(crate::app::PendingClose::Quit);
                         } else {
                             let close_win = self.close_unsaved_dialog_window();
-                            return Task::batch(vec![close_win, iced::exit()]);
+                            return Task::batch(vec![close_win, self.exit_app()]);
                         }
                     }
                     None => {}
@@ -252,7 +252,7 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
                             self.pending_close = Some(crate::app::PendingClose::Quit);
                         } else {
                             let close_win = self.close_unsaved_dialog_window();
-                            return Task::batch(vec![close_win, iced::exit()]);
+                            return Task::batch(vec![close_win, self.exit_app()]);
                         }
                     }
                     None => {}
@@ -299,7 +299,7 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
                                     self.pending_close = Some(crate::app::PendingClose::Quit);
                                     return self.open_unsaved_dialog_window();
                                 } else {
-                                    return iced::exit();
+                                    return self.exit_app();
                                 }
                             }
                             Err(e) => {

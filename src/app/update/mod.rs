@@ -809,7 +809,7 @@ impl OpenCADStudio {
                         self.pending_close = Some(super::PendingClose::Quit);
                         return self.open_unsaved_dialog_window();
                     }
-                    return iced::exit();
+                    return self.exit_app();
                 }
                 Task::none()
             }
@@ -818,7 +818,7 @@ impl OpenCADStudio {
                 // Only the main window exists now; all dialogs are in-canvas
                 // modals (Plan B). Closing it exits.
                 if self.main_window == Some(id) {
-                    return iced::exit();
+                    return self.exit_app();
                 }
                 Task::none()
             }
