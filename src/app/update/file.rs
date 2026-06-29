@@ -40,6 +40,7 @@ impl OpenCADStudio {
             },
             plugin_repos: self.plugin_repos.clone(),
             texteditmode: self.texteditmode,
+            backup_on_save: self.backup_on_save,
             bg_color: self.default_bg_color.map(f4_to_u3),
             paper_bg_color: self.default_paper_bg_color.map(f4_to_u3),
         }
@@ -58,6 +59,7 @@ impl OpenCADStudio {
         self.disabled_plugins = s.disabled_plugins.iter().cloned().collect();
         self.plugin_repos = s.plugin_repos.clone();
         self.texteditmode = s.texteditmode;
+        self.backup_on_save = s.backup_on_save;
         self.default_bg_color = s.bg_color.map(u3_to_f4);
         self.default_paper_bg_color = s.paper_bg_color.map(u3_to_f4);
         // Push the restored background onto every drawing tab that exists now
@@ -536,6 +538,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     self.tabs[i].scene.document.header.user_real1 =
                         self.tabs[i].scene.annotation_scale as f64;
                     // A direct Save preserves the document's current version.
+                    if self.backup_on_save {
+                        crate::io::write_backup(&path);
+                    }
                     match crate::io::save(&self.tabs[i].scene.document, &path) {
                         Ok(()) => {
                             self.command_line
@@ -597,6 +602,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     let path = self.save_dialog_folder.join(&filename);
+                    if self.backup_on_save {
+                        crate::io::write_backup(&path);
+                    }
                     match crate::io::save_as_version(&self.tabs[i].scene.document, &path, version) {
                         Ok(()) => {
                             self.command_line

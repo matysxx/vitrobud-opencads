@@ -247,6 +247,9 @@ pub(super) struct OpenCADStudio {
     dyn_input: bool,
     /// Controls whether the TEXTEDIT command repeats automatically (0 = Multiple, 1 = Single).
     pub texteditmode: bool,
+    /// When true (default), saving over an existing file first writes a `.bak`
+    /// copy of it for recovery (#205). Toggle with the ISAVEBAK command.
+    pub backup_on_save: bool,
     /// Persisted default viewport background, restored from settings and applied
     /// to every drawing tab (new and opened) so a chosen background survives
     /// restarts (#188). `None` = the built-in dark-grey / off-white defaults.
@@ -1862,6 +1865,7 @@ impl OpenCADStudio {
             show_grid: false,
             dyn_input: true,
             texteditmode: false,
+            backup_on_save: true,
             default_bg_color: None,
             default_paper_bg_color: None,
             awaiting_vports: false,

@@ -1449,6 +1449,25 @@ impl OpenCADStudio {
                         .push_error("Requires 0 OR 1 OR MULTIPLE OR SINGLE");
                 }
             }
+            "ISAVEBAK" => {
+                let v = if self.backup_on_save { 1 } else { 0 };
+                self.command_line.push_output(&format!("ISAVEBAK = {v}"));
+            }
+            cmd if cmd.starts_with("ISAVEBAK ") => {
+                match cmd.trim_start_matches("ISAVEBAK").trim() {
+                    "0" => {
+                        self.backup_on_save = false;
+                        self.persist_settings_if_changed();
+                        self.command_line.push_output("ISAVEBAK set to 0");
+                    }
+                    "1" => {
+                        self.backup_on_save = true;
+                        self.persist_settings_if_changed();
+                        self.command_line.push_output("ISAVEBAK set to 1");
+                    }
+                    _ => self.command_line.push_error("Requires 0 or 1"),
+                }
+            }
             "PDSIZE" => {
                 use crate::command::ValuePromptCommand;
                 let c = ValuePromptCommand::new(

@@ -272,12 +272,15 @@ mod windows_impl {
         // appear in the "Open with → Choose another app" picker for them.
         set_string(&format!(r"{APP_BASE}\SupportedTypes"), Some(".dwg"), "")?;
         set_string(&format!(r"{APP_BASE}\SupportedTypes"), Some(".dxf"), "")?;
+        // `.bak` copies hold verbatim DWG/DXF content and open the same way.
+        set_string(&format!(r"{APP_BASE}\SupportedTypes"), Some(".bak"), "")?;
 
         // ── ProgIDs (per-user mirror of the MSI's) ──────────────────────────
         // The Capabilities entries below point at these, and they must resolve
         // to a real open command for "set as default" to apply them.
         register_progid(&exe, "OpenCADStudio.DWG", "DWG Drawing")?;
         register_progid(&exe, "OpenCADStudio.DXF", "DXF Drawing")?;
+        register_progid(&exe, "OpenCADStudio.BAK", "CAD Backup")?;
         // Also offer the ProgIDs in each extension's Open-with list.
         set_string(
             r"Software\Classes\.dwg\OpenWithProgids",
@@ -287,6 +290,11 @@ mod windows_impl {
         set_string(
             r"Software\Classes\.dxf\OpenWithProgids",
             Some("OpenCADStudio.DXF"),
+            "",
+        )?;
+        set_string(
+            r"Software\Classes\.bak\OpenWithProgids",
+            Some("OpenCADStudio.BAK"),
             "",
         )?;
 
@@ -304,6 +312,7 @@ mod windows_impl {
         )?;
         set_string(&format!(r"{CAP}\FileAssociations"), Some(".dwg"), "OpenCADStudio.DWG")?;
         set_string(&format!(r"{CAP}\FileAssociations"), Some(".dxf"), "OpenCADStudio.DXF")?;
+        set_string(&format!(r"{CAP}\FileAssociations"), Some(".bak"), "OpenCADStudio.BAK")?;
         set_string(
             r"Software\RegisteredApplications",
             Some("Open CAD Studio"),
@@ -325,6 +334,11 @@ mod linux_impl {
     /// Skipped when a system package already registered the app, so we don't
     /// shadow a distro-provided desktop entry.
     pub(super) fn register_handler() -> Result<(), String> {
+        // High-priority CAD magic so DWG/DXF content (including `.bak` copies)
+        // resolves to image/vnd.dwg / image/vnd.dxf even though the freedesktop
+        // `*.bak` glob would otherwise tag it application/x-trash (#205).
+        install_cad_mime();
+
         // A system install already lists us — leave it alone.
         let data_dirs = std::env::var("XDG_DATA_DIRS")
             .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
@@ -379,6 +393,65 @@ mod linux_impl {
             .arg(&apps)
             .status();
         Ok(())
+    }
+
+    /// Install a high-priority shared-mime-info magic rule so DWG/DXF *content*
+    /// is recognised regardless of extension. Without it a `.bak` copy matches
+    /// the freedesktop `*.bak` glob (application/x-trash) and never reaches us;
+    /// the magic (priority 90) beats that glob so DWG/DXF backups open with the
+    /// app. Best-effort + idempotent (skips the slow DB refresh when unchanged).
+    fn install_cad_mime() {
+        let Ok(home) = data_home() else { return };
+        let pkgs = home.join("mime/packages");
+        let xml_path = pkgs.join(format!("{APP_ID}-cad.xml"));
+        // The `*.bak` glob is what makes file managers (GIO/Nautilus key off the
+        // extension, not content) open DWG/DXF backups with us — but it would
+        // mislabel every OTHER app's `.bak` files too. So only claim it once the
+        // user has actually made us the default for DWG (i.e. granted the file
+        // association). The content magic below is always safe.
+        let bak_glob = if is_default_for_dwg() {
+            "    <glob pattern=\"*.bak\" weight=\"60\"/>\n"
+        } else {
+            ""
+        };
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="image/vnd.dwg">
+{bak_glob}    <magic priority="100"><match value="AC10" type="string" offset="0"/></magic>
+  </mime-type>
+  <mime-type type="image/vnd.dxf">
+{bak_glob}    <magic priority="100"><match value="AutoCAD Binary DXF" type="string" offset="0"/></magic>
+  </mime-type>
+</mime-info>
+"#
+        );
+        if std::fs::read_to_string(&xml_path).ok().as_deref() == Some(xml.as_str()) {
+            return;
+        }
+        if std::fs::create_dir_all(&pkgs).is_ok() && std::fs::write(&xml_path, &xml).is_ok() {
+            let _ = std::process::Command::new("update-mime-database")
+                .arg(home.join("mime"))
+                .status();
+        }
+    }
+
+    /// Whether the user has already made us the default app for DWG drawings
+    /// (i.e. granted the file association). Used to decide whether to claim the
+    /// generic `*.bak` extension for DWG/DXF backups (#205).
+    fn is_default_for_dwg() -> bool {
+        let cfg = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+        let Some(cfg) = cfg else { return false };
+        let Ok(body) = std::fs::read_to_string(cfg.join("mimeapps.list")) else {
+            return false;
+        };
+        let target = format!("{APP_ID}.desktop");
+        body.lines().any(|l| {
+            let l = l.trim();
+            l.starts_with("image/vnd.dwg=") && l.contains(&target)
+        })
     }
 
     /// Write the app SVG icon into the user's hicolor icon theme so that the

@@ -38,9 +38,10 @@ const PHASE_FINALIZING: u8 = 3;
 pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
     let handle = rfd::AsyncFileDialog::new()
         .set_title("Open CAD file")
-        .add_filter("CAD Files", &["dwg", "dxf", "DWG", "DXF"])
+        .add_filter("CAD Files", &["dwg", "dxf", "bak", "DWG", "DXF", "BAK"])
         .add_filter("DWG Files", &["dwg", "DWG"])
         .add_filter("DXF Files", &["dxf", "DXF"])
+        .add_filter("Backup Files", &["bak", "BAK"])
         .add_filter("All Files", &["*"])
         .pick_file()
         .await?;
@@ -147,13 +148,36 @@ pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<CadDocument, String> {
 }
 
 /// Load a DWG or DXF file directly from a path (auto-detect by extension).
+/// Peek at a file's leading bytes to tell a DWG (version tag "AC10xx") from a
+/// DXF. Used for `.bak` copies, whose extension hides the real format.
+fn sniff_dwg_or_dxf(path: &Path) -> String {
+    use std::io::Read;
+    let mut buf = [0u8; 6];
+    if let Ok(mut f) = std::fs::File::open(path) {
+        let _ = f.read(&mut buf);
+    }
+    if buf.starts_with(b"AC10") {
+        "dwg".to_string()
+    } else {
+        "dxf".to_string()
+    }
+}
+
 pub fn load_file(path: &Path) -> Result<CadDocument, String> {
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
-    match ext.as_str() {
+    // A `.bak` backup holds a verbatim DWG or DXF copy — detect the real format
+    // from the file's leading bytes rather than the `.bak` extension.
+    let effective = if ext == "bak" {
+        sniff_dwg_or_dxf(path)
+    } else {
+        ext.clone()
+    };
+
+    match effective.as_str() {
         "dwg" => {
             let mut doc = DwgReader::from_file(path)
                 .map_err(|e| e.to_string())?
@@ -471,6 +495,15 @@ pub fn dropped_on_save_count(
         }
     }
     n
+}
+
+/// Before overwriting `path`, copy the existing file to a sibling `<name>.bak`
+/// so a faulty or accidental save can be recovered (#205). Best-effort: a
+/// failed backup never blocks the save itself.
+pub fn write_backup(path: &std::path::Path) {
+    if path.exists() {
+        let _ = std::fs::copy(path, path.with_extension("bak"));
+    }
 }
 
 // ── Plot Style Table ──────────────────────────────────────────────────────

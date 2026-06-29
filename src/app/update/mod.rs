@@ -315,9 +315,10 @@ impl OpenCADStudio {
                 async {
                     let handle = rfd::AsyncFileDialog::new()
                         .set_title("Select External Reference File")
-                        .add_filter("CAD Files", &["dwg", "dxf", "DWG", "DXF"])
+                        .add_filter("CAD Files", &["dwg", "dxf", "bak", "DWG", "DXF", "BAK"])
                         .add_filter("DWG Files", &["dwg", "DWG"])
                         .add_filter("DXF Files", &["dxf", "DXF"])
+                        .add_filter("Backup Files", &["bak", "BAK"])
                         .pick_file()
                         .await;
                     match handle {

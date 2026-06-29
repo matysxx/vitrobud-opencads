@@ -103,6 +103,9 @@ pub struct UserSettings {
     pub plugin_repos: Vec<String>,
     /// Controls whether the TEXTEDIT command repeats automatically (0 = Multiple, 1 = Single).
     pub texteditmode: bool,
+    /// When true, saving over an existing file first copies it to a sibling
+    /// `<name>.bak` so a faulty or accidental save can be recovered (#205).
+    pub backup_on_save: bool,
     /// Persisted viewport background colours (0–255 RGB); `None` = app default
     /// (dark grey model / off-white paper). Applied to every drawing tab on
     /// launch and to tabs opened later, so a chosen background survives restarts
@@ -133,6 +136,7 @@ impl Default for UserSettings {
             disabled_plugins: Vec::new(),
             plugin_repos: Vec::new(),
             texteditmode: false,
+            backup_on_save: true,
             bg_color: None,
             paper_bg_color: None,
         }
@@ -177,6 +181,7 @@ impl UserSettings {
                         s.texteditmode = v;
                     }
                 }
+                "backup_on_save" => s.backup_on_save = val == "1",
                 "disabled_plugins" => {
                     s.disabled_plugins = val
                         .split(',')
@@ -218,7 +223,7 @@ impl UserSettings {
             .collect::<Vec<_>>()
             .join(",");
         let body = format!(
-            "dyn={}\northo={}\npolar={}\npolar_increment_deg={}\nosnap={}\notrack={}\ndefault_assoc_prompted={}\nsnap_modes={}\ndisabled_plugins={}\nplugin_repos={}\ntexteditmode={}\nbg_color={}\npaper_bg_color={}\n",
+            "dyn={}\northo={}\npolar={}\npolar_increment_deg={}\nosnap={}\notrack={}\ndefault_assoc_prompted={}\nsnap_modes={}\ndisabled_plugins={}\nplugin_repos={}\ntexteditmode={}\nbackup_on_save={}\nbg_color={}\npaper_bg_color={}\n",
             b(self.dyn_input),
             b(self.ortho),
             b(self.polar),
@@ -230,6 +235,7 @@ impl UserSettings {
             self.disabled_plugins.join(","),
             self.plugin_repos.join(","),
             self.texteditmode,
+            b(self.backup_on_save),
             rgb_to_str(self.bg_color),
             rgb_to_str(self.paper_bg_color),
         );
