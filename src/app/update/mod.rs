@@ -1125,6 +1125,21 @@ impl OpenCADStudio {
                 if !was_click {
                     return Task::none();
                 }
+                // A command name (or option keyword / value) typed into the
+                // command line but not yet entered runs on right-click, exactly
+                // as pressing Enter would. Route through CommandFinalize — the
+                // canonical Enter action — so the same MText / grip-popup guards
+                // apply and a non-empty line is forwarded to the submit path.
+                // Without this the typed text would be swallowed by the context
+                // menu (when idle) or the Enter cycle. Every other right-click
+                // behaviour below is unchanged and only applies when the command
+                // line is empty. Pending text always runs and resets the Enter
+                // cycle so the next right-click acts as Enter again.
+                if !self.command_line.input.trim().is_empty() {
+                    sel.right_click_entered = false;
+                    drop(sel);
+                    return self.update(Message::CommandFinalize);
+                }
                 // A right-click (no orbit). While a command is active the first
                 // right-click acts as Enter (commit / close); a second
                 // consecutive right-click opens the context menu instead. When
