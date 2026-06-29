@@ -2590,14 +2590,18 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::AssocPromptYes => {
+                self.file_assoc_enabled = true;
                 self.mark_assoc_prompted();
                 self.active_modal = None;
+                // set_default_app registers the handler first, then makes us the
+                // default — boot no longer does this automatically.
                 Task::perform(
                     crate::io::file_association::set_default_app(),
                     Message::AssocResult,
                 )
             }
             Message::AssocPromptNo => {
+                self.file_assoc_enabled = false;
                 self.mark_assoc_prompted();
                 self.active_modal = None;
                 Task::none()

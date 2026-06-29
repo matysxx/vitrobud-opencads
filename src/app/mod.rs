@@ -2150,22 +2150,9 @@ impl OpenCADStudio {
     #[cfg(not(target_arch = "wasm32"))]
     fn boot() -> (Self, Task<Message>) {
         use helpers::build_window_icon;
-        // Silently (re)register this binary as a .dwg/.dxf handler so it appears
-        // in the OS "Open with" list. Best-effort and idempotent; covers the
-        // portable .exe / AppImage that no installer has registered. Detached so
-        // it never delays startup.
-        std::thread::spawn(|| {
-            // Honour the FILEASSOC toggle: skip (re)registration when the user
-            // has turned file association off.
-            let enabled = settings::UserSettings::load()
-                .map(|s| s.file_assoc_enabled)
-                .unwrap_or(true);
-            if enabled {
-                if let Err(e) = crate::io::file_association::register_as_handler() {
-                    eprintln!("file association: handler registration failed: {e}");
-                }
-            }
-        });
+        // File association is no longer re-registered on every launch. It is set
+        // up once via the first-launch prompt below (when the user hasn't been
+        // asked yet) and afterwards managed entirely by the FILEASSOC command.
         let state = Self::new();
         let (id, open_task) = window::open(window::Settings {
             maximized: true,

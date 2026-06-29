@@ -96,6 +96,10 @@ pub async fn set_default_app() -> Result<String, String> {
 }
 
 fn set_default_app_blocking() -> Result<String, String> {
+    // Boot no longer auto-registers, so make sure the handler entries (the
+    // .desktop / mime package / ProgIDs) exist before asking the OS to default
+    // to us — otherwise the default would point at nothing.
+    register_as_handler()?;
     #[cfg(target_os = "windows")]
     {
         windows_impl::set_default()
