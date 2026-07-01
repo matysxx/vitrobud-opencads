@@ -361,9 +361,11 @@ pub(super) struct OpenCADStudio {
     attr_editor_handle: Option<acadrust::Handle>,
     /// Block name shown in the editor's title bar.
     attr_editor_block: String,
-    /// Working copy of the block's attributes as `(tag, value)`, in the same
-    /// order as `Insert::attributes`. Edited live; written back on OK.
-    attr_editor_fields: Vec<(String, String)>,
+    /// Working copy of the block's attributes as `(tag, prompt, value)`, in the
+    /// same order as `Insert::attributes`. The prompt is read from the block's
+    /// matching ATTDEF (blank if none). Only the value is edited; the whole row
+    /// is written back on OK.
+    attr_editor_fields: Vec<(String, String, String)>,
     /// Plugin ids the user turned off in the Plugin Manager. Disabled plugins
     /// keep their manifest listed but drop their ribbon tab and command
     /// dispatch. Persisted via [`settings::UserSettings::disabled_plugins`].

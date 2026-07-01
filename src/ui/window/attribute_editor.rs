@@ -2,10 +2,10 @@
 //! reference (INSERT). Opened by double-clicking a block that carries
 //! attributes, or by the ATTEDIT command with such a block selected.
 //!
-//! Each attribute is one row: its tag (read-only) and an editable value box.
-//! OK writes every value back to the block; Cancel (the ✕ or button) discards.
-//! The heavy lifting — applying edits, undo, repaint — lives in the update
-//! handler (`Message::AttrEditorOk`); this module is pure layout.
+//! Each attribute is one row: its prompt/tag (read-only) and an editable value
+//! box. OK writes every value back to the block; Cancel (the ✕ or button)
+//! discards. The heavy lifting — applying edits, undo, repaint — lives in the
+//! update handler (`Message::AttrEditorOk`); this module is pure layout.
 
 use crate::app::Message;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
@@ -30,12 +30,23 @@ fn field_style(_t: &Theme, _s: text_input::Status) -> text_input::Style {
 }
 
 /// Build the attribute editor dialog body. `block` is the reference's block
-/// name (shown as a subtitle); `fields` are the `(tag, value)` pairs in
-/// attribute order — the row index is the routing key back to
-/// `Message::AttrEditorInput`.
-pub fn view_window<'a>(block: &'a str, fields: &'a [(String, String)]) -> Element<'a, Message> {
+/// name (shown as a subtitle); `fields` are the `(tag, prompt, value)` triples
+/// in attribute order — the row index is the routing key back to
+/// `Message::AttrEditorInput`. Each row is labelled with the prompt (falling
+/// back to the tag when the block defines none), so the label reads as it would
+/// when inserting the block.
+pub fn view_window<'a>(
+    block: &'a str,
+    fields: &'a [(String, String, String)],
+) -> Element<'a, Message> {
     let mut list = column![].spacing(6);
-    for (idx, (tag, value)) in fields.iter().enumerate() {
+    for (idx, (tag, prompt, value)) in fields.iter().enumerate() {
+        let label = if prompt.trim().is_empty() {
+            tag.as_str()
+        } else {
+            prompt.as_str()
+        };
+
         let value_box = text_input("", value)
             .on_input(move |v| Message::AttrEditorInput { idx, value: v })
             .on_submit(Message::AttrEditorOk)
@@ -45,7 +56,7 @@ pub fn view_window<'a>(block: &'a str, fields: &'a [(String, String)]) -> Elemen
             .width(Length::Fill);
 
         let attr_row = row![
-            container(text(tag.as_str()).size(13).color(WHITE))
+            container(text(label).size(13).color(WHITE))
                 .width(170)
                 .padding([4, 6]),
             value_box,

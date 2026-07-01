@@ -2270,7 +2270,7 @@ impl OpenCADStudio {
             }
             Message::AttrEditorInput { idx, value } => {
                 if let Some(field) = self.attr_editor_fields.get_mut(idx) {
-                    field.1 = value;
+                    field.2 = value;
                 }
                 Task::none()
             }

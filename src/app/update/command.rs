@@ -1214,33 +1214,38 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     /// attributes. Entry points: double-clicking such a block, or ATTEDIT.
     pub(crate) fn open_attribute_editor(&mut self, handle: acadrust::Handle) {
         let i = self.active_tab;
-        let loaded = match self.tabs[i].scene.document.get_entity(handle) {
+        let doc = &self.tabs[i].scene.document;
+        // Ok((block, fields)) to open; Err(msg) to report and stay closed. The
+        // borrow of `doc` ends with this match, before any `self` mutation.
+        let result = match doc.get_entity(handle) {
             Some(acadrust::EntityType::Insert(ins)) if !ins.attributes.is_empty() => {
-                let block = ins.block_name.clone();
+                // The prompt text lives on the block's ATTDEFs, not on the
+                // attribute instances — map tag → prompt from the definition.
+                let prompts = block_attr_prompts(doc, &ins.block_name);
                 let fields = ins
                     .attributes
                     .iter()
-                    .map(|a| (a.tag.clone(), a.get_value().to_string()))
+                    .map(|a| {
+                        let prompt = prompts.get(&a.tag).cloned().unwrap_or_default();
+                        (a.tag.clone(), prompt, a.get_value().to_string())
+                    })
                     .collect::<Vec<_>>();
-                Some((block, fields))
+                Ok((ins.block_name.clone(), fields))
             }
             Some(acadrust::EntityType::Insert(_)) => {
-                self.command_line
-                    .push_error("ATTEDIT  This block has no attributes.");
-                None
+                Err("ATTEDIT  This block has no attributes.")
             }
-            _ => {
-                self.command_line
-                    .push_error("ATTEDIT  Select a block with attributes.");
-                None
-            }
+            _ => Err("ATTEDIT  Select a block with attributes."),
         };
-        if let Some((block, fields)) = loaded {
-            self.attr_editor_block = block;
-            self.attr_editor_fields = fields;
-            self.attr_editor_handle = Some(handle);
-            self.active_modal = Some(crate::app::ModalKind::AttributeEditor);
-            self.modal_offset = iced::Vector::ZERO;
+        match result {
+            Ok((block, fields)) => {
+                self.attr_editor_block = block;
+                self.attr_editor_fields = fields;
+                self.attr_editor_handle = Some(handle);
+                self.active_modal = Some(crate::app::ModalKind::AttributeEditor);
+                self.modal_offset = iced::Vector::ZERO;
+            }
+            Err(msg) => self.command_line.push_error(msg),
         }
     }
 
@@ -1279,14 +1284,14 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
             self.tabs[i].scene.document.get_entity_mut(handle)
         {
             if fields.len() == ins.attributes.len() {
-                for (attr, (_, val)) in ins.attributes.iter_mut().zip(fields.iter()) {
+                for (attr, (_, _, val)) in ins.attributes.iter_mut().zip(fields.iter()) {
                     if attr.get_value() != val {
                         attr.set_value(val.clone());
                         changed = true;
                     }
                 }
             } else {
-                for (tag, val) in &fields {
+                for (tag, _, val) in &fields {
                     if let Some(attr) = ins.attributes.iter_mut().find(|a| &a.tag == tag) {
                         if attr.get_value() != val {
                             attr.set_value(val.clone());
@@ -1306,4 +1311,22 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
         self.refresh_properties();
         Task::none()
     }
+}
+
+/// Map each attribute tag to the prompt text declared on the block's matching
+/// ATTDEF. Attribute instances (ATTRIB) carry only tag + value; the prompt is
+/// defined once on the block definition. Tags with no definition are absent.
+fn block_attr_prompts(
+    doc: &acadrust::CadDocument,
+    block_name: &str,
+) -> rustc_hash::FxHashMap<String, String> {
+    let mut map = rustc_hash::FxHashMap::default();
+    if let Some(br) = doc.block_records.get(block_name) {
+        for &eh in &br.entity_handles {
+            if let Some(acadrust::EntityType::AttributeDefinition(ad)) = doc.get_entity(eh) {
+                map.insert(ad.tag.clone(), ad.prompt.clone());
+            }
+        }
+    }
+    map
 }
