@@ -209,8 +209,10 @@ impl Scene {
     }
 
     pub fn copy_entities(&mut self, handles: &[Handle], t: &EntityTransform) -> Vec<Handle> {
+        // Objects on a locked layer can't be copied (they can't be selected).
         let clones: Vec<EntityType> = handles
             .iter()
+            .filter(|&&h| !self.is_layer_locked(h))
             .filter_map(|&h| self.document.get_entity(h).cloned())
             .collect();
         let mut new_handles = Vec::with_capacity(clones.len());

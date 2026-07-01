@@ -1286,6 +1286,14 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
         let Some(handle) = self.attr_editor_handle else {
             return Task::none();
         };
+        // The block's layer may have been locked while the editor was open —
+        // refuse to write attributes to a locked-layer block.
+        if let Some(layer) = self.tabs[i].scene.locked_layer_name(handle) {
+            self.command_line.push_info(&format!(
+                "Object is on locked layer \"{layer}\" — unlock the layer to edit its attributes."
+            ));
+            return Task::none();
+        }
         // Snapshot the working copy so the document can be mutated while the
         // dialog's rows stay put (it remains open for further edits).
         let rows = self.attr_editor_rows.clone();

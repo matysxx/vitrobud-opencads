@@ -2286,26 +2286,31 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 let hit =
                                     hit.filter(|&h| self.tabs[i].scene.passes_selection_filter(h));
                                 if let Some(handle) = hit {
-                                    // Individual picks accumulate (issue #47):
-                                    // each plain click adds to the selection,
-                                    // Shift+click removes the picked entity.
-                                    // Esc / empty-space click clears.
                                     if let Some(layer) =
                                         self.tabs[i].scene.locked_layer_name(handle)
                                     {
-                                        // Locked layer: visible + snappable, but
-                                        // not selectable. Tell the user why.
+                                        // Locked layer: visible + snappable but
+                                        // not selectable. Report and do nothing
+                                        // else — in particular do NOT set
+                                        // `selection_just_completed`, or a
+                                        // gather command (MOVE's "select
+                                        // objects") would wrongly finish.
                                         self.command_line.push_info(&format!(
                                             "Object is on locked layer \"{layer}\" — unlock the layer to select or edit it."
                                         ));
-                                    } else if self.shift_down {
-                                        self.tabs[i].scene.deselect_entity(handle);
                                     } else {
-                                        self.tabs[i].scene.select_entity(handle, false);
-                                        self.tabs[i].scene.expand_selection_for_groups(&[handle]);
+                                        // Individual picks accumulate (issue #47):
+                                        // each plain click adds to the selection,
+                                        // Shift+click removes the picked entity.
+                                        if self.shift_down {
+                                            self.tabs[i].scene.deselect_entity(handle);
+                                        } else {
+                                            self.tabs[i].scene.select_entity(handle, false);
+                                            self.tabs[i].scene.expand_selection_for_groups(&[handle]);
+                                        }
+                                        self.refresh_properties();
+                                        selection_just_completed = true;
                                     }
-                                    self.refresh_properties();
-                                    selection_just_completed = true;
                                 } else {
                                     // Empty-space click only ARMS a box here; it
                                     // no longer clears the selection, so a box can
@@ -2438,6 +2443,14 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             .and_then(|s| Scene::handle_from_wire_name(s))
                             .or_else(|| self.tabs[i].scene.solid_click_hit(p, view_rot, eye, bounds));
                         if let Some(handle) = hit {
+                            // Locked layer: double-click must not open any editor
+                            // (text / attribute / in-place block edit).
+                            if let Some(layer) = self.tabs[i].scene.locked_layer_name(handle) {
+                                self.command_line.push_info(&format!(
+                                    "Object is on locked layer \"{layer}\" — unlock the layer to edit it."
+                                ));
+                                return Task::none();
+                            }
                             // Any text-bearing entity opens its in-place editor
                             // (plain box or rich MText editor, per type). A
                             // Leader resolves to the entity it annotates.
