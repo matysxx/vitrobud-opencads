@@ -688,6 +688,10 @@ impl OpenCADStudio {
                             e.as_entity_mut().set_layer(layer.clone());
                         }
                     }
+                    // New layer changes the baked by-layer colour/linetype/
+                    // lineweight — re-tessellate the moved entities so they
+                    // repaint immediately (issue #231 class).
+                    self.invalidate_property_targets(i, &dest);
                     self.tabs[i].dirty = true;
                     self.command_line
                         .push_info(&format!("Layer matched to \"{layer}\"."));

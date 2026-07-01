@@ -1971,11 +1971,15 @@ impl OpenCADStudio {
                     self.ribbon.active_lineweight = lw;
                 } else {
                     self.push_undo_snapshot(i, "CHPROP");
-                    for handle in handles {
+                    for &handle in &handles {
                         if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
                             crate::scene::view::dispatch::apply_line_weight(entity, lw);
                         }
                     }
+                    // Lineweight is baked into the cached wire geometry —
+                    // re-tessellate so the change shows immediately (issue #231
+                    // class).
+                    self.invalidate_property_targets(i, &handles);
                     self.tabs[i].dirty = true;
                     self.ribbon.active_lineweight = lw;
                     self.refresh_properties();

@@ -128,6 +128,10 @@ impl OpenCADStudio {
                                 l.color = acadrust::types::Color::from_index(idx);
                                 self.push_undo_snapshot(i, "LAYER COLOR");
                                 self.tabs[i].dirty = true;
+                                // By-layer colour is baked into every wire on
+                                // this layer — re-tessellate so they repaint
+                                // immediately (issue #231 class).
+                                self.tabs[i].scene.bump_geometry();
                                 self.command_line.push_output(&format!(
                                     "LAYER: '{}' color set to ACI {}.",
                                     layer_name, idx

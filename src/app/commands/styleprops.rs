@@ -413,6 +413,11 @@ impl OpenCADStudio {
                             if changed > 0 {
                                 self.push_undo_snapshot(i, "CHPROP");
                                 self.tabs[i].dirty = true;
+                                // Colour / linetype / ltscale / transparency /
+                                // layer are baked into the cached wire geometry —
+                                // re-tessellate the changed entities so they
+                                // repaint immediately (issue #231 class).
+                                self.invalidate_property_targets(i, &handles);
                                 self.command_line.push_output(&format!(
                                     "CHPROP: {} entity/entities updated.",
                                     changed
