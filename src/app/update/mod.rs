@@ -1215,6 +1215,7 @@ impl OpenCADStudio {
                 sel.right_press_time = None;
                 sel.right_last_pos = None;
                 sel.right_dragging = false;
+                sel.orbit_pivot = None;
                 if !was_click {
                     return Task::none();
                 }
@@ -1257,6 +1258,9 @@ impl OpenCADStudio {
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
                 sel.middle_down = false;
                 sel.middle_last_pos = None;
+                // End of a Shift+MMB orbit — drop the captured pivot so the next
+                // gesture recomputes it against the current selection. (#229)
+                sel.orbit_pivot = None;
                 Task::none()
             }
 

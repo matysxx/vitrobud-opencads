@@ -20,10 +20,6 @@ use acadrust::{EntityType as AcadEntityType, Handle};
 use iced::time::Instant;
 use iced::{mouse, Point, Task};
 
-/// How long the right button must be held (ms) before a right-drag is treated
-/// as an orbit. A press + release inside this window stays a click (context
-/// menu / Enter), so quick right-clicks aren't lost to slight pointer jitter.
-const RIGHT_HOLD_MS: u128 = 150;
 /// Pixel radius for grabbing a UCS-icon grip (origin dot or an axis tip).
 const UCS_GRIP_HIT_PX: f32 = 9.0;
 /// Pixel reach for hovering/clicking the icon body (origin, tips, or an arm).
@@ -571,72 +567,44 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                     }
                 }
 
-                if sel.right_down {
-                    // Time-based click-vs-orbit split: a quick right-click
-                    // (press + release within RIGHT_HOLD_MS) is always a click —
-                    // it opens the context menu / fires Enter on release, even if
-                    // the pointer drifted a little. Orbit only engages once the
-                    // button has been *held* past the threshold and the pointer
-                    // is actually moving, so hand jitter during a click never
-                    // promotes it to an orbit drag.
-                    if !sel.right_dragging {
-                        let held = sel
-                            .right_press_time
-                            .map(|t| t.elapsed().as_millis() >= RIGHT_HOLD_MS)
-                            .unwrap_or(false);
-                        let moved = sel
-                            .right_press_pos
-                            .map(|press| {
-                                let (dx, dy) = (p.x - press.x, p.y - press.y);
-                                dx * dx + dy * dy > 4.0
-                            })
-                            .unwrap_or(false);
-                        if held && moved {
-                            sel.right_dragging = true;
-                            sel.context_menu = None;
-                            // An orbit restarts the right-click cycle.
-                            sel.right_click_entered = false;
-                            // Start the orbit from the current position so the
-                            // view doesn't jump by the pre-threshold movement.
-                            sel.right_last_pos = Some(p);
-                        }
-                    }
-                    if sel.right_dragging {
-                        if let Some(last) = sel.right_last_pos {
-                            let (dx, dy) = (p.x - last.x, p.y - last.y);
-                            if self.tabs[i].scene.active_viewport.is_some() {
-                                // Update position before dropping the borrow.
-                                sel.right_last_pos = Some(p);
-                                drop(sel);
-                                self.tabs[i].scene.orbit_active_viewport(dx, dy);
-                                // Bump so the GPU re-uploads the viewport's
-                                // re-culled wire set after the view rotates.
-                                self.tabs[i].scene.camera_generation += 1;
-                                return Task::none();
-                            } else if self.tabs[i].scene.current_layout == "Model" {
-                                sel.right_last_pos = Some(p);
-                                drop(sel);
-                                self.tabs[i].scene.camera.borrow_mut().orbit(dx, dy);
-                                self.tabs[i].scene.camera_generation += 1;
-                                return Task::none();
-                            } else {
-                                // Paper sheet is top-locked: right-drag never
-                                // orbits it (orbiting would corrupt the camera
-                                // frame and skew subsequent pans).
-                                sel.right_last_pos = Some(p);
-                                return Task::none();
-                            }
-                        } else {
-                            sel.right_last_pos = Some(p);
-                        }
-                    }
-                }
-
                 let (mid_down, mid_last, vp_size) =
                     (sel.middle_down, sel.middle_last_pos, sel.vp_size);
                 if mid_down {
                     if let Some(last) = mid_last {
                         let (dx, dy) = (p.x - last.x, p.y - last.y);
+                        // Shift+MMB drag orbits the model view instead of panning
+                        // — the requested Zoom=wheel / Pan=MMB / Rotate=Shift+MMB
+                        // scheme (#229). Floating viewports and paper keep the
+                        // plain MMB pan.
+                        if self.shift_down {
+                            if self.tabs[i].scene.active_viewport.is_some() {
+                                // Orbit the floating viewport's own model view.
+                                drop(sel);
+                                self.tabs[i].scene.orbit_active_viewport(dx, dy);
+                                self.tabs[i].scene.camera_generation += 1;
+                                self.tabs[i].scene.selection.borrow_mut().middle_last_pos =
+                                    Some(p);
+                                return Task::none();
+                            } else if self.tabs[i].scene.current_layout == "Model" {
+                                if sel.orbit_pivot.is_none() {
+                                    // Selection centre when something is selected,
+                                    // otherwise the point under the cursor. (#229)
+                                    sel.orbit_pivot = self.tabs[i]
+                                        .scene
+                                        .orbit_pivot()
+                                        .or(Some(self.tabs[i].last_cursor_world.as_dvec3()));
+                                }
+                                let pivot = sel.orbit_pivot;
+                                drop(sel);
+                                self.tabs[i].scene.camera.borrow_mut().orbit(dx, dy, pivot);
+                                self.tabs[i].scene.camera_generation += 1;
+                                self.tabs[i].scene.selection.borrow_mut().middle_last_pos =
+                                    Some(p);
+                                return Task::none();
+                            }
+                            // Paper sheet is top-locked: Shift+MMB falls through
+                            // to the plain pan below.
+                        }
                         // Pan scale uses the active tile's size (ortho size
                         // is relative to viewport height), so a tiled pane
                         // pans at the correct rate.
@@ -1244,6 +1212,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                 sel.right_click_entered = false;
                 sel.middle_down = false;
                 sel.middle_last_pos = None;
+                sel.orbit_pivot = None;
                 sel.box_anchor = None;
                 sel.box_anchor_world = None;
                 sel.box_current = None;

@@ -32,6 +32,10 @@ pub struct SelectionState {
     pub right_press_time: Option<Instant>,
     pub right_dragging: bool,
     pub right_last_pos: Option<Point>,
+    /// World point the current orbit drag revolves around (selection or model
+    /// centre), captured when the drag starts so it stays fixed for the whole
+    /// gesture. `None` when no orbit is in progress. (#229)
+    pub orbit_pivot: Option<glam::DVec3>,
     /// While a command is active, a right-click acts as Enter; the *next*
     /// consecutive right-click opens the context menu instead. This tracks
     /// whether the previous right-click already fired Enter. Reset by any

@@ -3370,6 +3370,42 @@ impl Scene {
         result
     }
 
+    /// The AABB centre of the current selection, in absolute world coordinates
+    /// (same space as `Camera::target`) — the point the 3D view orbits around
+    /// when something is selected. `None` when nothing is selected; the caller
+    /// then orbits about the point under the cursor. (#229)
+    pub fn orbit_pivot(&self) -> Option<glam::DVec3> {
+        if self.selected.is_empty() {
+            return None;
+        }
+        let block = self.current_layout_block_handle();
+        let wires = self.wires_for_block_culled(block, None, None, None, None);
+        let mut min = glam::DVec2::splat(f64::INFINITY);
+        let mut max = glam::DVec2::splat(f64::NEG_INFINITY);
+        let mut any = false;
+        for wire in &wires {
+            let Some(h) = Self::handle_from_wire_name(&wire.name) else {
+                continue;
+            };
+            if !self.selected.contains(&h) {
+                continue;
+            }
+            for &[x, y, _] in &wire.points {
+                if x.is_finite() && y.is_finite() {
+                    min = min.min(glam::DVec2::new(x as f64, y as f64));
+                    max = max.max(glam::DVec2::new(x as f64, y as f64));
+                    any = true;
+                }
+            }
+        }
+        if any {
+            let c = (min + max) * 0.5;
+            Some(glam::DVec3::new(c.x, c.y, 0.0))
+        } else {
+            None
+        }
+    }
+
     fn compute_model_space_extents(&self) -> Option<(glam::Vec3, glam::Vec3)> {
         let model_block = self.model_space_block_handle();
         if model_block.is_null() {

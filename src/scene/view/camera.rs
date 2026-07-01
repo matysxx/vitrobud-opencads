@@ -11,7 +11,7 @@
 //
 // Coordinate convention: Z-up world space (same as the rest of OpenCADStudio).
 
-use glam::{vec3, DVec3, Mat4, Quat, Vec3};
+use glam::{DVec3, Mat4, Quat, Vec3};
 use iced::{Point, Rectangle};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -246,29 +246,39 @@ impl Camera {
     // ── Navigation ────────────────────────────────────────────────────────
 
     /// Arcball orbit: drag delta (dx, dy) in screen pixels.
-    pub fn orbit(&mut self, delta_x: f32, delta_y: f32) {
+    /// Orbit the view by a screen drag, turntable-style: horizontal drag yaws
+    /// about world +Z, vertical drag pitches about the camera's (always
+    /// horizontal) right axis — so the horizon never banks. `pivot` is the world
+    /// point to revolve around (selection or model centre); `None` keeps the
+    /// current target as the centre. (#229)
+    pub fn orbit(&mut self, delta_x: f32, delta_y: f32, pivot: Option<DVec3>) {
         if delta_x.abs() < 1e-6 && delta_y.abs() < 1e-6 {
             return;
         }
-
+        let old_rot = self.rotation;
         let speed = 0.005_f32;
-        let angle = (delta_x * delta_x + delta_y * delta_y).sqrt() * speed;
 
-        // Screen drag → rotation axis: right drag = rotate around cam_up (Y),
-        // down drag = rotate around cam_right (X). Negate so drag direction
-        // matches intuitive "grab and spin" arcball behaviour.
-        let screen_axis = vec3(-delta_y, -delta_x, 0.0).normalize_or_zero();
-
+        let yaw = Quat::from_rotation_z(-delta_x * speed);
+        self.rotation = (yaw * self.rotation).normalize();
         let cam_right = self.rotation * Vec3::X;
-        let cam_up = self.rotation * Vec3::Y;
-        let world_axis = (cam_right * screen_axis.x + cam_up * screen_axis.y).normalize_or_zero();
-
-        if world_axis.length_squared() < 1e-12 {
-            return;
+        let cur_z = (self.rotation * Vec3::Z).z;
+        let pitched =
+            (Quat::from_axis_angle(cam_right, -delta_y * speed) * self.rotation).normalize();
+        let new_z = (pitched * Vec3::Z).z;
+        // Accept the pitch while the gaze stays clear of the poles, OR when it
+        // moves back AWAY from a pole — so the straight-down default view (z = 1)
+        // can still be tilted out of (a hard `< 0.9995` gate alone would freeze
+        // small drags there). Only a step deeper INTO a pole is rejected.
+        if new_z.abs() < 0.9995 || new_z.abs() < cur_z.abs() {
+            self.rotation = pitched;
         }
 
-        let delta_rot = Quat::from_axis_angle(world_axis, angle);
-        self.rotation = (delta_rot * self.rotation).normalize();
+        // Revolve the target around the pivot by the same rotation delta so the
+        // view orbits the chosen centre instead of the fixed file centre (#229).
+        if let Some(p) = pivot {
+            let delta = self.rotation * old_rot.conjugate();
+            self.target = p + (delta * (self.target - p).as_vec3()).as_dvec3();
+        }
 
         // Sync legacy yaw/pitch for hit-test functions.
         self.sync_yaw_pitch();

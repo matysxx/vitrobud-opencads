@@ -220,7 +220,8 @@ impl Scene {
             Some(c) => c,
             None => return,
         };
-        cam.orbit(delta_x, delta_y);
+        // Floating viewport orbits about its own target (no selection pivot).
+        cam.orbit(delta_x, delta_y, None);
         // yaw_pitch_to_quat(y,p)*Z = (cos(p)*sin(y), -cos(p)*cos(y), sin(p))
         // `camera_for_viewport` reconstructs the rotation so that
         // `rotation * Z == view_direction` exactly (its `yaw = atan2(x, -y)`
