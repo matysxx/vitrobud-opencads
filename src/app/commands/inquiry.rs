@@ -41,6 +41,12 @@ impl OpenCADStudio {
                 self.refresh_properties();
             }
 
+            // ADDSELECTED — draw a new object of the same type as the selected
+            // one, inheriting its general properties. (#239)
+            "ADDSELECTED" => {
+                return Some(self.cmd_add_selected(i));
+            }
+
             // QSELECT builds a selection set by object type / property; FILTER is
             // the same criteria-based selection.
             "QSELECT" | "QS" | "FILTER" | "FI" => {
@@ -782,6 +788,119 @@ impl OpenCADStudio {
         }
         Some(self.finish_dispatch(cmd))
     }
+
+    /// ADDSELECTED — start the draw command that creates the same kind of
+    /// object as the currently-selected one, adopting its general properties
+    /// (layer, colour, linetype, lineweight, linetype scale) as the current
+    /// defaults so the new object is drawn to match. Issue #239.
+    pub(super) fn cmd_add_selected(&mut self, i: usize) -> Task<Message> {
+        // Use the first selected object as the template.
+        let Some(handle) = self.tabs[i].scene.selected.iter().next().copied() else {
+            self.command_line.push_info(
+                "ADDSELECTED: select an object first, then run ADDSELECTED to draw a new one like it.",
+            );
+            return Task::none();
+        };
+        // Pull the template's type + general properties into owned values, then
+        // drop the borrow so the document can be mutated below.
+        let info = self.tabs[i].scene.document.get_entity(handle).map(|e| {
+            let c = e.common();
+            (
+                add_selected_verb(e),
+                crate::entities::names::dxf_name(e).to_string(),
+                c.layer.clone(),
+                c.color,
+                c.linetype.clone(),
+                c.linetype_scale,
+                c.line_weight,
+            )
+        });
+        let Some((verb, kind, layer, color, linetype, lt_scale, lw)) = info else {
+            self.command_line
+                .push_error("ADDSELECTED: selected object not found.");
+            return Task::none();
+        };
+        let Some(verb) = verb else {
+            self.command_line
+                .push_error(&format!("ADDSELECTED: creating a new {kind} is not supported."));
+            return Task::none();
+        };
+
+        // Clear the selection so adopting the properties as defaults doesn't
+        // rewrite the template, and so the draw starts on a clean slate.
+        self.tabs[i].scene.deselect_all();
+
+        // Adopt the template's general properties as the current defaults. The
+        // entity-creation path stamps new objects from the tab's active layer
+        // and the ribbon's active colour / linetype / lineweight, mirrored into
+        // the header so they persist (CLAYER / CECOLOR / CELTYPE / CELWEIGHT /
+        // CELTSCALE).
+        let layer_handle = self.tabs[i]
+            .scene
+            .document
+            .layers
+            .get(&layer)
+            .map(|l| l.handle)
+            .unwrap_or(acadrust::types::Handle::NULL);
+        let lt_handle = self.tabs[i]
+            .scene
+            .document
+            .line_types
+            .iter()
+            .find(|x| x.name.eq_ignore_ascii_case(&linetype))
+            .map(|x| x.handle)
+            .unwrap_or(acadrust::types::Handle::NULL);
+        {
+            let header = &mut self.tabs[i].scene.document.header;
+            header.current_layer_name = layer.clone();
+            header.current_layer_handle = layer_handle;
+            header.current_entity_color = color;
+            header.current_linetype_name = linetype.clone();
+            header.current_linetype_handle = lt_handle;
+            header.current_line_weight = lw.value();
+            header.current_entity_linetype_scale = lt_scale;
+        }
+        self.tabs[i].active_layer = layer.clone();
+        self.tabs[i].layers.current_layer = layer.clone();
+        self.tabs[i].dirty = true;
+        self.ribbon.active_layer = layer.clone();
+        self.ribbon.active_color = color;
+        self.ribbon.active_linetype = linetype;
+        self.ribbon.active_lineweight = lw;
+        self.refresh_properties();
+
+        self.command_line.push_output(&format!(
+            "Add Selected: drawing a new {kind} on layer \"{layer}\"."
+        ));
+        // Launch the matching draw command (installs its interactive step).
+        self.dispatch_command(verb)
+    }
+}
+
+/// Map a template entity to the draw-command verb that creates the same kind of
+/// object, or `None` when there is no interactive creator for it. Used by
+/// ADDSELECTED (issue #239).
+fn add_selected_verb(entity: &acadrust::EntityType) -> Option<&'static str> {
+    use acadrust::EntityType;
+    Some(match entity {
+        EntityType::Point(_) => "POINT",
+        EntityType::Line(_) => "LINE",
+        EntityType::Circle(_) => "CIRCLE",
+        EntityType::Arc(_) => "ARC",
+        EntityType::Ellipse(_) => "ELLIPSE",
+        EntityType::LwPolyline(_)
+        | EntityType::Polyline(_)
+        | EntityType::Polyline2D(_)
+        | EntityType::Polyline3D(_) => "PLINE",
+        EntityType::Text(_) => "TEXT",
+        EntityType::MText(_) => "MTEXT",
+        EntityType::Spline(_) => "SPLINE",
+        EntityType::Hatch(_) => "HATCH",
+        EntityType::Solid(_) => "SOLID",
+        EntityType::Ray(_) => "RAY",
+        EntityType::XLine(_) => "XLINE",
+        _ => return None,
+    })
 }
 
 fn entity_list_details(entity: &acadrust::EntityType) -> String {

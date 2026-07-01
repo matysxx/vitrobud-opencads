@@ -520,6 +520,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "SELECTALL",
         "SELECTSIMILAR",
         "SELSIM",
+        // Draw a new object of the same type as the selected one. (#239)
+        "ADDSELECTED",
         "SHEETSET",
         "SHORTCUTS",
         "SSM",
