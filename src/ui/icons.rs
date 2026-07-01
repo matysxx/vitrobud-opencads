@@ -50,7 +50,6 @@ pub const CLOSE: &[u8] = include_bytes!("../../assets/icons/ui/close.svg");
 pub const PLUS: &[u8] = include_bytes!("../../assets/icons/ui/plus.svg");
 pub const TRASH: &[u8] = include_bytes!("../../assets/icons/ui/trash.svg");
 pub const MENU: &[u8] = include_bytes!("../../assets/icons/ui/menu.svg");
-pub const BOLT: &[u8] = include_bytes!("../../assets/icons/ui/bolt.svg");
 pub const MOVE: &[u8] = include_bytes!("../../assets/icons/ui/move.svg");
 pub const SPLIT_V: &[u8] = include_bytes!("../../assets/icons/ui/split_v.svg");
 pub const SPLIT_H: &[u8] = include_bytes!("../../assets/icons/ui/split_h.svg");
@@ -68,6 +67,20 @@ pub const HEART: &[u8] = include_bytes!("../../assets/icons/ui/heart.svg");
 pub const DOT: &[u8] = include_bytes!("../../assets/icons/ui/dot.svg");
 pub const TRI_LEFT_B: &[u8] = include_bytes!("../../assets/icons/ui/tri_left.svg");
 pub const ARROW_LONG_RIGHT: &[u8] = include_bytes!("../../assets/icons/ui/arrow_long_right.svg");
+
+// ── Status-bar toggle icons (issue #216) ──────────────────────────────────
+pub const ST_ORTHO: &[u8] = include_bytes!("../../assets/icons/status/ortho.svg");
+pub const ST_POLAR: &[u8] = include_bytes!("../../assets/icons/status/polar.svg");
+pub const ST_OSNAP: &[u8] = include_bytes!("../../assets/icons/status/osnap.svg");
+pub const ST_OTRACK: &[u8] = include_bytes!("../../assets/icons/status/otrack.svg");
+pub const ST_DYN: &[u8] = include_bytes!("../../assets/icons/status/dyn.svg");
+pub const ST_LWT: &[u8] = include_bytes!("../../assets/icons/status/lwt.svg");
+pub const ST_TRANSPARENCY: &[u8] = include_bytes!("../../assets/icons/status/transparency.svg");
+pub const ST_ISOLATE: &[u8] = include_bytes!("../../assets/icons/status/isolate.svg");
+pub const ST_QUICKPROPS: &[u8] = include_bytes!("../../assets/icons/status/quickprops.svg");
+pub const ST_FILTER: &[u8] = include_bytes!("../../assets/icons/status/filter.svg");
+pub const ST_SELCYCLE: &[u8] = include_bytes!("../../assets/icons/status/selcycle.svg");
+pub const ST_CLEANSCREEN: &[u8] = include_bytes!("../../assets/icons/status/cleanscreen.svg");
 
 /// Render one of the bundled SVGs tinted to `color` at a square `size`.
 pub fn tinted<'a, M: 'a>(bytes: &'static [u8], size: f32, color: Color) -> Element<'a, M> {

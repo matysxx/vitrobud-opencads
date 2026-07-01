@@ -481,7 +481,10 @@ impl CommandLine {
                     },
                     ..Default::default()
                 })
-                .width(Length::Fill),
+                .width(Length::Fill)
+                // Match the drawing tab bar / status bar height, and vertically
+                // centre the prompt/input/dropdown within it (issue #216).
+                .center_y(Length::Fixed(30.0)),
         ])
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(PANEL_BG)),

@@ -89,7 +89,7 @@ impl StatusBar {
     ) -> Element<'a, Message> {
         // Leftmost hamburger: opens a dropdown listing Model + every layout, so
         // a layout can be picked directly even when the tab strip is scrolled.
-        let menu_btn = button(crate::ui::icons::tinted(crate::ui::icons::MENU, 14.0, ICON_COLOR))
+        let menu_btn = button(crate::ui::icons::tinted(crate::ui::icons::MENU, 16.0, ICON_COLOR))
             .on_press(Message::ToggleLayoutList)
             .style(|_: &Theme, status| button::Style {
                 background: Some(Background::Color(match status {
@@ -102,7 +102,7 @@ impl StatusBar {
                 },
                 ..Default::default()
             })
-            .padding([2, 8]);
+            .padding([4, 8]);
 
         let add_btn = button(text("+").size(12).color(ICON_COLOR))
             .on_press(Message::LayoutCreate)
@@ -110,7 +110,7 @@ impl StatusBar {
                 background: Some(Background::Color(Color::TRANSPARENT)),
                 ..Default::default()
             })
-            .padding([3, 7]);
+            .padding([4, 8]);
 
         // ── Right side ────────────────────────────────────────────────────
         let osnap_active = snapper.is_active();
@@ -147,13 +147,13 @@ impl StatusBar {
         }
         if vis(StatusPill::Ortho) {
             right_status = right_status.push(tip(
-                toggle_pill("ORTHO", ortho_mode, Message::ToggleOrtho),
+                toggle_pill(crate::ui::icons::ST_ORTHO, ortho_mode, Message::ToggleOrtho),
                 "Orthogonal Mode\nF8",
             ));
         }
         if vis(StatusPill::Lwt) {
             right_status = right_status.push(tip(
-                toggle_pill("LWT", lineweight_display, Message::ToggleLineweightDisplay),
+                toggle_pill(crate::ui::icons::ST_LWT, lineweight_display, Message::ToggleLineweightDisplay),
                 "Show Lineweight\nLWDISPLAY",
             ));
         }
@@ -162,13 +162,13 @@ impl StatusBar {
         }
         if vis(StatusPill::Dyn) {
             right_status = right_status.push(tip(
-                toggle_pill("DYN", dyn_input, Message::ToggleDynInput),
+                toggle_pill(crate::ui::icons::ST_DYN, dyn_input, Message::ToggleDynInput),
                 "Dynamic Input\nF12",
             ));
         }
         if vis(StatusPill::Otrack) {
             right_status = right_status.push(tip(
-                toggle_pill("OTRACK", otrack, Message::ToggleOTrack),
+                toggle_pill(crate::ui::icons::ST_OTRACK, otrack, Message::ToggleOTrack),
                 "Object Snap Tracking\nF11",
             ));
         }
@@ -197,7 +197,7 @@ impl StatusBar {
         if vis(StatusPill::Transparency) {
             right_status = right_status.push(tip(
                 toggle_pill(
-                    "TPY",
+                    crate::ui::icons::ST_TRANSPARENCY,
                     transparency_display,
                     Message::ToggleTransparencyDisplay,
                 ),
@@ -206,20 +206,20 @@ impl StatusBar {
         }
         if vis(StatusPill::Isolate) {
             right_status = right_status.push(tip(
-                toggle_pill("ISO", isolation_active, Message::ToggleIsolatePopup),
+                toggle_pill(crate::ui::icons::ST_ISOLATE, isolation_active, Message::ToggleIsolatePopup),
                 "Isolate Objects\nClick for Isolate / Hide / End",
             ));
         }
         if vis(StatusPill::QuickProps) {
             right_status = right_status.push(tip(
-                toggle_pill("QP", quick_properties, Message::ToggleQuickProperties),
+                toggle_pill(crate::ui::icons::ST_QUICKPROPS, quick_properties, Message::ToggleQuickProperties),
                 "Quick Properties\nFloating panel on selection",
             ));
         }
         if vis(StatusPill::SelFilter) {
             right_status = right_status.push(tip(
                 toggle_pill(
-                    "FILTER",
+                    crate::ui::icons::ST_FILTER,
                     selection_filter_active,
                     Message::ToggleSelectionFilterPopup,
                 ),
@@ -228,7 +228,7 @@ impl StatusBar {
         }
         if vis(StatusPill::SelCycle) {
             right_status = right_status.push(tip(
-                toggle_pill("SC", selection_cycling, Message::ToggleSelectionCycling),
+                toggle_pill(crate::ui::icons::ST_SELCYCLE, selection_cycling, Message::ToggleSelectionCycling),
                 "Selection Cycling\nRepeat-click to step through overlapping objects",
             ));
         }
@@ -240,7 +240,7 @@ impl StatusBar {
         }
         if vis(StatusPill::CleanScreen) {
             right_status = right_status.push(tip(
-                toggle_pill("CLEAN", clean_screen, Message::ToggleCleanScreen),
+                toggle_pill(crate::ui::icons::ST_CLEANSCREEN, clean_screen, Message::ToggleCleanScreen),
                 "Clean Screen\nHide ribbon and panels",
             ));
         }
@@ -292,7 +292,11 @@ impl StatusBar {
                 ..Default::default()
             })
             .width(Length::Fill)
-            .height(26)
+            // Match the drawing (document) tab bar height so the three
+            // horizontal strips — tabs, status bar, command line — line up.
+            // `center_y` (not `height`) also vertically centres every pill in
+            // the taller bar instead of top-aligning them (issue #216).
+            .center_y(Length::Fixed(30.0))
             .padding([0, 4])
             .into()
     }
@@ -310,9 +314,9 @@ fn format_coords(p: glam::Vec3) -> String {
 /// direction (and step sign).
 fn scroll_arrow<'a>(right: bool) -> Element<'a, Message> {
     let glyph = if right {
-        crate::ui::icons::arrow_right(9.0, ICON_COLOR)
+        crate::ui::icons::arrow_right(12.0, ICON_COLOR)
     } else {
-        crate::ui::icons::arrow_left(9.0, ICON_COLOR)
+        crate::ui::icons::arrow_left(12.0, ICON_COLOR)
     };
     let step = if right {
         LAYOUT_TAB_SCROLL_STEP
@@ -332,14 +336,14 @@ fn scroll_arrow<'a>(right: bool) -> Element<'a, Message> {
             },
             ..Default::default()
         })
-        .padding([2, 4])
+        .padding([4, 6])
         .into()
 }
 
 // ── Customization handle ──────────────────────────────────────────────────
 
 fn customize_btn() -> Element<'static, Message> {
-    button(crate::ui::icons::tinted(crate::ui::icons::MENU, 14.0, ICON_COLOR))
+    button(crate::ui::icons::tinted(crate::ui::icons::MENU, 16.0, ICON_COLOR))
         .on_press(Message::ToggleStatusBarMenu)
         .style(|_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
@@ -352,7 +356,7 @@ fn customize_btn() -> Element<'static, Message> {
             },
             ..Default::default()
         })
-        .padding([2, 7])
+        .padding([4, 8])
         .into()
 }
 
@@ -397,35 +401,31 @@ fn tip_node<'a>(content: Element<'a, Message>, body: Element<'a, Message>) -> El
 
 // ── Simple toggle pill ────────────────────────────────────────────────────
 
-fn toggle_pill(label: &'static str, active: bool, msg: Message) -> Element<'static, Message> {
-    button(text(label).size(10).color(if active {
-        OSNAP_ON_TEXT
-    } else {
-        OSNAP_OFF_TEXT
-    }))
-    .on_press(msg)
-    .style(move |_: &Theme, status| button::Style {
-        background: Some(Background::Color(match (active, status) {
-            (true, button::Status::Hovered) => SNAP_ON_HOVER,
-            (true, _) => SNAP_ON_BG,
-            (false, button::Status::Hovered) => SNAP_OFF_HOVER,
-            (false, _) => SNAP_OFF_BG,
-        })),
-        border: Border {
-            color: if active { SNAP_BORDER_ON } else { BORDER_COLOR },
-            width: 1.0,
-            radius: 2.0.into(),
-        },
-        text_color: if active {
-            OSNAP_ON_TEXT
-        } else {
-            OSNAP_OFF_TEXT
-        },
-        shadow: iced::Shadow::default(),
-        snap: false,
-    })
-    .padding([2, 6])
-    .into()
+/// A status-bar toggle, drawn as a tinted icon (issue #216: the old size-10
+/// text labels were too small to read). The name lives in the tooltip each
+/// call site already wraps it with.
+fn toggle_pill(icon: &'static [u8], active: bool, msg: Message) -> Element<'static, Message> {
+    let color = if active { OSNAP_ON_TEXT } else { OSNAP_OFF_TEXT };
+    button(crate::ui::icons::tinted(icon, 17.0, color))
+        .on_press(msg)
+        .style(move |_: &Theme, status| button::Style {
+            background: Some(Background::Color(match (active, status) {
+                (true, button::Status::Hovered) => SNAP_ON_HOVER,
+                (true, _) => SNAP_ON_BG,
+                (false, button::Status::Hovered) => SNAP_OFF_HOVER,
+                (false, _) => SNAP_OFF_BG,
+            })),
+            border: Border {
+                color: if active { SNAP_BORDER_ON } else { BORDER_COLOR },
+                width: 1.0,
+                radius: 2.0.into(),
+            },
+            text_color: color,
+            shadow: iced::Shadow::default(),
+            snap: false,
+        })
+        .padding([4, 7])
+        .into()
 }
 
 // ── Polar tracking pill ───────────────────────────────────────────────────
@@ -434,7 +434,7 @@ fn toggle_pill(label: &'static str, active: bool, msg: Message) -> Element<'stat
 // Right-click cycles through common angle increments: 15 → 30 → 45 → 90 → 15 …
 
 fn polar_pill(active: bool, increment_deg: f32) -> Element<'static, Message> {
-    let label = format!("POLAR {:.0}°", increment_deg);
+    let angle = format!("{:.0}°", increment_deg);
     let tooltip_text = format!(
         "Polar Tracking ({}°)\nF10 — left-click on/off\nRight-click to change angle",
         increment_deg as u32
@@ -455,11 +455,15 @@ fn polar_pill(active: bool, increment_deg: f32) -> Element<'static, Message> {
         _ => 15.0,
     };
 
-    let inner = container(text(label).size(10).color(if active {
-        OSNAP_ON_TEXT
-    } else {
-        OSNAP_OFF_TEXT
-    }))
+    let color = if active { OSNAP_ON_TEXT } else { OSNAP_OFF_TEXT };
+    let inner = container(
+        row![
+            crate::ui::icons::tinted(crate::ui::icons::ST_POLAR, 17.0, color),
+            text(angle).size(11).color(color),
+        ]
+        .spacing(2)
+        .align_y(iced::Center),
+    )
     .style(move |_: &Theme| container::Style {
         background: Some(Background::Color(bg_color(false))),
         border: Border {
@@ -469,7 +473,7 @@ fn polar_pill(active: bool, increment_deg: f32) -> Element<'static, Message> {
         },
         ..Default::default()
     })
-    .padding([2, 6]);
+    .padding([4, 6]);
 
     let pill = mouse_area(inner)
         .on_press(Message::TogglePolar)
@@ -527,14 +531,11 @@ fn osnap_btn(active: bool, snap_enabled: bool, open: bool) -> Element<'static, M
         OSNAP_OFF_TEXT
     };
 
-    let left = button(
-        row![
-            crate::ui::icons::tinted(crate::ui::icons::BOLT, 11.0, text_color),
-            text("OSNAP").size(10).color(text_color),
-        ]
-        .spacing(3)
-        .align_y(iced::Center),
-    )
+    let left = button(crate::ui::icons::tinted(
+        crate::ui::icons::ST_OSNAP,
+        17.0,
+        text_color,
+    ))
     .on_press(Message::ToggleSnapEnabled)
         .style(move |_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
@@ -561,9 +562,9 @@ fn osnap_btn(active: bool, snap_enabled: bool, open: bool) -> Element<'static, M
             shadow: iced::Shadow::default(),
             snap: false,
         })
-        .padding([2, 6]);
+        .padding([4, 6]);
 
-    let right = button(crate::ui::icons::arrow_down(9.0, text_color))
+    let right = button(crate::ui::icons::arrow_down(11.0, text_color))
         .on_press(Message::ToggleSnapPopup)
         .style(move |_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
@@ -590,7 +591,7 @@ fn osnap_btn(active: bool, snap_enabled: bool, open: bool) -> Element<'static, M
             shadow: iced::Shadow::default(),
             snap: false,
         })
-        .padding([2, 4]);
+        .padding([4, 4]);
 
     row![
         tip(left.into(), "Object Snap: toggle on/off\nF3"),
@@ -662,7 +663,7 @@ fn space_tab<'a>(
             .id(iced::widget::Id::new(LAYOUT_RENAME_INPUT_ID))
             .on_input(Message::LayoutRenameEdit)
             .on_submit(Message::LayoutRenameCommit)
-            .size(11)
+            .size(12)
             .style(|_: &Theme, _| text_input::Style {
                 background: Background::Color(TAB_ACTIVE),
                 border: Border {
@@ -685,7 +686,7 @@ fn space_tab<'a>(
                     a: 0.4,
                 },
             })
-            .padding([2, 6])
+            .padding([3, 6])
             .width(Length::Fixed(90.0));
 
         let cancel_btn = button(crate::ui::icons::tinted(
@@ -706,7 +707,7 @@ fn space_tab<'a>(
             snap: false,
             ..Default::default()
         })
-        .padding([2, 4]);
+        .padding([4, 4]);
 
         row![input, cancel_btn]
             .spacing(0)
@@ -714,13 +715,13 @@ fn space_tab<'a>(
             .into()
     } else {
         // Normal clickable tab — left click switches, right click opens context menu.
-        let display = container(text(label.clone()).size(11).color(text_color))
+        let display = container(text(label.clone()).size(12).color(text_color))
             .style(move |_: &Theme| container::Style {
                 background: Some(Background::Color(bg(is_active, false))),
                 border,
                 ..Default::default()
             })
-            .padding([3, 10]);
+            .padding([4, 10]);
 
         let switch_msg = Message::LayoutSwitch(label.clone());
         let ctx_msg = Message::LayoutContextMenu(label.clone());
@@ -766,7 +767,7 @@ fn space_mode_btn(current_layout: &str, in_mspace: bool) -> Element<'static, Mes
     let border_color = if active { SNAP_BORDER_ON } else { BORDER_COLOR };
 
     let clickable = on_press.is_some();
-    let mut btn = button(text(label).size(10).color(text_color))
+    let mut btn = button(text(label).size(12).color(text_color))
         .style(move |_: &Theme, status| button::Style {
             background: Some(Background::Color(match status {
                 button::Status::Hovered if clickable => bg_hover,
@@ -781,7 +782,7 @@ fn space_mode_btn(current_layout: &str, in_mspace: bool) -> Element<'static, Mes
             shadow: iced::Shadow::default(),
             snap: false,
         })
-        .padding([2, 6]);
+        .padding([4, 7]);
 
     if let Some(msg) = on_press {
         btn = btn.on_press(msg);
@@ -791,7 +792,7 @@ fn space_mode_btn(current_layout: &str, in_mspace: bool) -> Element<'static, Mes
 }
 
 fn status_pill(label: impl Into<String>) -> Element<'static, Message> {
-    container(text(label.into()).size(10).color(Color {
+    container(text(label.into()).size(12).color(Color {
         r: 0.65,
         g: 0.65,
         b: 0.65,
@@ -806,7 +807,7 @@ fn status_pill(label: impl Into<String>) -> Element<'static, Message> {
         },
         ..Default::default()
     })
-    .padding([2, 6])
+    .padding([4, 8])
     .into()
 }
 
@@ -904,7 +905,7 @@ fn units_btn(label: &str, open: bool) -> Element<'static, Message> {
     let label = label.to_string();
     button(
         text(label)
-            .size(10)
+            .size(12)
             .color(if open { SNAP_BORDER_ON } else { OSNAP_OFF_TEXT }),
     )
     .on_press(Message::ToggleUnitsPopup)
@@ -924,7 +925,7 @@ fn units_btn(label: &str, open: bool) -> Element<'static, Message> {
         shadow: iced::Shadow::default(),
         snap: false,
     })
-    .padding([2, 6])
+    .padding([4, 7])
     .into()
 }
 
@@ -932,7 +933,7 @@ fn scale_popup_btn(label: &str, open: bool) -> Element<'static, Message> {
     let label = label.to_string();
     button(
         text(label)
-            .size(10)
+            .size(12)
             .color(if open { SNAP_BORDER_ON } else { OSNAP_OFF_TEXT }),
     )
     .on_press(Message::ToggleScalePopup)
@@ -952,7 +953,7 @@ fn scale_popup_btn(label: &str, open: bool) -> Element<'static, Message> {
         shadow: iced::Shadow::default(),
         snap: false,
     })
-    .padding([2, 6])
+    .padding([4, 7])
     .into()
 }
 
