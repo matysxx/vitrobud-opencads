@@ -230,6 +230,10 @@ impl Scene {
             projection: view::camera::Projection::Orthographic,
             yaw,
             pitch,
+            // Sized from the saved view height rather than a zoom-scaled range,
+            // so a restored view keeps stable depth precision. `view_height` is
+            // the visible extent; a few multiples cover the drawing's depth.
+            depth_half_range: (view_height as f32 * 4.0).max(1.0),
         })
     }
 

@@ -39,6 +39,14 @@ pub struct Camera {
     // Kept in sync with `rotation` whenever orbit() or snap_angles() is called.
     pub yaw: f32,
     pub pitch: f32,
+
+    /// Half-depth of the orthographic frustum in **world units**, sized from the
+    /// drawing's extent (set by `fit_to_bounds`). The ortho near/far are placed
+    /// at `distance ± depth_half_range`, so depth-buffer precision stays fixed
+    /// as the user zooms. `0.0` means "unset" — the projection falls back to a
+    /// distance-scaled range, whose precision collapses when zoomed out and
+    /// makes coincident solids / meshes / wires flip draw order.
+    pub depth_half_range: f32,
 }
 
 impl Default for Camera {
@@ -55,6 +63,7 @@ impl Default for Camera {
             projection: Projection::Orthographic,
             yaw,
             pitch,
+            depth_half_range: 0.0,
         }
     }
 }
@@ -94,7 +103,17 @@ impl Camera {
     /// A symmetric range gives the bias half the depth buffer of headroom on
     /// each side; ortho permits a negative near.
     fn ortho_depth_range(&self) -> (f32, f32) {
-        let r = (self.distance * 1000.0).max(1.0);
+        // Prefer a drawing-sized, zoom-independent half-range so depth-buffer
+        // precision stays constant as the user zooms. A distance-scaled range
+        // (the `else`) balloons the near/far span when zoomed out — at large
+        // `distance` the f32 depth buffer can no longer separate coincident
+        // solids / meshes / wires, so they flip draw order (issue: meshes drew
+        // in front of solids only when zoomed out).
+        let r = if self.depth_half_range > 0.0 {
+            self.depth_half_range
+        } else {
+            (self.distance * 1000.0).max(1.0)
+        };
         (self.distance - r, self.distance + r)
     }
 
@@ -342,6 +361,11 @@ impl Camera {
         self.target = ((min + max) * 0.5).as_dvec3();
         let size = (max - min).length();
         self.distance = size * 1.5;
+        // Size the depth range to the drawing's full diagonal (not the zoom
+        // distance): it covers the model's Z-extent even after panning to a
+        // corner, and keeps depth-buffer precision constant across zoom so
+        // coincident solids / meshes / wires never flip draw order.
+        self.depth_half_range = size.max(1.0);
     }
 
     // ── ViewCube snap ─────────────────────────────────────────────────────
