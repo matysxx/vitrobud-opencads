@@ -24,6 +24,25 @@ use serde::de::DeserializeOwned;
 mod manager;
 pub use manager::{DispatchResult, PluginManager};
 
+/// Whether verbose plugin-IPC logging is on. Off by default so a normal run
+/// only prints the one-line "Loaded plugin" notice; set `OCS_PLUGIN_VERBOSE=1`
+/// (any value) to see the spawn / handshake / per-dispatch request-response
+/// trace.
+pub(crate) fn verbose() -> bool {
+    use std::sync::OnceLock;
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("OCS_PLUGIN_VERBOSE").is_some())
+}
+
+/// `eprintln!` that only fires in verbose mode (see [`verbose`]).
+macro_rules! vlog {
+    ($($arg:tt)*) => {{
+        if crate::process::verbose() {
+            eprintln!($($arg)*);
+        }
+    }};
+}
+
 /// Maximum time to wait for the plugin runner to connect back to the host.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -126,7 +145,7 @@ impl PluginProcess {
             .to_ns_name::<GenericNamespaced>()
             .expect("valid namespaced name");
         let runner_path = runner_executable()?;
-        eprintln!(
+        vlog!(
             "[plugin] spawning runner {} for {}",
             runner_path.display(),
             cdylib_path.display()
@@ -156,7 +175,7 @@ impl PluginProcess {
         });
         let stream = match rx.recv_timeout(spawn_timeout()) {
             Ok(Ok(stream)) => {
-                eprintln!("[plugin] runner connected");
+                vlog!("[plugin] runner connected");
                 Mutex::new(Some(stream))
             }
             Ok(Err(e)) => return Err(e.into()),
@@ -200,6 +219,12 @@ impl PluginProcess {
             HostResponse::Manifest(m) => m,
             other => return Err(PluginError::UnexpectedResponse(other)),
         };
+        // Normal-run notice: just the loaded plugin's name (id + version). The
+        // full IPC trace above/below is gated behind OCS_PLUGIN_VERBOSE.
+        eprintln!(
+            "Loaded plugin: {} ({} {})",
+            manifest.name, manifest.id, manifest.version
+        );
         let ribbon = match call(&stream, &child, host, HostRequest::GetRibbon, no_op)? {
             HostResponse::Ribbon(r) => r,
             other => return Err(PluginError::UnexpectedResponse(other)),
@@ -233,7 +258,7 @@ impl PluginProcess {
         cmd: &str,
         on_start_interactive: &mut dyn FnMut(u64),
     ) -> Result<bool, PluginError> {
-        eprintln!("[plugin] dispatching {cmd}");
+        vlog!("[plugin] dispatching {cmd}");
         let result = match call(
             &self.stream,
             &self.child,
@@ -246,7 +271,7 @@ impl PluginProcess {
             HostResponse::Bool(b) => Ok(b),
             other => Err(PluginError::UnexpectedResponse(other)),
         };
-        eprintln!("[plugin] dispatch {cmd} result: {result:?}");
+        vlog!("[plugin] dispatch {cmd} result: {result:?}");
         result
     }
 
@@ -492,7 +517,7 @@ fn call(
     let kind = request_kind(&req);
     let timeout = request_timeout(kind);
     let deadline = Instant::now() + timeout;
-    eprintln!("[plugin] host -> runner: {req:?}");
+    vlog!("[plugin] host -> runner: {req:?}");
     {
         let mut guard = stream.lock().unwrap_or_else(|e| e.into_inner());
         let stream = guard.as_mut().ok_or_else(shutdown_error)?;
@@ -500,12 +525,12 @@ fn call(
     }
     loop {
         let msg = recv_with_deadline::<PluginToHost>(stream, child, deadline, timeout, kind)?;
-        eprintln!("[plugin] runner -> host: {msg:?}");
+        vlog!("[plugin] runner -> host: {msg:?}");
         match msg {
             PluginToHost::Response(resp) => return Ok(resp),
             PluginToHost::Request(plugin_req) => {
                 let resp = handle_plugin_request(host, plugin_req, on_start_interactive);
-                eprintln!("[plugin] host -> runner response: {resp:?}");
+                vlog!("[plugin] host -> runner response: {resp:?}");
                 let mut guard = stream.lock().unwrap_or_else(|e| e.into_inner());
                 let stream = guard.as_mut().ok_or_else(shutdown_error)?;
                 send(stream, &HostToPlugin::Response(resp))?;
@@ -592,7 +617,7 @@ fn verify_runner_handshake(
 ) -> Result<(), PluginError> {
     match handshake {
         RunnerHandshake::Token(ref presented) if presented == expected_token => {
-            eprintln!("[plugin] runner authenticated");
+            vlog!("[plugin] runner authenticated");
             Ok(())
         }
         RunnerHandshake::Token(_) => Err(PluginError::Runner("authentication failed".into())),
