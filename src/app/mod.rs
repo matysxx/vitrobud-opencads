@@ -361,11 +361,14 @@ pub(super) struct OpenCADStudio {
     attr_editor_handle: Option<acadrust::Handle>,
     /// Block name shown in the editor's title bar.
     attr_editor_block: String,
-    /// Working copy of the block's attributes as `(tag, prompt, value)`, in the
-    /// same order as `Insert::attributes`. The prompt is read from the block's
-    /// matching ATTDEF (blank if none). Only the value is edited; the whole row
-    /// is written back on OK.
-    attr_editor_fields: Vec<(String, String, String)>,
+    /// Working copy of the block's attributes, in the same order as
+    /// `Insert::attributes`. Each row carries the value plus the text-option and
+    /// common-property fields the editor edits; written back on OK.
+    attr_editor_rows: Vec<crate::ui::window::attribute_editor::AttrRow>,
+    /// Which editor tab is showing.
+    attr_editor_tab: crate::ui::window::attribute_editor::AttrTab,
+    /// Highlighted attribute row driving the Text Options / Properties tabs.
+    attr_editor_selected: usize,
     /// Plugin ids the user turned off in the Plugin Manager. Disabled plugins
     /// keep their manifest listed but drop their ribbon tab and command
     /// dispatch. Persisted via [`settings::UserSettings::disabled_plugins`].
@@ -1456,10 +1459,29 @@ pub enum Message {
     // ── Attribute editor dialog ───────────────────────────────────────────
     /// Open the attribute editor for an INSERT (double-click / ATTEDIT).
     AttrEditorOpen(acadrust::Handle),
-    /// Live edit of the attribute value at row `idx` in the editor dialog.
+    /// Switch the editor's active tab.
+    AttrEditorTab(crate::ui::window::attribute_editor::AttrTab),
+    /// Select the row the Text Options / Properties tabs act on.
+    AttrEditorSelect(usize),
+    /// Live edit of the attribute value at row `idx` (Attribute tab).
     AttrEditorInput { idx: usize, value: String },
-    /// Apply every attribute edit to the block and close the dialog (OK).
-    AttrEditorOk,
+    // Text Options — all act on the selected row:
+    AttrEditorTextStyle(String),
+    AttrEditorJustify(String),
+    AttrEditorHeight(String),
+    AttrEditorRotation(String),
+    AttrEditorWidth(String),
+    AttrEditorOblique(String),
+    AttrEditorBackwards(bool),
+    AttrEditorUpsideDown(bool),
+    // Properties — all act on the selected row:
+    AttrEditorLayer(String),
+    AttrEditorLinetype(String),
+    AttrEditorColor(String),
+    AttrEditorLineweight(acadrust::types::LineWeight),
+    /// Commit every attribute edit to the block, keeping the dialog open
+    /// (Apply); the frame ✕ closes and discards any un-applied edits.
+    AttrEditorApply,
     /// Title-bar pressed: begin dragging the active modal.
     ModalGrab,
     /// Cursor moved while dragging the modal title bar.
@@ -1934,7 +1956,9 @@ impl OpenCADStudio {
             modal_dragging: false,
             attr_editor_handle: None,
             attr_editor_block: String::new(),
-            attr_editor_fields: Vec::new(),
+            attr_editor_rows: Vec::new(),
+            attr_editor_tab: crate::ui::window::attribute_editor::AttrTab::Attribute,
+            attr_editor_selected: 0,
             disabled_plugins: rustc_hash::FxHashSet::default(),
             external_plugins: Vec::new(),
             loaded_plugin_ids: rustc_hash::FxHashSet::default(),

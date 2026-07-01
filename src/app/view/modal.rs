@@ -511,14 +511,36 @@ impl OpenCADStudio {
                 360,
                 470,
             ),
-            super::super::ModalKind::AttributeEditor => sized(
-                crate::ui::window::attribute_editor::view_window(
-                    &self.attr_editor_block,
-                    &self.attr_editor_fields,
-                ),
-                460,
-                440,
-            ),
+            super::super::ModalKind::AttributeEditor => {
+                let doc = &self.tabs[self.active_tab].scene.document;
+                let layers: Vec<String> = doc.layers.iter().map(|l| l.name.clone()).collect();
+                let mut linetypes: Vec<String> = vec!["ByLayer".to_string()];
+                linetypes.extend(
+                    doc.line_types
+                        .iter()
+                        .map(|lt| lt.name.clone())
+                        .filter(|n| !n.is_empty() && n != "ByLayer"),
+                );
+                let styles: Vec<String> = doc
+                    .text_styles
+                    .iter()
+                    .map(|s| s.name.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                sized(
+                    crate::ui::window::attribute_editor::view_window(
+                        &self.attr_editor_block,
+                        &self.attr_editor_rows,
+                        self.attr_editor_selected,
+                        self.attr_editor_tab,
+                        layers,
+                        linetypes,
+                        styles,
+                    ),
+                    640,
+                    500,
+                )
+            }
             super::super::ModalKind::SaveDialog => sized(
                 save_as_dialog_window(
                     &self.save_dialog_filename,

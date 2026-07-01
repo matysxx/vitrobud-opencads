@@ -108,7 +108,9 @@ impl OpenCADStudio {
             Some(AttributeEditor) => {
                 self.attr_editor_handle = None;
                 self.attr_editor_block.clear();
-                self.attr_editor_fields.clear();
+                self.attr_editor_rows.clear();
+                self.attr_editor_selected = 0;
+                self.attr_editor_tab = crate::ui::window::attribute_editor::AttrTab::Attribute;
             }
             _ => {}
         }
@@ -2268,13 +2270,102 @@ impl OpenCADStudio {
                 self.open_attribute_editor(handle);
                 Task::none()
             }
-            Message::AttrEditorInput { idx, value } => {
-                if let Some(field) = self.attr_editor_fields.get_mut(idx) {
-                    field.2 = value;
+            Message::AttrEditorTab(t) => {
+                self.attr_editor_tab = t;
+                Task::none()
+            }
+            Message::AttrEditorSelect(idx) => {
+                if idx < self.attr_editor_rows.len() {
+                    self.attr_editor_selected = idx;
                 }
                 Task::none()
             }
-            Message::AttrEditorOk => self.on_attr_editor_ok(),
+            Message::AttrEditorInput { idx, value } => {
+                if let Some(r) = self.attr_editor_rows.get_mut(idx) {
+                    r.value = value;
+                }
+                Task::none()
+            }
+            Message::AttrEditorTextStyle(s) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.text_style = s;
+                }
+                Task::none()
+            }
+            Message::AttrEditorJustify(label) => {
+                if let Some((h, v)) =
+                    crate::ui::window::attribute_editor::justify_from_label(&label)
+                {
+                    if let Some(r) = self.attr_row_selected_mut() {
+                        r.h_align = h;
+                        r.v_align = v;
+                    }
+                }
+                Task::none()
+            }
+            Message::AttrEditorHeight(s) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.height = s;
+                }
+                Task::none()
+            }
+            Message::AttrEditorRotation(s) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.rotation = s;
+                }
+                Task::none()
+            }
+            Message::AttrEditorWidth(s) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.width_factor = s;
+                }
+                Task::none()
+            }
+            Message::AttrEditorOblique(s) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.oblique = s;
+                }
+                Task::none()
+            }
+            Message::AttrEditorBackwards(b) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.backwards = b;
+                }
+                Task::none()
+            }
+            Message::AttrEditorUpsideDown(b) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.upside_down = b;
+                }
+                Task::none()
+            }
+            Message::AttrEditorLayer(s) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.layer = s;
+                }
+                Task::none()
+            }
+            Message::AttrEditorLinetype(s) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.linetype = if s == "ByLayer" { String::new() } else { s };
+                }
+                Task::none()
+            }
+            Message::AttrEditorColor(label) => {
+                if let Some(c) = crate::ui::window::attribute_editor::color_from_label(&label) {
+                    if let Some(r) = self.attr_row_selected_mut() {
+                        r.color = c;
+                    }
+                }
+                Task::none()
+            }
+            Message::AttrEditorLineweight(lw) => {
+                if let Some(r) = self.attr_row_selected_mut() {
+                    r.line_weight = lw;
+                }
+                Task::none()
+            }
+            Message::AttrEditorApply => self.on_attr_editor_apply(),
             Message::ModalGrab => {
                 // Start a drag; the first ModalDragMove seeds the reference.
                 self.modal_dragging = true;

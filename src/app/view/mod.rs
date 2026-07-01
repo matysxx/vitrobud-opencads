@@ -1363,7 +1363,7 @@ impl OpenCADStudio {
             OverwriteWarning => (420, 180),
             SaveDialog => (560, 480),
             PointStyle => (360, 470),
-            AttributeEditor => (460, 440),
+            AttributeEditor => (640, 500),
         };
         Some((w as f32 + EXTRA_W, h as f32 + EXTRA_H))
     }

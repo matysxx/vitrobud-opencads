@@ -15,6 +15,7 @@ use crate::scene::{
     self, hover_id, CubeRegion, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX,
 };
 use crate::ui::PropertiesPanel;
+use crate::ui::window::attribute_editor::{AttrRow, AttrTab};
 use acadrust::types::Color as AcadColor;
 use acadrust::{EntityType as AcadEntityType, Handle};
 use iced::time::Instant;
@@ -1215,22 +1216,19 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     pub(crate) fn open_attribute_editor(&mut self, handle: acadrust::Handle) {
         let i = self.active_tab;
         let doc = &self.tabs[i].scene.document;
-        // Ok((block, fields)) to open; Err(msg) to report and stay closed. The
+        // Ok((block, rows)) to open; Err(msg) to report and stay closed. The
         // borrow of `doc` ends with this match, before any `self` mutation.
         let result = match doc.get_entity(handle) {
             Some(acadrust::EntityType::Insert(ins)) if !ins.attributes.is_empty() => {
                 // The prompt text lives on the block's ATTDEFs, not on the
                 // attribute instances — map tag → prompt from the definition.
                 let prompts = block_attr_prompts(doc, &ins.block_name);
-                let fields = ins
+                let rows = ins
                     .attributes
                     .iter()
-                    .map(|a| {
-                        let prompt = prompts.get(&a.tag).cloned().unwrap_or_default();
-                        (a.tag.clone(), prompt, a.get_value().to_string())
-                    })
+                    .map(|a| attr_row_from_entity(a, &prompts))
                     .collect::<Vec<_>>();
-                Ok((ins.block_name.clone(), fields))
+                Ok((ins.block_name.clone(), rows))
             }
             Some(acadrust::EntityType::Insert(_)) => {
                 Err("ATTEDIT  This block has no attributes.")
@@ -1238,15 +1236,24 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
             _ => Err("ATTEDIT  Select a block with attributes."),
         };
         match result {
-            Ok((block, fields)) => {
+            Ok((block, rows)) => {
                 self.attr_editor_block = block;
-                self.attr_editor_fields = fields;
+                self.attr_editor_rows = rows;
+                self.attr_editor_selected = 0;
+                self.attr_editor_tab = AttrTab::Attribute;
                 self.attr_editor_handle = Some(handle);
                 self.active_modal = Some(crate::app::ModalKind::AttributeEditor);
                 self.modal_offset = iced::Vector::ZERO;
             }
             Err(msg) => self.command_line.push_error(msg),
         }
+    }
+
+    /// The currently-selected editor row, for the Text Options / Properties
+    /// edit handlers (which all act on that one attribute).
+    pub(super) fn attr_row_selected_mut(&mut self) -> Option<&mut AttrRow> {
+        let sel = self.attr_editor_selected;
+        self.attr_editor_rows.get_mut(sel)
     }
 
     /// Close the attribute editor without applying, if it is open. Used when
@@ -1259,45 +1266,35 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
         }
         self.attr_editor_handle = None;
         self.attr_editor_block.clear();
-        self.attr_editor_fields.clear();
+        self.attr_editor_rows.clear();
+        self.attr_editor_selected = 0;
+        self.attr_editor_tab = AttrTab::Attribute;
     }
 
-    /// Apply every edited attribute value back to the block and close the
-    /// editor (OK). Values are written verbatim (attribute text is free-form).
-    /// The edits are positional — same order the dialog was populated in — so
-    /// blocks with duplicate tags stay correct; a tag-based fallback covers the
-    /// unlikely case the attribute list changed underneath the open dialog.
-    pub(super) fn on_attr_editor_ok(&mut self) -> Task<Message> {
+    /// Commit every edited attribute (value, text options, common properties)
+    /// back to the block, keeping the dialog open (Apply). Closing is the frame
+    /// ✕ (`CloseModal`), which discards any un-applied edits — matching the
+    /// other modal windows. Applied positionally so blocks with duplicate tags
+    /// stay correct; guarded on block name + count so an edit can never land on
+    /// a different entity if the selection changed under the open dialog.
+    pub(super) fn on_attr_editor_apply(&mut self) -> Task<Message> {
         let i = self.active_tab;
-        let Some(handle) = self.attr_editor_handle.take() else {
-            self.active_modal = None;
+        let Some(handle) = self.attr_editor_handle else {
             return Task::none();
         };
-        let fields = std::mem::take(&mut self.attr_editor_fields);
-        self.attr_editor_block.clear();
-        self.active_modal = None;
-        self.modal_offset = iced::Vector::ZERO;
+        // Snapshot the working copy so the document can be mutated while the
+        // dialog's rows stay put (it remains open for further edits).
+        let rows = self.attr_editor_rows.clone();
+        let block = self.attr_editor_block.clone();
 
         self.push_undo_snapshot(i, "ATTEDIT");
         let mut changed = false;
         if let Some(acadrust::EntityType::Insert(ins)) =
             self.tabs[i].scene.document.get_entity_mut(handle)
         {
-            if fields.len() == ins.attributes.len() {
-                for (attr, (_, _, val)) in ins.attributes.iter_mut().zip(fields.iter()) {
-                    if attr.get_value() != val {
-                        attr.set_value(val.clone());
-                        changed = true;
-                    }
-                }
-            } else {
-                for (tag, _, val) in &fields {
-                    if let Some(attr) = ins.attributes.iter_mut().find(|a| &a.tag == tag) {
-                        if attr.get_value() != val {
-                            attr.set_value(val.clone());
-                            changed = true;
-                        }
-                    }
+            if ins.block_name == block && rows.len() == ins.attributes.len() {
+                for (attr, row) in ins.attributes.iter_mut().zip(rows.iter()) {
+                    changed |= apply_attr_row(attr, row);
                 }
             }
         }
@@ -1311,6 +1308,107 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
         self.refresh_properties();
         Task::none()
     }
+}
+
+/// Build the editor's working copy of one attribute. Angles are shown in
+/// degrees; numeric fields become strings so the user can type freely.
+fn attr_row_from_entity(
+    a: &acadrust::entities::AttributeEntity,
+    prompts: &rustc_hash::FxHashMap<String, String>,
+) -> AttrRow {
+    let fmt = |v: f64| format!("{v}");
+    AttrRow {
+        tag: a.tag.clone(),
+        prompt: prompts.get(&a.tag).cloned().unwrap_or_default(),
+        value: a.get_value().to_string(),
+        text_style: a.text_style.clone(),
+        height: fmt(a.height),
+        rotation: fmt(a.rotation.to_degrees()),
+        width_factor: fmt(a.width_factor),
+        oblique: fmt(a.oblique_angle.to_degrees()),
+        h_align: a.horizontal_alignment,
+        v_align: a.vertical_alignment,
+        backwards: a.text_generation_flags & 0x2 != 0,
+        upside_down: a.text_generation_flags & 0x4 != 0,
+        layer: a.common.layer.clone(),
+        color: a.common.color,
+        linetype: a.common.linetype.clone(),
+        line_weight: a.common.line_weight,
+    }
+}
+
+/// Write one edited row back onto its attribute; returns whether anything
+/// changed. Numeric fields are parsed (angles from degrees); an unparseable
+/// field is left as-is.
+fn apply_attr_row(a: &mut acadrust::entities::AttributeEntity, row: &AttrRow) -> bool {
+    let mut ch = false;
+    if a.get_value() != row.value {
+        a.set_value(row.value.clone());
+        ch = true;
+    }
+    if a.text_style != row.text_style {
+        a.text_style = row.text_style.clone();
+        ch = true;
+    }
+    if let Ok(h) = row.height.trim().parse::<f64>() {
+        if a.height != h {
+            a.height = h;
+            ch = true;
+        }
+    }
+    if let Ok(deg) = row.rotation.trim().parse::<f64>() {
+        let rad = deg.to_radians();
+        if (a.rotation - rad).abs() > 1e-12 {
+            a.rotation = rad;
+            ch = true;
+        }
+    }
+    if let Ok(w) = row.width_factor.trim().parse::<f64>() {
+        if a.width_factor != w {
+            a.width_factor = w;
+            ch = true;
+        }
+    }
+    if let Ok(deg) = row.oblique.trim().parse::<f64>() {
+        let rad = deg.to_radians();
+        if (a.oblique_angle - rad).abs() > 1e-12 {
+            a.oblique_angle = rad;
+            ch = true;
+        }
+    }
+    if a.horizontal_alignment != row.h_align {
+        a.horizontal_alignment = row.h_align;
+        ch = true;
+    }
+    if a.vertical_alignment != row.v_align {
+        a.vertical_alignment = row.v_align;
+        ch = true;
+    }
+    // Text generation flags: bit 0x2 = backwards, bit 0x4 = upside down.
+    let new_flags = (a.text_generation_flags & !0x6)
+        | if row.backwards { 0x2 } else { 0 }
+        | if row.upside_down { 0x4 } else { 0 };
+    if new_flags != a.text_generation_flags {
+        a.text_generation_flags = new_flags;
+        ch = true;
+    }
+    if a.common.layer != row.layer {
+        a.common.layer = row.layer.clone();
+        ch = true;
+    }
+    if a.common.color != row.color {
+        a.common.color = row.color;
+        ch = true;
+    }
+    if a.common.linetype != row.linetype {
+        a.common.linetype = row.linetype.clone();
+        ch = true;
+    }
+    if a.common.line_weight != row.line_weight {
+        a.common.line_weight = row.line_weight;
+        ch = true;
+    }
+    ch
 }
 
 /// Map each attribute tag to the prompt text declared on the block's matching
