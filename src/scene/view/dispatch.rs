@@ -18,6 +18,9 @@ pub fn properties_sectioned(
     text_style_names: &[String],
 ) -> Vec<PropSection> {
     let mut sections = vec![properties::general_section(entity)];
+    if let Some(viz) = properties::visualization_section(entity) {
+        sections.push(viz);
+    }
     let groups = entity.geometry_properties(text_style_names);
     if groups.is_empty() {
         sections.push(properties::fallback_properties(handle, entity));

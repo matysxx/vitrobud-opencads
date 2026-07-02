@@ -40,6 +40,18 @@ pub fn general_section(entity: &EntityType) -> PropSection {
                 value: PropValue::EditText(format!("{:.4}", common.linetype_scale)),
             },
             Property {
+                label: "Plot style".into(),
+                field: "plot_style",
+                value: PropValue::ReadOnly(
+                    match common.plotstyle_flags {
+                        0 => "ByLayer",
+                        1 => "ByBlock",
+                        _ => "ByColor",
+                    }
+                    .into(),
+                ),
+            },
+            Property {
                 label: "Lineweight".into(),
                 field: "lineweight",
                 value: PropValue::LwChoice(common.line_weight),
@@ -48,6 +60,11 @@ pub fn general_section(entity: &EntityType) -> PropSection {
                 label: "Transparency".into(),
                 field: "transparency",
                 value: PropValue::EditText(format!("{transp_pct}")),
+            },
+            Property {
+                label: "Hyperlink".into(),
+                field: "hyperlink",
+                value: PropValue::ReadOnly(String::new()),
             },
             Property {
                 label: "Invisible".into(),
@@ -59,6 +76,48 @@ pub fn general_section(entity: &EntityType) -> PropSection {
             },
         ],
     }
+}
+
+/// The "3D Visualization" group (Material + Shadow display), common to every
+/// graphical object. Material / plot-style / shadow source is flag-based; a
+/// custom material handle is shown as "Custom" (name resolution needs the doc).
+pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
+    if matches!(
+        entity,
+        EntityType::Block(_)
+            | EntityType::BlockEnd(_)
+            | EntityType::Seqend(_)
+            | EntityType::Unknown(_)
+    ) {
+        return None;
+    }
+    let common = entity.common();
+    let material = match common.material_flags {
+        0 => "ByLayer",
+        1 => "ByBlock",
+        _ => "Custom",
+    };
+    let shadow = match common.shadow_flags {
+        0 => "Casts and Receives Shadows",
+        1 => "Casts Shadows",
+        2 => "Receives Shadows",
+        _ => "Ignores Shadows",
+    };
+    Some(PropSection {
+        title: "3D Visualization".into(),
+        props: vec![
+            Property {
+                label: "Material".into(),
+                field: "material",
+                value: PropValue::ReadOnly(material.into()),
+            },
+            Property {
+                label: "Shadow display".into(),
+                field: "shadow_display",
+                value: PropValue::ReadOnly(shadow.into()),
+            },
+        ],
+    })
 }
 
 pub fn fallback_properties(_handle: Handle, entity: &EntityType) -> PropSection {
