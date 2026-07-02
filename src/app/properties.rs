@@ -74,6 +74,39 @@ impl OpenCADStudio {
                     let mut sections =
                         dispatch::properties_sectioned(handle, entity, &text_style_names);
 
+                    // Resolve a custom material handle (material_flags == 3) to
+                    // its name in the 3D Visualization group.
+                    {
+                        let common = entity.common();
+                        if common.material_flags == 3 {
+                            if let Some(mh) = common.material_handle {
+                                if let Some(name) = self.tabs[i]
+                                    .scene
+                                    .document
+                                    .objects
+                                    .iter()
+                                    .find_map(|(h, o)| match o {
+                                        acadrust::objects::ObjectType::Material(m) if *h == mh => {
+                                            Some(m.name.clone())
+                                        }
+                                        _ => None,
+                                    })
+                                {
+                                    for section in sections.iter_mut() {
+                                        if let Some(row) =
+                                            section.props.iter_mut().find(|p| p.field == "material")
+                                        {
+                                            row.value =
+                                                crate::scene::model::object::PropValue::ReadOnly(
+                                                    name.clone(),
+                                                );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Inject viewport-only properties that require doc access.
                     if let acadrust::EntityType::Viewport(vp) = entity {
                         let frozen_names: Vec<String> = vp

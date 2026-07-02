@@ -11,6 +11,18 @@ pub fn general_section(entity: &EntityType) -> PropSection {
     };
     let transp_pct = (common.transparency.alpha() as f64 / 255.0 * 100.0).round() as u32;
 
+    // Hyperlink is stored in XDATA under the "PE_URL" application.
+    let hyperlink = common
+        .extended_data
+        .get_record("PE_URL")
+        .and_then(|r| {
+            r.values.iter().find_map(|v| match v {
+                acadrust::xdata::XDataValue::String(s) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default();
+
     PropSection {
         title: "General".into(),
         props: vec![
@@ -64,7 +76,7 @@ pub fn general_section(entity: &EntityType) -> PropSection {
             Property {
                 label: "Hyperlink".into(),
                 field: "hyperlink",
-                value: PropValue::ReadOnly(String::new()),
+                value: PropValue::ReadOnly(hyperlink),
             },
             Property {
                 label: "Invisible".into(),
