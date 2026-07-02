@@ -272,7 +272,14 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
                     "line_space_distance",
                     format!("{line_space_distance:.4}"),
                 ),
-                ro("Line space style", "line_space_style", String::new()),
+                ro(
+                    "Line space style",
+                    "line_space_style",
+                    match t.line_spacing_style {
+                        acadrust::entities::LineSpacingStyle::Exactly => "Exactly",
+                        _ => "At least",
+                    },
+                ),
                 ro(
                     "Background mask",
                     "background_mask",

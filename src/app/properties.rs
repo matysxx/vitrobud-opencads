@@ -280,6 +280,112 @@ impl OpenCADStudio {
                         }
                     }
 
+                    // ── Doc-dependent property rows ──────────────────────────
+                    // Rows whose value lives on another object (a block record,
+                    // an underlay definition, a dimension / multileader style)
+                    // are left empty by the entity builders and resolved here,
+                    // where the document is reachable.
+                    let doc = &self.tabs[i].scene.document;
+                    match entity {
+                        // Block reference: the referenced block's units and the
+                        // unit-scale factor against the drawing's INSUNITS.
+                        acadrust::EntityType::Insert(ins) => {
+                            let host = doc.header.insertion_units;
+                            let src = doc
+                                .block_records
+                                .get(&ins.block_name)
+                                .map(|br| br.units)
+                                .unwrap_or(0);
+                            set_row(&mut sections, "block_unit", insunits_name(src).to_string());
+                            let host_mm = if host == 0 { 1.0 } else { insunits_to_mm(host) };
+                            let src_mm = if src == 0 { 1.0 } else { insunits_to_mm(src) };
+                            let factor = if host_mm.abs() > 1e-12 { src_mm / host_mm } else { 1.0 };
+                            set_row(&mut sections, "unit_factor", format!("{factor:.4}"));
+                        }
+                        // Underlay: name + path from the referenced definition.
+                        acadrust::EntityType::Underlay(ul) => {
+                            if let Some((name, path)) =
+                                doc.objects.iter().find_map(|(h, o)| match o {
+                                    acadrust::objects::ObjectType::UnderlayDefinition(def)
+                                        if *h == ul.definition_handle =>
+                                    {
+                                        let nm = if !def.name.is_empty() {
+                                            def.name.clone()
+                                        } else {
+                                            def.page_name.clone()
+                                        };
+                                        Some((nm, def.file_path.clone()))
+                                    }
+                                    _ => None,
+                                })
+                            {
+                                set_row(&mut sections, "ul_name", name);
+                                set_row(&mut sections, "ul_path", path);
+                            }
+                        }
+                        // Leader: text style / vertical text placement / overall
+                        // scale come from its dimension style.
+                        acadrust::EntityType::Leader(ld) => {
+                            if let Some(ds) = find_dim_style(doc, &ld.dimension_style) {
+                                if !ds.dimtxsty.is_empty() {
+                                    set_row(&mut sections, "text_style", ds.dimtxsty.clone());
+                                }
+                                set_row(
+                                    &mut sections,
+                                    "text_pos_vert",
+                                    dimtad_label(ds.dimtad).to_string(),
+                                );
+                                set_row(
+                                    &mut sections,
+                                    "dim_scale_overall",
+                                    format!("{:.4}", ds.dimscale),
+                                );
+                            }
+                        }
+                        // Feature-control frame: FCF text style is the dimension
+                        // style's DIMTXSTY.
+                        acadrust::EntityType::Tolerance(tol) => {
+                            if let Some(ds) = find_dim_style(doc, &tol.dimension_style_name) {
+                                if !ds.dimtxsty.is_empty() {
+                                    set_row(&mut sections, "tol_text_style", ds.dimtxsty.clone());
+                                }
+                            }
+                        }
+                        // MultiLeader: max points + segment-angle constraints
+                        // are MLeaderStyle settings, not stored on the entity.
+                        acadrust::EntityType::MultiLeader(ml) => {
+                            if let Some(sh) = ml.style_handle {
+                                if let Some((mx, a1, a2)) =
+                                    doc.objects.iter().find_map(|(h, o)| match o {
+                                        acadrust::objects::ObjectType::MultiLeaderStyle(s)
+                                            if *h == sh =>
+                                        {
+                                            Some((
+                                                s.max_leader_points,
+                                                s.first_segment_angle,
+                                                s.second_segment_angle,
+                                            ))
+                                        }
+                                        _ => None,
+                                    })
+                                {
+                                    set_row(&mut sections, "max_leader_points", mx.to_string());
+                                    set_row(
+                                        &mut sections,
+                                        "first_segment_angle",
+                                        format!("{a1:.4}"),
+                                    );
+                                    set_row(
+                                        &mut sections,
+                                        "second_segment_angle",
+                                        format!("{a2:.4}"),
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+
                     if !group_names.is_empty() {
                         let label = group_names.join(", ");
                         if let Some(general) = sections.first_mut() {
@@ -923,6 +1029,73 @@ fn merge_prop_value(
             },
         ) if field == other_field => PropValue::ReadOnly(VARIES_LABEL.into()),
         _ => left.clone(),
+    }
+}
+
+/// Set the first property row matching `field` (across all sections) to a
+/// read-only `value`. No-op when the field is absent. Used to fill the
+/// doc-dependent placeholder rows the entity builders leave empty.
+fn set_row(
+    sections: &mut [crate::scene::model::object::PropSection],
+    field: &str,
+    value: String,
+) {
+    for section in sections.iter_mut() {
+        if let Some(row) = section.props.iter_mut().find(|p| p.field == field) {
+            row.value = crate::scene::model::object::PropValue::ReadOnly(value);
+            return;
+        }
+    }
+}
+
+/// Resolve a dimension style by name (case-insensitive), falling back to
+/// "Standard" when the name is blank.
+fn find_dim_style<'a>(
+    doc: &'a acadrust::CadDocument,
+    name: &str,
+) -> Option<&'a acadrust::tables::DimStyle> {
+    doc.dim_styles.iter().find(|s| {
+        s.name.eq_ignore_ascii_case(name)
+            || (name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
+    })
+}
+
+/// Vertical text placement (DIMTAD) label.
+fn dimtad_label(dimtad: i16) -> &'static str {
+    match dimtad {
+        1 => "Above",
+        2 => "Outside",
+        3 => "JIS",
+        4 => "Below",
+        _ => "Centered",
+    }
+}
+
+/// Human-readable INSUNITS name (DXF group 70 unit codes).
+fn insunits_name(code: i16) -> &'static str {
+    match code {
+        1 => "Inches",
+        2 => "Feet",
+        3 => "Miles",
+        4 => "Millimeters",
+        5 => "Centimeters",
+        6 => "Meters",
+        7 => "Kilometers",
+        8 => "Microinches",
+        9 => "Mils",
+        10 => "Yards",
+        11 => "Angstroms",
+        12 => "Nanometers",
+        13 => "Microns",
+        14 => "Decimeters",
+        15 => "Decameters",
+        16 => "Hectometers",
+        17 => "Gigameters",
+        18 => "Astronomical Units",
+        19 => "Light Years",
+        20 => "Parsecs",
+        21 => "US Survey Feet",
+        _ => "Unitless",
     }
 }
 

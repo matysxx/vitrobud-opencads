@@ -150,7 +150,15 @@ fn properties(h: &Hatch) -> Vec<PropSection> {
                 ),
                 ro("Layer override", "layer_override", String::new()),
                 ro("Double", "double", if h.is_double { "Yes" } else { "No" }),
-                ro("Spacing", "spacing", String::new()),
+                ro(
+                    "Spacing",
+                    "spacing",
+                    h.pattern
+                        .lines
+                        .first()
+                        .map(|l| format!("{:.4}", l.offset.length()))
+                        .unwrap_or_default(),
+                ),
                 ro("ISO pen width", "iso_pen_width", String::new()),
                 ro("Gradient colors", "gradient_colors", g.colors.len().to_string()),
                 ro("Gradient tint", "gradient_tint", format!("{:.4}", g.color_tint)),

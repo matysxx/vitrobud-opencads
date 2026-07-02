@@ -231,7 +231,11 @@ fn properties(leader: &Leader) -> Vec<PropSection> {
 
     let text = vec![
         edit("Text height", "text_height", leader.text_height),
-        ro("Text offset", "text_offset", String::new()),
+        ro(
+            "Text offset",
+            "text_offset",
+            format!("{:.4}", leader.annotation_offset.length()),
+        ),
         ro("Text style", "text_style", String::new()),
         ro("Text color", "text_color", color_str(&leader.override_color)),
         ro("Text position vert", "text_pos_vert", String::new()),

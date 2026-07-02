@@ -133,6 +133,30 @@ fn properties(spline: &Spline) -> Vec<PropSection> {
     let closed = spline.flags.closed || spline.flags.periodic;
     let yes_no = |b: bool| if b { "Yes" } else { "No" };
 
+    // Knot parameterization method (R2013+ DWG); older splines report 0.
+    let knot_param = match spline.knot_parameterization {
+        0 => "Chord",
+        1 => "Square Root",
+        2 => "Uniform",
+        _ => "Custom",
+    };
+
+    // Closed splines enclose an area; approximate it with the shoelace
+    // formula over the defining points projected to the XY plane, matching
+    // the polyline approximation already used for Length.
+    let area = if closed && pts.len() >= 3 {
+        let mut acc = 0.0;
+        for w in pts.windows(2) {
+            acc += w[0].x * w[1].y - w[1].x * w[0].y;
+        }
+        if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
+            acc += last.x * first.y - first.x * last.y;
+        }
+        format!("{:.4}", acc.abs() * 0.5)
+    } else {
+        String::new()
+    };
+
     vec![
         PropSection {
             title: "Data Points".into(),
@@ -161,7 +185,7 @@ fn properties(spline: &Spline) -> Vec<PropSection> {
                     format!("{:.4}", cp0.map(|p| p.z).unwrap_or(0.0)),
                 ),
                 ro("Weight", "weight", format!("{:.4}", w0.unwrap_or(1.0))),
-                ro("Knot Parameterization", "knot_param", String::new()),
+                ro("Knot Parameterization", "knot_param", knot_param),
                 ro(
                     "Fit Point Count",
                     "fit_pt_count",
@@ -198,7 +222,7 @@ fn properties(spline: &Spline) -> Vec<PropSection> {
                 ro("Closed", "closed", yes_no(closed)),
                 ro("Planar", "planar", yes_no(spline.flags.planar)),
                 ro("Length", "length", format!("{length:.4}")),
-                ro("Area", "area", String::new()),
+                ro("Area", "area", area),
             ],
         },
     ]

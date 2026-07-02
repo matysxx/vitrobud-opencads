@@ -52,6 +52,39 @@ fn translate_wires(wires: &mut Vec<acadrust::entities::Wire>, d: Vec3) {
     }
 }
 
+/// Approximate a region's enclosed area and boundary perimeter from its
+/// wireframe loops. Perimeter is the total edge length across every wire.
+/// Area accumulates the Newell area vector of each loop (opposite-wound
+/// holes subtract) and halves its magnitude — exact for a single planar
+/// loop, approximate for multi-loop or curved regions. Returns zeros when
+/// there is nothing to measure.
+fn region_area_perimeter(wires: &[acadrust::entities::Wire]) -> (f64, f64) {
+    let mut perimeter = 0.0;
+    let (mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0);
+    for wire in wires {
+        let pts = &wire.points;
+        if pts.len() < 2 {
+            continue;
+        }
+        for seg in pts.windows(2) {
+            let dx = seg[1].x - seg[0].x;
+            let dy = seg[1].y - seg[0].y;
+            let dz = seg[1].z - seg[0].z;
+            perimeter += (dx * dx + dy * dy + dz * dz).sqrt();
+        }
+        let n = pts.len();
+        for i in 0..n {
+            let a = &pts[i];
+            let b = &pts[(i + 1) % n];
+            nx += (a.y - b.y) * (a.z + b.z);
+            ny += (a.z - b.z) * (a.x + b.x);
+            nz += (a.x - b.x) * (a.y + b.y);
+        }
+    }
+    let area = 0.5 * (nx * nx + ny * ny + nz * nz).sqrt();
+    (area, perimeter)
+}
+
 // ── Solid3D ───────────────────────────────────────────────────────────────────
 
 impl Grippable for Solid3D {
@@ -132,11 +165,12 @@ impl Grippable for Region {
 
 impl PropertyEditable for Region {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        let (area, perimeter) = region_area_perimeter(&self.wires);
         vec![PropSection {
             title: "Geometry".into(),
             props: vec![
-                ro("Area", "rgn_area", String::new()),
-                ro("Perimeter", "rgn_perimeter", String::new()),
+                ro("Area", "rgn_area", format!("{area:.4}")),
+                ro("Perimeter", "rgn_perimeter", format!("{perimeter:.4}")),
             ],
         }]
     }
