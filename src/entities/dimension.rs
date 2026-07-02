@@ -866,6 +866,168 @@ impl Grippable for Dimension {
 use acadrust::entities::{MText, Text};
 use acadrust::tables::DimStyle;
 use acadrust::types::{Color as AcadColor, Vector3};
+
+/// Dimension-style-derived property groups (Lines & Arrows, Text, Fit, Primary
+/// Units, Alternate Units, Tolerances) built from the resolved DimStyle. These
+/// are read-only mirrors of the style's dimension variables, injected by the
+/// panel after the entity's own Misc/Geometry groups.
+pub fn style_sections(style: &DimStyle) -> Vec<crate::scene::model::object::PropSection> {
+    let s = style;
+    let yn = |b: bool| if b { "Yes" } else { "No" };
+    let onoff = |b: bool| if b { "On" } else { "Off" };
+    let f = |v: f64| format!("{v:.4}");
+    let dsep = {
+        let c = s.dimdsep as u8 as char;
+        if s.dimdsep > 0 && !c.is_control() {
+            c.to_string()
+        } else {
+            s.dimdsep.to_string()
+        }
+    };
+    let tol_display = if s.dimlim {
+        "Limits"
+    } else if s.dimtol {
+        "Deviation"
+    } else {
+        "None"
+    };
+
+    vec![
+        PropSection {
+            title: "Lines & Arrows".into(),
+            props: vec![
+                ro("Arrow size", "dim_arrow_size", f(s.dimasz)),
+                ro("Dim line color", "dim_line_color", s.dimclrd.to_string()),
+                ro(
+                    "Dim line lineweight",
+                    "dim_line_lineweight",
+                    s.dimlwd.to_string(),
+                ),
+                ro("Ext line color", "dim_ext_line_color", s.dimclre.to_string()),
+                ro(
+                    "Ext line lineweight",
+                    "dim_ext_line_lineweight",
+                    s.dimlwe.to_string(),
+                ),
+                ro("Dim line 1", "dim_line_1", onoff(!s.dimsd1)),
+                ro("Dim line 2", "dim_line_2", onoff(!s.dimsd2)),
+                ro("Ext line 1", "dim_ext_line_1", onoff(!s.dimse1)),
+                ro("Ext line 2", "dim_ext_line_2", onoff(!s.dimse2)),
+                ro("Dim line ext", "dim_line_ext", f(s.dimdle)),
+                ro("Ext line ext", "dim_ext_line_ext", f(s.dimexe)),
+                ro("Ext line offset", "dim_ext_line_offset", f(s.dimexo)),
+                ro("Ext line fixed", "dim_ext_line_fixed", yn(s.dimfxlon)),
+                ro(
+                    "Ext line fixed length",
+                    "dim_ext_line_fixed_length",
+                    f(s.dimfxl),
+                ),
+            ],
+        },
+        PropSection {
+            title: "Text".into(),
+            props: vec![
+                ro("Fill color", "dim_text_fill_color", s.dimtfillclr.to_string()),
+                ro("Text color", "dim_text_color", s.dimclrt.to_string()),
+                ro("Text height", "dim_text_height", f(s.dimtxt)),
+                ro("Text offset", "dim_text_offset", f(s.dimgap)),
+                ro("Text pos vert", "dim_text_pos_vert", s.dimtad.to_string()),
+                ro("Text pos hor", "dim_text_pos_hor", s.dimjust.to_string()),
+                ro("Text outside align", "dim_text_outside_align", yn(s.dimtoh)),
+                ro("Text inside align", "dim_text_inside_align", yn(s.dimtih)),
+                ro("Text style", "dim_text_style", s.dimtxsty.clone()),
+            ],
+        },
+        PropSection {
+            title: "Fit".into(),
+            props: vec![
+                ro("Fit", "dim_fit", s.dimatfit.to_string()),
+                ro("Text inside", "dim_text_inside", yn(s.dimtix)),
+                ro("Text movement", "dim_text_movement", s.dimtmove.to_string()),
+                ro("Dim scale overall", "dim_scale_overall", f(s.dimscale)),
+                ro("Dim line forced", "dim_line_forced", yn(s.dimtofl)),
+                ro("Dim line inside", "dim_line_inside", yn(s.dimsoxd)),
+            ],
+        },
+        PropSection {
+            title: "Primary Units".into(),
+            props: vec![
+                ro("Dim units", "dim_units", s.dimlunit.to_string()),
+                ro("Precision", "dim_precision", s.dimdec.to_string()),
+                ro("Decimal separator", "dim_decimal_separator", dsep),
+                ro("Dim prefix/suffix", "dim_prefix_suffix", s.dimpost.clone()),
+                ro("Dim roundoff", "dim_roundoff", f(s.dimrnd)),
+                ro(
+                    "Suppress leading zeros",
+                    "dim_suppress_leading_zeros",
+                    yn(s.dimzin & 4 != 0),
+                ),
+                ro(
+                    "Suppress trailing zeros",
+                    "dim_suppress_trailing_zeros",
+                    yn(s.dimzin & 8 != 0),
+                ),
+                ro("Dim scale linear", "dim_scale_linear", f(s.dimlfac)),
+                ro("Angle format", "dim_angle_format", s.dimaunit.to_string()),
+                ro("Angle precision", "dim_angle_precision", s.dimadec.to_string()),
+            ],
+        },
+        PropSection {
+            title: "Alternate Units".into(),
+            props: vec![
+                ro("Alt enabled", "dim_alt_enabled", yn(s.dimalt)),
+                ro("Alt format", "dim_alt_format", s.dimaltu.to_string()),
+                ro("Alt precision", "dim_alt_precision", s.dimaltd.to_string()),
+                ro("Alt scale factor", "dim_alt_scale_factor", f(s.dimaltf)),
+                ro("Alt roundoff", "dim_alt_roundoff", f(s.dimaltrnd)),
+                ro("Alt prefix/suffix", "dim_alt_prefix_suffix", s.dimapost.clone()),
+                ro(
+                    "Alt suppress leading zeros",
+                    "dim_alt_suppress_leading_zeros",
+                    yn(s.dimaltz & 4 != 0),
+                ),
+                ro(
+                    "Alt suppress trailing zeros",
+                    "dim_alt_suppress_trailing_zeros",
+                    yn(s.dimaltz & 8 != 0),
+                ),
+            ],
+        },
+        PropSection {
+            title: "Tolerances".into(),
+            props: vec![
+                ro("Tolerance display", "dim_tolerance_display", tol_display),
+                ro("Tolerance limit lower", "dim_tolerance_limit_lower", f(s.dimtm)),
+                ro("Tolerance limit upper", "dim_tolerance_limit_upper", f(s.dimtp)),
+                ro(
+                    "Tolerance precision",
+                    "dim_tolerance_precision",
+                    s.dimtdec.to_string(),
+                ),
+                ro(
+                    "Tolerance text height",
+                    "dim_tolerance_text_height",
+                    f(s.dimtfac),
+                ),
+                ro(
+                    "Tolerance pos vert",
+                    "dim_tolerance_pos_vert",
+                    s.dimtolj.to_string(),
+                ),
+                ro(
+                    "Tolerance suppress leading zeros",
+                    "dim_tolerance_suppress_leading_zeros",
+                    yn(s.dimtzin & 4 != 0),
+                ),
+                ro(
+                    "Tolerance suppress trailing zeros",
+                    "dim_tolerance_suppress_trailing_zeros",
+                    yn(s.dimtzin & 8 != 0),
+                ),
+            ],
+        },
+    ]
+}
 use acadrust::{CadDocument, EntityType, Handle};
 
 use crate::scene::convert::tess_util::aci_to_rgba;

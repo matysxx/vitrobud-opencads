@@ -179,8 +179,8 @@ impl OpenCADStudio {
                         }
                     }
 
-                    // Inject DimStyle picker for Dimension entities.
-                    if let acadrust::EntityType::Dimension(_) = entity {
+                    // Inject DimStyle picker + style-derived groups for Dimensions.
+                    if let acadrust::EntityType::Dimension(d) = entity {
                         let dim_style_names: Vec<String> = self.tabs[i]
                             .scene
                             .document
@@ -207,6 +207,19 @@ impl OpenCADStudio {
                                     };
                                 }
                             }
+                        }
+
+                        // Append the resolved dimension style's groups
+                        // (Lines & Arrows, Text, Fit, Units, Tolerances).
+                        let style_name = d.base().style_name.clone();
+                        if let Some(style) =
+                            self.tabs[i].scene.document.dim_styles.iter().find(|s| {
+                                s.name.eq_ignore_ascii_case(&style_name)
+                                    || (style_name.trim().is_empty()
+                                        && s.name.eq_ignore_ascii_case("Standard"))
+                            })
+                        {
+                            sections.extend(crate::entities::dimension::style_sections(style));
                         }
                     }
 
