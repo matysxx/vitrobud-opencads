@@ -819,112 +819,106 @@ impl Grippable for Table {
 
 impl PropertyEditable for Table {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        use crate::entities::common::edit_prop as edit;
+        use acadrust::entities::table::BreakOptionFlags;
+
         let fmt_h = |oh: &Option<acadrust::types::Handle>| -> String {
             match oh {
                 Some(h) if !h.is_null() => format!("{:X}", h.value()),
                 _ => "(none)".to_string(),
             }
         };
-        vec![PropSection {
-            title: "Table".into(),
-            props: vec![
-                ro("Rows", "tbl_rows", self.rows.len().to_string()),
-                ro("Columns", "tbl_cols", self.columns.len().to_string()),
-                ro(
-                    "Insert X",
-                    "tbl_ix",
-                    format!("{:.4}", self.insertion_point.x),
-                ),
-                ro(
-                    "Insert Y",
-                    "tbl_iy",
-                    format!("{:.4}", self.insertion_point.y),
-                ),
-                ro(
-                    "Insert Z",
-                    "tbl_iz",
-                    format!("{:.4}", self.insertion_point.z),
-                ),
-                ro(
-                    "Table Style",
-                    "tbl_style_handle",
-                    fmt_h(&self.table_style_handle),
-                ),
-                ro(
-                    "Block Record",
-                    "tbl_block_rec_handle",
-                    fmt_h(&self.block_record_handle),
-                ),
-                ro(
-                    "Data Version",
-                    "tbl_data_version",
-                    self.data_version.to_string(),
-                ),
-                ro(
-                    "Value Flags",
-                    "tbl_value_flags",
-                    format!("{:#010x}", self.value_flags),
-                ),
-                ro(
-                    "Override Flag",
-                    "tbl_override_flag",
-                    if self.override_flag { "Yes" } else { "No" },
-                ),
-                ro(
-                    "Override Border Color",
-                    "tbl_override_border_color",
-                    if self.override_border_color {
-                        "Yes"
-                    } else {
-                        "No"
-                    },
-                ),
-                ro(
-                    "Override Border LW",
-                    "tbl_override_border_lw",
-                    if self.override_border_line_weight {
-                        "Yes"
-                    } else {
-                        "No"
-                    },
-                ),
-                ro(
-                    "Override Border Vis",
-                    "tbl_override_border_vis",
-                    if self.override_border_visibility {
-                        "Yes"
-                    } else {
-                        "No"
-                    },
-                ),
-                ro(
-                    "Break Spacing",
-                    "tbl_break_spacing",
-                    format!("{:.4}", self.break_spacing),
-                ),
-                ro(
-                    "Break Flow",
-                    "tbl_break_flow",
-                    format!("{:?}", self.break_flow_direction),
-                ),
-                ro(
-                    "Break Options",
-                    "tbl_break_options",
-                    format!("{:#018b}", self.break_options.bits()),
-                ),
-                ro(
-                    "Normal",
-                    "tbl_normal",
-                    format!(
-                        "{:.3}, {:.3}, {:.3}",
-                        self.normal.x, self.normal.y, self.normal.z
+        let yes_no = |b: bool| -> String {
+            if b { "Yes".into() } else { "No".into() }
+        };
+        // Direction = angle of the horizontal direction vector in the XY plane.
+        let direction_deg =
+            (self.horizontal_direction.y.atan2(self.horizontal_direction.x)).to_degrees();
+
+        vec![
+            PropSection {
+                title: "Table".into(),
+                props: vec![
+                    ro(
+                        "Table style",
+                        "tbl_style_handle",
+                        fmt_h(&self.table_style_handle),
                     ),
-                ),
-            ],
-        }]
+                    ro("Rows", "tbl_rows", self.rows.len().to_string()),
+                    ro("Columns", "tbl_cols", self.columns.len().to_string()),
+                    ro("Direction", "tbl_direction", format!("{:.4}", direction_deg)),
+                    ro(
+                        "Table width",
+                        "tbl_width",
+                        format!("{:.4}", self.total_width()),
+                    ),
+                    ro(
+                        "Table height",
+                        "tbl_height",
+                        format!("{:.4}", self.total_height()),
+                    ),
+                ],
+            },
+            PropSection {
+                title: "Table Breaks".into(),
+                props: vec![
+                    ro(
+                        "Enabled",
+                        "tbl_break_enabled",
+                        yes_no(self.break_options.contains(BreakOptionFlags::ENABLE_BREAKS)),
+                    ),
+                    ro(
+                        "Direction",
+                        "tbl_break_direction",
+                        format!("{:?}", self.break_flow_direction),
+                    ),
+                    ro(
+                        "Repeat top labels",
+                        "tbl_break_repeat_top",
+                        yes_no(
+                            self.break_options
+                                .contains(BreakOptionFlags::REPEAT_TOP_LABELS),
+                        ),
+                    ),
+                    ro(
+                        "Repeat bottom labels",
+                        "tbl_break_repeat_bottom",
+                        yes_no(
+                            self.break_options
+                                .contains(BreakOptionFlags::REPEAT_BOTTOM_LABELS),
+                        ),
+                    ),
+                    ro(
+                        "Manual positions",
+                        "tbl_break_manual_positions",
+                        yes_no(
+                            self.break_options
+                                .contains(BreakOptionFlags::ALLOW_MANUAL_POSITIONS),
+                        ),
+                    ),
+                    ro(
+                        "Manual heights",
+                        "tbl_break_manual_heights",
+                        yes_no(
+                            self.break_options
+                                .contains(BreakOptionFlags::ALLOW_MANUAL_HEIGHTS),
+                        ),
+                    ),
+                    ro("Break height", "tbl_break_height", String::new()),
+                    edit("Spacing", "tbl_break_spacing", self.break_spacing),
+                ],
+            },
+        ]
     }
 
-    fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
+    fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        use crate::entities::common::parse_f64;
+        if field == "tbl_break_spacing" {
+            if let Some(v) = parse_f64(value) {
+                self.break_spacing = v;
+            }
+        }
+    }
 }
 
 impl Transformable for Table {

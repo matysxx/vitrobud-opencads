@@ -1,7 +1,7 @@
 use acadrust::entities::{Text, TextHorizontalAlignment as HA, TextVerticalAlignment as VA};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{edit_prop as edit, parse_f64, square_grip};
+use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
 use crate::entities::text_support::{
     resolve_dxf_special_chars, resolve_text_style, text_local_bounds,
 };
@@ -170,61 +170,95 @@ fn grips(t: &Text) -> Vec<GripDef> {
 }
 
 fn properties(t: &Text, text_style_names: &[String]) -> Vec<PropSection> {
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            edit("Insert X", "ins_x", t.insertion_point.x),
-            edit("Insert Y", "ins_y", t.insertion_point.y),
-            edit("Insert Z", "ins_z", t.insertion_point.z),
-            edit("Height", "height", t.height),
-            edit("Rotation", "rotation", t.rotation.to_degrees()),
-            edit("Width Factor", "width_factor", t.width_factor),
-            edit(
-                "Oblique Angle",
-                "oblique_angle",
-                t.oblique_angle.to_degrees(),
-            ),
-            Property {
-                label: "H-Align".into(),
-                field: "h_align",
-                value: PropValue::Choice {
-                    selected: text_halign_str(&t.horizontal_alignment).to_string(),
-                    options: ["Left", "Center", "Right", "Aligned", "Middle", "Fit"]
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
+    // Text alignment point (second alignment / justify point). Falls back to
+    // the insertion point for Left/Baseline text where no second point exists.
+    let ap = t.alignment_point.unwrap_or(t.insertion_point);
+    vec![
+        PropSection {
+            title: "Text".into(),
+            props: vec![
+                Property {
+                    label: "Contents".into(),
+                    field: "content",
+                    value: PropValue::EditText(t.value.clone()),
                 },
-            },
-            Property {
-                label: "V-Align".into(),
-                field: "v_align",
-                value: PropValue::Choice {
-                    selected: text_valign_str(&t.vertical_alignment).to_string(),
-                    options: ["Baseline", "Bottom", "Middle", "Top"]
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
-                },
-            },
-            Property {
-                label: "Content".into(),
-                field: "content",
-                value: PropValue::EditText(t.value.clone()),
-            },
-            Property {
-                label: "Style".into(),
-                field: "style",
-                value: PropValue::Choice {
-                    selected: if t.style.trim().is_empty() {
-                        "Standard".into()
-                    } else {
-                        t.style.clone()
+                Property {
+                    label: "Style".into(),
+                    field: "style",
+                    value: PropValue::Choice {
+                        selected: if t.style.trim().is_empty() {
+                            "Standard".into()
+                        } else {
+                            t.style.clone()
+                        },
+                        options: text_style_names.to_vec(),
                     },
-                    options: text_style_names.to_vec(),
                 },
-            },
-        ],
-    }]
+                ro("Annotative", "annotative", String::new()),
+                ro("Annotative scale", "annotative_scale", String::new()),
+                Property {
+                    label: "Justify".into(),
+                    field: "h_align",
+                    value: PropValue::Choice {
+                        selected: text_halign_str(&t.horizontal_alignment).to_string(),
+                        options: ["Left", "Center", "Right", "Aligned", "Middle", "Fit"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                },
+                Property {
+                    label: "V-Align".into(),
+                    field: "v_align",
+                    value: PropValue::Choice {
+                        selected: text_valign_str(&t.vertical_alignment).to_string(),
+                        options: ["Baseline", "Bottom", "Middle", "Top"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                },
+                edit("Height", "height", t.height),
+                edit("Rotation", "rotation", t.rotation.to_degrees()),
+                edit("Width factor", "width_factor", t.width_factor),
+                edit("Obliquing", "oblique_angle", t.oblique_angle.to_degrees()),
+                ro("Text alignment X", "align_x", format!("{:.4}", ap.x)),
+                ro("Text alignment Y", "align_y", format!("{:.4}", ap.y)),
+                ro("Text alignment Z", "align_z", format!("{:.4}", ap.z)),
+            ],
+        },
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                edit("Position X", "ins_x", t.insertion_point.x),
+                edit("Position Y", "ins_y", t.insertion_point.y),
+                edit("Position Z", "ins_z", t.insertion_point.z),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                ro(
+                    "Upside down",
+                    "upside_down",
+                    if t.generation_flags & 0x4 != 0 {
+                        "Yes"
+                    } else {
+                        "No"
+                    },
+                ),
+                ro(
+                    "Backward",
+                    "backward",
+                    if t.generation_flags & 0x2 != 0 {
+                        "Yes"
+                    } else {
+                        "No"
+                    },
+                ),
+            ],
+        },
+    ]
 }
 
 fn apply_geom_prop(t: &mut Text, field: &str, value: &str) {

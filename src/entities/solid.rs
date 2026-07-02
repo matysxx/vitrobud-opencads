@@ -7,7 +7,7 @@
 use acadrust::entities::Solid;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{edit_prop as edit, square_grip};
+use crate::entities::common::{edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
@@ -98,21 +98,25 @@ impl Grippable for Solid {
 
 impl PropertyEditable for Solid {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        // Elevation is the OCS Z shared by the planar corners (no dedicated
+        // field on the entity); reported from the first corner's Z.
+        let elevation = self.first_corner.z;
         vec![PropSection {
             title: "Geometry".into(),
             props: vec![
-                edit("P1 X", "sl_p1x", self.first_corner.x),
-                edit("P1 Y", "sl_p1y", self.first_corner.y),
-                edit("P1 Z", "sl_p1z", self.first_corner.z),
-                edit("P2 X", "sl_p2x", self.second_corner.x),
-                edit("P2 Y", "sl_p2y", self.second_corner.y),
-                edit("P2 Z", "sl_p2z", self.second_corner.z),
-                edit("P3 X", "sl_p3x", self.third_corner.x),
-                edit("P3 Y", "sl_p3y", self.third_corner.y),
-                edit("P3 Z", "sl_p3z", self.third_corner.z),
-                edit("P4 X", "sl_p4x", self.fourth_corner.x),
-                edit("P4 Y", "sl_p4y", self.fourth_corner.y),
-                edit("P4 Z", "sl_p4z", self.fourth_corner.z),
+                edit("Point 1 X", "sl_p1x", self.first_corner.x),
+                edit("Point 1 Y", "sl_p1y", self.first_corner.y),
+                edit("Point 1 Z", "sl_p1z", self.first_corner.z),
+                edit("Point 2 X", "sl_p2x", self.second_corner.x),
+                edit("Point 2 Y", "sl_p2y", self.second_corner.y),
+                edit("Point 2 Z", "sl_p2z", self.second_corner.z),
+                edit("Point 3 X", "sl_p3x", self.third_corner.x),
+                edit("Point 3 Y", "sl_p3y", self.third_corner.y),
+                edit("Point 3 Z", "sl_p3z", self.third_corner.z),
+                edit("Point 4 X", "sl_p4x", self.fourth_corner.x),
+                edit("Point 4 Y", "sl_p4y", self.fourth_corner.y),
+                edit("Point 4 Z", "sl_p4z", self.fourth_corner.z),
+                ro("Elevation", "sl_elev", format!("{:.4}", elevation)),
                 edit("Thickness", "sl_thick", self.thickness),
             ],
         }]

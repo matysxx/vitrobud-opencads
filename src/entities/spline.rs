@@ -5,7 +5,7 @@ use truck_modeling::{
 };
 
 use crate::command::EntityTransform;
-use crate::entities::common::{ro_prop as ro, square_grip};
+use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
 use crate::entities::traits::TruckConvertible;
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
@@ -107,21 +107,110 @@ fn grips(spline: &Spline) -> Vec<GripDef> {
 }
 
 fn properties(spline: &Spline) -> Vec<PropSection> {
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            ro("Degree", "degree", spline.degree.to_string()),
-            ro(
-                "Control Pts",
-                "ctrl_pts",
-                spline.control_points.len().to_string(),
-            ),
-            ro("Fit Pts", "fit_pts", spline.fit_points.len().to_string()),
-        ],
-    }]
+    let show = if spline.fit_points.is_empty() {
+        "Control Vertices"
+    } else {
+        "Fit Points"
+    };
+    let cp0 = spline.control_points.first();
+    let fp0 = spline.fit_points.first();
+    let w0 = spline.weights.first().copied();
+
+    // Polyline-approximation length over the effective defining points.
+    let pts = if spline.fit_points.is_empty() {
+        &spline.control_points
+    } else {
+        &spline.fit_points
+    };
+    let mut length = 0.0;
+    for w in pts.windows(2) {
+        let dx = w[1].x - w[0].x;
+        let dy = w[1].y - w[0].y;
+        let dz = w[1].z - w[0].z;
+        length += (dx * dx + dy * dy + dz * dz).sqrt();
+    }
+
+    let closed = spline.flags.closed || spline.flags.periodic;
+    let yes_no = |b: bool| if b { "Yes" } else { "No" };
+
+    vec![
+        PropSection {
+            title: "Data Points".into(),
+            props: vec![
+                ro("Show", "show", show),
+                edit("Degree", "degree", spline.degree as f64),
+                ro(
+                    "Control Point Count",
+                    "ctrl_pt_count",
+                    spline.control_points.len().to_string(),
+                ),
+                ro("Control Point", "ctrl_pt_index", "0"),
+                ro(
+                    "Control Point X",
+                    "ctrl_pt_x",
+                    format!("{:.4}", cp0.map(|p| p.x).unwrap_or(0.0)),
+                ),
+                ro(
+                    "Control Point Y",
+                    "ctrl_pt_y",
+                    format!("{:.4}", cp0.map(|p| p.y).unwrap_or(0.0)),
+                ),
+                ro(
+                    "Control Point Z",
+                    "ctrl_pt_z",
+                    format!("{:.4}", cp0.map(|p| p.z).unwrap_or(0.0)),
+                ),
+                ro("Weight", "weight", format!("{:.4}", w0.unwrap_or(1.0))),
+                ro("Knot Parameterization", "knot_param", String::new()),
+                ro(
+                    "Fit Point Count",
+                    "fit_pt_count",
+                    spline.fit_points.len().to_string(),
+                ),
+                ro("Fit Point", "fit_pt_index", "0"),
+                ro(
+                    "Fit Point X",
+                    "fit_pt_x",
+                    format!("{:.4}", fp0.map(|p| p.x).unwrap_or(0.0)),
+                ),
+                ro(
+                    "Fit Point Y",
+                    "fit_pt_y",
+                    format!("{:.4}", fp0.map(|p| p.y).unwrap_or(0.0)),
+                ),
+                ro(
+                    "Fit Point Z",
+                    "fit_pt_z",
+                    format!("{:.4}", fp0.map(|p| p.z).unwrap_or(0.0)),
+                ),
+                ro("Fit Tolerance", "fit_tolerance", String::new()),
+                ro("Start Tangent X", "start_tan_x", String::new()),
+                ro("Start Tangent Y", "start_tan_y", String::new()),
+                ro("Start Tangent Z", "start_tan_z", String::new()),
+                ro("End Tangent X", "end_tan_x", String::new()),
+                ro("End Tangent Y", "end_tan_y", String::new()),
+                ro("End Tangent Z", "end_tan_z", String::new()),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                ro("Closed", "closed", yes_no(closed)),
+                ro("Planar", "planar", yes_no(spline.flags.planar)),
+                ro("Length", "length", format!("{length:.4}")),
+                ro("Area", "area", String::new()),
+            ],
+        },
+    ]
 }
 
-fn apply_geom_prop(_spline: &mut Spline, _field: &str, _value: &str) {}
+fn apply_geom_prop(spline: &mut Spline, field: &str, value: &str) {
+    if field == "degree" {
+        if let Some(v) = parse_f64(value) {
+            spline.degree = v.round() as i32;
+        }
+    }
+}
 
 fn apply_grip(spline: &mut Spline, grip_id: usize, apply: GripApply) {
     if let Some(cp) = spline.control_points.get_mut(grip_id) {

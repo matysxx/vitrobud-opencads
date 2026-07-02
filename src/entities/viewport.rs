@@ -122,196 +122,94 @@ fn properties(vp: &Viewport) -> Vec<PropSection> {
         crate::scene::vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
     let current_scale_label = scale_label(effective_scale);
 
-    let view_opts: Vec<String> = STD_VIEWS.iter().map(|s| s.to_string()).collect();
-    let current_view = viewport_view_label(vp);
-
-    let render_opts: Vec<String> = RENDER_MODES.iter().map(|(s, _)| s.to_string()).collect();
-    let current_render = render_mode_label(&vp.render_mode).to_string();
-
     let shade_opts: Vec<String> = SHADE_PLOT_LABELS.iter().map(|s| s.to_string()).collect();
     let current_shade = shade_plot_label(vp.shade_plot_mode).to_string();
 
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            edit("Center X", "center_x", vp.center.x),
-            edit("Center Y", "center_y", vp.center.y),
-            edit("Center Z", "center_z", vp.center.z),
-            edit("Width", "vp_w", vp.width),
-            edit("Height", "vp_h", vp.height),
-            // Numeric scale entry (derived from view_height; writes both).
-            edit("Scale (num)", "vscale", effective_scale),
-            // Standard scale picker.
-            Property {
-                label: "Scale".into(),
-                field: "vscale_std",
-                value: PropValue::Choice {
-                    selected: current_scale_label,
-                    options: scale_opts,
-                },
-            },
-            // Standard view picker.
-            Property {
-                label: "View".into(),
-                field: "vp_view",
-                value: PropValue::Choice {
-                    selected: current_view,
-                    options: view_opts,
-                },
-            },
-            // Render mode picker.
-            Property {
-                label: "Render Mode".into(),
-                field: "vp_render",
-                value: PropValue::Choice {
-                    selected: current_render,
-                    options: render_opts,
-                },
-            },
-            // Shade plot mode picker.
-            Property {
-                label: "Shade Plot".into(),
-                field: "vp_shade_plot",
-                value: PropValue::Choice {
-                    selected: current_shade,
-                    options: shade_opts,
-                },
-            },
-            // Display state toggles.
-            Property {
-                label: "Locked".into(),
-                field: "vp_locked",
-                value: PropValue::BoolToggle {
-                    field: "vp_locked",
-                    value: vp.status.locked,
-                },
-            },
-            Property {
-                label: "On".into(),
-                field: "vp_on",
-                value: PropValue::BoolToggle {
+    let annotation_scale = if effective_scale.abs() > 1e-9 {
+        format!("1:{}", scale_label(effective_scale))
+    } else {
+        String::new()
+    };
+
+    vec![
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                edit("Center X", "center_x", vp.center.x),
+                edit("Center Y", "center_y", vp.center.y),
+                edit("Center Z", "center_z", vp.center.z),
+                edit("Height", "vp_h", vp.height),
+                edit("Width", "vp_w", vp.width),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                Property {
+                    label: "On".into(),
                     field: "vp_on",
-                    value: vp.status.is_on,
+                    value: PropValue::BoolToggle {
+                        field: "vp_on",
+                        value: vp.status.is_on,
+                    },
                 },
-            },
-            Property {
-                label: "Perspective".into(),
-                field: "vp_perspective",
-                value: PropValue::BoolToggle {
-                    field: "vp_perspective",
-                    value: vp.status.perspective,
+                ro("Clipped", "vp_clipped", String::new()),
+                Property {
+                    label: "Display locked".into(),
+                    field: "vp_locked",
+                    value: PropValue::BoolToggle {
+                        field: "vp_locked",
+                        value: vp.status.locked,
+                    },
                 },
-            },
-            Property {
-                label: "Hide Plot".into(),
-                field: "vp_hide_plot",
-                value: PropValue::BoolToggle {
-                    field: "vp_hide_plot",
-                    value: vp.status.hide_plot,
+                ro("Annotation scale", "vp_anno_scale", annotation_scale),
+                Property {
+                    label: "Standard scale".into(),
+                    field: "vscale_std",
+                    value: PropValue::Choice {
+                        selected: current_scale_label,
+                        options: scale_opts,
+                    },
                 },
-            },
-            Property {
-                label: "UCS Icon".into(),
-                field: "vp_ucs_icon",
-                value: PropValue::BoolToggle {
-                    field: "vp_ucs_icon",
-                    value: vp.ucs_icon_visible,
-                },
-            },
-            edit("Target X", "vtgt_x", vp.view_target.x),
-            edit("Target Z", "vtgt_z", vp.view_target.z),
-            // Perspective lens length.
-            edit("Lens Length (mm)", "vp_lens", vp.lens_length),
-            // Per-Viewport UCS.
-            Property {
-                label: "UCS Per Viewport".into(),
-                field: "vp_ucs_per_vp",
-                value: PropValue::BoolToggle {
+                edit("Custom scale", "vscale", effective_scale),
+                Property {
+                    label: "UCS per viewport".into(),
                     field: "vp_ucs_per_vp",
-                    value: vp.ucs_per_viewport,
+                    value: PropValue::BoolToggle {
+                        field: "vp_ucs_per_vp",
+                        value: vp.ucs_per_viewport,
+                    },
                 },
-            },
-            edit("UCS Origin X", "vp_ucs_ox", vp.ucs_origin.x),
-            edit("UCS Origin Y", "vp_ucs_oy", vp.ucs_origin.y),
-            edit("UCS Origin Z", "vp_ucs_oz", vp.ucs_origin.z),
-            edit("UCS X-Axis X", "vp_ucs_xx", vp.ucs_x_axis.x),
-            edit("UCS X-Axis Y", "vp_ucs_xy", vp.ucs_x_axis.y),
-            edit("UCS X-Axis Z", "vp_ucs_xz", vp.ucs_x_axis.z),
-            edit("UCS Y-Axis X", "vp_ucs_yx", vp.ucs_y_axis.x),
-            edit("UCS Y-Axis Y", "vp_ucs_yy", vp.ucs_y_axis.y),
-            edit("UCS Y-Axis Z", "vp_ucs_yz", vp.ucs_y_axis.z),
-            // Snap / grid metadata (drives the snap-aware UI; not rendered
-            // into the viewport contents directly).
-            edit("Snap Base X", "vp_snap_bx", vp.snap_base.x),
-            edit("Snap Base Y", "vp_snap_by", vp.snap_base.y),
-            edit("Snap Spacing X", "vp_snap_sx", vp.snap_spacing.x),
-            edit("Snap Spacing Y", "vp_snap_sy", vp.snap_spacing.y),
-            edit("Snap Angle", "vp_snap_ang", vp.snap_angle.to_degrees()),
-            edit("Twist Angle", "vp_twist", vp.twist_angle.to_degrees()),
-            edit("Front Clip Z", "vp_front_clip", vp.front_clip_z),
-            edit("Back Clip Z", "vp_back_clip", vp.back_clip_z),
-            edit("Circle Sides", "vp_circle_sides", vp.circle_sides as f64),
-            ro(
-                "Grid Flags",
-                "vp_grid_flags",
-                format!("{:#06b}", vp.grid_flags.to_bits()),
-            ),
-            ro("Grid Major", "vp_grid_major", vp.grid_major.to_string()),
-            ro(
-                "Base UCS",
-                "vp_base_ucs_handle",
-                if vp.base_ucs_handle.is_null() {
-                    "(none)".to_string()
-                } else {
-                    format!("{:X}", vp.base_ucs_handle.value())
+                ro(
+                    "Layer property overrides",
+                    "vp_layer_overrides",
+                    if vp.frozen_layers.is_empty() {
+                        "No".to_string()
+                    } else {
+                        format!("Yes ({})", vp.frozen_layers.len())
+                    },
+                ),
+                ro(
+                    "Visual style",
+                    "vp_visual_style_handle",
+                    if vp.visual_style_handle.is_null() {
+                        "(none)".to_string()
+                    } else {
+                        format!("{:X}", vp.visual_style_handle.value())
+                    },
+                ),
+                Property {
+                    label: "Shade plot".into(),
+                    field: "vp_shade_plot",
+                    value: PropValue::Choice {
+                        selected: current_shade,
+                        options: shade_opts,
+                    },
                 },
-            ),
-            ro("UCS Ortho", "vp_ucs_ortho", vp.ucs_ortho_type.to_string()),
-            ro(
-                "Background",
-                "vp_background_handle",
-                if vp.background_handle.is_null() {
-                    "(none)".to_string()
-                } else {
-                    format!("{:X}", vp.background_handle.value())
-                },
-            ),
-            ro(
-                "Shade Plot",
-                "vp_shade_plot_handle",
-                if vp.shade_plot_handle.is_null() {
-                    "(none)".to_string()
-                } else {
-                    format!("{:X}", vp.shade_plot_handle.value())
-                },
-            ),
-            ro(
-                "Visual Style",
-                "vp_visual_style_handle",
-                if vp.visual_style_handle.is_null() {
-                    "(none)".to_string()
-                } else {
-                    format!("{:X}", vp.visual_style_handle.value())
-                },
-            ),
-            // 3D lighting (not yet applied to the viewport mesh path).
-            ro(
-                "Default Lighting",
-                "vp_default_lighting",
-                if vp.default_lighting { "Yes" } else { "No" },
-            ),
-            ro(
-                "Lighting Type",
-                "vp_lighting_type",
-                vp.default_lighting_type.to_string(),
-            ),
-            ro(
-                "Ambient Color",
-                "vp_ambient_color",
-                format!("{:#010x}", vp.ambient_color as u32),
-            ),
-        ],
-    }]
+                ro("Linked to Sheet View", "vp_sheet_view", String::new()),
+            ],
+        },
+    ]
 }
 
 /// Identify which standard view matches the viewport's view direction.

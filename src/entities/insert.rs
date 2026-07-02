@@ -6,7 +6,7 @@ use glam::Vec3;
 use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
 
-use crate::scene::model::object::{GripApply, GripDef, PropSection};
+use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::cache::block_cache;
 use crate::scene::convert::tessellate;
@@ -20,19 +20,58 @@ fn grips(ins: &Insert) -> Vec<GripDef> {
 }
 
 fn properties(ins: &Insert) -> Vec<PropSection> {
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            edit("Insert X", "ins_x", ins.insert_point.x),
-            edit("Insert Y", "ins_y", ins.insert_point.y),
-            edit("Insert Z", "ins_z", ins.insert_point.z),
-            edit("Scale X", "x_scale", ins.x_scale()),
-            edit("Scale Y", "y_scale", ins.y_scale()),
-            edit("Scale Z", "z_scale", ins.z_scale()),
-            edit("Rotation", "rotation", ins.rotation.to_degrees()),
-            ro("Block", "block", ins.block_name.clone()),
-        ],
-    }]
+    let annotative = ins
+        .common
+        .extended_data
+        .get_record("AcAnnotativeData")
+        .is_some();
+    let attrs: Vec<Property> = ins
+        .attributes
+        .iter()
+        .map(|a| Property {
+            label: a.tag.clone(),
+            field: "attr",
+            value: PropValue::AttrText {
+                tag: a.tag.clone(),
+                value: a.value.clone(),
+            },
+        })
+        .collect();
+    vec![
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                edit("Position X", "ins_x", ins.insert_point.x),
+                edit("Position Y", "ins_y", ins.insert_point.y),
+                edit("Position Z", "ins_z", ins.insert_point.z),
+                edit("Scale X", "x_scale", ins.x_scale()),
+                edit("Scale Y", "y_scale", ins.y_scale()),
+                edit("Scale Z", "z_scale", ins.z_scale()),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                ro("Name", "block", ins.block_name.clone()),
+                edit("Rotation", "rotation", ins.rotation.to_degrees()),
+                ro("Block Unit", "block_unit", String::new()),
+                ro("Unit factor", "unit_factor", String::new()),
+                ro(
+                    "Annotative",
+                    "annotative",
+                    if annotative { "Yes" } else { "No" },
+                ),
+            ],
+        },
+        PropSection {
+            title: "Attributes".into(),
+            props: attrs,
+        },
+        PropSection {
+            title: "Custom".into(),
+            props: Vec::new(),
+        },
+    ]
 }
 
 fn apply_geom_prop(ins: &mut Insert, field: &str, value: &str) {

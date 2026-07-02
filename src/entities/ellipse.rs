@@ -2,7 +2,9 @@ use acadrust::entities::Ellipse;
 use truck_modeling::{builder, BSplineCurve, Curve, Edge, KnotVec, Point3, Wire};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{
+    center_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+};
 use crate::entities::traits::TruckConvertible;
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
@@ -159,32 +161,81 @@ fn grips(ell: &Ellipse) -> Vec<GripDef> {
 }
 
 fn properties(ell: &Ellipse) -> Vec<PropSection> {
-    let r_major = (ell.major_axis.x * ell.major_axis.x
-        + ell.major_axis.y * ell.major_axis.y
-        + ell.major_axis.z * ell.major_axis.z)
-        .sqrt();
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            edit("Center X", "center_x", ell.center.x),
-            edit("Center Y", "center_y", ell.center.y),
-            edit("Center Z", "center_z", ell.center.z),
-            ro("Major Radius", "major_r", format!("{r_major:.4}")),
-            ro(
-                "Minor Radius",
-                "minor_r",
-                format!("{:.4}", r_major * ell.minor_axis_ratio),
-            ),
-            ro(
-                "Minor/Major",
-                "ratio",
-                format!("{:.4}", ell.minor_axis_ratio),
-            ),
-        ],
-    }]
+    use crate::entities::traits::MassPropsCalc;
+
+    let r_major = ell.major_axis_length();
+    let r_minor = ell.minor_axis_length();
+
+    // Axis frame in WCS: major-axis unit vector `u`, minor direction `v = normal × u`.
+    let u = glam::DVec3::new(ell.major_axis.x, ell.major_axis.y, ell.major_axis.z);
+    let u = if r_major > 1e-12 {
+        u / r_major
+    } else {
+        glam::DVec3::X
+    };
+    let n = glam::DVec3::new(ell.normal.x, ell.normal.y, ell.normal.z);
+    let v = n.cross(u);
+
+    // Parametric end point in WCS: center + r_major·cos(t1)·u + r_minor·sin(t1)·v.
+    let t1 = ell.end_parameter;
+    let end = glam::DVec3::new(ell.center.x, ell.center.y, ell.center.z)
+        + u * (r_major * t1.cos())
+        + v * (r_minor * t1.sin());
+
+    let start_angle = ell.start_parameter.to_degrees().rem_euclid(360.0);
+    let end_angle = ell.end_parameter.to_degrees().rem_euclid(360.0);
+
+    let props = ell.mass_props();
+
+    vec![
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                edit("Center X", "center_x", ell.center.x),
+                edit("Center Y", "center_y", ell.center.y),
+                edit("Center Z", "center_z", ell.center.z),
+                ro("End X", "end_x", format!("{:.4}", end.x)),
+                ro("End Y", "end_y", format!("{:.4}", end.y)),
+                ro("End Z", "end_z", format!("{:.4}", end.z)),
+                ro("Major radius", "major_r", format!("{r_major:.4}")),
+                ro("Minor radius", "minor_r", format!("{r_minor:.4}")),
+                edit("Radius ratio", "ratio", ell.minor_axis_ratio),
+                ro("Start angle", "start_angle", format!("{start_angle:.2}")),
+                ro("End angle", "end_angle", format!("{end_angle:.2}")),
+                edit("Start parameter", "start_param", ell.start_parameter),
+                edit("End parameter", "end_param", ell.end_parameter),
+                ro("Area", "area", format!("{:.4}", props.area)),
+                ro("Length", "length", format!("{:.4}", props.perimeter)),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                edit("Normal X", "normal_x", ell.normal.x),
+                edit("Normal Y", "normal_y", ell.normal.y),
+                edit("Normal Z", "normal_z", ell.normal.z),
+            ],
+        },
+    ]
 }
 
-fn apply_geom_prop(_ell: &mut Ellipse, _field: &str, _value: &str) {}
+fn apply_geom_prop(ell: &mut Ellipse, field: &str, value: &str) {
+    let Some(v) = parse_f64(value) else {
+        return;
+    };
+    match field {
+        "center_x" => ell.center.x = v,
+        "center_y" => ell.center.y = v,
+        "center_z" => ell.center.z = v,
+        "ratio" => ell.minor_axis_ratio = v,
+        "start_param" => ell.start_parameter = v,
+        "end_param" => ell.end_parameter = v,
+        "normal_x" => ell.normal.x = v,
+        "normal_y" => ell.normal.y = v,
+        "normal_z" => ell.normal.z = v,
+        _ => {}
+    }
+}
 
 fn apply_grip(ell: &mut Ellipse, grip_id: usize, apply: GripApply) {
     match (grip_id, apply) {

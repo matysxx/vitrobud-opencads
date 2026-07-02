@@ -10,7 +10,7 @@ use acadrust::entities::{Body, Region, Solid3D, Surface};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{center_grip, ro_prop as ro};
+use crate::entities::common::{center_grip, edit_prop as edit, parse_f64, ro_prop as ro};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
 
@@ -52,17 +52,6 @@ fn translate_wires(wires: &mut Vec<acadrust::entities::Wire>, d: Vec3) {
     }
 }
 
-fn acis_size_str(has_data: bool, sat_len: usize, sab_len: usize, is_binary: bool) -> String {
-    if !has_data {
-        return "none".to_string();
-    }
-    if is_binary {
-        format!("{} bytes (SAB)", sab_len)
-    } else {
-        format!("{} bytes (SAT)", sat_len)
-    }
-}
-
 // ── Solid3D ───────────────────────────────────────────────────────────────────
 
 impl Grippable for Solid3D {
@@ -85,58 +74,40 @@ impl Grippable for Solid3D {
 
 impl PropertyEditable for Solid3D {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        let size = acis_size_str(
-            self.acis_data.has_data(),
-            self.acis_data.sat_data.len(),
-            self.acis_data.sab_data.len(),
-            self.acis_data.is_binary,
-        );
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro(
-                    "Ref Pt X",
-                    "s3d_px",
-                    format!("{:.4}", self.point_of_reference.x),
-                ),
-                ro(
-                    "Ref Pt Y",
-                    "s3d_py",
-                    format!("{:.4}", self.point_of_reference.y),
-                ),
-                ro(
-                    "Ref Pt Z",
-                    "s3d_pz",
-                    format!("{:.4}", self.point_of_reference.z),
-                ),
-                ro("ACIS Data", "s3d_acis", size),
-                ro(
-                    "UID",
-                    "s3d_uid",
-                    if self.uid.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        self.uid.clone()
-                    },
-                ),
-                ro(
-                    "Silhouettes",
-                    "s3d_silhouettes",
-                    self.silhouettes.len().to_string(),
-                ),
-                ro(
-                    "History",
-                    "s3d_history",
-                    match self.history_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
-                    },
-                ),
-            ],
-        }]
+        let history = match self.history_handle {
+            Some(h) if !h.is_null() => format!("{:X}", h.value()),
+            _ => "None".to_string(),
+        };
+        vec![
+            PropSection {
+                title: "Solid History".into(),
+                props: vec![
+                    ro("History", "s3d_history", history),
+                    ro("Show History", "s3d_show_history", String::new()),
+                ],
+            },
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Position X", "s3d_px", self.point_of_reference.x),
+                    edit("Position Y", "s3d_py", self.point_of_reference.y),
+                    edit("Position Z", "s3d_pz", self.point_of_reference.z),
+                ],
+            },
+        ]
     }
 
-    fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
+    fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        let Some(v) = parse_f64(value) else {
+            return;
+        };
+        match field {
+            "s3d_px" => self.point_of_reference.x = v,
+            "s3d_py" => self.point_of_reference.y = v,
+            "s3d_pz" => self.point_of_reference.z = v,
+            _ => {}
+        }
+    }
 }
 
 // ── Region ────────────────────────────────────────────────────────────────────
@@ -161,45 +132,11 @@ impl Grippable for Region {
 
 impl PropertyEditable for Region {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        let size = acis_size_str(
-            self.acis_data.has_data(),
-            self.acis_data.sat_data.len(),
-            self.acis_data.sab_data.len(),
-            self.acis_data.is_binary,
-        );
         vec![PropSection {
             title: "Geometry".into(),
             props: vec![
-                ro(
-                    "Ref Pt X",
-                    "rgn_px",
-                    format!("{:.4}", self.point_of_reference.x),
-                ),
-                ro(
-                    "Ref Pt Y",
-                    "rgn_py",
-                    format!("{:.4}", self.point_of_reference.y),
-                ),
-                ro(
-                    "Ref Pt Z",
-                    "rgn_pz",
-                    format!("{:.4}", self.point_of_reference.z),
-                ),
-                ro("ACIS Data", "rgn_acis", size),
-                ro(
-                    "UID",
-                    "rgn_uid",
-                    if self.uid.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        self.uid.clone()
-                    },
-                ),
-                ro(
-                    "Silhouettes",
-                    "rgn_silhouettes",
-                    self.silhouettes.len().to_string(),
-                ),
+                ro("Area", "rgn_area", String::new()),
+                ro("Perimeter", "rgn_perimeter", String::new()),
             ],
         }]
     }
@@ -229,45 +166,11 @@ impl Grippable for Body {
 
 impl PropertyEditable for Body {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        let size = acis_size_str(
-            self.acis_data.has_data(),
-            self.acis_data.sat_data.len(),
-            self.acis_data.sab_data.len(),
-            self.acis_data.is_binary,
-        );
         vec![PropSection {
-            title: "Geometry".into(),
+            title: "Solid History".into(),
             props: vec![
-                ro(
-                    "Ref Pt X",
-                    "bdy_px",
-                    format!("{:.4}", self.point_of_reference.x),
-                ),
-                ro(
-                    "Ref Pt Y",
-                    "bdy_py",
-                    format!("{:.4}", self.point_of_reference.y),
-                ),
-                ro(
-                    "Ref Pt Z",
-                    "bdy_pz",
-                    format!("{:.4}", self.point_of_reference.z),
-                ),
-                ro("ACIS Data", "bdy_acis", size),
-                ro(
-                    "UID",
-                    "bdy_uid",
-                    if self.uid.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        self.uid.clone()
-                    },
-                ),
-                ro(
-                    "Silhouettes",
-                    "bdy_silhouettes",
-                    self.silhouettes.len().to_string(),
-                ),
+                ro("History", "bdy_history", String::new()),
+                ro("Show History", "bdy_show_history", String::new()),
             ],
         }]
     }

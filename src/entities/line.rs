@@ -73,6 +73,10 @@ fn grips(line: &Line) -> Vec<GripDef> {
 }
 
 fn properties(line: &Line) -> Vec<PropSection> {
+    let dx = line.end.x - line.start.x;
+    let dy = line.end.y - line.start.y;
+    let dz = line.end.z - line.start.z;
+    let angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
     vec![PropSection {
         title: "Geometry".into(),
         props: vec![
@@ -82,7 +86,11 @@ fn properties(line: &Line) -> Vec<PropSection> {
             edit("End X", "end_x", line.end.x),
             edit("End Y", "end_y", line.end.y),
             edit("End Z", "end_z", line.end.z),
+            ro("Delta X", "delta_x", format!("{dx:.4}")),
+            ro("Delta Y", "delta_y", format!("{dy:.4}")),
+            ro("Delta Z", "delta_z", format!("{dz:.4}")),
             ro("Length", "length", format!("{:.4}", line.length())),
+            ro("Angle", "angle", format!("{angle:.2}")),
         ],
     }]
 }

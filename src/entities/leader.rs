@@ -191,102 +191,94 @@ fn hookline_dir_str(hd: &HooklineDirection) -> &'static str {
     }
 }
 
+fn color_str(c: &acadrust::types::Color) -> String {
+    match c.rgb() {
+        Some((r, g, b)) => format!("RGB({},{},{})", r, g, b),
+        None => format!("{:?}", c),
+    }
+}
+
 fn properties(leader: &Leader) -> Vec<PropSection> {
     let n = leader.vertices.len();
-    let mut props = vec![
-        // Style
-        Property {
-            label: "Dim Style".into(),
-            field: "dimension_style",
-            value: PropValue::EditText(leader.dimension_style.clone()),
-        },
-        // Path type
+
+    let arrow_size = leader.text_height.max(1.0);
+
+    let misc = vec![
         choice_prop(
-            "Path Type",
+            "Type",
             "path_type",
             path_type_str(&leader.path_type),
             &["Straight", "Spline"],
         ),
-        // Creation type
         choice_prop(
-            "Creation Type",
+            "Annotation type",
             "creation_type",
             creation_type_str(&leader.creation_type),
             &["With Text", "With Tolerance", "With Block", "No Annotation"],
         ),
-        // Arrow
-        bool_toggle("Arrow", "arrow_enabled", leader.arrow_enabled),
-        // Hookline
-        bool_toggle("Hookline", "hookline_enabled", leader.hookline_enabled),
-        choice_prop(
-            "Hookline Dir",
-            "hookline_direction",
-            hookline_dir_str(&leader.hookline_direction),
-            &["Opposite", "Same"],
-        ),
-        // Text dims
-        edit("Text Height", "text_height", leader.text_height),
-        edit("Text Width", "text_width", leader.text_width),
-        // Normal
-        edit("Normal X", "normal_x", leader.normal.x),
-        edit("Normal Y", "normal_y", leader.normal.y),
-        edit("Normal Z", "normal_z", leader.normal.z),
-        // Horizontal direction
-        edit("H Dir X", "h_dir_x", leader.horizontal_direction.x),
-        edit("H Dir Y", "h_dir_y", leader.horizontal_direction.y),
-        edit("H Dir Z", "h_dir_z", leader.horizontal_direction.z),
-        // Block offset
-        edit("Block Offset X", "block_offset_x", leader.block_offset.x),
-        edit("Block Offset Y", "block_offset_y", leader.block_offset.y),
-        edit("Block Offset Z", "block_offset_z", leader.block_offset.z),
-        // Annotation offset
-        edit("Ann Offset X", "ann_offset_x", leader.annotation_offset.x),
-        edit("Ann Offset Y", "ann_offset_y", leader.annotation_offset.y),
-        edit("Ann Offset Z", "ann_offset_z", leader.annotation_offset.z),
-        // Stats
-        ro("Vertices", "vertex_count", n.to_string()),
-        ro("Length", "length", format!("{:.4}", leader.length())),
-        // Annotation reference + dim-style colour override (read-only —
-        // they are written by the file and survive a round-trip).
-        ro(
-            "Annotation",
-            "annotation_handle",
-            if leader.annotation_handle.is_null() {
-                "(none)".to_string()
-            } else {
-                format!("{:X}", leader.annotation_handle.value())
-            },
-        ),
-        ro(
-            "Override Color",
-            "override_color",
-            match leader.override_color.rgb() {
-                Some((r, g, b)) => format!("RGB({},{},{})", r, g, b),
-                None => format!("{:?}", leader.override_color),
-            },
-        ),
+        bool_toggle("Arrowhead", "arrow_enabled", leader.arrow_enabled),
+        Property {
+            label: "Dim style".into(),
+            field: "dimension_style",
+            value: PropValue::EditText(leader.dimension_style.clone()),
+        },
     ];
 
-    // Arrow point (vertex[0])
+    let lines_arrows = vec![
+        ro("Dim line color", "override_color", color_str(&leader.override_color)),
+        ro(
+            "Dim line lineweight",
+            "line_weight",
+            format!("{:?}", leader.common.line_weight),
+        ),
+        ro("Dim line linetype", "linetype", leader.common.linetype.clone()),
+        bool_toggle("Arrowhead", "arrow_enabled", leader.arrow_enabled),
+        ro("Arrow size", "arrow_size", format!("{:.4}", arrow_size)),
+    ];
+
+    let text = vec![
+        edit("Text height", "text_height", leader.text_height),
+        ro("Text offset", "text_offset", String::new()),
+        ro("Text style", "text_style", String::new()),
+        ro("Text color", "text_color", color_str(&leader.override_color)),
+        ro("Text position vert", "text_pos_vert", String::new()),
+    ];
+
+    let fit = vec![ro("Dim scale overall", "dim_scale_overall", String::new())];
+
+    let mut geometry = vec![ro("Vertex", "vertex_count", n.to_string())];
     if let Some(a) = leader.arrow_point() {
-        props.push(edit("Arrow X", "arrow_x", a.x));
-        props.push(edit("Arrow Y", "arrow_y", a.y));
-        props.push(edit("Arrow Z", "arrow_z", a.z));
+        geometry.push(edit("Vertex X", "vertex_x", a.x));
+        geometry.push(edit("Vertex Y", "vertex_y", a.y));
+        geometry.push(edit("Vertex Z", "vertex_z", a.z));
+    } else {
+        geometry.push(ro("Vertex X", "vertex_x", String::new()));
+        geometry.push(ro("Vertex Y", "vertex_y", String::new()));
+        geometry.push(ro("Vertex Z", "vertex_z", String::new()));
     }
 
-    // End point (last vertex)
-    if n >= 2 {
-        if let Some(e) = leader.end_point() {
-            props.push(edit("End X", "end_x", e.x));
-            props.push(edit("End Y", "end_y", e.y));
-            props.push(edit("End Z", "end_z", e.z));
-        }
-    }
-
-    vec![PropSection {
-        title: "Geometry".into(),
-        props,
-    }]
+    vec![
+        PropSection {
+            title: "Misc".into(),
+            props: misc,
+        },
+        PropSection {
+            title: "Lines & Arrows".into(),
+            props: lines_arrows,
+        },
+        PropSection {
+            title: "Text".into(),
+            props: text,
+        },
+        PropSection {
+            title: "Fit".into(),
+            props: fit,
+        },
+        PropSection {
+            title: "Geometry".into(),
+            props: geometry,
+        },
+    ]
 }
 
 fn apply_geom_prop(leader: &mut Leader, field: &str, value: &str) {
@@ -398,43 +390,19 @@ fn apply_geom_prop(leader: &mut Leader, field: &str, value: &str) {
                 leader.annotation_offset.z = v;
             }
         }
-        "arrow_x" => {
+        "vertex_x" => {
             if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(0)) {
                 vert.x = v;
             }
         }
-        "arrow_y" => {
+        "vertex_y" => {
             if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(0)) {
                 vert.y = v;
             }
         }
-        "arrow_z" => {
+        "vertex_z" => {
             if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(0)) {
                 vert.z = v;
-            }
-        }
-        "end_x" => {
-            let last = leader.vertices.len().saturating_sub(1);
-            if last > 0 {
-                if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(last)) {
-                    vert.x = v;
-                }
-            }
-        }
-        "end_y" => {
-            let last = leader.vertices.len().saturating_sub(1);
-            if last > 0 {
-                if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(last)) {
-                    vert.y = v;
-                }
-            }
-        }
-        "end_z" => {
-            let last = leader.vertices.len().saturating_sub(1);
-            if last > 0 {
-                if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(last)) {
-                    vert.z = v;
-                }
             }
         }
         _ => {}

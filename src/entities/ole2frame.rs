@@ -79,42 +79,30 @@ fn properties(ole: &Ole2Frame) -> Vec<PropSection> {
         OleObjectType::Embedded => "Embedded",
         OleObjectType::Static => "Static",
     };
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            ro("Type", "ole_type", type_str),
-            edit("Upper Left X", "ole_ulx", ole.upper_left_corner.x),
-            edit("Upper Left Y", "ole_uly", ole.upper_left_corner.y),
-            edit("Lower Right X", "ole_lrx", ole.lower_right_corner.x),
-            edit("Lower Right Y", "ole_lry", ole.lower_right_corner.y),
-            ro("Version", "ole_version", ole.version.to_string()),
-            ro(
-                "Source App",
-                "ole_source_app",
-                if ole.source_application.is_empty() {
-                    "(unknown)".to_string()
-                } else {
-                    ole.source_application.clone()
-                },
-            ),
-            ro(
-                "Data Size",
-                "ole_data_size",
-                format!("{} bytes", ole.binary_data.len()),
-            ),
-            ro("DWG Mode", "ole_dwg_mode", ole.dwg_mode.to_string()),
-            ro(
-                "DWG Trailing Byte",
-                "ole_dwg_trailing",
-                format!("{:#04x}", ole.dwg_trailing_byte),
-            ),
-            ro(
-                "Paper Space",
-                "ole_paper_space",
-                if ole.is_paper_space { "Yes" } else { "No" },
-            ),
-        ],
-    }]
+    let width = (ole.lower_right_corner.x - ole.upper_left_corner.x).abs();
+    let height = (ole.upper_left_corner.y - ole.lower_right_corner.y).abs();
+    vec![
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                edit("Position X", "ole_ulx", ole.upper_left_corner.x),
+                edit("Position Y", "ole_uly", ole.upper_left_corner.y),
+                edit("Position Z", "ole_ulz", ole.upper_left_corner.z),
+                ro("Width", "ole_width", format!("{:.4}", width)),
+                ro("Height", "ole_height", format!("{:.4}", height)),
+                ro("Scale width", "ole_scale_width", String::new()),
+                ro("Scale height", "ole_scale_height", String::new()),
+                ro("Lock aspect", "ole_lock_aspect", String::new()),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                ro("Type", "ole_type", type_str),
+                ro("Plot quality", "ole_plot_quality", String::new()),
+            ],
+        },
+    ]
 }
 
 fn apply_geom_prop(ole: &mut Ole2Frame, field: &str, value: &str) {
@@ -124,6 +112,7 @@ fn apply_geom_prop(ole: &mut Ole2Frame, field: &str, value: &str) {
     match field {
         "ole_ulx" => ole.upper_left_corner.x = v,
         "ole_uly" => ole.upper_left_corner.y = v,
+        "ole_ulz" => ole.upper_left_corner.z = v,
         "ole_lrx" => ole.lower_right_corner.x = v,
         "ole_lry" => ole.lower_right_corner.y = v,
         _ => {}

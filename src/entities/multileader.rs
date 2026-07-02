@@ -520,204 +520,186 @@ fn choice(label: &str, field: &'static str, selected: &str, opts: &[&str]) -> Pr
     }
 }
 
+fn hexh(h: Option<acadrust::Handle>) -> String {
+    match h {
+        Some(h) if !h.is_null() => format!("{:X}", h.value()),
+        _ => "(none)".to_string(),
+    }
+}
+
 fn properties(ml: &MultiLeader) -> Vec<PropSection> {
     let ctx = &ml.context;
-    let total_pts: usize = ctx
-        .leader_roots
-        .iter()
-        .flat_map(|r| r.lines.iter())
-        .map(|l| l.points.len())
-        .sum();
+    let first_root = ctx.leader_roots.first();
 
-    let mut props = vec![
-        // Content
-        choice(
-            "Content Type",
-            "content_type",
-            content_type_str(&ml.content_type),
-            &["None", "MText", "Block", "Tolerance"],
-        ),
-        Property {
-            label: "Text".into(),
-            field: "text_string",
-            value: PropValue::EditText(ctx.text_string.clone()),
-        },
-        edit("Text Height", "text_height", ml.text_height),
-        edit("Text X", "text_x", ctx.text_location.x),
-        edit("Text Y", "text_y", ctx.text_location.y),
-        edit("Text Z", "text_z", ctx.text_location.z),
-        bool_toggle("Text Frame", "text_frame", ml.text_frame),
-        // Leader line
-        choice(
-            "Path Type",
-            "path_type",
-            path_type_str(&ml.path_type),
-            &["Straight", "Spline", "Invisible"],
-        ),
-        bool_toggle("Landing", "enable_landing", ml.enable_landing),
-        bool_toggle("Dogleg", "enable_dogleg", ml.enable_dogleg),
-        edit("Dogleg Length", "dogleg_length", ml.dogleg_length),
-        edit("Arrow Size", "arrowhead_size", ml.arrowhead_size),
-        edit("Scale", "scale_factor", ml.scale_factor),
-        bool_toggle(
-            "Annotation Scale",
-            "enable_annotation_scale",
-            ml.enable_annotation_scale,
-        ),
-        // Text attachment
-        choice(
-            "Left Attach",
-            "text_left_attachment",
-            attachment_str(&ml.text_left_attachment),
-            &[
-                "Top of Top",
-                "Mid of Top",
-                "Mid of Text",
-                "Mid of Bot",
-                "Bot of Bot",
-                "Bottom Line",
-            ],
-        ),
-        choice(
-            "Right Attach",
-            "text_right_attachment",
-            attachment_str(&ml.text_right_attachment),
-            &[
-                "Top of Top",
-                "Mid of Top",
-                "Mid of Text",
-                "Mid of Bot",
-                "Bot of Bot",
-                "Bottom Line",
-            ],
-        ),
-        // Top / Bottom attach (used when text_attachment_direction = Vertical)
-        choice(
-            "Top Attach",
-            "text_top_attachment",
-            attachment_str(&ml.text_top_attachment),
-            &[
-                "Top of Top",
-                "Mid of Top",
-                "Mid of Text",
-                "Mid of Bot",
-                "Bot of Bot",
-                "Bottom Line",
-            ],
-        ),
-        choice(
-            "Bottom Attach",
-            "text_bottom_attachment",
-            attachment_str(&ml.text_bottom_attachment),
-            &[
-                "Top of Top",
-                "Mid of Top",
-                "Mid of Text",
-                "Mid of Bot",
-                "Bot of Bot",
-                "Bottom Line",
-            ],
-        ),
-        // Stats
-        ro("Leader Pts", "total_pts", total_pts.to_string()),
-        ro("Roots", "root_count", ctx.leader_roots.len().to_string()),
-        // Style references / handles (read-only — the multileader's own
-        // copies of the style values are the authoritative render inputs).
-        ro(
-            "Style Handle",
-            "style_handle",
-            match ml.style_handle {
-                Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                _ => "(none)".to_string(),
-            },
-        ),
-        ro(
-            "Text Style Handle",
-            "text_style_handle",
-            match ml.text_style_handle {
-                Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                _ => "(none)".to_string(),
-            },
-        ),
-        ro(
-            "Arrow Handle",
-            "arrowhead_handle",
-            match ml.arrowhead_handle {
-                Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                _ => "(none)".to_string(),
-            },
-        ),
-        ro(
-            "Line Type Handle",
-            "line_type_handle",
-            match ml.line_type_handle {
-                Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                _ => "(none)".to_string(),
-            },
-        ),
-        ro(
-            "Block Content Handle",
-            "block_content_handle",
-            match ml.block_content_handle {
-                Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                _ => "(none)".to_string(),
-            },
-        ),
-        // Less common toggles surfaced read-only.
-        ro(
-            "Extend Leader",
-            "extend_leader_to_text",
-            if ml.extend_leader_to_text {
-                "Yes"
-            } else {
-                "No"
-            },
-        ),
-        ro(
-            "Text Direction Negative",
-            "text_direction_negative",
-            if ml.text_direction_negative {
-                "Yes"
-            } else {
-                "No"
-            },
-        ),
-        ro(
-            "Text Align In IPE",
-            "text_align_in_ipe",
-            ml.text_align_in_ipe.to_string(),
-        ),
-        ro(
-            "Property Override Flags",
-            "property_override_flags",
-            format!("{:#018b}", ml.property_override_flags.bits()),
-        ),
-        ro(
-            "Block Scale",
-            "block_scale",
-            format!(
-                "{:.3} × {:.3} × {:.3}",
-                ml.block_scale.x, ml.block_scale.y, ml.block_scale.z
+    // ── Misc ─────────────────────────────────────────────────────────────
+    let misc = PropSection {
+        title: "Misc".into(),
+        props: vec![
+            ro("Leader type", "path_type", path_type_str(&ml.path_type)),
+            choice(
+                "Content type",
+                "content_type",
+                content_type_str(&ml.content_type),
+                &["None", "MText", "Block", "Tolerance"],
             ),
-        ),
-        ro(
-            "Block Rotation",
-            "block_rotation",
-            format!("{:.3}°", ml.block_rotation.to_degrees()),
-        ),
-    ];
+            edit("Overall scale", "scale_factor", ml.scale_factor),
+            ro(
+                "Annotative",
+                "enable_annotation_scale",
+                if ml.enable_annotation_scale { "Yes" } else { "No" },
+            ),
+            // No stored annotative-scale name on the entity.
+            ro("Annotative scale", "annotative_scale", String::new()),
+        ],
+    };
 
-    // Connection point for first root (most common case)
-    if let Some(root) = ctx.leader_roots.first() {
-        props.push(edit("Root Conn X", "conn_x", root.connection_point.x));
-        props.push(edit("Root Conn Y", "conn_y", root.connection_point.y));
-        props.push(edit("Root Conn Z", "conn_z", root.connection_point.z));
-    }
+    // ── Leaders ──────────────────────────────────────────────────────────
+    let leaders = PropSection {
+        title: "Leaders".into(),
+        props: vec![
+            ro("Leader type", "path_type", path_type_str(&ml.path_type)),
+            ro("Leader color", "line_color", format!("{:?}", ml.line_color)),
+            ro(
+                "Leader linetype",
+                "line_type_handle",
+                hexh(ml.line_type_handle),
+            ),
+            ro(
+                "Leader linetype scale",
+                "leader_linetype_scale",
+                format!("{:.4}", ml.common.linetype_scale),
+            ),
+            ro(
+                "Leader lineweight",
+                "line_weight",
+                format!("{:?}", ml.line_weight),
+            ),
+            ro("Arrowhead", "arrowhead_handle", hexh(ml.arrowhead_handle)),
+            edit("Arrowhead size", "arrowhead_size", ml.arrowhead_size),
+        ],
+    };
 
-    vec![PropSection {
-        title: "Geometry".into(),
-        props,
-    }]
+    // ── Leader Structure ─────────────────────────────────────────────────
+    let structure = PropSection {
+        title: "Leader Structure".into(),
+        props: vec![
+            // Maximum leader points / segment-angle constraints are leader-style
+            // settings not stored on the entity instance.
+            ro("Maximum leader points", "max_leader_points", String::new()),
+            ro("First segment angle", "first_segment_angle", String::new()),
+            ro("Second segment angle", "second_segment_angle", String::new()),
+            ro(
+                "Landing",
+                "enable_landing",
+                if ml.enable_landing { "Yes" } else { "No" },
+            ),
+            edit(
+                "Landing distance",
+                "landing_distance",
+                first_root.map(|r| r.landing_distance).unwrap_or(0.0),
+            ),
+            edit("Dogleg length", "dogleg_length", ml.dogleg_length),
+        ],
+    };
+
+    // ── Text ─────────────────────────────────────────────────────────────
+    let text = PropSection {
+        title: "Text".into(),
+        props: vec![
+            ro("Text style", "text_style_handle", hexh(ml.text_style_handle)),
+            ro(
+                "Text angle",
+                "text_angle_type",
+                format!("{:?}", ml.text_angle_type),
+            ),
+            ro("Text color", "text_color", format!("{:?}", ml.text_color)),
+            edit("Text height", "text_height", ml.text_height),
+            ro(
+                "Justification",
+                "text_alignment",
+                format!("{:?}", ml.text_alignment),
+            ),
+            bool_toggle("Frame text", "text_frame", ml.text_frame),
+            choice(
+                "Left attachment type",
+                "text_left_attachment",
+                attachment_str(&ml.text_left_attachment),
+                &[
+                    "Top of Top",
+                    "Mid of Top",
+                    "Mid of Text",
+                    "Mid of Bot",
+                    "Bot of Bot",
+                    "Bottom Line",
+                ],
+            ),
+            choice(
+                "Right attachment type",
+                "text_right_attachment",
+                attachment_str(&ml.text_right_attachment),
+                &[
+                    "Top of Top",
+                    "Mid of Top",
+                    "Mid of Text",
+                    "Mid of Bot",
+                    "Bot of Bot",
+                    "Bottom Line",
+                ],
+            ),
+            ro(
+                "Text align type",
+                "text_attachment_direction",
+                format!("{:?}", ml.text_attachment_direction),
+            ),
+            edit("Landing gap", "landing_gap", ctx.landing_gap),
+            ro(
+                "Background mask",
+                "background_fill_enabled",
+                if ctx.background_fill_enabled {
+                    "Yes"
+                } else {
+                    "No"
+                },
+            ),
+        ],
+    };
+
+    // ── Block ────────────────────────────────────────────────────────────
+    let block = PropSection {
+        title: "Block".into(),
+        props: vec![
+            ro(
+                "Source block",
+                "block_content_handle",
+                hexh(ml.block_content_handle),
+            ),
+            ro(
+                "Block attachment",
+                "block_connection_type",
+                format!("{:?}", ml.block_connection_type),
+            ),
+            ro(
+                "Block color",
+                "block_content_color",
+                format!("{:?}", ml.block_content_color),
+            ),
+            ro(
+                "Block scale",
+                "block_scale",
+                format!(
+                    "{:.3} × {:.3} × {:.3}",
+                    ml.block_scale.x, ml.block_scale.y, ml.block_scale.z
+                ),
+            ),
+            edit(
+                "Block rotation",
+                "block_rotation",
+                ml.block_rotation.to_degrees(),
+            ),
+        ],
+    };
+
+    vec![misc, leaders, structure, text, block]
 }
 
 fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
@@ -802,6 +784,21 @@ fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
         "scale_factor" => {
             if let Some(v) = f64(value) {
                 ml.scale_factor = v;
+            }
+        }
+        "landing_distance" => {
+            if let (Some(v), Some(root)) = (f64(value), ml.context.leader_roots.first_mut()) {
+                root.landing_distance = v;
+            }
+        }
+        "landing_gap" => {
+            if let Some(v) = f64(value) {
+                ml.context.landing_gap = v;
+            }
+        }
+        "block_rotation" => {
+            if let Some(v) = f64(value) {
+                ml.block_rotation = v.to_radians();
             }
         }
         "conn_x" => {

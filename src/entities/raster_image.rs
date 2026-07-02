@@ -163,56 +163,100 @@ impl Grippable for RasterImage {
 
 impl PropertyEditable for RasterImage {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("File", "ri_file", self.file_path.clone()),
-                edit("Insert X", "ri_ox", self.insertion_point.x),
-                edit("Insert Y", "ri_oy", self.insertion_point.y),
-                edit("Insert Z", "ri_oz", self.insertion_point.z),
-                edit("Brightness", "ri_bright", self.brightness as f64),
-                edit("Contrast", "ri_contrast", self.contrast as f64),
-                edit("Fade", "ri_fade", self.fade as f64),
-                Property {
-                    label: "Clipping".into(),
-                    field: "ri_clip",
-                    value: PropValue::BoolToggle {
-                        field: "ri_clip",
-                        value: self.clipping_enabled,
+        let rotation_deg = self.u_vector.y.atan2(self.u_vector.x).to_degrees();
+        let scale = self.u_vector.length();
+        let show_image = self.flags.contains(acadrust::entities::ImageDisplayFlags::SHOW_IMAGE);
+        let show_clipped = self
+            .flags
+            .contains(acadrust::entities::ImageDisplayFlags::USE_CLIPPING_BOUNDARY);
+        let clip_inverted = self.clip_boundary.clip_mode == acadrust::entities::ClipMode::Inside;
+        let transparency = format!("{:.0}%", self.common.transparency.as_percent() * 100.0);
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Position X", "ri_ox", self.insertion_point.x),
+                    edit("Position Y", "ri_oy", self.insertion_point.y),
+                    edit("Position Z", "ri_oz", self.insertion_point.z),
+                    ro("Rotation", "ri_rotation", format!("{:.4}", rotation_deg)),
+                    ro("Width", "ri_width", format!("{:.4}", self.width())),
+                    ro("Height", "ri_height", format!("{:.4}", self.height())),
+                    ro("Scale", "ri_scale", format!("{:.4}", scale)),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    ro("Name", "ri_name", self.file_name().to_string()),
+                    edit("Brightness", "ri_bright", self.brightness as f64),
+                    edit("Contrast", "ri_contrast", self.contrast as f64),
+                    edit("Fade", "ri_fade", self.fade as f64),
+                    ro("Transparency", "ri_transparency", transparency),
+                    Property {
+                        label: "Show image".into(),
+                        field: "ri_show_image",
+                        value: PropValue::BoolToggle {
+                            field: "ri_show_image",
+                            value: show_image,
+                        },
                     },
-                },
-                ro(
-                    "Class Version",
-                    "ri_class_version",
-                    self.class_version.to_string(),
-                ),
-                ro(
-                    "Definition",
-                    "ri_def_handle",
-                    match self.definition_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
+                    Property {
+                        label: "Show clipped".into(),
+                        field: "ri_show_clipped",
+                        value: PropValue::BoolToggle {
+                            field: "ri_show_clipped",
+                            value: show_clipped,
+                        },
                     },
-                ),
-                ro(
-                    "Def Reactor",
-                    "ri_def_reactor_handle",
-                    match self.definition_reactor_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
+                    Property {
+                        label: "Clip inverted".into(),
+                        field: "ri_clip_inverted",
+                        value: PropValue::BoolToggle {
+                            field: "ri_clip_inverted",
+                            value: clip_inverted,
+                        },
                     },
-                ),
-            ],
-        }]
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
         match field {
-            "ri_clip" => {
-                self.clipping_enabled = if value == "toggle" {
-                    !self.clipping_enabled
+            "ri_show_image" => {
+                let on = if value == "toggle" {
+                    !self.flags.contains(acadrust::entities::ImageDisplayFlags::SHOW_IMAGE)
                 } else {
                     value == "true"
+                };
+                self.set_visible(on);
+                return;
+            }
+            "ri_show_clipped" => {
+                let on = if value == "toggle" {
+                    !self
+                        .flags
+                        .contains(acadrust::entities::ImageDisplayFlags::USE_CLIPPING_BOUNDARY)
+                } else {
+                    value == "true"
+                };
+                if on {
+                    self.flags |= acadrust::entities::ImageDisplayFlags::USE_CLIPPING_BOUNDARY;
+                } else {
+                    self.flags &= !acadrust::entities::ImageDisplayFlags::USE_CLIPPING_BOUNDARY;
+                }
+                return;
+            }
+            "ri_clip_inverted" => {
+                let on = if value == "toggle" {
+                    self.clip_boundary.clip_mode != acadrust::entities::ClipMode::Inside
+                } else {
+                    value == "true"
+                };
+                self.clip_boundary.clip_mode = if on {
+                    acadrust::entities::ClipMode::Inside
+                } else {
+                    acadrust::entities::ClipMode::Outside
                 };
                 return;
             }
@@ -424,57 +468,91 @@ impl Grippable for Wipeout {
 
 impl PropertyEditable for Wipeout {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                edit("Insert X", "wo_ox", self.insertion_point.x),
-                edit("Insert Y", "wo_oy", self.insertion_point.y),
-                edit("Insert Z", "wo_oz", self.insertion_point.z),
-                edit("Brightness", "wo_bright", self.brightness as f64),
-                edit("Contrast", "wo_contrast", self.contrast as f64),
-                edit("Fade", "wo_fade", self.fade as f64),
-                Property {
-                    label: "Clipping".into(),
-                    field: "wo_clip",
-                    value: PropValue::BoolToggle {
-                        field: "wo_clip",
-                        value: self.clipping_enabled,
+        let show_image = self.flags.contains(acadrust::entities::WipeoutDisplayFlags::SHOW_IMAGE);
+        let show_clipped = self
+            .flags
+            .contains(acadrust::entities::WipeoutDisplayFlags::USE_CLIPPING_BOUNDARY);
+        let bg_transparency = self
+            .flags
+            .contains(acadrust::entities::WipeoutDisplayFlags::TRANSPARENCY_ON);
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Position X", "wo_ox", self.insertion_point.x),
+                    edit("Position Y", "wo_oy", self.insertion_point.y),
+                    edit("Position Z", "wo_oz", self.insertion_point.z),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    Property {
+                        label: "Show image".into(),
+                        field: "wo_show_image",
+                        value: PropValue::BoolToggle {
+                            field: "wo_show_image",
+                            value: show_image,
+                        },
                     },
-                },
-                ro(
-                    "Class Version",
-                    "wo_class_version",
-                    self.class_version.to_string(),
-                ),
-                ro("Clip Mode", "wo_clip_mode", format!("{:?}", self.clip_mode)),
-                ro(
-                    "Definition",
-                    "wo_def_handle",
-                    match self.definition_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
+                    Property {
+                        label: "Show clipped".into(),
+                        field: "wo_show_clipped",
+                        value: PropValue::BoolToggle {
+                            field: "wo_show_clipped",
+                            value: show_clipped,
+                        },
                     },
-                ),
-                ro(
-                    "Def Reactor",
-                    "wo_def_reactor_handle",
-                    match self.definition_reactor_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
+                    Property {
+                        label: "Background transparency".into(),
+                        field: "wo_bg_transparency",
+                        value: PropValue::BoolToggle {
+                            field: "wo_bg_transparency",
+                            value: bg_transparency,
+                        },
                     },
-                ),
-            ],
-        }]
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
         match field {
-            "wo_clip" => {
-                self.clipping_enabled = if value == "toggle" {
-                    !self.clipping_enabled
+            "wo_show_image" => {
+                let on = if value == "toggle" {
+                    !self.flags.contains(acadrust::entities::WipeoutDisplayFlags::SHOW_IMAGE)
                 } else {
                     value == "true"
                 };
+                self.set_frame_visible(on);
+                return;
+            }
+            "wo_show_clipped" => {
+                let on = if value == "toggle" {
+                    !self
+                        .flags
+                        .contains(acadrust::entities::WipeoutDisplayFlags::USE_CLIPPING_BOUNDARY)
+                } else {
+                    value == "true"
+                };
+                if on {
+                    self.flags |= acadrust::entities::WipeoutDisplayFlags::USE_CLIPPING_BOUNDARY;
+                } else {
+                    self.flags -= acadrust::entities::WipeoutDisplayFlags::USE_CLIPPING_BOUNDARY;
+                }
+                return;
+            }
+            "wo_bg_transparency" => {
+                let on = if value == "toggle" {
+                    !self.flags.contains(acadrust::entities::WipeoutDisplayFlags::TRANSPARENCY_ON)
+                } else {
+                    value == "true"
+                };
+                if on {
+                    self.flags |= acadrust::entities::WipeoutDisplayFlags::TRANSPARENCY_ON;
+                } else {
+                    self.flags -= acadrust::entities::WipeoutDisplayFlags::TRANSPARENCY_ON;
+                }
                 return;
             }
             _ => {}
@@ -486,9 +564,6 @@ impl PropertyEditable for Wipeout {
             "wo_ox" => self.insertion_point.x = v,
             "wo_oy" => self.insertion_point.y = v,
             "wo_oz" => self.insertion_point.z = v,
-            "wo_bright" => self.brightness = v.clamp(0.0, 100.0) as u8,
-            "wo_contrast" => self.contrast = v.clamp(0.0, 100.0) as u8,
-            "wo_fade" => self.fade = v.clamp(0.0, 100.0) as u8,
             _ => {}
         }
     }

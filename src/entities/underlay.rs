@@ -147,58 +147,74 @@ impl Grippable for Underlay {
 
 impl PropertyEditable for Underlay {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        let type_str = match self.underlay_type {
-            acadrust::entities::UnderlayType::Pdf => "PDF",
-            acadrust::entities::UnderlayType::Dwf => "DWF",
-            acadrust::entities::UnderlayType::Dgn => "DGN",
+        let yes_no = |b: bool| if b { "Yes" } else { "No" };
+
+        // Width / Height derived from the world-space clip boundary bounds
+        // (the only in-entity source of the placed footprint size).
+        let (width, height) = if self.clip_boundary_vertices.is_empty() {
+            (0.0_f64, 0.0_f64)
+        } else {
+            let verts = self.world_clip_boundary();
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for v in &verts {
+                min_x = min_x.min(v.x);
+                min_y = min_y.min(v.y);
+                max_x = max_x.max(v.x);
+                max_y = max_y.max(v.y);
+            }
+            (max_x - min_x, max_y - min_y)
         };
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("Type", "ul_type", type_str),
-                edit("Ins X", "ul_ix", self.insertion_point.x),
-                edit("Ins Y", "ul_iy", self.insertion_point.y),
-                edit("Ins Z", "ul_iz", self.insertion_point.z),
-                edit("X Scale", "ul_sx", self.x_scale),
-                edit("Y Scale", "ul_sy", self.y_scale),
-                edit("Z Scale", "ul_sz", self.z_scale),
-                edit("Rotation", "ul_rot", self.rotation.to_degrees()),
-                edit("Contrast", "ul_contrast", self.contrast as f64),
-                edit("Fade", "ul_fade", self.fade as f64),
-                ro(
-                    "On",
-                    "ul_on",
-                    if self.flags.contains(UnderlayDisplayFlags::ON) {
-                        "Yes"
-                    } else {
-                        "No"
-                    },
-                ),
-                ro(
-                    "Clipping",
-                    "ul_clip",
-                    if self.flags.contains(UnderlayDisplayFlags::CLIPPING) {
-                        "Yes"
-                    } else {
-                        "No"
-                    },
-                ),
-                ro(
-                    "Monochrome",
-                    "ul_mono",
-                    if self.flags.contains(UnderlayDisplayFlags::MONOCHROME) {
-                        "Yes"
-                    } else {
-                        "No"
-                    },
-                ),
-                ro(
-                    "Clip Inverted",
-                    "ul_clip_inverted",
-                    if self.clip_inverted { "Yes" } else { "No" },
-                ),
-            ],
-        }]
+
+        let show = self.flags.contains(UnderlayDisplayFlags::ON);
+        let clipping = self.flags.contains(UnderlayDisplayFlags::CLIPPING);
+        let monochrome = self.flags.contains(UnderlayDisplayFlags::MONOCHROME);
+        let adjust_bg = self.flags.contains(UnderlayDisplayFlags::ADJUST_FOR_BACKGROUND);
+
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Position X", "ul_ix", self.insertion_point.x),
+                    edit("Position Y", "ul_iy", self.insertion_point.y),
+                    edit("Position Z", "ul_iz", self.insertion_point.z),
+                    edit("Scale X", "ul_sx", self.x_scale),
+                    edit("Scale Y", "ul_sy", self.y_scale),
+                    edit("Scale Z", "ul_sz", self.z_scale),
+                    ro("Width", "ul_width", format!("{:.4}", width)),
+                    ro("Height", "ul_height", format!("{:.4}", height)),
+                    edit("Rotation", "ul_rot", self.rotation.to_degrees()),
+                ],
+            },
+            PropSection {
+                title: "Underlay Adjust".into(),
+                props: vec![
+                    edit("Contrast", "ul_contrast", self.contrast as f64),
+                    edit("Fade", "ul_fade", self.fade as f64),
+                    ro("Monochrome", "ul_mono", yes_no(monochrome)),
+                    ro(
+                        "Adjust Colors for Background",
+                        "ul_adjust_bg",
+                        yes_no(adjust_bg),
+                    ),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    // Underlay name/path/layers live on the separate
+                    // UnderlayDefinition object, not reachable from the entity.
+                    ro("Underlay name", "ul_name", String::new()),
+                    ro("Underlay path", "ul_path", String::new()),
+                    ro("Show underlay", "ul_on", yes_no(show)),
+                    ro("Clipping", "ul_clip", yes_no(clipping)),
+                    ro("Show clipped", "ul_clip_inverted", yes_no(self.clip_inverted)),
+                    ro("Underlay layers", "ul_layers", String::new()),
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

@@ -119,23 +119,26 @@ fn grips(circle: &Circle) -> Vec<GripDef> {
 }
 
 fn properties(circle: &Circle) -> Vec<PropSection> {
+    use std::f64::consts::PI;
+    let r = circle.radius;
     vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Center X", "center_x", circle.center.x),
             edit("Center Y", "center_y", circle.center.y),
             edit("Center Z", "center_z", circle.center.z),
-            edit("Radius", "radius", circle.radius),
-            ro(
-                "Diameter",
-                "diameter",
-                format!("{:.4}", circle.radius * 2.0),
-            ),
+            edit("Radius", "radius", r),
+            ro("Diameter", "diameter", format!("{:.4}", r * 2.0)),
             ro(
                 "Circumference",
                 "circumference",
-                format!("{:.4}", circle.radius * 2.0 * std::f64::consts::PI),
+                format!("{:.4}", 2.0 * PI * r),
             ),
+            ro("Area", "area", format!("{:.4}", PI * r * r)),
+            edit("Normal X", "normal_x", circle.normal.x),
+            edit("Normal Y", "normal_y", circle.normal.y),
+            edit("Normal Z", "normal_z", circle.normal.z),
+            edit("Thickness", "thickness", circle.thickness),
         ],
     }]
 }
@@ -149,6 +152,10 @@ fn apply_geom_prop(circle: &mut Circle, field: &str, value: &str) {
         "center_y" => circle.center.y = v,
         "center_z" => circle.center.z = v,
         "radius" if v > 0.0 => circle.radius = v,
+        "normal_x" => circle.normal.x = v,
+        "normal_y" => circle.normal.y = v,
+        "normal_z" => circle.normal.z = v,
+        "thickness" => circle.thickness = v,
         _ => {}
     }
 }

@@ -8,6 +8,59 @@ use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Pr
 use crate::scene::convert::tess_util::{arc_segments, arc_signed_span, wire_chord_tol, FallbackGeometry};
 use crate::scene::model::wire_model::SnapHint;
 
+/// Signed area of every boundary path, summed via the shoelace formula over
+/// the OCS boundary vertices (bulge/curved edges approximated by their end
+/// points). Returns the absolute total area.
+fn boundary_area(h: &Hatch) -> f64 {
+    let mut area = 0.0;
+    for path in &h.paths {
+        let mut ring: Vec<[f64; 2]> = Vec::new();
+        for edge in &path.edges {
+            match edge {
+                BoundaryEdge::Polyline(poly) => {
+                    for v in &poly.vertices {
+                        ring.push([v.x, v.y]);
+                    }
+                }
+                BoundaryEdge::Line(l) => {
+                    ring.push([l.start.x, l.start.y]);
+                    ring.push([l.end.x, l.end.y]);
+                }
+                BoundaryEdge::CircularArc(a) => ring.push([a.center.x, a.center.y]),
+                BoundaryEdge::EllipticArc(e) => ring.push([e.center.x, e.center.y]),
+                BoundaryEdge::Spline(s) => {
+                    let src = if !s.fit_points.is_empty() {
+                        s.fit_points.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>()
+                    } else {
+                        s.control_points
+                            .iter()
+                            .map(|p| [p.x, p.y])
+                            .collect::<Vec<_>>()
+                    };
+                    ring.extend(src);
+                }
+            }
+        }
+        let n = ring.len();
+        if n < 3 {
+            continue;
+        }
+        let mut acc = 0.0;
+        for i in 0..n {
+            let a = ring[i];
+            let b = ring[(i + 1) % n];
+            acc += a[0] * b[1] - b[0] * a[1];
+        }
+        area += acc.abs() * 0.5;
+    }
+    area
+}
+
+/// Format a color for a read-only row (`ByLayer` / `ByBlock` / index / RGB).
+fn color_str(c: acadrust::types::Color) -> String {
+    c.to_string()
+}
+
 fn properties(h: &Hatch) -> Vec<PropSection> {
     let pattern_type = match h.pattern_type {
         acadrust::entities::HatchPatternType::Predefined => "Predefined",
@@ -19,61 +72,109 @@ fn properties(h: &Hatch) -> Vec<PropSection> {
         acadrust::entities::HatchStyleType::Outer => "Outer",
         acadrust::entities::HatchStyleType::Ignore => "Ignore",
     };
-    let fill_type = if h.gradient_color.enabled {
-        format!("Gradient ({})", h.gradient_color.name)
-    } else if h.is_solid {
-        "Solid".into()
-    } else {
-        format!("Pattern ({})", h.pattern.name)
-    };
-    let boundary_count: usize = h
-        .paths
-        .iter()
-        .map(|p| {
-            p.edges
-                .iter()
-                .map(|e| match e {
-                    BoundaryEdge::Polyline(poly) => poly.vertices.len(),
-                    _ => 1,
-                })
-                .sum::<usize>()
-        })
-        .sum();
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            ro("Fill Type", "fill_type", fill_type),
-            Property {
-                label: "Pattern Name".into(),
-                field: "pattern_name",
-                value: PropValue::HatchPatternChoice(h.pattern.name.clone()),
+    let area = boundary_area(h);
+    let g = &h.gradient_color;
+    let grad_c1 = g.colors.first().map(|e| color_str(e.color)).unwrap_or_default();
+    let grad_c2 = g.colors.get(1).map(|e| color_str(e.color)).unwrap_or_default();
+
+    if g.enabled {
+        // ── Gradient fill ──────────────────────────────────────────────────
+        let grad_type = if g.is_single_color { "One color" } else { "Two color" };
+        let centered = if g.shift.abs() < 1e-9 { "Yes" } else { "No" };
+        return vec![
+            PropSection {
+                title: "Pattern".into(),
+                props: vec![
+                    ro("Type", "fill_type", grad_type),
+                    ro("Gradient name", "gradient_name", g.name.clone()),
+                    ro("Color 1", "gradient_color_1", grad_c1),
+                    ro("Color 2", "gradient_color_2", grad_c2),
+                    edit("Angle", "pattern_angle", g.angle.to_degrees()),
+                    ro("Centered", "gradient_centered", centered),
+                ],
             },
-            ro("Pattern Type", "pattern_type", pattern_type),
-            edit(
-                "Pattern Angle",
-                "pattern_angle",
-                h.pattern_angle.to_degrees(),
-            ),
-            edit("Pattern Scale", "pattern_scale", h.pattern_scale),
-            ro("Style", "style", style),
-            ro("Boundary Paths", "path_count", h.paths.len().to_string()),
-            ro("Boundary Verts", "vert_count", boundary_count.to_string()),
-            ro("Double", "double", if h.is_double { "Yes" } else { "No" }),
-            ro(
-                "Associative",
-                "associative",
-                if h.is_associative { "Yes" } else { "No" },
-            ),
-            edit("Elevation", "elevation", h.elevation),
-            ro("Seed Points", "seed_count", h.seed_points.len().to_string()),
-            ro("Pixel Size", "pixel_size", format!("{:.6}", h.pixel_size)),
-            ro(
-                "Normal",
-                "normal",
-                format!("{:.3}, {:.3}, {:.3}", h.normal.x, h.normal.y, h.normal.z),
-            ),
-        ],
-    }]
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Elevation", "elevation", h.elevation),
+                    ro("Origin X", "origin_x", String::new()),
+                    ro("Origin Y", "origin_y", String::new()),
+                    ro("Area", "area", format!("{:.4}", area)),
+                    ro("Cumulative area", "cumulative_area", format!("{:.4}", area)),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    ro(
+                        "Associative",
+                        "associative",
+                        if h.is_associative { "Yes" } else { "No" },
+                    ),
+                    ro("Annotative", "annotative", String::new()),
+                    ro("Island detection style", "style", style),
+                    ro("Background color", "background_color", String::new()),
+                ],
+            },
+        ];
+    }
+
+    // ── Hatch (pattern / solid) ────────────────────────────────────────────
+    let hatch_type = if h.is_solid { "Solid" } else { "Pattern" };
+    vec![
+        PropSection {
+            title: "Pattern".into(),
+            props: vec![
+                ro("Type", "pattern_type_label", hatch_type),
+                Property {
+                    label: "Pattern name".into(),
+                    field: "pattern_name",
+                    value: PropValue::HatchPatternChoice(h.pattern.name.clone()),
+                },
+                ro("Color", "color", color_str(h.common.color)),
+                ro("Background color", "background_color", String::new()),
+                ro(
+                    "Transparency",
+                    "transparency",
+                    format!("{}%", (h.common.transparency.as_percent() * 100.0).round() as i32),
+                ),
+                edit("Angle", "pattern_angle", h.pattern_angle.to_degrees()),
+                edit("Scale", "pattern_scale", h.pattern_scale),
+                ro("Origin X", "origin_x", String::new()),
+                ro("Origin Y", "origin_y", String::new()),
+                ro("Annotative", "annotative", String::new()),
+                ro(
+                    "Associative",
+                    "associative",
+                    if h.is_associative { "Yes" } else { "No" },
+                ),
+                ro("Layer override", "layer_override", String::new()),
+                ro("Double", "double", if h.is_double { "Yes" } else { "No" }),
+                ro("Spacing", "spacing", String::new()),
+                ro("ISO pen width", "iso_pen_width", String::new()),
+                ro("Gradient colors", "gradient_colors", g.colors.len().to_string()),
+                ro("Gradient tint", "gradient_tint", format!("{:.4}", g.color_tint)),
+                ro("Gradient color 1", "gradient_color_1", grad_c1),
+                ro("Gradient color 2", "gradient_color_2", grad_c2),
+                ro("Pattern type", "pattern_type", pattern_type),
+            ],
+        },
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                edit("Elevation", "elevation", h.elevation),
+                ro("Area", "area", format!("{:.4}", area)),
+                ro("Cumulative area", "cumulative_area", format!("{:.4}", area)),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                ro("Boundary retention", "boundary_retention", String::new()),
+                ro("Island detection style", "style", style),
+            ],
+        },
+    ]
 }
 
 fn apply_geom_prop(h: &mut Hatch, field: &str, value: &str) {
@@ -81,6 +182,7 @@ fn apply_geom_prop(h: &mut Hatch, field: &str, value: &str) {
         return;
     };
     match field {
+        "pattern_angle" if h.gradient_color.enabled => h.gradient_color.angle = v.to_radians(),
         "pattern_angle" => h.pattern_angle = v.to_radians(),
         "pattern_scale" if v > 0.0 => h.pattern_scale = v,
         "elevation" => h.elevation = v,

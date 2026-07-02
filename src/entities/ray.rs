@@ -92,12 +92,12 @@ impl PropertyEditable for Ray {
         vec![PropSection {
             title: "Geometry".into(),
             props: vec![
-                edit("Base X", "ray_bx", self.base_point.x),
-                edit("Base Y", "ray_by", self.base_point.y),
-                edit("Base Z", "ray_bz", self.base_point.z),
-                edit("Dir X", "ray_dx", self.direction.x),
-                edit("Dir Y", "ray_dy", self.direction.y),
-                edit("Dir Z", "ray_dz", self.direction.z),
+                edit("Start X", "ray_bx", self.base_point.x),
+                edit("Start Y", "ray_by", self.base_point.y),
+                edit("Start Z", "ray_bz", self.base_point.z),
+                edit("Direction vector X", "ray_dx", self.direction.x),
+                edit("Direction vector Y", "ray_dy", self.direction.y),
+                edit("Direction vector Z", "ray_dz", self.direction.z),
             ],
         }]
     }
@@ -232,9 +232,9 @@ impl PropertyEditable for XLine {
                 edit("Base X", "xl_bx", self.base_point.x),
                 edit("Base Y", "xl_by", self.base_point.y),
                 edit("Base Z", "xl_bz", self.base_point.z),
-                edit("Dir X", "xl_dx", self.direction.x),
-                edit("Dir Y", "xl_dy", self.direction.y),
-                edit("Dir Z", "xl_dz", self.direction.z),
+                edit("Direction vector X", "xl_dx", self.direction.x),
+                edit("Direction vector Y", "xl_dy", self.direction.y),
+                edit("Direction vector Z", "xl_dz", self.direction.z),
             ],
         }]
     }

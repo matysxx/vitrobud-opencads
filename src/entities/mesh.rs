@@ -117,21 +117,28 @@ impl Grippable for Face3D {
 impl PropertyEditable for Face3D {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         use crate::entities::common::edit_prop as edit;
+        let inv = self.invisible_edges;
+        let edge = |hidden: bool| if hidden { "Invisible" } else { "Visible" };
         vec![PropSection {
             title: "Geometry".into(),
             props: vec![
-                edit("P1 X", "f3_p1x", self.first_corner.x),
-                edit("P1 Y", "f3_p1y", self.first_corner.y),
-                edit("P1 Z", "f3_p1z", self.first_corner.z),
-                edit("P2 X", "f3_p2x", self.second_corner.x),
-                edit("P2 Y", "f3_p2y", self.second_corner.y),
-                edit("P2 Z", "f3_p2z", self.second_corner.z),
-                edit("P3 X", "f3_p3x", self.third_corner.x),
-                edit("P3 Y", "f3_p3y", self.third_corner.y),
-                edit("P3 Z", "f3_p3z", self.third_corner.z),
-                edit("P4 X", "f3_p4x", self.fourth_corner.x),
-                edit("P4 Y", "f3_p4y", self.fourth_corner.y),
-                edit("P4 Z", "f3_p4z", self.fourth_corner.z),
+                ro("Current vertex", "f3_current", String::new()),
+                edit("Vertex 1 X", "f3_p1x", self.first_corner.x),
+                edit("Vertex 1 Y", "f3_p1y", self.first_corner.y),
+                edit("Vertex 1 Z", "f3_p1z", self.first_corner.z),
+                edit("Vertex 2 X", "f3_p2x", self.second_corner.x),
+                edit("Vertex 2 Y", "f3_p2y", self.second_corner.y),
+                edit("Vertex 2 Z", "f3_p2z", self.second_corner.z),
+                edit("Vertex 3 X", "f3_p3x", self.third_corner.x),
+                edit("Vertex 3 Y", "f3_p3y", self.third_corner.y),
+                edit("Vertex 3 Z", "f3_p3z", self.third_corner.z),
+                edit("Vertex 4 X", "f3_p4x", self.fourth_corner.x),
+                edit("Vertex 4 Y", "f3_p4y", self.fourth_corner.y),
+                edit("Vertex 4 Z", "f3_p4z", self.fourth_corner.z),
+                ro("Edge 1", "f3_edge1", edge(inv.is_first_invisible())),
+                ro("Edge 2", "f3_edge2", edge(inv.is_second_invisible())),
+                ro("Edge 3", "f3_edge3", edge(inv.is_third_invisible())),
+                ro("Edge 4", "f3_edge4", edge(inv.is_fourth_invisible())),
             ],
         }]
     }
@@ -283,38 +290,49 @@ impl PropertyEditable for PolygonMesh {
             acadrust::entities::polygon_mesh::SurfaceSmoothType::Cubic => "Cubic",
             acadrust::entities::polygon_mesh::SurfaceSmoothType::Bezier => "Bezier",
         };
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("M count", "pm_m", self.m_vertex_count.to_string()),
-                ro("N count", "pm_n", self.n_vertex_count.to_string()),
-                ro("Vertices", "pm_v", self.vertices.len().to_string()),
-                ro("Smooth Type", "pm_smooth", smooth),
-                ro(
-                    "Smooth M Density",
-                    "pm_smooth_m",
-                    self.m_smooth_density.to_string(),
-                ),
-                ro(
-                    "Smooth N Density",
-                    "pm_smooth_n",
-                    self.n_smooth_density.to_string(),
-                ),
-                ro(
-                    "Elevation",
-                    "pm_elevation",
-                    format!("{:.4}", self.elevation),
-                ),
-                ro(
-                    "Normal",
-                    "pm_normal",
-                    format!(
-                        "{:.3}, {:.3}, {:.3}",
-                        self.normal.x, self.normal.y, self.normal.z
+        let yesno = |b: bool| if b { "Yes" } else { "No" };
+        let first = self.vertices.first();
+        // Grid faces: one quad per cell; closed direction adds a wrap row/column.
+        let m = self.m_vertex_count.max(0) as i64;
+        let n = self.n_vertex_count.max(0) as i64;
+        let cells_m = if self.is_closed_m() { m } else { (m - 1).max(0) };
+        let cells_n = if self.is_closed_n() { n } else { (n - 1).max(0) };
+        let face_count = cells_m * cells_n;
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    ro("Vertex", "pm_vertex", String::new()),
+                    ro(
+                        "Vertex X",
+                        "pm_vx",
+                        first.map(|v| format!("{:.4}", v.location.x)).unwrap_or_default(),
                     ),
-                ),
-            ],
-        }]
+                    ro(
+                        "Vertex Y",
+                        "pm_vy",
+                        first.map(|v| format!("{:.4}", v.location.y)).unwrap_or_default(),
+                    ),
+                    ro(
+                        "Vertex Z",
+                        "pm_vz",
+                        first.map(|v| format!("{:.4}", v.location.z)).unwrap_or_default(),
+                    ),
+                    ro("M vertex count", "pm_m", self.m_vertex_count.to_string()),
+                    ro("N vertex count", "pm_n", self.n_vertex_count.to_string()),
+                    ro("M closed", "pm_closed_m", yesno(self.is_closed_m())),
+                    ro("N closed", "pm_closed_n", yesno(self.is_closed_n())),
+                    ro("M density", "pm_smooth_m", self.m_smooth_density.to_string()),
+                    ro("N density", "pm_smooth_n", self.n_smooth_density.to_string()),
+                    ro("Vertex count", "pm_v", self.vertices.len().to_string()),
+                    ro("Face count", "pm_faces", face_count.to_string()),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![ro("Fit/smooth", "pm_smooth", smooth)],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
@@ -431,40 +449,44 @@ impl PropertyEditable for PolyfaceMesh {
             acadrust::entities::PolyfaceSmoothType::Cubic => "Cubic",
             acadrust::entities::PolyfaceSmoothType::Bezier => "Bezier",
         };
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("Vertices", "pfm_v", self.vertices.len().to_string()),
-                ro("Faces", "pfm_f", self.faces.len().to_string()),
-                ro("Smooth Surface", "pfm_smooth", smooth),
-                ro(
-                    "Seqend",
-                    "pfm_seqend_handle",
-                    match self.seqend_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
-                    },
-                ),
-                ro(
-                    "Elevation",
-                    "pfm_elevation",
-                    format!("{:.4}", self.elevation),
-                ),
-                ro(
-                    "Normal",
-                    "pfm_normal",
-                    format!(
-                        "{:.3}, {:.3}, {:.3}",
-                        self.normal.x, self.normal.y, self.normal.z
+        let first = self.vertices.first();
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    ro("Vertex", "pfm_vertex", String::new()),
+                    ro(
+                        "Vertex X",
+                        "pfm_vx",
+                        first.map(|v| format!("{:.4}", v.location.x)).unwrap_or_default(),
                     ),
-                ),
-                ro(
-                    "Thickness",
-                    "pfm_thickness",
-                    format!("{:.4}", self.thickness),
-                ),
-            ],
-        }]
+                    ro(
+                        "Vertex Y",
+                        "pfm_vy",
+                        first.map(|v| format!("{:.4}", v.location.y)).unwrap_or_default(),
+                    ),
+                    ro(
+                        "Vertex Z",
+                        "pfm_vz",
+                        first.map(|v| format!("{:.4}", v.location.z)).unwrap_or_default(),
+                    ),
+                    // Polyface meshes store an explicit vertex/face list rather
+                    // than an M×N grid, so the grid-only rows are not applicable.
+                    ro("M vertex count", "pfm_m", String::new()),
+                    ro("N vertex count", "pfm_n", String::new()),
+                    ro("M closed", "pfm_closed_m", String::new()),
+                    ro("N closed", "pfm_closed_n", String::new()),
+                    ro("M density", "pfm_density_m", String::new()),
+                    ro("N density", "pfm_density_n", String::new()),
+                    ro("Vertex count", "pfm_v", self.vertices.len().to_string()),
+                    ro("Face count", "pfm_f", self.faces.len().to_string()),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![ro("Fit/smooth", "pfm_smooth", smooth)],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
@@ -598,24 +620,35 @@ impl Grippable for Mesh {
 
 impl PropertyEditable for Mesh {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        let creased_edges = self.edges.iter().filter(|e| e.has_crease()).count();
+        // Watertight when every face edge is shared by exactly two faces
+        // (closed manifold). Empty meshes are not watertight.
+        let mut edge_use: std::collections::HashMap<(usize, usize), u32> =
+            std::collections::HashMap::new();
+        for face in &self.faces {
+            let vs = &face.vertices;
+            for i in 0..vs.len() {
+                let a = vs[i];
+                let b = vs[(i + 1) % vs.len()];
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edge_use.entry(key).or_insert(0) += 1;
+            }
+        }
+        let watertight =
+            !self.faces.is_empty() && edge_use.values().all(|&c| c == 2);
         vec![PropSection {
             title: "Geometry".into(),
             props: vec![
-                ro("Vertices", "msh_v", self.vertices.len().to_string()),
-                ro("Faces", "msh_f", self.faces.len().to_string()),
-                ro("Edges", "msh_e", self.edges.len().to_string()),
-                ro("Creased Edges", "msh_creased", creased_edges.to_string()),
-                ro("Version", "msh_version", self.version.to_string()),
                 ro(
-                    "Subdivision Level",
+                    "Level of Smoothness",
                     "msh_subdiv",
                     self.subdivision_level.to_string(),
                 ),
+                ro("Number of Faces", "msh_f", self.faces.len().to_string()),
+                ro("Number of Grips", "msh_grips", self.vertices.len().to_string()),
                 ro(
-                    "Blend Crease",
-                    "msh_blend_crease",
-                    if self.blend_crease { "Yes" } else { "No" },
+                    "Watertight",
+                    "msh_watertight",
+                    if watertight { "Yes" } else { "No" },
                 ),
             ],
         }]

@@ -385,26 +385,33 @@ impl Grippable for AttributeDefinition {
 
 impl PropertyEditable for AttributeDefinition {
     fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
-        let mut props = vec![
+        let mut text_props = vec![
             ro("Tag", "att_tag", self.tag.clone()),
             ro("Prompt", "att_prompt", self.prompt.clone()),
             Property {
-                label: "Default".into(),
+                label: "Value".into(),
                 field: "att_default",
                 value: PropValue::EditText(self.default_value.clone()),
             },
-            edit("Insert X", "att_ix", self.insertion_point.x),
-            edit("Insert Y", "att_iy", self.insertion_point.y),
-            edit("Insert Z", "att_iz", self.insertion_point.z),
-            edit("Align X", "att_ax", self.alignment_point.x),
-            edit("Align Y", "att_ay", self.alignment_point.y),
-            edit("Align Z", "att_az", self.alignment_point.z),
-            edit("Height", "att_h", self.height),
-            edit("Rotation", "att_rot", self.rotation.to_degrees()),
-            edit("Width Factor", "att_wf", self.width_factor),
-            edit("Oblique Angle", "att_ob", self.oblique_angle.to_degrees()),
             Property {
-                label: "H-Align".into(),
+                label: "Style".into(),
+                field: "att_style",
+                value: PropValue::Choice {
+                    selected: if self.text_style.trim().is_empty() {
+                        "Standard".into()
+                    } else {
+                        self.text_style.clone()
+                    },
+                    options: text_style_names.to_vec(),
+                },
+            },
+            ro(
+                "Annotative",
+                "att_annotative",
+                bool_yn(self.flags.annotative),
+            ),
+            Property {
+                label: "Justify".into(),
                 field: "att_halign",
                 value: PropValue::Choice {
                     selected: halign_str(self.horizontal_alignment).to_string(),
@@ -425,63 +432,71 @@ impl PropertyEditable for AttributeDefinition {
                         .collect(),
                 },
             },
-            Property {
-                label: "Style".into(),
-                field: "att_style",
-                value: PropValue::Choice {
-                    selected: if self.text_style.trim().is_empty() {
-                        "Standard".into()
-                    } else {
-                        self.text_style.clone()
-                    },
-                    options: text_style_names.to_vec(),
-                },
-            },
+            edit("Height", "att_h", self.height),
+            edit("Rotation", "att_rot", self.rotation.to_degrees()),
+            edit("Width factor", "att_wf", self.width_factor),
+            edit("Obliquing", "att_ob", self.oblique_angle.to_degrees()),
+            edit("Text alignment X", "att_ax", self.alignment_point.x),
+            edit("Text alignment Y", "att_ay", self.alignment_point.y),
+            edit("Text alignment Z", "att_az", self.alignment_point.z),
             ro(
-                "Generation",
-                "att_gen_flags",
-                format!("{:#06b}", self.text_generation_flags & 0xff),
-            ),
-            ro(
-                "Field Length",
+                "Boundary width",
                 "att_field_len",
                 self.field_length.to_string(),
             ),
-            Property {
-                label: "MText Mode".into(),
-                field: "att_mtext_flag",
-                value: PropValue::Choice {
-                    selected: mtext_flag_str(self.mtext_flag).to_string(),
-                    options: ["SingleLine", "MultiLine", "ConstantMultiLine"]
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
-                },
-            },
-            ro("Multiline", "att_is_multiline", bool_yn(self.is_multiline)),
-            ro("Line Count", "att_line_count", self.line_count.to_string()),
-            ro("Lock Position", "att_lock_pos", bool_yn(self.lock_position)),
-            ro("Invisible", "att_invisible", bool_yn(self.flags.invisible)),
-            ro("Constant", "att_constant", bool_yn(self.flags.constant)),
-            ro("Verify", "att_verify", bool_yn(self.flags.verify)),
-            ro("Preset", "att_preset", bool_yn(self.flags.preset)),
             ro(
-                "Annotative",
-                "att_annotative",
-                bool_yn(self.flags.annotative),
+                "Upside down",
+                "att_upside_down",
+                bool_yn(self.text_generation_flags & 0x4 != 0),
+            ),
+            ro(
+                "Backward",
+                "att_backward",
+                bool_yn(self.text_generation_flags & 0x2 != 0),
             ),
         ];
         // Constant attributes can't be edited at insert time — surface that
-        // by marking the Default field read-only.
+        // by marking the Value field read-only.
         if self.flags.constant {
-            if let Some(p) = props.iter_mut().find(|p| p.field == "att_default") {
+            if let Some(p) = text_props.iter_mut().find(|p| p.field == "att_default") {
                 p.value = PropValue::ReadOnly(self.default_value.clone());
             }
         }
-        vec![PropSection {
-            title: "Geometry".into(),
-            props,
-        }]
+        vec![
+            PropSection {
+                title: "Text".into(),
+                props: text_props,
+            },
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Position X", "att_ix", self.insertion_point.x),
+                    edit("Position Y", "att_iy", self.insertion_point.y),
+                    edit("Position Z", "att_iz", self.insertion_point.z),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    ro("Invisible", "att_invisible", bool_yn(self.flags.invisible)),
+                    ro("Constant", "att_constant", bool_yn(self.flags.constant)),
+                    ro("Verify", "att_verify", bool_yn(self.flags.verify)),
+                    ro("Preset", "att_preset", bool_yn(self.flags.preset)),
+                    ro("Lock position", "att_lock_pos", bool_yn(self.lock_position)),
+                    Property {
+                        label: "Multiple lines".into(),
+                        field: "att_mtext_flag",
+                        value: PropValue::Choice {
+                            selected: mtext_flag_str(self.mtext_flag).to_string(),
+                            options: ["SingleLine", "MultiLine", "ConstantMultiLine"]
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect(),
+                        },
+                    },
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -626,101 +641,108 @@ impl Grippable for AttributeEntity {
 
 impl PropertyEditable for AttributeEntity {
     fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("Tag", "atte_tag", self.tag.clone()),
-                Property {
-                    label: "Value".into(),
-                    field: "atte_val",
-                    value: PropValue::EditText(self.value.clone()),
-                },
-                edit("Insert X", "atte_ix", self.insertion_point.x),
-                edit("Insert Y", "atte_iy", self.insertion_point.y),
-                edit("Insert Z", "atte_iz", self.insertion_point.z),
-                edit("Align X", "atte_ax", self.alignment_point.x),
-                edit("Align Y", "atte_ay", self.alignment_point.y),
-                edit("Align Z", "atte_az", self.alignment_point.z),
-                edit("Height", "atte_h", self.height),
-                edit("Rotation", "atte_rot", self.rotation.to_degrees()),
-                edit("Width Factor", "atte_wf", self.width_factor),
-                edit("Oblique Angle", "atte_ob", self.oblique_angle.to_degrees()),
-                Property {
-                    label: "H-Align".into(),
-                    field: "atte_halign",
-                    value: PropValue::Choice {
-                        selected: halign_str(self.horizontal_alignment).to_string(),
-                        options: ["Left", "Center", "Right", "Aligned", "Middle", "Fit"]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
+        vec![
+            PropSection {
+                title: "Text".into(),
+                props: vec![
+                    ro("Tag", "atte_tag", self.tag.clone()),
+                    ro("Prompt", "atte_prompt", String::new()),
+                    Property {
+                        label: "Value".into(),
+                        field: "atte_val",
+                        value: PropValue::EditText(self.value.clone()),
                     },
-                },
-                Property {
-                    label: "V-Align".into(),
-                    field: "atte_valign",
-                    value: PropValue::Choice {
-                        selected: valign_str(self.vertical_alignment).to_string(),
-                        options: ["Baseline", "Bottom", "Middle", "Top"]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
-                    },
-                },
-                Property {
-                    label: "Style".into(),
-                    field: "atte_style",
-                    value: PropValue::Choice {
-                        selected: if self.text_style.trim().is_empty() {
-                            "Standard".into()
-                        } else {
-                            self.text_style.clone()
+                    Property {
+                        label: "Style".into(),
+                        field: "atte_style",
+                        value: PropValue::Choice {
+                            selected: if self.text_style.trim().is_empty() {
+                                "Standard".into()
+                            } else {
+                                self.text_style.clone()
+                            },
+                            options: text_style_names.to_vec(),
                         },
-                        options: text_style_names.to_vec(),
                     },
-                },
-                ro(
-                    "Generation",
-                    "atte_gen_flags",
-                    format!("{:#06b}", self.text_generation_flags & 0xff),
-                ),
-                ro(
-                    "Field Length",
-                    "atte_field_len",
-                    self.field_length.to_string(),
-                ),
-                ro(
-                    "MText Mode",
-                    "atte_mtext_flag",
-                    mtext_flag_str(self.mtext_flag),
-                ),
-                ro("Multiline", "atte_is_multiline", bool_yn(self.is_multiline)),
-                ro("Line Count", "atte_line_count", self.line_count.to_string()),
-                ro(
-                    "Lock Position",
-                    "atte_lock_pos",
-                    bool_yn(self.lock_position),
-                ),
-                ro(
-                    "Definition",
-                    "atte_attdef",
-                    if self.attdef_handle.is_null() {
-                        "(none)".into()
-                    } else {
-                        format!("{:X}", self.attdef_handle.value())
+                    Property {
+                        label: "Justify".into(),
+                        field: "atte_halign",
+                        value: PropValue::Choice {
+                            selected: halign_str(self.horizontal_alignment).to_string(),
+                            options: ["Left", "Center", "Right", "Aligned", "Middle", "Fit"]
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect(),
+                        },
                     },
-                ),
-                ro("Invisible", "atte_invisible", bool_yn(self.flags.invisible)),
-                ro("Constant", "atte_constant", bool_yn(self.flags.constant)),
-                ro("Verify", "atte_verify", bool_yn(self.flags.verify)),
-                ro("Preset", "atte_preset", bool_yn(self.flags.preset)),
-                ro(
-                    "Annotative",
-                    "atte_annotative",
-                    bool_yn(self.flags.annotative),
-                ),
-            ],
-        }]
+                    Property {
+                        label: "V-Align".into(),
+                        field: "atte_valign",
+                        value: PropValue::Choice {
+                            selected: valign_str(self.vertical_alignment).to_string(),
+                            options: ["Baseline", "Bottom", "Middle", "Top"]
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect(),
+                        },
+                    },
+                    ro(
+                        "Annotative",
+                        "atte_annotative",
+                        bool_yn(self.flags.annotative),
+                    ),
+                    edit("Height", "atte_h", self.height),
+                    edit("Rotation", "atte_rot", self.rotation.to_degrees()),
+                    edit("Width factor", "atte_wf", self.width_factor),
+                    edit("Obliquing", "atte_ob", self.oblique_angle.to_degrees()),
+                    edit("Text alignment X", "atte_ax", self.alignment_point.x),
+                    edit("Text alignment Y", "atte_ay", self.alignment_point.y),
+                    edit("Text alignment Z", "atte_az", self.alignment_point.z),
+                    ro(
+                        "Boundary width",
+                        "atte_field_len",
+                        self.field_length.to_string(),
+                    ),
+                ],
+            },
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Position X", "atte_ix", self.insertion_point.x),
+                    edit("Position Y", "atte_iy", self.insertion_point.y),
+                    edit("Position Z", "atte_iz", self.insertion_point.z),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    ro(
+                        "Upside down",
+                        "atte_upside_down",
+                        bool_yn(self.text_generation_flags & 0x4 != 0),
+                    ),
+                    ro(
+                        "Backward",
+                        "atte_backward",
+                        bool_yn(self.text_generation_flags & 0x2 != 0),
+                    ),
+                    ro("Invisible", "atte_invisible", bool_yn(self.flags.invisible)),
+                    ro(
+                        "Multiple lines",
+                        "atte_mtext_flag",
+                        mtext_flag_str(self.mtext_flag),
+                    ),
+                    ro("Constant", "atte_constant", bool_yn(self.flags.constant)),
+                    ro("Verify", "atte_verify", bool_yn(self.flags.verify)),
+                    ro("Preset", "atte_preset", bool_yn(self.flags.preset)),
+                    ro(
+                        "Lock position",
+                        "atte_lock_pos",
+                        bool_yn(self.lock_position),
+                    ),
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

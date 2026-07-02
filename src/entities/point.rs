@@ -182,9 +182,9 @@ fn properties(pt: &Point) -> Vec<PropSection> {
     vec![PropSection {
         title: "Geometry".into(),
         props: vec![
-            edit("X", "loc_x", pt.location.x),
-            edit("Y", "loc_y", pt.location.y),
-            edit("Z", "loc_z", pt.location.z),
+            edit("Position X", "loc_x", pt.location.x),
+            edit("Position Y", "loc_y", pt.location.y),
+            edit("Position Z", "loc_z", pt.location.z),
         ],
     }]
 }

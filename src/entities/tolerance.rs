@@ -294,50 +294,40 @@ impl Grippable for Tolerance {
 
 impl PropertyEditable for Tolerance {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("Text", "tol_text", self.text.clone()),
-                edit("Insert X", "tol_ix", self.insertion_point.x),
-                edit("Insert Y", "tol_iy", self.insertion_point.y),
-                edit("Insert Z", "tol_iz", self.insertion_point.z),
-                ro(
-                    "Dim Style",
-                    "tol_dim_style",
-                    if self.dimension_style_name.is_empty() {
-                        "(default)".to_string()
-                    } else {
-                        self.dimension_style_name.clone()
-                    },
-                ),
-                ro(
-                    "Dim Style Handle",
-                    "tol_dim_style_handle",
-                    match self.dimension_style_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
-                    },
-                ),
-                edit("Text Height", "tol_text_height", self.text_height),
-                edit("Dim Gap", "tol_dim_gap", self.dimension_gap),
-                ro(
-                    "Direction",
-                    "tol_direction",
-                    format!(
-                        "{:.3}, {:.3}, {:.3}",
-                        self.direction.x, self.direction.y, self.direction.z
+        vec![
+            PropSection {
+                title: "Text".into(),
+                props: vec![
+                    ro("Text style", "tol_text_style", String::new()),
+                    edit("Text height", "tol_text_height", self.text_height),
+                ],
+            },
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    edit("Position X", "tol_ix", self.insertion_point.x),
+                    edit("Position Y", "tol_iy", self.insertion_point.y),
+                    edit("Position Z", "tol_iz", self.insertion_point.z),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    ro(
+                        "Dimension style",
+                        "tol_dim_style",
+                        if self.dimension_style_name.is_empty() {
+                            "(default)".to_string()
+                        } else {
+                            self.dimension_style_name.clone()
+                        },
                     ),
-                ),
-                ro(
-                    "Normal",
-                    "tol_normal",
-                    format!(
-                        "{:.3}, {:.3}, {:.3}",
-                        self.normal.x, self.normal.y, self.normal.z
-                    ),
-                ),
-            ],
-        }]
+                    edit("Direction X", "tol_dir_x", self.direction.x),
+                    edit("Direction Y", "tol_dir_y", self.direction.y),
+                    edit("Direction Z", "tol_dir_z", self.direction.z),
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -349,7 +339,9 @@ impl PropertyEditable for Tolerance {
             "tol_iy" => self.insertion_point.y = v,
             "tol_iz" => self.insertion_point.z = v,
             "tol_text_height" if v > 0.0 => self.text_height = v,
-            "tol_dim_gap" => self.dimension_gap = v,
+            "tol_dir_x" => self.direction.x = v,
+            "tol_dir_y" => self.direction.y = v,
+            "tol_dir_z" => self.direction.z = v,
             _ => {}
         }
     }

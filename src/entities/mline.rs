@@ -194,46 +194,39 @@ impl PropertyEditable for MLine {
             acadrust::entities::MLineJustification::Zero => "Zero",
             acadrust::entities::MLineJustification::Bottom => "Bottom",
         };
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("Style", "ml_style", self.style_name.clone()),
-                ro(
-                    "Style Handle",
-                    "ml_style_handle",
-                    match self.style_handle {
-                        Some(h) if !h.is_null() => format!("{:X}", h.value()),
-                        _ => "(none)".to_string(),
+        let cur = self.vertices.first();
+        let cur_x = cur.map(|v| v.position.x).unwrap_or(0.0);
+        let cur_y = cur.map(|v| v.position.y).unwrap_or(0.0);
+        let cur_z = cur.map(|v| v.position.z).unwrap_or(0.0);
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    ro("Vertex", "ml_vertex", if self.vertices.is_empty() { String::new() } else { "1".to_string() }),
+                    edit("Vertex X", "ml_vertex_x", cur_x),
+                    edit("Vertex Y", "ml_vertex_y", cur_y),
+                    edit("Vertex Z", "ml_vertex_z", cur_z),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    ro("Style", "ml_style", self.style_name.clone()),
+                    Property {
+                        label: "Style justification".into(),
+                        field: "ml_justification",
+                        value: PropValue::Choice {
+                            selected: just_str.to_string(),
+                            options: ["Top", "Zero", "Bottom"]
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect(),
+                        },
                     },
-                ),
-                ro("Vertices", "ml_verts", self.vertices.len().to_string()),
-                ro(
-                    "Style Elements",
-                    "ml_style_elem_count",
-                    self.style_element_count.to_string(),
-                ),
-                edit("Scale", "ml_scale", self.scale_factor),
-                Property {
-                    label: "Justification".into(),
-                    field: "ml_justification",
-                    value: PropValue::Choice {
-                        selected: just_str.to_string(),
-                        options: ["Top", "Zero", "Bottom"]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
-                    },
-                },
-                Property {
-                    label: "Closed".into(),
-                    field: "ml_closed",
-                    value: PropValue::BoolToggle {
-                        field: "ml_closed",
-                        value: self.flags.contains(acadrust::entities::MLineFlags::CLOSED),
-                    },
-                },
-            ],
-        }]
+                    edit("Style scale", "ml_scale", self.scale_factor),
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -261,8 +254,24 @@ impl PropertyEditable for MLine {
         let Ok(v) = value.trim().parse::<f64>() else {
             return;
         };
-        if field == "ml_scale" && v != 0.0 {
-            self.scale_factor = v;
+        match field {
+            "ml_scale" if v != 0.0 => self.scale_factor = v,
+            "ml_vertex_x" => {
+                if let Some(vx) = self.vertices.first_mut() {
+                    vx.position.x = v;
+                }
+            }
+            "ml_vertex_y" => {
+                if let Some(vx) = self.vertices.first_mut() {
+                    vx.position.y = v;
+                }
+            }
+            "ml_vertex_z" => {
+                if let Some(vx) = self.vertices.first_mut() {
+                    vx.position.z = v;
+                }
+            }
+            _ => {}
         }
     }
 }

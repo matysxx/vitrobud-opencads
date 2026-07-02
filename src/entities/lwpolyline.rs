@@ -323,21 +323,40 @@ fn grips(pline: &LwPolyline) -> Vec<GripDef> {
 }
 
 fn properties(pline: &LwPolyline) -> Vec<PropSection> {
-    let (length, area) = length_and_area(pline);
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            ro("Vertices", "vertices", pline.vertices.len().to_string()),
-            ro(
-                "Closed",
-                "closed",
-                if pline.is_closed { "Yes" } else { "No" },
-            ),
-            edit("Elevation", "elevation", pline.elevation),
-            ro("Length", "length", format!("{length:.4}")),
-            ro("Area", "area", format!("{area:.4}")),
-        ],
-    }]
+    let v0 = pline.vertices.first();
+    let vx = v0.map_or(0.0, |v| v.location.x);
+    let vy = v0.map_or(0.0, |v| v.location.y);
+    let start_w = v0.map_or(0.0, |v| v.start_width);
+    let end_w = v0.map_or(0.0, |v| v.end_width);
+    vec![
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                ro("Current Vertex", "current_vertex", String::new()),
+                edit("Vertex X", "vertex_x", vx),
+                edit("Vertex Y", "vertex_y", vy),
+                edit("Start segment width", "start_width", start_w),
+                edit("End segment width", "end_width", end_w),
+                edit("Global width", "global_width", pline.constant_width),
+                edit("Elevation", "elevation", pline.elevation),
+            ],
+        },
+        PropSection {
+            title: "Misc".into(),
+            props: vec![
+                ro(
+                    "Closed",
+                    "closed",
+                    if pline.is_closed { "Yes" } else { "No" },
+                ),
+                ro(
+                    "Linetype generation",
+                    "plinegen",
+                    if pline.plinegen { "Yes" } else { "No" },
+                ),
+            ],
+        },
+    ]
 }
 
 /// Path length and enclosed area of a polyline, accounting for arc
@@ -382,8 +401,30 @@ fn apply_geom_prop(pline: &mut LwPolyline, field: &str, value: &str) {
     let Some(v) = parse_f64(value) else {
         return;
     };
-    if field == "elevation" {
-        pline.elevation = v;
+    match field {
+        "elevation" => pline.elevation = v,
+        "global_width" => pline.constant_width = v,
+        "vertex_x" => {
+            if let Some(vtx) = pline.vertices.first_mut() {
+                vtx.location.x = v;
+            }
+        }
+        "vertex_y" => {
+            if let Some(vtx) = pline.vertices.first_mut() {
+                vtx.location.y = v;
+            }
+        }
+        "start_width" => {
+            if let Some(vtx) = pline.vertices.first_mut() {
+                vtx.start_width = v;
+            }
+        }
+        "end_width" => {
+            if let Some(vtx) = pline.vertices.first_mut() {
+                vtx.end_width = v;
+            }
+        }
+        _ => {}
     }
 }
 

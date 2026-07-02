@@ -2,7 +2,9 @@ use acadrust::entities::Arc;
 use truck_modeling::{builder, Point3};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{center_grip, edit_prop as edit, parse_f64, square_grip};
+use crate::entities::common::{
+    center_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+};
 use crate::entities::traits::TruckConvertible;
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
@@ -122,6 +124,31 @@ fn grips(arc: &Arc) -> Vec<GripDef> {
 }
 
 fn properties(arc: &Arc) -> Vec<PropSection> {
+    let r = arc.radius;
+    let sa = arc.start_angle;
+    let ea = arc.end_angle;
+    let sweep = (ea - sa).rem_euclid(TAU);
+    let total_angle = sweep.to_degrees();
+    let arc_length = r * sweep;
+    let area = 0.5 * r * r * sweep;
+
+    let normal = (arc.normal.x, arc.normal.y, arc.normal.z);
+    let (ax, ay) = crate::scene::view::transform::ocs_axes(normal);
+    let (cwx, cwy, cwz) = crate::scene::view::transform::ocs_point_to_wcs(
+        (arc.center.x, arc.center.y, arc.center.z),
+        normal,
+    );
+    let arc_pt = |a: f64| {
+        let (c, s) = (a.cos(), a.sin());
+        (
+            cwx + r * c * ax.0 + r * s * ay.0,
+            cwy + r * c * ax.1 + r * s * ay.1,
+            cwz + r * c * ax.2 + r * s * ay.2,
+        )
+    };
+    let (sx, sy, sz) = arc_pt(sa);
+    let (ex, ey, ez) = arc_pt(ea);
+
     vec![PropSection {
         title: "Geometry".into(),
         props: vec![
@@ -129,12 +156,21 @@ fn properties(arc: &Arc) -> Vec<PropSection> {
             edit("Center Y", "center_y", arc.center.y),
             edit("Center Z", "center_z", arc.center.z),
             edit("Radius", "radius", arc.radius),
-            edit(
-                "Start Angle (deg)",
-                "start_angle",
-                arc.start_angle.to_degrees(),
-            ),
-            edit("End Angle (deg)", "end_angle", arc.end_angle.to_degrees()),
+            edit("Start angle", "start_angle", sa.to_degrees()),
+            edit("End angle", "end_angle", ea.to_degrees()),
+            ro("Total angle", "total_angle", format!("{total_angle:.2}")),
+            ro("Arc length", "arc_length", format!("{arc_length:.4}")),
+            ro("Area", "area", format!("{area:.4}")),
+            ro("Start X", "start_x", format!("{sx:.4}")),
+            ro("Start Y", "start_y", format!("{sy:.4}")),
+            ro("Start Z", "start_z", format!("{sz:.4}")),
+            ro("End X", "end_x", format!("{ex:.4}")),
+            ro("End Y", "end_y", format!("{ey:.4}")),
+            ro("End Z", "end_z", format!("{ez:.4}")),
+            edit("Normal X", "normal_x", arc.normal.x),
+            edit("Normal Y", "normal_y", arc.normal.y),
+            edit("Normal Z", "normal_z", arc.normal.z),
+            edit("Thickness", "thickness", arc.thickness),
         ],
     }]
 }
@@ -150,6 +186,10 @@ fn apply_geom_prop(arc: &mut Arc, field: &str, value: &str) {
         "radius" if v > 0.0 => arc.radius = v,
         "start_angle" => arc.start_angle = v.to_radians(),
         "end_angle" => arc.end_angle = v.to_radians(),
+        "normal_x" => arc.normal.x = v,
+        "normal_y" => arc.normal.y = v,
+        "normal_z" => arc.normal.z = v,
+        "thickness" => arc.thickness = v,
         _ => {}
     }
 }

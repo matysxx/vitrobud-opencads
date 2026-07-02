@@ -192,69 +192,115 @@ fn grips(t: &MText) -> Vec<GripDef> {
     vec![square_grip(0, p), triangle_grip(1, width_grip)]
 }
 
+fn columns_str(c: &acadrust::entities::MTextColumnData) -> &'static str {
+    match c.column_type {
+        1 => "Static",
+        2 => "Dynamic",
+        _ => "None",
+    }
+}
+
 fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
-    vec![PropSection {
-        title: "Geometry".into(),
-        props: vec![
-            edit("Insert X", "ins_x", t.insertion_point.x),
-            edit("Insert Y", "ins_y", t.insertion_point.y),
-            edit("Insert Z", "ins_z", t.insertion_point.z),
-            edit("Height", "height", t.height),
-            edit("Width", "rect_w", t.rectangle_width),
-            edit("Rect Height", "rect_h", t.rectangle_height.unwrap_or(0.0)),
-            edit("Rotation", "rotation", t.rotation.to_degrees()),
-            edit("Line Spacing", "line_spacing", t.line_spacing_factor),
-            Property {
-                label: "H-Align".into(),
-                field: "h_align",
-                value: PropValue::Choice {
-                    selected: mtext_halign_str(&t.attachment_point).to_string(),
-                    options: ["Left", "Center", "Right"]
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
+    // Absolute line-space distance for single spacing (~1.66 * height) scaled
+    // by the line-spacing factor.
+    let line_space_distance = t.height * 1.666_666_666_666_667 * t.line_spacing_factor;
+    let bg_mask_on = (t.background_fill_flags & 0x03) != 0;
+    let text_frame_on = (t.background_fill_flags & 0x10) != 0;
+    vec![
+        PropSection {
+            title: "Text".into(),
+            props: vec![
+                Property {
+                    label: "Contents".into(),
+                    field: "content",
+                    value: PropValue::EditText(t.value.clone()),
                 },
-            },
-            Property {
-                label: "V-Align".into(),
-                field: "v_align",
-                value: PropValue::Choice {
-                    selected: mtext_valign_str(&t.attachment_point).to_string(),
-                    options: ["Top", "Middle", "Bottom"]
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect(),
-                },
-            },
-            ro(
-                "Attachment",
-                "attachment",
-                attachment_str(&t.attachment_point).to_string(),
-            ),
-            ro(
-                "Direction",
-                "direction",
-                drawing_dir_str(&t.drawing_direction).to_string(),
-            ),
-            Property {
-                label: "Content".into(),
-                field: "content",
-                value: PropValue::EditText(t.value.clone()),
-            },
-            Property {
-                label: "Style".into(),
-                field: "style",
-                value: PropValue::Choice {
-                    selected: if t.style.trim().is_empty() {
-                        "Standard".into()
-                    } else {
-                        t.style.clone()
+                Property {
+                    label: "Style".into(),
+                    field: "style",
+                    value: PropValue::Choice {
+                        selected: if t.style.trim().is_empty() {
+                            "Standard".into()
+                        } else {
+                            t.style.clone()
+                        },
+                        options: text_style_names.to_vec(),
                     },
-                    options: text_style_names.to_vec(),
                 },
-            },
-        ],
-    }]
+                ro(
+                    "Annotative",
+                    "annotative",
+                    if t.is_annotative { "Yes" } else { "No" },
+                ),
+                Property {
+                    label: "Justify".into(),
+                    field: "h_align",
+                    value: PropValue::Choice {
+                        selected: mtext_halign_str(&t.attachment_point).to_string(),
+                        options: ["Left", "Center", "Right"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                },
+                Property {
+                    label: "V-Align".into(),
+                    field: "v_align",
+                    value: PropValue::Choice {
+                        selected: mtext_valign_str(&t.attachment_point).to_string(),
+                        options: ["Top", "Middle", "Bottom"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                },
+                ro(
+                    "Attachment",
+                    "attachment",
+                    attachment_str(&t.attachment_point).to_string(),
+                ),
+                ro(
+                    "Direction",
+                    "direction",
+                    drawing_dir_str(&t.drawing_direction).to_string(),
+                ),
+                edit("Text height", "height", t.height),
+                edit("Rotation", "rotation", t.rotation.to_degrees()),
+                edit("Line space factor", "line_spacing", t.line_spacing_factor),
+                ro(
+                    "Line space distance",
+                    "line_space_distance",
+                    format!("{line_space_distance:.4}"),
+                ),
+                ro("Line space style", "line_space_style", String::new()),
+                ro(
+                    "Background mask",
+                    "background_mask",
+                    if bg_mask_on { "On" } else { "Off" },
+                ),
+                edit("Defined width", "rect_w", t.rectangle_width),
+                edit("Defined height", "rect_h", t.rectangle_height.unwrap_or(0.0)),
+                ro(
+                    "Text frame",
+                    "text_frame",
+                    if text_frame_on { "On" } else { "Off" },
+                ),
+                ro(
+                    "Columns",
+                    "columns",
+                    columns_str(&t.column_data).to_string(),
+                ),
+            ],
+        },
+        PropSection {
+            title: "Geometry".into(),
+            props: vec![
+                edit("Position X", "ins_x", t.insertion_point.x),
+                edit("Position Y", "ins_y", t.insertion_point.y),
+                edit("Position Z", "ins_z", t.insertion_point.z),
+            ],
+        },
+    ]
 }
 
 fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {

@@ -2,7 +2,7 @@ use acadrust::entities::{Polyline, Polyline2D, Polyline3D};
 use truck_modeling::{builder, Edge, Point3, Wire};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
@@ -387,39 +387,58 @@ impl Grippable for Polyline2D {
 
 impl PropertyEditable for Polyline2D {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        let smooth = match self.smooth_surface {
-            acadrust::entities::SmoothSurfaceType::None => "None",
-            acadrust::entities::SmoothSurfaceType::QuadraticBSpline => "Quadratic",
-            acadrust::entities::SmoothSurfaceType::CubicBSpline => "Cubic",
-            acadrust::entities::SmoothSurfaceType::Bezier => "Bezier",
-        };
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("Vertices", "vertices", self.vertices.len().to_string()),
-                edit("Elevation", "pl2_elevation", self.elevation),
-                edit("Default Start W", "pl2_start_w", self.start_width),
-                edit("Default End W", "pl2_end_w", self.end_width),
-                edit("Thickness", "pl2_thickness", self.thickness),
-                ro("Smooth Surface", "pl2_smooth", smooth),
-                ro(
-                    "Normal",
-                    "pl2_normal",
-                    format!(
-                        "{:.3}, {:.3}, {:.3}",
-                        self.normal.x, self.normal.y, self.normal.z
-                    ),
-                ),
-                Property {
-                    label: "Closed".into(),
-                    field: "pl2_closed",
-                    value: PropValue::BoolToggle {
+        let n = self.vertices.len();
+        let mut area = 0.0;
+        let mut length = 0.0;
+        let seg_count = if self.is_closed() { n } else { n.saturating_sub(1) };
+        for i in 0..seg_count {
+            let a = &self.vertices[i].location;
+            let b = &self.vertices[(i + 1) % n].location;
+            area += a.x * b.y - b.x * a.y;
+            length += ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+        }
+        area = (area * 0.5).abs();
+
+        let v0 = self.vertices.first();
+        let vertex_x = v0.map(|v| format!("{:.4}", v.location.x)).unwrap_or_default();
+        let vertex_y = v0.map(|v| format!("{:.4}", v.location.y)).unwrap_or_default();
+        let seg_start_w = v0.map(|v| format!("{:.4}", v.start_width)).unwrap_or_default();
+        let seg_end_w = v0.map(|v| format!("{:.4}", v.end_width)).unwrap_or_default();
+
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    ro("Current Vertex", "pl2_current_vertex", if n > 0 { "1" } else { "" }),
+                    ro("Vertex X", "pl2_vertex_x", vertex_x),
+                    ro("Vertex Y", "pl2_vertex_y", vertex_y),
+                    ro("Start segment width", "pl2_seg_start_w", seg_start_w),
+                    ro("End segment width", "pl2_seg_end_w", seg_end_w),
+                    edit("Global width", "pl2_start_w", self.start_width),
+                    edit("Elevation", "pl2_elevation", self.elevation),
+                    ro("Area", "pl2_area", format!("{area:.4}")),
+                    ro("Length", "pl2_length", format!("{length:.4}")),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    Property {
+                        label: "Closed".into(),
                         field: "pl2_closed",
-                        value: self.is_closed(),
+                        value: PropValue::BoolToggle {
+                            field: "pl2_closed",
+                            value: self.is_closed(),
+                        },
                     },
-                },
-            ],
-        }]
+                    ro(
+                        "Linetype generation",
+                        "pl2_ltype_gen",
+                        if self.flags.bits() & 128 != 0 { "Enabled" } else { "Disabled" },
+                    ),
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -437,27 +456,16 @@ impl PropertyEditable for Polyline2D {
                 }
             }
             "pl2_elevation" => {
-                if let Ok(v) = value.trim().parse::<f64>() {
+                if let Some(v) = parse_f64(value) {
                     self.elevation = v;
                 }
             }
             "pl2_start_w" => {
-                if let Ok(v) = value.trim().parse::<f64>() {
+                if let Some(v) = parse_f64(value) {
                     if v >= 0.0 {
                         self.start_width = v;
-                    }
-                }
-            }
-            "pl2_end_w" => {
-                if let Ok(v) = value.trim().parse::<f64>() {
-                    if v >= 0.0 {
                         self.end_width = v;
                     }
-                }
-            }
-            "pl2_thickness" => {
-                if let Ok(v) = value.trim().parse::<f64>() {
-                    self.thickness = v;
                 }
             }
             _ => {}
@@ -606,41 +614,43 @@ impl Grippable for Polyline3D {
 impl PropertyEditable for Polyline3D {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         use acadrust::entities::polyline3d::SmoothSurfaceType as SST;
-        let smooth = match self.smooth_type {
+        let n = self.vertices.len();
+        let v0 = self.vertices.first();
+        let vertex_x = v0.map(|v| format!("{:.4}", v.position.x)).unwrap_or_default();
+        let vertex_y = v0.map(|v| format!("{:.4}", v.position.y)).unwrap_or_default();
+        let vertex_z = v0.map(|v| format!("{:.4}", v.position.z)).unwrap_or_default();
+        let fit_smooth = match self.smooth_type {
             SST::None => "None",
             SST::QuadraticBSpline => "Quadratic",
             SST::CubicBSpline => "Cubic",
             SST::Bezier => "Bezier",
         };
-        vec![PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                ro("Vertices", "vertices", self.vertices.len().to_string()),
-                edit("Default Start W", "pl3_start_w", self.default_start_width),
-                edit("Default End W", "pl3_end_w", self.default_end_width),
-                ro("Smooth", "pl3_smooth", smooth),
-                ro("Mesh M", "pl3_mesh_m", self.mesh_m_count.to_string()),
-                ro("Mesh N", "pl3_mesh_n", self.mesh_n_count.to_string()),
-                ro(
-                    "Smooth M Density",
-                    "pl3_smooth_m",
-                    self.smooth_m_density.to_string(),
-                ),
-                ro(
-                    "Smooth N Density",
-                    "pl3_smooth_n",
-                    self.smooth_n_density.to_string(),
-                ),
-                Property {
-                    label: "Closed".into(),
-                    field: "pl3_closed",
-                    value: PropValue::BoolToggle {
+
+        vec![
+            PropSection {
+                title: "Geometry".into(),
+                props: vec![
+                    ro("Vertex", "pl3_vertex", if n > 0 { "1" } else { "" }),
+                    ro("Vertex X", "pl3_vertex_x", vertex_x),
+                    ro("Vertex Y", "pl3_vertex_y", vertex_y),
+                    ro("Vertex Z", "pl3_vertex_z", vertex_z),
+                ],
+            },
+            PropSection {
+                title: "Misc".into(),
+                props: vec![
+                    Property {
+                        label: "Closed".into(),
                         field: "pl3_closed",
-                        value: self.is_closed(),
+                        value: PropValue::BoolToggle {
+                            field: "pl3_closed",
+                            value: self.is_closed(),
+                        },
                     },
-                },
-            ],
-        }]
+                    ro("Fit/Smooth", "pl3_smooth", fit_smooth),
+                ],
+            },
+        ]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -654,14 +664,6 @@ impl PropertyEditable for Polyline3D {
                 self.close();
             } else {
                 self.open();
-            }
-            return;
-        }
-        if let Ok(v) = value.trim().parse::<f64>() {
-            match field {
-                "pl3_start_w" if v >= 0.0 => self.default_start_width = v,
-                "pl3_end_w" if v >= 0.0 => self.default_end_width = v,
-                _ => {}
             }
         }
     }
