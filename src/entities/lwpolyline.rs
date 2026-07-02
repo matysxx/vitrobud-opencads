@@ -322,9 +322,9 @@ fn grips(pline: &LwPolyline) -> Vec<GripDef> {
     out
 }
 
-fn properties(pline: &LwPolyline) -> PropSection {
+fn properties(pline: &LwPolyline) -> Vec<PropSection> {
     let (length, area) = length_and_area(pline);
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             ro("Vertices", "vertices", pline.vertices.len().to_string()),
@@ -337,7 +337,7 @@ fn properties(pline: &LwPolyline) -> PropSection {
             ro("Length", "length", format!("{length:.4}")),
             ro("Area", "area", format!("{area:.4}")),
         ],
-    }
+    }]
 }
 
 /// Path length and enclosed area of a polyline, accounting for arc
@@ -587,7 +587,7 @@ impl crate::entities::traits::PropertyEditable for LwPolyline {
     fn geometry_properties(
         &self,
         _text_style_names: &[String],
-    ) -> crate::scene::model::object::PropSection {
+    ) -> Vec<crate::scene::model::object::PropSection> {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

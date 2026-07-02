@@ -117,8 +117,8 @@ impl Grippable for Polyline {
 }
 
 impl PropertyEditable for Polyline {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Vertices", "vertices", self.vertices.len().to_string()),
@@ -131,7 +131,7 @@ impl PropertyEditable for Polyline {
                     },
                 },
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -386,14 +386,14 @@ impl Grippable for Polyline2D {
 }
 
 impl PropertyEditable for Polyline2D {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let smooth = match self.smooth_surface {
             acadrust::entities::SmoothSurfaceType::None => "None",
             acadrust::entities::SmoothSurfaceType::QuadraticBSpline => "Quadratic",
             acadrust::entities::SmoothSurfaceType::CubicBSpline => "Cubic",
             acadrust::entities::SmoothSurfaceType::Bezier => "Bezier",
         };
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Vertices", "vertices", self.vertices.len().to_string()),
@@ -419,7 +419,7 @@ impl PropertyEditable for Polyline2D {
                     },
                 },
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -604,7 +604,7 @@ impl Grippable for Polyline3D {
 }
 
 impl PropertyEditable for Polyline3D {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         use acadrust::entities::polyline3d::SmoothSurfaceType as SST;
         let smooth = match self.smooth_type {
             SST::None => "None",
@@ -612,7 +612,7 @@ impl PropertyEditable for Polyline3D {
             SST::CubicBSpline => "Cubic",
             SST::Bezier => "Bezier",
         };
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Vertices", "vertices", self.vertices.len().to_string()),
@@ -640,7 +640,7 @@ impl PropertyEditable for Polyline3D {
                     },
                 },
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

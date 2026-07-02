@@ -520,7 +520,7 @@ fn choice(label: &str, field: &'static str, selected: &str, opts: &[&str]) -> Pr
     }
 }
 
-fn properties(ml: &MultiLeader) -> PropSection {
+fn properties(ml: &MultiLeader) -> Vec<PropSection> {
     let ctx = &ml.context;
     let total_pts: usize = ctx
         .leader_roots
@@ -714,10 +714,10 @@ fn properties(ml: &MultiLeader) -> PropSection {
         props.push(edit("Root Conn Z", "conn_z", root.connection_point.z));
     }
 
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props,
-    }
+    }]
 }
 
 fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
@@ -1047,7 +1047,7 @@ impl crate::entities::traits::Grippable for MultiLeader {
 }
 
 impl crate::entities::traits::PropertyEditable for MultiLeader {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

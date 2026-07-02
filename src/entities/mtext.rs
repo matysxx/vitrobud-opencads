@@ -192,8 +192,8 @@ fn grips(t: &MText) -> Vec<GripDef> {
     vec![square_grip(0, p), triangle_grip(1, width_grip)]
 }
 
-fn properties(t: &MText, text_style_names: &[String]) -> PropSection {
-    PropSection {
+fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Insert X", "ins_x", t.insertion_point.x),
@@ -254,7 +254,7 @@ fn properties(t: &MText, text_style_names: &[String]) -> PropSection {
                 },
             },
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {
@@ -413,7 +413,7 @@ impl Grippable for MText {
 }
 
 impl PropertyEditable for MText {
-    fn geometry_properties(&self, text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
         properties(self, text_style_names)
     }
 

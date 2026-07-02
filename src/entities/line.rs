@@ -72,8 +72,8 @@ fn grips(line: &Line) -> Vec<GripDef> {
     vec![square_grip(0, s), square_grip(1, e), center_grip(2, m)]
 }
 
-fn properties(line: &Line) -> PropSection {
-    PropSection {
+fn properties(line: &Line) -> Vec<PropSection> {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Start X", "start_x", line.start.x),
@@ -84,7 +84,7 @@ fn properties(line: &Line) -> PropSection {
             edit("End Z", "end_z", line.end.z),
             ro("Length", "length", format!("{:.4}", line.length())),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(line: &mut Line, field: &str, value: &str) {
@@ -232,7 +232,7 @@ impl crate::entities::traits::Grippable for Line {
 }
 
 impl crate::entities::traits::PropertyEditable for Line {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

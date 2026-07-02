@@ -384,7 +384,7 @@ impl Grippable for AttributeDefinition {
 }
 
 impl PropertyEditable for AttributeDefinition {
-    fn geometry_properties(&self, text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
         let mut props = vec![
             ro("Tag", "att_tag", self.tag.clone()),
             ro("Prompt", "att_prompt", self.prompt.clone()),
@@ -478,10 +478,10 @@ impl PropertyEditable for AttributeDefinition {
                 p.value = PropValue::ReadOnly(self.default_value.clone());
             }
         }
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props,
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -625,8 +625,8 @@ impl Grippable for AttributeEntity {
 }
 
 impl PropertyEditable for AttributeEntity {
-    fn geometry_properties(&self, text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Tag", "atte_tag", self.tag.clone()),
@@ -720,7 +720,7 @@ impl PropertyEditable for AttributeEntity {
                     bool_yn(self.flags.annotative),
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

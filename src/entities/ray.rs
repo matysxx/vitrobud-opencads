@@ -88,8 +88,8 @@ impl Grippable for Ray {
 }
 
 impl PropertyEditable for Ray {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 edit("Base X", "ray_bx", self.base_point.x),
@@ -99,7 +99,7 @@ impl PropertyEditable for Ray {
                 edit("Dir Y", "ray_dy", self.direction.y),
                 edit("Dir Z", "ray_dz", self.direction.z),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -225,8 +225,8 @@ impl Grippable for XLine {
 }
 
 impl PropertyEditable for XLine {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 edit("Base X", "xl_bx", self.base_point.x),
@@ -236,7 +236,7 @@ impl PropertyEditable for XLine {
                 edit("Dir Y", "xl_dy", self.direction.y),
                 edit("Dir Z", "xl_dz", self.direction.z),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

@@ -84,14 +84,14 @@ impl Grippable for Solid3D {
 }
 
 impl PropertyEditable for Solid3D {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let size = acis_size_str(
             self.acis_data.has_data(),
             self.acis_data.sat_data.len(),
             self.acis_data.sab_data.len(),
             self.acis_data.is_binary,
         );
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro(
@@ -133,7 +133,7 @@ impl PropertyEditable for Solid3D {
                     },
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
@@ -160,14 +160,14 @@ impl Grippable for Region {
 }
 
 impl PropertyEditable for Region {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let size = acis_size_str(
             self.acis_data.has_data(),
             self.acis_data.sat_data.len(),
             self.acis_data.sab_data.len(),
             self.acis_data.is_binary,
         );
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro(
@@ -201,7 +201,7 @@ impl PropertyEditable for Region {
                     self.silhouettes.len().to_string(),
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
@@ -228,14 +228,14 @@ impl Grippable for Body {
 }
 
 impl PropertyEditable for Body {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let size = acis_size_str(
             self.acis_data.has_data(),
             self.acis_data.sat_data.len(),
             self.acis_data.sab_data.len(),
             self.acis_data.is_binary,
         );
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro(
@@ -269,7 +269,7 @@ impl PropertyEditable for Body {
                     self.silhouettes.len().to_string(),
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}

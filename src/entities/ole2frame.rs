@@ -73,13 +73,13 @@ fn grips(ole: &Ole2Frame) -> Vec<GripDef> {
     ]
 }
 
-fn properties(ole: &Ole2Frame) -> PropSection {
+fn properties(ole: &Ole2Frame) -> Vec<PropSection> {
     let type_str = match ole.ole_object_type {
         OleObjectType::Link => "Link",
         OleObjectType::Embedded => "Embedded",
         OleObjectType::Static => "Static",
     };
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             ro("Type", "ole_type", type_str),
@@ -114,7 +114,7 @@ fn properties(ole: &Ole2Frame) -> PropSection {
                 if ole.is_paper_space { "Yes" } else { "No" },
             ),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(ole: &mut Ole2Frame, field: &str, value: &str) {

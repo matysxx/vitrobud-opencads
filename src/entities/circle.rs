@@ -118,8 +118,8 @@ fn grips(circle: &Circle) -> Vec<GripDef> {
     ]
 }
 
-fn properties(circle: &Circle) -> PropSection {
-    PropSection {
+fn properties(circle: &Circle) -> Vec<PropSection> {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Center X", "center_x", circle.center.x),
@@ -137,7 +137,7 @@ fn properties(circle: &Circle) -> PropSection {
                 format!("{:.4}", circle.radius * 2.0 * std::f64::consts::PI),
             ),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(circle: &mut Circle, field: &str, value: &str) {

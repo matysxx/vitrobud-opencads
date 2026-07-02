@@ -8,7 +8,7 @@ use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Pr
 use crate::scene::convert::tess_util::{arc_segments, arc_signed_span, wire_chord_tol, FallbackGeometry};
 use crate::scene::model::wire_model::SnapHint;
 
-fn properties(h: &Hatch) -> PropSection {
+fn properties(h: &Hatch) -> Vec<PropSection> {
     let pattern_type = match h.pattern_type {
         acadrust::entities::HatchPatternType::Predefined => "Predefined",
         acadrust::entities::HatchPatternType::UserDefined => "User Defined",
@@ -39,7 +39,7 @@ fn properties(h: &Hatch) -> PropSection {
                 .sum::<usize>()
         })
         .sum();
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             ro("Fill Type", "fill_type", fill_type),
@@ -73,7 +73,7 @@ fn properties(h: &Hatch) -> PropSection {
                 format!("{:.3}, {:.3}, {:.3}", h.normal.x, h.normal.y, h.normal.z),
             ),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(h: &mut Hatch, field: &str, value: &str) {
@@ -103,7 +103,7 @@ fn apply_transform(h: &mut Hatch, t: &EntityTransform) {
 }
 
 impl PropertyEditable for Hatch {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         properties(self)
     }
 

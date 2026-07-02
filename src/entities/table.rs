@@ -818,14 +818,14 @@ impl Grippable for Table {
 }
 
 impl PropertyEditable for Table {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let fmt_h = |oh: &Option<acadrust::types::Handle>| -> String {
             match oh {
                 Some(h) if !h.is_null() => format!("{:X}", h.value()),
                 _ => "(none)".to_string(),
             }
         };
-        PropSection {
+        vec![PropSection {
             title: "Table".into(),
             props: vec![
                 ro("Rows", "tbl_rows", self.rows.len().to_string()),
@@ -921,7 +921,7 @@ impl PropertyEditable for Table {
                     ),
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}

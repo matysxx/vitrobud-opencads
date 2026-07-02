@@ -162,8 +162,8 @@ impl Grippable for RasterImage {
 }
 
 impl PropertyEditable for RasterImage {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("File", "ri_file", self.file_path.clone()),
@@ -203,7 +203,7 @@ impl PropertyEditable for RasterImage {
                     },
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -423,8 +423,8 @@ impl Grippable for Wipeout {
 }
 
 impl PropertyEditable for Wipeout {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 edit("Insert X", "wo_ox", self.insertion_point.x),
@@ -464,7 +464,7 @@ impl PropertyEditable for Wipeout {
                     },
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

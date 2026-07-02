@@ -191,7 +191,7 @@ fn hookline_dir_str(hd: &HooklineDirection) -> &'static str {
     }
 }
 
-fn properties(leader: &Leader) -> PropSection {
+fn properties(leader: &Leader) -> Vec<PropSection> {
     let n = leader.vertices.len();
     let mut props = vec![
         // Style
@@ -283,10 +283,10 @@ fn properties(leader: &Leader) -> PropSection {
         }
     }
 
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props,
-    }
+    }]
 }
 
 fn apply_geom_prop(leader: &mut Leader, field: &str, value: &str) {
@@ -540,7 +540,7 @@ impl crate::entities::traits::Grippable for Leader {
 }
 
 impl crate::entities::traits::PropertyEditable for Leader {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

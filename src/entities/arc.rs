@@ -121,8 +121,8 @@ fn grips(arc: &Arc) -> Vec<GripDef> {
     ]
 }
 
-fn properties(arc: &Arc) -> PropSection {
-    PropSection {
+fn properties(arc: &Arc) -> Vec<PropSection> {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Center X", "center_x", arc.center.x),
@@ -136,7 +136,7 @@ fn properties(arc: &Arc) -> PropSection {
             ),
             edit("End Angle (deg)", "end_angle", arc.end_angle.to_degrees()),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(arc: &mut Arc, field: &str, value: &str) {
@@ -313,7 +313,7 @@ impl crate::entities::traits::Grippable for Arc {
 }
 
 impl crate::entities::traits::PropertyEditable for Arc {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

@@ -19,8 +19,8 @@ fn grips(ins: &Insert) -> Vec<GripDef> {
     vec![square_grip(0, glam::DVec3::new(w.x, w.y, w.z))]
 }
 
-fn properties(ins: &Insert) -> PropSection {
-    PropSection {
+fn properties(ins: &Insert) -> Vec<PropSection> {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Insert X", "ins_x", ins.insert_point.x),
@@ -32,7 +32,7 @@ fn properties(ins: &Insert) -> PropSection {
             edit("Rotation", "rotation", ins.rotation.to_degrees()),
             ro("Block", "block", ins.block_name.clone()),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(ins: &mut Insert, field: &str, value: &str) {

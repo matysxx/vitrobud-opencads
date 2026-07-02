@@ -57,7 +57,7 @@ fn base_props(base: &DimensionBase) -> Vec<crate::scene::model::object::Property
     ]
 }
 
-fn properties(dim: &Dimension) -> PropSection {
+fn properties(dim: &Dimension) -> Vec<PropSection> {
     let mut props = base_props(dim.base());
     match dim {
         Dimension::Aligned(d) => {
@@ -129,10 +129,10 @@ fn properties(dim: &Dimension) -> PropSection {
             ));
         }
     }
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props,
-    }
+    }]
 }
 
 fn linear_like_props(
@@ -579,7 +579,7 @@ fn mirror_point(p: &mut acadrust::types::Vector3, p1: DVec3, p2: DVec3) {
 }
 
 impl PropertyEditable for Dimension {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         properties(self)
     }
 

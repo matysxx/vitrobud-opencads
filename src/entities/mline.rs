@@ -188,13 +188,13 @@ impl Grippable for MLine {
 }
 
 impl PropertyEditable for MLine {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let just_str = match self.justification {
             acadrust::entities::MLineJustification::Top => "Top",
             acadrust::entities::MLineJustification::Zero => "Zero",
             acadrust::entities::MLineJustification::Bottom => "Bottom",
         };
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Style", "ml_style", self.style_name.clone()),
@@ -233,7 +233,7 @@ impl PropertyEditable for MLine {
                     },
                 },
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

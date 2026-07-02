@@ -118,12 +118,12 @@ impl Grippable for Shape {
 // ── PropertyEditable ──────────────────────────────────────────────────────────
 
 impl PropertyEditable for Shape {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let style_handle_display = match self.style_handle {
             Some(h) if !h.is_null() => format!("{:X}", h.value()),
             _ => "(none)".to_string(),
         };
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Name", "shp_name", self.shape_name.clone()),
@@ -142,7 +142,7 @@ impl PropertyEditable for Shape {
                 edit("Normal Y", "shp_ny", self.normal.y),
                 edit("Normal Z", "shp_nz", self.normal.z),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

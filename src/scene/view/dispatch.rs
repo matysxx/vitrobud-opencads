@@ -17,11 +17,14 @@ pub fn properties_sectioned(
     entity: &EntityType,
     text_style_names: &[String],
 ) -> Vec<PropSection> {
-    let general = properties::general_section(entity);
-    let geometry = entity
-        .geometry_properties(text_style_names)
-        .unwrap_or_else(|| properties::fallback_properties(handle, entity));
-    vec![general, geometry]
+    let mut sections = vec![properties::general_section(entity)];
+    let groups = entity.geometry_properties(text_style_names);
+    if groups.is_empty() {
+        sections.push(properties::fallback_properties(handle, entity));
+    } else {
+        sections.extend(groups);
+    }
+    sections
 }
 
 pub fn apply_common_prop(entity: &mut EntityType, field: &str, value: &str) {

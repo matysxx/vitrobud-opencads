@@ -97,8 +97,8 @@ impl Grippable for Solid {
 }
 
 impl PropertyEditable for Solid {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 edit("P1 X", "sl_p1x", self.first_corner.x),
@@ -115,7 +115,7 @@ impl PropertyEditable for Solid {
                 edit("P4 Z", "sl_p4z", self.fourth_corner.z),
                 edit("Thickness", "sl_thick", self.thickness),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

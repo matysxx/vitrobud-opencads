@@ -115,9 +115,9 @@ impl Grippable for Face3D {
 }
 
 impl PropertyEditable for Face3D {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         use crate::entities::common::edit_prop as edit;
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 edit("P1 X", "f3_p1x", self.first_corner.x),
@@ -133,7 +133,7 @@ impl PropertyEditable for Face3D {
                 edit("P4 Y", "f3_p4y", self.fourth_corner.y),
                 edit("P4 Z", "f3_p4z", self.fourth_corner.z),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -276,14 +276,14 @@ impl Grippable for PolygonMesh {
 }
 
 impl PropertyEditable for PolygonMesh {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let smooth = match self.smooth_type {
             acadrust::entities::polygon_mesh::SurfaceSmoothType::NoSmooth => "None",
             acadrust::entities::polygon_mesh::SurfaceSmoothType::Quadratic => "Quadratic",
             acadrust::entities::polygon_mesh::SurfaceSmoothType::Cubic => "Cubic",
             acadrust::entities::polygon_mesh::SurfaceSmoothType::Bezier => "Bezier",
         };
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("M count", "pm_m", self.m_vertex_count.to_string()),
@@ -314,7 +314,7 @@ impl PropertyEditable for PolygonMesh {
                     ),
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
@@ -424,14 +424,14 @@ impl Grippable for PolyfaceMesh {
 }
 
 impl PropertyEditable for PolyfaceMesh {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let smooth = match self.smooth_surface {
             acadrust::entities::PolyfaceSmoothType::None => "None",
             acadrust::entities::PolyfaceSmoothType::Quadratic => "Quadratic",
             acadrust::entities::PolyfaceSmoothType::Cubic => "Cubic",
             acadrust::entities::PolyfaceSmoothType::Bezier => "Bezier",
         };
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Vertices", "pfm_v", self.vertices.len().to_string()),
@@ -464,7 +464,7 @@ impl PropertyEditable for PolyfaceMesh {
                     format!("{:.4}", self.thickness),
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}
@@ -597,9 +597,9 @@ impl Grippable for Mesh {
 }
 
 impl PropertyEditable for Mesh {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let creased_edges = self.edges.iter().filter(|e| e.has_crease()).count();
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Vertices", "msh_v", self.vertices.len().to_string()),
@@ -618,7 +618,7 @@ impl PropertyEditable for Mesh {
                     if self.blend_crease { "Yes" } else { "No" },
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, _field: &str, _value: &str) {}

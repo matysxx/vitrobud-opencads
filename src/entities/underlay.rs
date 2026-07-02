@@ -146,13 +146,13 @@ impl Grippable for Underlay {
 // ── PropertyEditable ──────────────────────────────────────────────────────────
 
 impl PropertyEditable for Underlay {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let type_str = match self.underlay_type {
             acadrust::entities::UnderlayType::Pdf => "PDF",
             acadrust::entities::UnderlayType::Dwf => "DWF",
             acadrust::entities::UnderlayType::Dgn => "DGN",
         };
-        PropSection {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Type", "ul_type", type_str),
@@ -198,7 +198,7 @@ impl PropertyEditable for Underlay {
                     if self.clip_inverted { "Yes" } else { "No" },
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

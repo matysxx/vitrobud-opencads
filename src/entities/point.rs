@@ -178,15 +178,15 @@ fn grips(pt: &Point) -> Vec<GripDef> {
     vec![square_grip(0, p)]
 }
 
-fn properties(pt: &Point) -> PropSection {
-    PropSection {
+fn properties(pt: &Point) -> Vec<PropSection> {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("X", "loc_x", pt.location.x),
             edit("Y", "loc_y", pt.location.y),
             edit("Z", "loc_z", pt.location.z),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(pt: &mut Point, field: &str, value: &str) {

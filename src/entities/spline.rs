@@ -106,8 +106,8 @@ fn grips(spline: &Spline) -> Vec<GripDef> {
         .collect()
 }
 
-fn properties(spline: &Spline) -> PropSection {
-    PropSection {
+fn properties(spline: &Spline) -> Vec<PropSection> {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             ro("Degree", "degree", spline.degree.to_string()),
@@ -118,7 +118,7 @@ fn properties(spline: &Spline) -> PropSection {
             ),
             ro("Fit Pts", "fit_pts", spline.fit_points.len().to_string()),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(_spline: &mut Spline, _field: &str, _value: &str) {}
@@ -257,7 +257,7 @@ impl crate::entities::traits::Grippable for Spline {
 }
 
 impl crate::entities::traits::PropertyEditable for Spline {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         properties(self)
     }
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

@@ -293,8 +293,8 @@ impl Grippable for Tolerance {
 // ── PropertyEditable ──────────────────────────────────────────────────────────
 
 impl PropertyEditable for Tolerance {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> PropSection {
-        PropSection {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        vec![PropSection {
             title: "Geometry".into(),
             props: vec![
                 ro("Text", "tol_text", self.text.clone()),
@@ -337,7 +337,7 @@ impl PropertyEditable for Tolerance {
                     ),
                 ),
             ],
-        }
+        }]
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {

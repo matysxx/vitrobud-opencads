@@ -60,7 +60,9 @@ pub trait Grippable {
 }
 
 pub trait PropertyEditable {
-    fn geometry_properties(&self, text_style_names: &[String]) -> PropSection;
+    /// Type-specific property groups (Geometry, Misc, Text, …) shown after the
+    /// common General group. May be several groups; empty means none.
+    fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection>;
     fn apply_geom_prop(&mut self, field: &str, value: &str);
 }
 
@@ -147,7 +149,7 @@ pub trait EntityTypeOps {
     fn to_truck_entity(&self, document: &CadDocument) -> Option<TruckEntity>;
     fn grips(&self) -> Vec<GripDef>;
     fn grip_menu(&self, grip_id: usize) -> Vec<GripMenuItem>;
-    fn geometry_properties(&self, text_style_names: &[String]) -> Option<PropSection>;
+    fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection>;
     fn apply_geom_prop(&mut self, field: &str, value: &str);
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply);
     fn apply_grip_menu(&mut self, grip_id: usize, action: GripMenuAction);
@@ -207,7 +209,7 @@ macro_rules! impl_entity_basics {
             fn geometry_properties(
                 &self,
                 _text_style_names: &[String],
-            ) -> $crate::scene::model::object::PropSection {
+            ) -> Vec<$crate::scene::model::object::PropSection> {
                 properties(self)
             }
             fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -244,7 +246,7 @@ macro_rules! impl_entity_basics_with_text_styles {
             fn geometry_properties(
                 &self,
                 text_style_names: &[String],
-            ) -> $crate::scene::model::object::PropSection {
+            ) -> Vec<$crate::scene::model::object::PropSection> {
                 properties(self, text_style_names)
             }
             fn apply_geom_prop(&mut self, field: &str, value: &str) {
@@ -291,9 +293,9 @@ impl EntityTypeOps for EntityType {
         )
     }
 
-    fn geometry_properties(&self, text_style_names: &[String]) -> Option<PropSection> {
+    fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
         dispatch!(self,
-            |e| Some(PropertyEditable::geometry_properties(e, text_style_names)),
+            |e| PropertyEditable::geometry_properties(e, text_style_names),
             [
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
@@ -303,7 +305,7 @@ impl EntityTypeOps for EntityType {
                 Viewport, Insert, Dimension, Leader, MultiLeader, Underlay,
                 Shape, Ole2Frame,
             ],
-            _ => None,
+            _ => vec![],
         )
     }
 

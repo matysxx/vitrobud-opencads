@@ -116,7 +116,7 @@ fn grips(vp: &Viewport) -> Vec<GripDef> {
     ]
 }
 
-fn properties(vp: &Viewport) -> PropSection {
+fn properties(vp: &Viewport) -> Vec<PropSection> {
     let scale_opts: Vec<String> = STANDARD_SCALES.iter().map(|(s, _)| s.to_string()).collect();
     let effective_scale =
         crate::scene::vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
@@ -131,7 +131,7 @@ fn properties(vp: &Viewport) -> PropSection {
     let shade_opts: Vec<String> = SHADE_PLOT_LABELS.iter().map(|s| s.to_string()).collect();
     let current_shade = shade_plot_label(vp.shade_plot_mode).to_string();
 
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Center X", "center_x", vp.center.x),
@@ -311,7 +311,7 @@ fn properties(vp: &Viewport) -> PropSection {
                 format!("{:#010x}", vp.ambient_color as u32),
             ),
         ],
-    }
+    }]
 }
 
 /// Identify which standard view matches the viewport's view direction.

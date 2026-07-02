@@ -246,7 +246,7 @@ impl Scene {
                 .filter_map(|h| self.document.get_entity(h))
                 .find(|e| entity_type_name(e) == t);
             if let Some(sample) = sample {
-                if let Some(section) = sample.geometry_properties(&text_style_names) {
+                for section in sample.geometry_properties(&text_style_names) {
                     for prop in section.props {
                         // Skip rows that don't sensibly compare via
                         // `entity_property_value` (read-only labels are
@@ -284,8 +284,11 @@ impl Scene {
                     .iter()
                     .map(|s| s.name.clone())
                     .collect();
-                let section = entity.geometry_properties(&text_style_names)?;
-                let prop = section.props.into_iter().find(|p| p.field == field)?;
+                let prop = entity
+                    .geometry_properties(&text_style_names)
+                    .into_iter()
+                    .flat_map(|s| s.props)
+                    .find(|p| p.field == field)?;
                 Some(match prop.value {
                     PropValue::ReadOnly(s) | PropValue::EditText(s) => s,
                     PropValue::LayerChoice(s) => s,

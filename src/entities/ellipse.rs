@@ -158,12 +158,12 @@ fn grips(ell: &Ellipse) -> Vec<GripDef> {
     ]
 }
 
-fn properties(ell: &Ellipse) -> PropSection {
+fn properties(ell: &Ellipse) -> Vec<PropSection> {
     let r_major = (ell.major_axis.x * ell.major_axis.x
         + ell.major_axis.y * ell.major_axis.y
         + ell.major_axis.z * ell.major_axis.z)
         .sqrt();
-    PropSection {
+    vec![PropSection {
         title: "Geometry".into(),
         props: vec![
             edit("Center X", "center_x", ell.center.x),
@@ -181,7 +181,7 @@ fn properties(ell: &Ellipse) -> PropSection {
                 format!("{:.4}", ell.minor_axis_ratio),
             ),
         ],
-    }
+    }]
 }
 
 fn apply_geom_prop(_ell: &mut Ellipse, _field: &str, _value: &str) {}
