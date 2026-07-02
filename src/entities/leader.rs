@@ -184,13 +184,6 @@ fn creation_type_str(ct: &LeaderCreationType) -> &'static str {
     }
 }
 
-fn hookline_dir_str(hd: &HooklineDirection) -> &'static str {
-    match hd {
-        HooklineDirection::Opposite => "Opposite",
-        HooklineDirection::Same => "Same",
-    }
-}
-
 fn color_str(c: &acadrust::types::Color) -> String {
     match c.rgb() {
         Some((r, g, b)) => format!("RGB({},{},{})", r, g, b),

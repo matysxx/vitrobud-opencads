@@ -359,44 +359,6 @@ fn properties(pline: &LwPolyline) -> Vec<PropSection> {
     ]
 }
 
-/// Path length and enclosed area of a polyline, accounting for arc
-/// (bulge) segments. Length is the actual path — it excludes the implicit
-/// closing segment when the polyline is open. Area always treats the
-/// polyline as closed (last vertex joined back to the first), matching how
-/// CAD property panels report a polyline's area.
-fn length_and_area(pline: &LwPolyline) -> (f64, f64) {
-    let n = pline.vertices.len();
-    if n < 2 {
-        return (0.0, 0.0);
-    }
-    let mut length = 0.0;
-    let mut chord_area = 0.0; // shoelace over chords, signed
-    let mut arc_area = 0.0; // bulge corrections, signed
-    for i in 0..n {
-        let v0 = &pline.vertices[i];
-        let v1 = &pline.vertices[(i + 1) % n];
-        let p0 = [v0.location.x, v0.location.y];
-        let p1 = [v1.location.x, v1.location.y];
-        // The wrap edge (last → first) is part of the closed-area shoelace
-        // regardless, but only contributes to length when the polyline is
-        // actually closed.
-        chord_area += p0[0] * p1[1] - p1[0] * p0[1];
-        let is_wrap = i + 1 == n;
-        if is_wrap && !pline.is_closed {
-            continue;
-        }
-        let chord = ((p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2)).sqrt();
-        match crate::entities::common::BulgeArc::from_bulge(p0, p1, v0.bulge) {
-            Some(arc) => {
-                length += arc.radius * arc.sweep.abs();
-                arc_area += 0.5 * arc.radius * arc.radius * (arc.sweep - arc.sweep.sin());
-            }
-            None => length += chord,
-        }
-    }
-    (length, (chord_area / 2.0 + arc_area).abs())
-}
-
 fn apply_geom_prop(pline: &mut LwPolyline, field: &str, value: &str) {
     let Some(v) = parse_f64(value) else {
         return;

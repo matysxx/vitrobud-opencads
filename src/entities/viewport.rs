@@ -68,15 +68,6 @@ const RENDER_MODES: &[(&str, ViewportRenderMode)] = &[
     ),
 ];
 
-fn render_mode_label(mode: &ViewportRenderMode) -> &'static str {
-    for (label, m) in RENDER_MODES {
-        if m == mode {
-            return label;
-        }
-    }
-    "2D Wireframe"
-}
-
 // ── Shade plot mode labels ────────────────────────────────────────────────
 
 const SHADE_PLOT_LABELS: &[&str] = &["As Displayed", "Wireframe", "Hidden", "Rendered"];
@@ -87,21 +78,6 @@ fn shade_plot_label(mode: i16) -> &'static str {
         .copied()
         .unwrap_or("As Displayed")
 }
-
-// ── Standard view options ─────────────────────────────────────────────────
-
-const STD_VIEWS: &[&str] = &[
-    "Top",
-    "Bottom",
-    "Front",
-    "Back",
-    "Left",
-    "Right",
-    "SW Isometric",
-    "SE Isometric",
-    "NE Isometric",
-    "NW Isometric",
-];
 
 fn grips(vp: &Viewport) -> Vec<GripDef> {
     let (cx, cy, cz) = (vp.center.x, vp.center.y, vp.center.z);
@@ -210,47 +186,6 @@ fn properties(vp: &Viewport) -> Vec<PropSection> {
             ],
         },
     ]
-}
-
-/// Identify which standard view matches the viewport's view direction.
-fn viewport_view_label(vp: &Viewport) -> String {
-    let d = &vp.view_direction;
-    let dx = d.x;
-    let dy = d.y;
-    let dz = d.z;
-
-    // Use a simple threshold comparison to classify the view direction.
-    if dx.abs() < 0.1 && dy.abs() < 0.1 && dz > 0.5 {
-        return "Top".into();
-    }
-    if dx.abs() < 0.1 && dy.abs() < 0.1 && dz < -0.5 {
-        return "Bottom".into();
-    }
-    if dx.abs() < 0.1 && dy < -0.5 && dz.abs() < 0.1 {
-        return "Front".into();
-    }
-    if dx.abs() < 0.1 && dy > 0.5 && dz.abs() < 0.1 {
-        return "Back".into();
-    }
-    if dx < -0.5 && dy.abs() < 0.1 && dz.abs() < 0.1 {
-        return "Left".into();
-    }
-    if dx > 0.5 && dy.abs() < 0.1 && dz.abs() < 0.1 {
-        return "Right".into();
-    }
-    if dx < -0.4 && dy < -0.4 && dz > 0.4 {
-        return "SW Isometric".into();
-    }
-    if dx > 0.4 && dy < -0.4 && dz > 0.4 {
-        return "SE Isometric".into();
-    }
-    if dx > 0.4 && dy > 0.4 && dz > 0.4 {
-        return "NE Isometric".into();
-    }
-    if dx < -0.4 && dy > 0.4 && dz > 0.4 {
-        return "NW Isometric".into();
-    }
-    "Custom".into()
 }
 
 fn apply_geom_prop(vp: &mut Viewport, field: &str, value: &str) {
