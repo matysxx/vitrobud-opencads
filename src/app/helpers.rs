@@ -313,6 +313,7 @@ pub(super) fn entity_type_key(entity: &acadrust::EntityType) -> String {
         Arc(_) => "arc",
         Ellipse(_) => "ellipse",
         Spline(_) => "spline",
+        Helix(_) => "helix",
         LwPolyline(_) | Polyline(_) => "pline",
         Polyline2D(_) => "pline2d",
         Polyline3D(_) => "pline3d",

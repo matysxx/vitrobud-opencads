@@ -111,6 +111,7 @@ pub fn entity_type_name(et: &EntityType) -> &'static str {
         EntityType::Text(_) => "Text",
         EntityType::MText(_) => "MText",
         EntityType::Spline(_) => "Spline",
+        EntityType::Helix(_) => "Helix",
         EntityType::Dimension(_) => "Dimension",
         EntityType::Hatch(_) => "Hatch",
         EntityType::Solid(_) => "Solid",
