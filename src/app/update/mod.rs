@@ -858,19 +858,32 @@ impl OpenCADStudio {
             // ── Layer panel messages ───────────────────────────────────────
             Message::LayerToggleVisible(idx) => {
                 let i = self.active_tab;
-                if idx < self.tabs[i].layers.layers.len() {
-                    self.push_undo_snapshot(i, "LAYER OFF/ON");
-                    let l = &mut self.tabs[i].layers.layers[idx];
-                    l.visible = !l.visible;
-                    let name = l.name.clone();
-                    let on = l.visible;
-                    self.tabs[i].scene.toggle_layer_visibility(&name);
-                    self.command_line.push_output(&format!(
-                        "Layer \"{}\" {}",
-                        name,
-                        if on { "on" } else { "off" }
-                    ));
-                    self.sync_ribbon_layers();
+                // New state = toggle of the clicked row, applied to every target
+                // (the whole selection when the clicked row is part of it) (#236).
+                let on = self.tabs[i].layers.layers.get(idx).map(|l| !l.visible);
+                let targets = self.layer_row_action_targets(i, idx);
+                if let Some(on) = on {
+                    if !targets.is_empty() {
+                        self.push_undo_snapshot(i, "LAYER OFF/ON");
+                        for name in &targets {
+                            if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
+                                dl.flags.off = !on;
+                            }
+                            if let Some(pl) =
+                                self.tabs[i].layers.layers.iter_mut().find(|l| &l.name == name)
+                            {
+                                pl.visible = on;
+                            }
+                        }
+                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(&format!(
+                            "{} layer(s) turned {}",
+                            targets.len(),
+                            if on { "on" } else { "off" }
+                        ));
+                        self.sync_ribbon_layers();
+                    }
                 }
                 Task::none()
             }
@@ -886,41 +899,64 @@ impl OpenCADStudio {
 
             Message::LayerToggleLock(idx) => {
                 let i = self.active_tab;
-                if idx < self.tabs[i].layers.layers.len() {
-                    self.push_undo_snapshot(i, "LAYER LOCK/UNLOCK");
-                    let l = &mut self.tabs[i].layers.layers[idx];
-                    l.locked = !l.locked;
-                    let name = l.name.clone();
-                    let locked = l.locked;
-                    self.tabs[i].scene.toggle_layer_lock(&name);
-                    self.command_line.push_output(&format!(
-                        "Layer \"{}\" {}",
-                        name,
-                        if locked { "locked" } else { "unlocked" }
-                    ));
-                    self.sync_ribbon_layers();
+                let locked = self.tabs[i].layers.layers.get(idx).map(|l| !l.locked);
+                let targets = self.layer_row_action_targets(i, idx);
+                if let Some(locked) = locked {
+                    if !targets.is_empty() {
+                        self.push_undo_snapshot(i, "LAYER LOCK/UNLOCK");
+                        for name in &targets {
+                            if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
+                                dl.flags.locked = locked;
+                            }
+                            if let Some(pl) =
+                                self.tabs[i].layers.layers.iter_mut().find(|l| &l.name == name)
+                            {
+                                pl.locked = locked;
+                            }
+                        }
+                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(&format!(
+                            "{} layer(s) {}",
+                            targets.len(),
+                            if locked { "locked" } else { "unlocked" }
+                        ));
+                        self.sync_ribbon_layers();
+                    }
                 }
                 Task::none()
             }
 
             Message::LayerToggleFreeze(idx) => {
                 let i = self.active_tab;
-                if idx < self.tabs[i].layers.layers.len() {
-                    self.push_undo_snapshot(i, "LAYER FREEZE");
-                    let l = &mut self.tabs[i].layers.layers[idx];
-                    l.frozen = !l.frozen;
-                    let name = l.name.clone();
-                    let frozen = l.frozen;
-                    if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(&name) {
-                        if frozen {
-                            dl.freeze();
-                        } else {
-                            dl.thaw();
+                let frozen = self.tabs[i].layers.layers.get(idx).map(|l| !l.frozen);
+                let targets = self.layer_row_action_targets(i, idx);
+                if let Some(frozen) = frozen {
+                    if !targets.is_empty() {
+                        self.push_undo_snapshot(i, "LAYER FREEZE");
+                        for name in &targets {
+                            if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
+                                if frozen {
+                                    dl.freeze();
+                                } else {
+                                    dl.thaw();
+                                }
+                            }
+                            if let Some(pl) =
+                                self.tabs[i].layers.layers.iter_mut().find(|l| &l.name == name)
+                            {
+                                pl.frozen = frozen;
+                            }
                         }
+                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(&format!(
+                            "{} layer(s) {}",
+                            targets.len(),
+                            if frozen { "frozen" } else { "thawed" }
+                        ));
+                        self.sync_ribbon_layers();
                     }
-                    self.tabs[i].scene.bump_geometry();
-                    self.tabs[i].dirty = true;
-                    self.sync_ribbon_layers();
                 }
                 Task::none()
             }
@@ -956,8 +992,11 @@ impl OpenCADStudio {
                     let anchor = panel.selected.unwrap_or(idx);
                     let (lo, hi) = (anchor.min(idx), anchor.max(idx));
                     panel.selected_multi = (lo..=hi).collect();
-                } else {
-                    // Plain click selects just this row.
+                } else if !panel.selected_multi.contains(&idx) {
+                    // Plain click collapses to this row — but NOT when it is
+                    // already part of a multi-selection, so clicking a property
+                    // combo (linetype / lineweight) on one of the selected rows
+                    // keeps the selection and the edit stays bulk (#236).
                     panel.selected_multi = vec![idx];
                 }
                 panel.selected = Some(idx);
@@ -1082,11 +1121,22 @@ impl OpenCADStudio {
 
             Message::LayerTransparencyEdit(idx, s) => {
                 let i = self.active_tab;
-                if let Some(pl) = self.tabs[i].layers.layers.get_mut(idx) {
-                    if let Ok(v) = s.parse::<i32>() {
-                        pl.transparency = v.clamp(0, 90);
-                    } else if s.is_empty() {
-                        pl.transparency = 0;
+                let val = if let Ok(v) = s.parse::<i32>() {
+                    Some(v.clamp(0, 90))
+                } else if s.is_empty() {
+                    Some(0)
+                } else {
+                    None
+                };
+                // Apply the edited transparency to every selected layer (#236).
+                if let Some(v) = val {
+                    let targets = self.layer_row_action_targets(i, idx);
+                    for name in &targets {
+                        if let Some(pl) =
+                            self.tabs[i].layers.layers.iter_mut().find(|l| &l.name == name)
+                        {
+                            pl.transparency = v;
+                        }
                     }
                 }
                 Task::none()
@@ -1792,6 +1842,19 @@ impl OpenCADStudio {
             // text_input expects is empty. With no editor open it falls through
             // to the entity paste command.
             Message::PasteShortcut => self.on_paste_shortcut(),
+
+            Message::SelectAllShortcut => {
+                let i = self.active_tab;
+                if self.active_modal == Some(super::ModalKind::Layers) {
+                    // Select every row in the Layer Manager (#236).
+                    let n = self.tabs[i].layers.layers.len();
+                    self.tabs[i].layers.selected_multi = (0..n).collect();
+                    self.tabs[i].layers.selected = (n > 0).then_some(0);
+                    Task::none()
+                } else {
+                    self.dispatch_command("SELECTALL")
+                }
+            }
             Message::MTextPasteClip(text) => {
                 if let Some(text) = text.filter(|t| !t.is_empty()) {
                     // CR/LF arrive as line breaks; MText keeps "\n", drop "\r".

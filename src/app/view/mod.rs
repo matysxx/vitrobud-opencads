@@ -1605,6 +1605,12 @@ impl OpenCADStudio {
                                 "z" if !shift => Some(Message::Undo),
                                 "z" if shift => Some(Message::Redo),
                                 "y" => Some(Message::Redo),
+                                // Ctrl/Cmd+A: select all layer rows when the
+                                // Layer Manager is open, else all objects. The
+                                // update handler branches on the active modal.
+                                "a" if status == Status::Ignored => {
+                                    Some(Message::SelectAllShortcut)
+                                }
                                 // Clipboard accelerators defer to a focused
                                 // text widget: when the command-line history
                                 // editor (or any text field) captures Ctrl+C/

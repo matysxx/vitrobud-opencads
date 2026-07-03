@@ -1097,6 +1097,9 @@ pub enum Message {
     /// system-clipboard read, which is the only paste path that works on the
     /// web) or, with no editor open, the entity paste command.
     PasteShortcut,
+    /// Ctrl/Cmd+A — select all layer rows when the Layer Manager is open, or all
+    /// drawing objects otherwise (#236).
+    SelectAllShortcut,
     /// System-clipboard text read for the MText editor (`None` = empty/denied).
     MTextPasteClip(Option<String>),
     /// System-clipboard text read for the single-line TEXT editor.

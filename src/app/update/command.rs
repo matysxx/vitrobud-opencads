@@ -709,6 +709,22 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
         Task::none()
     }
 
+    /// Layers a Layer-manager row toggle (visibility / lock / freeze /
+    /// transparency) should affect: the whole multi-selection when the clicked
+    /// row is part of it, otherwise just the clicked row — so those toggles work
+    /// in bulk like the color / linetype / lineweight edits already do (#236).
+    pub(super) fn layer_row_action_targets(&self, i: usize, idx: usize) -> Vec<String> {
+        let Some(clicked) = self.tabs[i].layers.layers.get(idx).map(|l| l.name.clone()) else {
+            return Vec::new();
+        };
+        let selected = self.selected_layer_names(i);
+        if selected.iter().any(|n| n == &clicked) {
+            selected
+        } else {
+            vec![clicked]
+        }
+    }
+
     /// Layer names for the current Layer-manager selection — every row in the
     /// multi-selection, or the anchor row when the multi-set is empty. Bulk
     /// property edits and deletion act on these.

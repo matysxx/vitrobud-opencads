@@ -81,20 +81,4 @@ impl Scene {
         self.bump_selection();
     }
 
-    // ── Layer helpers ──────────────────────────────────────────────────────
-
-    pub fn toggle_layer_visibility(&mut self, name: &str) {
-        if let Some(layer) = self.document.layers.get_mut(name) {
-            layer.flags.off = !layer.flags.off;
-        }
-        self.bump_geometry();
-    }
-
-    pub fn toggle_layer_lock(&mut self, name: &str) {
-        if let Some(layer) = self.document.layers.get_mut(name) {
-            layer.flags.locked = !layer.flags.locked;
-        }
-        // Re-tessellate so the locked-layer dim (fade) appears/clears at once.
-        self.bump_geometry();
-    }
 }
