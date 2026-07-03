@@ -42,6 +42,55 @@ impl Scene {
             .collect()
     }
 
+    /// Split a MIRROR selection into plain ghost wires (reflected wholesale) and
+    /// text ghosts paired with their bounding-box centre. Lets the preview match
+    /// the commit for TEXT: MIRRTEXT on → true glyph mirror (full reflection, same
+    /// as plain geometry); MIRRTEXT off → right-reading at the mirror-symmetric
+    /// position (reflect the centre, translate) instead of hugging the axis.
+    pub fn mirror_preview_parts(
+        &self,
+        handles: &[Handle],
+    ) -> (Vec<WireModel>, Vec<(WireModel, glam::DVec3)>) {
+        let mut plain: Vec<WireModel> = Vec::new();
+        let mut texts: Vec<(WireModel, glam::DVec3)> = Vec::new();
+        for h in handles {
+            let Some(e) = self.document.entities().find(|e| e.common().handle == *h) else {
+                continue;
+            };
+            if matches!(e, EntityType::Text(_)) {
+                let wires = self.tessellate_one(e);
+                let mut lo = [f64::INFINITY; 2];
+                let mut hi = [f64::NEG_INFINITY; 2];
+                for w in &wires {
+                    for (i, p) in w.points.iter().enumerate() {
+                        if !p[0].is_finite() || !p[1].is_finite() {
+                            continue;
+                        }
+                        // Reconstruct f64 world from the double-single pair (the
+                        // low residual may be absent on some wires).
+                        let l = w.points_low.get(i).copied().unwrap_or([0.0; 3]);
+                        let (x, y) = (p[0] as f64 + l[0] as f64, p[1] as f64 + l[1] as f64);
+                        lo[0] = lo[0].min(x);
+                        lo[1] = lo[1].min(y);
+                        hi[0] = hi[0].max(x);
+                        hi[1] = hi[1].max(y);
+                    }
+                }
+                let center = if lo[0] <= hi[0] {
+                    glam::DVec3::new((lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, 0.0)
+                } else {
+                    glam::DVec3::ZERO
+                };
+                for w in wires {
+                    texts.push((w, center));
+                }
+            } else {
+                plain.extend(self.tessellate_one(e));
+            }
+        }
+        (plain, texts)
+    }
+
     /// Boundary outline wire for a hatch, reconstructed from its cached
     /// `HatchModel` (offsets from `world_origin`). Used only for edit previews —
     /// the normal render shows the fill, not this outline.

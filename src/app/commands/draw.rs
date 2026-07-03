@@ -648,8 +648,10 @@ impl OpenCADStudio {
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 } else {
                     use crate::modules::draw::modify::mirror::MirrorCommand;
-                    let wires = self.tabs[i].scene.wire_models_for(&handles);
-                    let new_cmd = MirrorCommand::new(handles, wires);
+                    let (wires, text_ghosts) =
+                        self.tabs[i].scene.mirror_preview_parts(&handles);
+                    let mirror_text = self.tabs[i].scene.document.header.mirror_text;
+                    let new_cmd = MirrorCommand::new(handles, wires, text_ghosts, mirror_text);
                     self.command_line.push_info(&new_cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                 }

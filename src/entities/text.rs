@@ -69,14 +69,15 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
     } else {
         resolved_style.width_factor.max(0.01)
     };
-    // is_backward mirrors text left-right via negative width factor.
-    let width_factor = if resolved_style.is_backward {
-        -base_wf
-    } else {
-        base_wf
-    };
-    // is_upside_down rotates 180° around the insertion point.
-    let rotation = if resolved_style.is_upside_down {
+    // Backward mirrors text left-right (negative width factor); upside-down
+    // rotates 180° about the anchor. The effective state is the TextStyle flag
+    // XOR the entity's own generation flags (DXF group 71: bit 2 = backward,
+    // bit 4 = upside-down). A MIRROR toggles the entity bit for a true glyph
+    // mirror, and XOR keeps a double mirror an involution.
+    let eff_backward = resolved_style.is_backward ^ (t.generation_flags & 0x2 != 0);
+    let eff_upside = resolved_style.is_upside_down ^ (t.generation_flags & 0x4 != 0);
+    let width_factor = if eff_backward { -base_wf } else { base_wf };
+    let rotation = if eff_upside {
         t.rotation as f32 + std::f32::consts::PI
     } else {
         t.rotation as f32
@@ -111,11 +112,16 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
     );
     let (anchor_local_x, anchor_local_y) = if let Some(b) = bounds {
         // Horizontal anchor uses the pen advance box [0, advance] so leading /
-        // trailing spaces keep their width instead of snapping to the inked glyphs.
+        // trailing spaces keep their width instead of snapping to the inked
+        // glyphs. Signed by the width factor: backward text grows in −x, so its
+        // Center/Right offset flips sign too, otherwise the anchor pushes the
+        // box one way while the strokes run the other (the bounds advance is
+        // always positive — it uses |width_factor|). Left keeps its 0 reference.
+        let sign = width_factor.signum();
         let ax = match t.horizontal_alignment {
             HA::Left => 0.0,
-            HA::Center | HA::Middle => b.advance * 0.5,
-            HA::Right | HA::Aligned | HA::Fit => b.advance,
+            HA::Center | HA::Middle => b.advance * 0.5 * sign,
+            HA::Right | HA::Aligned | HA::Fit => b.advance * sign,
         };
         // Vertical anchor uses the inked extent (cap / baseline geometry).
         let ay = match t.vertical_alignment {

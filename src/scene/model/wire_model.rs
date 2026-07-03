@@ -232,6 +232,14 @@ impl WireModel {
             p[0] = p1.x + 2.0 * t * ax - dx;
             p[1] = p1.y + 2.0 * t * ay - dy;
         }
+        // World position is the double-single sum `points + points_low` (text /
+        // UTM wires split it), so the residual must reflect too — as a direction
+        // (linear reflection about the axis, no `p1` offset).
+        for p in &mut out.points_low {
+            let t = (p[0] * ax + p[1] * ay) / len2;
+            p[0] = 2.0 * t * ax - p[0];
+            p[1] = 2.0 * t * ay - p[1];
+        }
         out
     }
 

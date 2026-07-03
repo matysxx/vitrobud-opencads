@@ -34,14 +34,26 @@ enum Step {
 pub struct MirrorCommand {
     handles: Vec<Handle>,
     wire_models: Vec<WireModel>,
+    /// Text ghosts paired with their bounding-box centre — mirrored per MIRRTEXT
+    /// so the preview matches the commit (true glyph mirror on / symmetric
+    /// right-reading off).
+    text_ghosts: Vec<(WireModel, DVec3)>,
+    mirror_text: bool,
     step: Step,
 }
 
 impl MirrorCommand {
-    pub fn new(handles: Vec<Handle>, wire_models: Vec<WireModel>) -> Self {
+    pub fn new(
+        handles: Vec<Handle>,
+        wire_models: Vec<WireModel>,
+        text_ghosts: Vec<(WireModel, DVec3)>,
+        mirror_text: bool,
+    ) -> Self {
         Self {
             handles,
             wire_models,
+            text_ghosts,
+            mirror_text,
             step: Step::P1,
         }
     }
@@ -121,12 +133,25 @@ impl CadCommand for MirrorCommand {
             Step::AskErase { p1, p2 } => (*p1, *p2),
             _ => return vec![],
         };
-        // Mirrored ghosts of all selected objects.
+        // Mirrored ghosts of all non-text objects (full geometric reflection).
         let mut out: Vec<WireModel> = self
             .wire_models
             .iter()
             .map(|w| w.mirrored(p1.as_vec3(), p2.as_vec3()))
             .collect();
+        // Text ghosts honour MIRRTEXT: on → true glyph mirror (full reflection);
+        // off → keep glyphs readable, relocate to the mirror-symmetric position
+        // by reflecting the box centre and translating.
+        for (w, center) in &self.text_ghosts {
+            if self.mirror_text {
+                out.push(w.mirrored(p1.as_vec3(), p2.as_vec3()));
+            } else {
+                let (mut cx, mut cy) = (center.x, center.y);
+                crate::scene::view::transform::reflect_xy_point(&mut cx, &mut cy, p1, p2);
+                let delta = glam::Vec3::new((cx - center.x) as f32, (cy - center.y) as f32, 0.0);
+                out.push(w.translated(delta));
+            }
+        }
         // Mirror-axis line (rubber-band).
         out.push(WireModel::solid(
             "rubber_band".into(),

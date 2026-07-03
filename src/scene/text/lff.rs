@@ -420,18 +420,22 @@ pub fn tessellate_text_run(
                 emit_glyph(out, &g.strokes, *cursor_x);
                 emit_fill(fill_tris, &g.fill_tris, *cursor_x);
             }
-            *cursor_x += run.advance * wf;
+            // Advance the pen in unscaled glyph units — the `xform` scales the
+            // pen position by `wf`, so multiplying the advance here too would
+            // apply the width factor twice (and reverse a backward run's word
+            // order onto the wrong side). Matches `text_local_bounds`.
+            *cursor_x += run.advance;
         } else {
             for ch in seg.chars() {
                 match face.glyph(ch) {
                     Some(glyph) => {
                         emit_glyph(out, &glyph.strokes, *cursor_x);
                         emit_fill(fill_tris, &glyph.fill_tris, *cursor_x);
-                        *cursor_x += (glyph.advance + face.letter_spacing() * tracking) * wf;
+                        *cursor_x += glyph.advance + face.letter_spacing() * tracking;
                     }
                     None => {
                         warn_missing_glyph(font_name, ch);
-                        *cursor_x += (6.0 + face.letter_spacing() * tracking) * wf;
+                        *cursor_x += 6.0 + face.letter_spacing() * tracking;
                     }
                 }
             }
@@ -456,17 +460,17 @@ pub fn tessellate_text_run(
                         Some(glyph) => {
                             emit_glyph(&mut out, &glyph.strokes, cursor_x);
                             emit_fill(&mut fill_tris, &glyph.fill_tris, cursor_x);
-                            cursor_x += (glyph.advance + face.letter_spacing() * tracking) * wf;
+                            cursor_x += glyph.advance + face.letter_spacing() * tracking;
                         }
                         None => {
                             warn_missing_glyph(font_name, *c);
-                            cursor_x += (6.0 + face.letter_spacing() * tracking) * wf;
+                            cursor_x += 6.0 + face.letter_spacing() * tracking;
                         }
                     }
                 }
             }
             Tok::Space => cursor_x += face.word_spacing(),
-            Tok::Missing => cursor_x += (6.0 + face.letter_spacing() * tracking) * wf,
+            Tok::Missing => cursor_x += 6.0 + face.letter_spacing() * tracking,
             Tok::Deco(deco, op) => {
                 let (slot, y) = match deco {
                     Deco::Under => (&mut underline, UNDER_Y),

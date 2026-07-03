@@ -32,13 +32,24 @@ fn capture_text_orient(e: &EntityType) -> Option<TextOrient> {
     }
 }
 
-/// Re-apply a captured orientation after a transform (the position stays
-/// mirrored, only the rotation / oblique / x-scale are restored).
+/// MIRRTEXT off: after the mirror reflects a text's points and rotation, put
+/// the glyphs back to right-reading. Restores the captured rotation / oblique /
+/// x-scale, and for single-line TEXT also flips the horizontal justification
+/// (left ↔ right) so the box lands mirror-symmetric to the source instead of
+/// hugging the axis — AutoCAD's behaviour. Center/Middle/Aligned/Fit are already
+/// symmetric about their (reflected) anchor, so they stay.
 fn restore_text_orient(e: &mut EntityType, o: &TextOrient) {
     match e {
         EntityType::Text(t) => {
             t.rotation = o.rotation;
             t.oblique_angle = o.oblique;
+            use acadrust::entities::TextHorizontalAlignment as HA;
+            t.horizontal_alignment = match t.horizontal_alignment {
+                HA::Left => HA::Right,
+                HA::Right => HA::Left,
+                other => other,
+            };
+            crate::entities::text::sync_text_alignment_point(t);
         }
         EntityType::MText(m) => {
             m.rotation = o.rotation;
@@ -49,6 +60,19 @@ fn restore_text_orient(e: &mut EntityType, o: &TextOrient) {
             s.relative_x_scale = o.x_scale;
         }
         _ => {}
+    }
+}
+
+/// MIRRTEXT on: a real MIRROR makes text a true glyph mirror. `apply_transform`
+/// already reflects the baseline rotation; toggling *both* group-71 bits
+/// (backward `0x2` + upside-down `0x4`) then renders the exact geometric
+/// reflection (the renderer XORs these flags into the effective width-factor
+/// sign / 180° flip). Toggling — not setting — keeps a double mirror an
+/// involution. Only single-line TEXT carries group 71; MTEXT / Shape keep the
+/// reflected rotation (readable-but-rotated), which is standard-conforming.
+fn mirror_true_text_flags(e: &mut EntityType) {
+    if let EntityType::Text(t) = e {
+        t.generation_flags ^= 0x2 | 0x4;
     }
 }
 
@@ -67,6 +91,10 @@ impl Scene {
         // transform and re-apply afterwards.
         let preserve_text_orientation =
             matches!(t, EntityTransform::Mirror { .. }) && !self.document.header.mirror_text;
+        // MIRRTEXT on: toggle the group-71 flags after the reflect so text
+        // becomes a true glyph mirror (see `mirror_true_text_flags`).
+        let mirror_true =
+            matches!(t, EntityTransform::Mirror { .. }) && self.document.header.mirror_text;
         let mut text_orient_backup: Vec<(Handle, TextOrient)> = Vec::new();
         if preserve_text_orientation {
             for &h in handles {
@@ -106,6 +134,9 @@ impl Scene {
         for &h in handles {
             if let Some(entity) = self.document.get_entity_mut(h) {
                 view::dispatch::apply_transform(entity, t);
+                if mirror_true {
+                    mirror_true_text_flags(entity);
+                }
             }
             if self.hatches.contains_key(&h) {
                 let existing_color = self.hatches[&h].color;
@@ -245,6 +276,8 @@ impl Scene {
         // header flag is off.
         let preserve_text_orientation =
             matches!(t, EntityTransform::Mirror { .. }) && !self.document.header.mirror_text;
+        let mirror_true =
+            matches!(t, EntityTransform::Mirror { .. }) && self.document.header.mirror_text;
         let mut new_handles = Vec::with_capacity(clones.len());
         for mut entity in clones {
             let text_orient = if preserve_text_orientation {
@@ -255,6 +288,9 @@ impl Scene {
             view::dispatch::apply_transform(&mut entity, t);
             if let Some(o) = &text_orient {
                 restore_text_orient(&mut entity, o);
+            }
+            if mirror_true {
+                mirror_true_text_flags(&mut entity);
             }
             // A dimension draws from its baked `*D` block; give the copy its own
             // transformed block so it lands at the copy position rather than
