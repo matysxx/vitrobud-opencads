@@ -211,7 +211,11 @@ impl PropertyEditable for MLine {
             PropSection {
                 title: "Misc".into(),
                 props: vec![
-                    ro("Style", "ml_style", self.style_name.clone()),
+                    Property {
+                        label: "Style".into(),
+                        field: "ml_style",
+                        value: PropValue::EditText(self.style_name.clone()),
+                    },
                     Property {
                         label: "Style justification".into(),
                         field: "ml_justification",
@@ -247,6 +251,10 @@ impl PropertyEditable for MLine {
                     "Bottom" => acadrust::entities::MLineJustification::Bottom,
                     _ => acadrust::entities::MLineJustification::Zero,
                 };
+                return;
+            }
+            "ml_style" => {
+                self.style_name = value.to_string();
                 return;
             }
             _ => {}

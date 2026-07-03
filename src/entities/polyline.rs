@@ -400,20 +400,20 @@ impl PropertyEditable for Polyline2D {
         area = (area * 0.5).abs();
 
         let v0 = self.vertices.first();
-        let vertex_x = v0.map(|v| format!("{:.4}", v.location.x)).unwrap_or_default();
-        let vertex_y = v0.map(|v| format!("{:.4}", v.location.y)).unwrap_or_default();
-        let seg_start_w = v0.map(|v| format!("{:.4}", v.start_width)).unwrap_or_default();
-        let seg_end_w = v0.map(|v| format!("{:.4}", v.end_width)).unwrap_or_default();
+        let vertex_x = v0.map(|v| v.location.x).unwrap_or_default();
+        let vertex_y = v0.map(|v| v.location.y).unwrap_or_default();
+        let seg_start_w = v0.map(|v| v.start_width).unwrap_or_default();
+        let seg_end_w = v0.map(|v| v.end_width).unwrap_or_default();
 
         vec![
             PropSection {
                 title: "Geometry".into(),
                 props: vec![
                     ro("Current Vertex", "pl2_current_vertex", if n > 0 { "1" } else { "" }),
-                    ro("Vertex X", "pl2_vertex_x", vertex_x),
-                    ro("Vertex Y", "pl2_vertex_y", vertex_y),
-                    ro("Start segment width", "pl2_seg_start_w", seg_start_w),
-                    ro("End segment width", "pl2_seg_end_w", seg_end_w),
+                    edit("Vertex X", "pl2_vertex_x", vertex_x),
+                    edit("Vertex Y", "pl2_vertex_y", vertex_y),
+                    edit("Start segment width", "pl2_seg_start_w", seg_start_w),
+                    edit("End segment width", "pl2_seg_end_w", seg_end_w),
                     edit("Global width", "pl2_start_w", self.start_width),
                     edit("Elevation", "pl2_elevation", self.elevation),
                     ro("Area", "pl2_area", format!("{area:.4}")),
@@ -431,11 +431,14 @@ impl PropertyEditable for Polyline2D {
                             value: self.is_closed(),
                         },
                     },
-                    ro(
-                        "Linetype generation",
-                        "pl2_ltype_gen",
-                        if self.flags.bits() & 128 != 0 { "Enabled" } else { "Disabled" },
-                    ),
+                    Property {
+                        label: "Linetype generation".into(),
+                        field: "pl2_ltype_gen",
+                        value: PropValue::BoolToggle {
+                            field: "pl2_ltype_gen",
+                            value: self.flags.bits() & 128 != 0,
+                        },
+                    },
                 ],
             },
         ]
@@ -467,6 +470,43 @@ impl PropertyEditable for Polyline2D {
                         self.end_width = v;
                     }
                 }
+            }
+            "pl2_vertex_x" => {
+                if let (Some(v), Some(vert)) = (parse_f64(value), self.vertices.first_mut()) {
+                    vert.location.x = v;
+                }
+            }
+            "pl2_vertex_y" => {
+                if let (Some(v), Some(vert)) = (parse_f64(value), self.vertices.first_mut()) {
+                    vert.location.y = v;
+                }
+            }
+            "pl2_seg_start_w" => {
+                if let (Some(v), Some(vert)) = (parse_f64(value), self.vertices.first_mut()) {
+                    if v >= 0.0 {
+                        vert.start_width = v;
+                    }
+                }
+            }
+            "pl2_seg_end_w" => {
+                if let (Some(v), Some(vert)) = (parse_f64(value), self.vertices.first_mut()) {
+                    if v >= 0.0 {
+                        vert.end_width = v;
+                    }
+                }
+            }
+            "pl2_ltype_gen" => {
+                let on = if value == "toggle" {
+                    self.flags.bits() & 128 == 0
+                } else {
+                    value == "true"
+                };
+                let bits = if on {
+                    self.flags.bits() | 128
+                } else {
+                    self.flags.bits() & !128
+                };
+                self.flags = acadrust::entities::polyline::PolylineFlags::from_bits(bits);
             }
             _ => {}
         }
@@ -616,9 +656,9 @@ impl PropertyEditable for Polyline3D {
         use acadrust::entities::polyline3d::SmoothSurfaceType as SST;
         let n = self.vertices.len();
         let v0 = self.vertices.first();
-        let vertex_x = v0.map(|v| format!("{:.4}", v.position.x)).unwrap_or_default();
-        let vertex_y = v0.map(|v| format!("{:.4}", v.position.y)).unwrap_or_default();
-        let vertex_z = v0.map(|v| format!("{:.4}", v.position.z)).unwrap_or_default();
+        let vertex_x = v0.map(|v| v.position.x).unwrap_or_default();
+        let vertex_y = v0.map(|v| v.position.y).unwrap_or_default();
+        let vertex_z = v0.map(|v| v.position.z).unwrap_or_default();
         let fit_smooth = match self.smooth_type {
             SST::None => "None",
             SST::QuadraticBSpline => "Quadratic",
@@ -631,9 +671,9 @@ impl PropertyEditable for Polyline3D {
                 title: "Geometry".into(),
                 props: vec![
                     ro("Vertex", "pl3_vertex", if n > 0 { "1" } else { "" }),
-                    ro("Vertex X", "pl3_vertex_x", vertex_x),
-                    ro("Vertex Y", "pl3_vertex_y", vertex_y),
-                    ro("Vertex Z", "pl3_vertex_z", vertex_z),
+                    edit("Vertex X", "pl3_vertex_x", vertex_x),
+                    edit("Vertex Y", "pl3_vertex_y", vertex_y),
+                    edit("Vertex Z", "pl3_vertex_z", vertex_z),
                 ],
             },
             PropSection {
@@ -654,17 +694,35 @@ impl PropertyEditable for Polyline3D {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
-        if field == "pl3_closed" {
-            let closed = if value == "toggle" {
-                !self.is_closed()
-            } else {
-                value == "true"
-            };
-            if closed {
-                self.close();
-            } else {
-                self.open();
+        match field {
+            "pl3_closed" => {
+                let closed = if value == "toggle" {
+                    !self.is_closed()
+                } else {
+                    value == "true"
+                };
+                if closed {
+                    self.close();
+                } else {
+                    self.open();
+                }
             }
+            "pl3_vertex_x" => {
+                if let (Some(v), Some(vert)) = (parse_f64(value), self.vertices.first_mut()) {
+                    vert.position.x = v;
+                }
+            }
+            "pl3_vertex_y" => {
+                if let (Some(v), Some(vert)) = (parse_f64(value), self.vertices.first_mut()) {
+                    vert.position.y = v;
+                }
+            }
+            "pl3_vertex_z" => {
+                if let (Some(v), Some(vert)) = (parse_f64(value), self.vertices.first_mut()) {
+                    vert.position.z = v;
+                }
+            }
+            _ => {}
         }
     }
 }

@@ -386,8 +386,16 @@ impl Grippable for AttributeDefinition {
 impl PropertyEditable for AttributeDefinition {
     fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
         let mut text_props = vec![
-            ro("Tag", "att_tag", self.tag.clone()),
-            ro("Prompt", "att_prompt", self.prompt.clone()),
+            Property {
+                label: "Tag".into(),
+                field: "att_tag",
+                value: PropValue::EditText(self.tag.clone()),
+            },
+            Property {
+                label: "Prompt".into(),
+                field: "att_prompt",
+                value: PropValue::EditText(self.prompt.clone()),
+            },
             Property {
                 label: "Value".into(),
                 field: "att_default",
@@ -501,6 +509,14 @@ impl PropertyEditable for AttributeDefinition {
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
         // String / enum fields first.
+        if field == "att_tag" {
+            self.tag = value.to_string();
+            return;
+        }
+        if field == "att_prompt" {
+            self.prompt = value.to_string();
+            return;
+        }
         if field == "att_default" {
             if !self.flags.constant {
                 self.default_value = value.to_string();
@@ -645,7 +661,11 @@ impl PropertyEditable for AttributeEntity {
             PropSection {
                 title: "Text".into(),
                 props: vec![
-                    ro("Tag", "atte_tag", self.tag.clone()),
+                    Property {
+                        label: "Tag".into(),
+                        field: "atte_tag",
+                        value: PropValue::EditText(self.tag.clone()),
+                    },
                     ro("Prompt", "atte_prompt", String::new()),
                     Property {
                         label: "Value".into(),
@@ -746,6 +766,10 @@ impl PropertyEditable for AttributeEntity {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        if field == "atte_tag" {
+            self.tag = value.to_string();
+            return;
+        }
         if field == "atte_val" {
             if !self.flags.constant {
                 self.value = value.to_string();

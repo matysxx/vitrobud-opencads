@@ -11,7 +11,7 @@ use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
-use crate::scene::model::object::{GripApply, GripDef, PropSection};
+use crate::scene::model::object::{GripApply, GripDef, PropSection, Property, PropValue};
 use crate::scene::view::transform;
 use crate::scene::model::wire_model::SnapHint;
 
@@ -118,7 +118,7 @@ impl Grippable for Shape {
 // ── PropertyEditable ──────────────────────────────────────────────────────────
 
 impl PropertyEditable for Shape {
-    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+    fn geometry_properties(&self, text_style_names: &[String]) -> Vec<PropSection> {
         let style_handle_display = match self.style_handle {
             Some(h) if !h.is_null() => format!("{:X}", h.value()),
             _ => "(none)".to_string(),
@@ -128,7 +128,14 @@ impl PropertyEditable for Shape {
             props: vec![
                 ro("Name", "shp_name", self.shape_name.clone()),
                 ro("Number", "shp_number", self.shape_number.to_string()),
-                ro("Style", "shp_style", self.style_name.clone()),
+                Property {
+                    label: "Style".into(),
+                    field: "shp_style",
+                    value: PropValue::Choice {
+                        selected: self.style_name.clone(),
+                        options: text_style_names.to_vec(),
+                    },
+                },
                 ro("Style Handle", "shp_style_handle", style_handle_display),
                 edit("Insert X", "shp_ix", self.insertion_point.x),
                 edit("Insert Y", "shp_iy", self.insertion_point.y),
@@ -146,6 +153,10 @@ impl PropertyEditable for Shape {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        if field == "shp_style" {
+            self.style_name = value.to_string();
+            return;
+        }
         let Ok(v) = value.trim().parse::<f64>() else {
             return;
         };

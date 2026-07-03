@@ -222,9 +222,9 @@ fn properties(t: &Text, text_style_names: &[String]) -> Vec<PropSection> {
                 edit("Rotation", "rotation", t.rotation.to_degrees()),
                 edit("Width factor", "width_factor", t.width_factor),
                 edit("Obliquing", "oblique_angle", t.oblique_angle.to_degrees()),
-                ro("Text alignment X", "align_x", format!("{:.4}", ap.x)),
-                ro("Text alignment Y", "align_y", format!("{:.4}", ap.y)),
-                ro("Text alignment Z", "align_z", format!("{:.4}", ap.z)),
+                edit("Text alignment X", "align_x", ap.x),
+                edit("Text alignment Y", "align_y", ap.y),
+                edit("Text alignment Z", "align_z", ap.z),
             ],
         },
         PropSection {
@@ -238,24 +238,22 @@ fn properties(t: &Text, text_style_names: &[String]) -> Vec<PropSection> {
         PropSection {
             title: "Misc".into(),
             props: vec![
-                ro(
-                    "Upside down",
-                    "upside_down",
-                    if t.generation_flags & 0x4 != 0 {
-                        "Yes"
-                    } else {
-                        "No"
+                Property {
+                    label: "Upside down".into(),
+                    field: "upside_down",
+                    value: PropValue::BoolToggle {
+                        field: "upside_down",
+                        value: t.generation_flags & 0x4 != 0,
                     },
-                ),
-                ro(
-                    "Backward",
-                    "backward",
-                    if t.generation_flags & 0x2 != 0 {
-                        "Yes"
-                    } else {
-                        "No"
+                },
+                Property {
+                    label: "Backward".into(),
+                    field: "backward",
+                    value: PropValue::BoolToggle {
+                        field: "backward",
+                        value: t.generation_flags & 0x2 != 0,
                     },
-                ),
+                },
             ],
         },
     ]
@@ -295,6 +293,32 @@ fn apply_geom_prop(t: &mut Text, field: &str, value: &str) {
             sync_text_alignment_point(t);
             return;
         }
+        "upside_down" => {
+            let set = if value == "toggle" {
+                t.generation_flags & 0x4 == 0
+            } else {
+                value == "true"
+            };
+            if set {
+                t.generation_flags |= 0x4;
+            } else {
+                t.generation_flags &= !0x4;
+            }
+            return;
+        }
+        "backward" => {
+            let set = if value == "toggle" {
+                t.generation_flags & 0x2 == 0
+            } else {
+                value == "true"
+            };
+            if set {
+                t.generation_flags |= 0x2;
+            } else {
+                t.generation_flags &= !0x2;
+            }
+            return;
+        }
         _ => {}
     }
     let Some(v) = parse_f64(value) else {
@@ -304,6 +328,15 @@ fn apply_geom_prop(t: &mut Text, field: &str, value: &str) {
         "ins_x" => t.insertion_point.x = v,
         "ins_y" => t.insertion_point.y = v,
         "ins_z" => t.insertion_point.z = v,
+        "align_x" | "align_y" | "align_z" => {
+            let ins = t.insertion_point;
+            let ap = t.alignment_point.get_or_insert(ins);
+            match field {
+                "align_x" => ap.x = v,
+                "align_y" => ap.y = v,
+                _ => ap.z = v,
+            }
+        }
         "height" if v > 0.0 => t.height = v,
         "rotation" => t.rotation = v.to_radians(),
         "width_factor" if v > 0.0 => t.width_factor = v,

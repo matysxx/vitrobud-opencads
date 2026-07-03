@@ -7,7 +7,7 @@ use crate::entities::common::{
 };
 use crate::entities::traits::TruckConvertible;
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
-use crate::scene::model::object::{GripApply, GripDef, PropSection};
+use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::TangentGeom;
 
 const TAU: f64 = std::f64::consts::TAU;
@@ -344,22 +344,47 @@ fn properties(pline: &LwPolyline) -> Vec<PropSection> {
         PropSection {
             title: "Misc".into(),
             props: vec![
-                ro(
-                    "Closed",
-                    "closed",
-                    if pline.is_closed { "Yes" } else { "No" },
-                ),
-                ro(
-                    "Linetype generation",
-                    "plinegen",
-                    if pline.plinegen { "Yes" } else { "No" },
-                ),
+                Property {
+                    label: "Closed".into(),
+                    field: "closed",
+                    value: PropValue::BoolToggle {
+                        field: "closed",
+                        value: pline.is_closed,
+                    },
+                },
+                Property {
+                    label: "Linetype generation".into(),
+                    field: "plinegen",
+                    value: PropValue::BoolToggle {
+                        field: "plinegen",
+                        value: pline.plinegen,
+                    },
+                },
             ],
         },
     ]
 }
 
 fn apply_geom_prop(pline: &mut LwPolyline, field: &str, value: &str) {
+    match field {
+        "closed" => {
+            pline.is_closed = if value == "toggle" {
+                !pline.is_closed
+            } else {
+                value == "true"
+            };
+            return;
+        }
+        "plinegen" => {
+            pline.plinegen = if value == "toggle" {
+                !pline.plinegen
+            } else {
+                value == "true"
+            };
+            return;
+        }
+        _ => {}
+    }
     let Some(v) = parse_f64(value) else {
         return;
     };

@@ -209,7 +209,6 @@ fn properties(leader: &Leader) -> Vec<PropSection> {
             creation_type_str(&leader.creation_type),
             &["With Text", "With Tolerance", "With Block", "No Annotation"],
         ),
-        bool_toggle("Arrowhead", "arrow_enabled", leader.arrow_enabled),
         Property {
             label: "Dim style".into(),
             field: "dimension_style",

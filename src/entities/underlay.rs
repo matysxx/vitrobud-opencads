@@ -10,7 +10,7 @@ use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
-use crate::scene::model::object::{GripApply, GripDef, PropSection};
+use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::SnapHint;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -147,8 +147,6 @@ impl Grippable for Underlay {
 
 impl PropertyEditable for Underlay {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
-        let yes_no = |b: bool| if b { "Yes" } else { "No" };
-
         // Width / Height derived from the world-space clip boundary bounds
         // (the only in-entity source of the placed footprint size).
         let (width, height) = if self.clip_boundary_vertices.is_empty() {
@@ -193,12 +191,22 @@ impl PropertyEditable for Underlay {
                 props: vec![
                     edit("Contrast", "ul_contrast", self.contrast as f64),
                     edit("Fade", "ul_fade", self.fade as f64),
-                    ro("Monochrome", "ul_mono", yes_no(monochrome)),
-                    ro(
-                        "Adjust Colors for Background",
-                        "ul_adjust_bg",
-                        yes_no(adjust_bg),
-                    ),
+                    Property {
+                        label: "Monochrome".into(),
+                        field: "ul_mono",
+                        value: PropValue::BoolToggle {
+                            field: "ul_mono",
+                            value: monochrome,
+                        },
+                    },
+                    Property {
+                        label: "Adjust Colors for Background".into(),
+                        field: "ul_adjust_bg",
+                        value: PropValue::BoolToggle {
+                            field: "ul_adjust_bg",
+                            value: adjust_bg,
+                        },
+                    },
                 ],
             },
             PropSection {
@@ -208,9 +216,30 @@ impl PropertyEditable for Underlay {
                     // UnderlayDefinition object, not reachable from the entity.
                     ro("Underlay name", "ul_name", String::new()),
                     ro("Underlay path", "ul_path", String::new()),
-                    ro("Show underlay", "ul_on", yes_no(show)),
-                    ro("Clipping", "ul_clip", yes_no(clipping)),
-                    ro("Show clipped", "ul_clip_inverted", yes_no(self.clip_inverted)),
+                    Property {
+                        label: "Show underlay".into(),
+                        field: "ul_on",
+                        value: PropValue::BoolToggle {
+                            field: "ul_on",
+                            value: show,
+                        },
+                    },
+                    Property {
+                        label: "Clipping".into(),
+                        field: "ul_clip",
+                        value: PropValue::BoolToggle {
+                            field: "ul_clip",
+                            value: clipping,
+                        },
+                    },
+                    Property {
+                        label: "Show clipped".into(),
+                        field: "ul_clip_inverted",
+                        value: PropValue::BoolToggle {
+                            field: "ul_clip_inverted",
+                            value: self.clip_inverted,
+                        },
+                    },
                     ro("Underlay layers", "ul_layers", String::new()),
                 ],
             },
@@ -218,6 +247,62 @@ impl PropertyEditable for Underlay {
     }
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        match field {
+            "ul_mono" => {
+                let on = if value == "toggle" {
+                    !self.flags.contains(UnderlayDisplayFlags::MONOCHROME)
+                } else {
+                    value == "true"
+                };
+                self.set_monochrome(on);
+                return;
+            }
+            "ul_adjust_bg" => {
+                let on = if value == "toggle" {
+                    !self.flags.contains(UnderlayDisplayFlags::ADJUST_FOR_BACKGROUND)
+                } else {
+                    value == "true"
+                };
+                if on {
+                    self.flags |= UnderlayDisplayFlags::ADJUST_FOR_BACKGROUND;
+                } else {
+                    self.flags -= UnderlayDisplayFlags::ADJUST_FOR_BACKGROUND;
+                }
+                return;
+            }
+            "ul_on" => {
+                let on = if value == "toggle" {
+                    !self.flags.contains(UnderlayDisplayFlags::ON)
+                } else {
+                    value == "true"
+                };
+                self.set_on(on);
+                return;
+            }
+            "ul_clip" => {
+                let on = if value == "toggle" {
+                    !self.flags.contains(UnderlayDisplayFlags::CLIPPING)
+                } else {
+                    value == "true"
+                };
+                if on {
+                    self.flags |= UnderlayDisplayFlags::CLIPPING;
+                } else {
+                    self.flags -= UnderlayDisplayFlags::CLIPPING;
+                }
+                return;
+            }
+            "ul_clip_inverted" => {
+                let on = if value == "toggle" {
+                    !self.clip_inverted
+                } else {
+                    value == "true"
+                };
+                self.clip_inverted = on;
+                return;
+            }
+            _ => {}
+        }
         if let Ok(v) = value.trim().parse::<f64>() {
             match field {
                 "ul_ix" => self.insertion_point.x = v,

@@ -162,29 +162,29 @@ fn properties(spline: &Spline) -> Vec<PropSection> {
             title: "Data Points".into(),
             props: vec![
                 ro("Show", "show", show),
-                edit("Degree", "degree", spline.degree as f64),
+                ro("Degree", "degree", spline.degree.to_string()),
                 ro(
                     "Control Point Count",
                     "ctrl_pt_count",
                     spline.control_points.len().to_string(),
                 ),
                 ro("Control Point", "ctrl_pt_index", "0"),
-                ro(
+                edit(
                     "Control Point X",
                     "ctrl_pt_x",
-                    format!("{:.4}", cp0.map(|p| p.x).unwrap_or(0.0)),
+                    cp0.map(|p| p.x).unwrap_or(0.0),
                 ),
-                ro(
+                edit(
                     "Control Point Y",
                     "ctrl_pt_y",
-                    format!("{:.4}", cp0.map(|p| p.y).unwrap_or(0.0)),
+                    cp0.map(|p| p.y).unwrap_or(0.0),
                 ),
-                ro(
+                edit(
                     "Control Point Z",
                     "ctrl_pt_z",
-                    format!("{:.4}", cp0.map(|p| p.z).unwrap_or(0.0)),
+                    cp0.map(|p| p.z).unwrap_or(0.0),
                 ),
-                ro("Weight", "weight", format!("{:.4}", w0.unwrap_or(1.0))),
+                edit("Weight", "weight", w0.unwrap_or(1.0)),
                 ro("Knot Parameterization", "knot_param", knot_param),
                 ro(
                     "Fit Point Count",
@@ -192,28 +192,28 @@ fn properties(spline: &Spline) -> Vec<PropSection> {
                     spline.fit_points.len().to_string(),
                 ),
                 ro("Fit Point", "fit_pt_index", "0"),
-                ro(
+                edit(
                     "Fit Point X",
                     "fit_pt_x",
-                    format!("{:.4}", fp0.map(|p| p.x).unwrap_or(0.0)),
+                    fp0.map(|p| p.x).unwrap_or(0.0),
                 ),
-                ro(
+                edit(
                     "Fit Point Y",
                     "fit_pt_y",
-                    format!("{:.4}", fp0.map(|p| p.y).unwrap_or(0.0)),
+                    fp0.map(|p| p.y).unwrap_or(0.0),
                 ),
-                ro(
+                edit(
                     "Fit Point Z",
                     "fit_pt_z",
-                    format!("{:.4}", fp0.map(|p| p.z).unwrap_or(0.0)),
+                    fp0.map(|p| p.z).unwrap_or(0.0),
                 ),
-                ro("Fit Tolerance", "fit_tolerance", format!("{:.6}", spline.fit_tolerance)),
-                ro("Start Tangent X", "start_tan_x", format!("{:.4}", spline.begin_tangent.x)),
-                ro("Start Tangent Y", "start_tan_y", format!("{:.4}", spline.begin_tangent.y)),
-                ro("Start Tangent Z", "start_tan_z", format!("{:.4}", spline.begin_tangent.z)),
-                ro("End Tangent X", "end_tan_x", format!("{:.4}", spline.end_tangent.x)),
-                ro("End Tangent Y", "end_tan_y", format!("{:.4}", spline.end_tangent.y)),
-                ro("End Tangent Z", "end_tan_z", format!("{:.4}", spline.end_tangent.z)),
+                edit("Fit Tolerance", "fit_tolerance", spline.fit_tolerance),
+                edit("Start Tangent X", "start_tan_x", spline.begin_tangent.x),
+                edit("Start Tangent Y", "start_tan_y", spline.begin_tangent.y),
+                edit("Start Tangent Z", "start_tan_z", spline.begin_tangent.z),
+                edit("End Tangent X", "end_tan_x", spline.end_tangent.x),
+                edit("End Tangent Y", "end_tan_y", spline.end_tangent.y),
+                edit("End Tangent Z", "end_tan_z", spline.end_tangent.z),
             ],
         },
         PropSection {
@@ -229,10 +229,51 @@ fn properties(spline: &Spline) -> Vec<PropSection> {
 }
 
 fn apply_geom_prop(spline: &mut Spline, field: &str, value: &str) {
-    if field == "degree" {
-        if let Some(v) = parse_f64(value) {
-            spline.degree = v.round() as i32;
+    let Some(v) = parse_f64(value) else { return };
+    match field {
+        "ctrl_pt_x" => {
+            if let Some(cp) = spline.control_points.first_mut() {
+                cp.x = v;
+            }
         }
+        "ctrl_pt_y" => {
+            if let Some(cp) = spline.control_points.first_mut() {
+                cp.y = v;
+            }
+        }
+        "ctrl_pt_z" => {
+            if let Some(cp) = spline.control_points.first_mut() {
+                cp.z = v;
+            }
+        }
+        "weight" => {
+            if let Some(w) = spline.weights.first_mut() {
+                *w = v;
+            }
+        }
+        "fit_pt_x" => {
+            if let Some(fp) = spline.fit_points.first_mut() {
+                fp.x = v;
+            }
+        }
+        "fit_pt_y" => {
+            if let Some(fp) = spline.fit_points.first_mut() {
+                fp.y = v;
+            }
+        }
+        "fit_pt_z" => {
+            if let Some(fp) = spline.fit_points.first_mut() {
+                fp.z = v;
+            }
+        }
+        "fit_tolerance" => spline.fit_tolerance = v,
+        "start_tan_x" => spline.begin_tangent.x = v,
+        "start_tan_y" => spline.begin_tangent.y = v,
+        "start_tan_z" => spline.begin_tangent.z = v,
+        "end_tan_x" => spline.end_tangent.x = v,
+        "end_tan_y" => spline.end_tangent.y = v,
+        "end_tan_z" => spline.end_tangent.z = v,
+        _ => {}
     }
 }
 

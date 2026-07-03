@@ -8,7 +8,7 @@ use crate::entities::text_support::{
 };
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
-use crate::scene::model::object::{GripApply, GripDef, PropSection};
+use crate::scene::model::object::{GripApply, GripDef, PropSection, Property, PropValue};
 use crate::scene::view::transform;
 use crate::scene::model::wire_model::SnapHint;
 
@@ -828,8 +828,12 @@ impl PropertyEditable for Table {
                 _ => "(none)".to_string(),
             }
         };
-        let yes_no = |b: bool| -> String {
-            if b { "Yes".into() } else { "No".into() }
+        let toggle = |label: &'static str, field: &'static str, b: bool| -> Property {
+            Property {
+                label: label.into(),
+                field,
+                value: PropValue::BoolToggle { field, value: b },
+            }
         };
         // Direction = angle of the horizontal direction vector in the XY plane.
         let direction_deg =
@@ -862,47 +866,39 @@ impl PropertyEditable for Table {
             PropSection {
                 title: "Table Breaks".into(),
                 props: vec![
-                    ro(
+                    toggle(
                         "Enabled",
                         "tbl_break_enabled",
-                        yes_no(self.break_options.contains(BreakOptionFlags::ENABLE_BREAKS)),
+                        self.break_options.contains(BreakOptionFlags::ENABLE_BREAKS),
                     ),
                     ro(
                         "Direction",
                         "tbl_break_direction",
                         format!("{:?}", self.break_flow_direction),
                     ),
-                    ro(
+                    toggle(
                         "Repeat top labels",
                         "tbl_break_repeat_top",
-                        yes_no(
-                            self.break_options
-                                .contains(BreakOptionFlags::REPEAT_TOP_LABELS),
-                        ),
+                        self.break_options
+                            .contains(BreakOptionFlags::REPEAT_TOP_LABELS),
                     ),
-                    ro(
+                    toggle(
                         "Repeat bottom labels",
                         "tbl_break_repeat_bottom",
-                        yes_no(
-                            self.break_options
-                                .contains(BreakOptionFlags::REPEAT_BOTTOM_LABELS),
-                        ),
+                        self.break_options
+                            .contains(BreakOptionFlags::REPEAT_BOTTOM_LABELS),
                     ),
-                    ro(
+                    toggle(
                         "Manual positions",
                         "tbl_break_manual_positions",
-                        yes_no(
-                            self.break_options
-                                .contains(BreakOptionFlags::ALLOW_MANUAL_POSITIONS),
-                        ),
+                        self.break_options
+                            .contains(BreakOptionFlags::ALLOW_MANUAL_POSITIONS),
                     ),
-                    ro(
+                    toggle(
                         "Manual heights",
                         "tbl_break_manual_heights",
-                        yes_no(
-                            self.break_options
-                                .contains(BreakOptionFlags::ALLOW_MANUAL_HEIGHTS),
-                        ),
+                        self.break_options
+                            .contains(BreakOptionFlags::ALLOW_MANUAL_HEIGHTS),
                     ),
                     ro("Break height", "tbl_break_height", String::new()),
                     edit("Spacing", "tbl_break_spacing", self.break_spacing),
@@ -913,6 +909,24 @@ impl PropertyEditable for Table {
 
     fn apply_geom_prop(&mut self, field: &str, value: &str) {
         use crate::entities::common::parse_f64;
+        use acadrust::entities::table::BreakOptionFlags;
+        let flag = match field {
+            "tbl_break_enabled" => Some(BreakOptionFlags::ENABLE_BREAKS),
+            "tbl_break_repeat_top" => Some(BreakOptionFlags::REPEAT_TOP_LABELS),
+            "tbl_break_repeat_bottom" => Some(BreakOptionFlags::REPEAT_BOTTOM_LABELS),
+            "tbl_break_manual_positions" => Some(BreakOptionFlags::ALLOW_MANUAL_POSITIONS),
+            "tbl_break_manual_heights" => Some(BreakOptionFlags::ALLOW_MANUAL_HEIGHTS),
+            _ => None,
+        };
+        if let Some(flag) = flag {
+            let on = if value == "toggle" {
+                !self.break_options.contains(flag)
+            } else {
+                value == "true"
+            };
+            self.break_options.set(flag, on);
+            return;
+        }
         if field == "tbl_break_spacing" {
             if let Some(v) = parse_f64(value) {
                 self.break_spacing = v;

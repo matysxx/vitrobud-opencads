@@ -543,10 +543,10 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
                 &["None", "MText", "Block", "Tolerance"],
             ),
             edit("Overall scale", "scale_factor", ml.scale_factor),
-            ro(
+            bool_toggle(
                 "Annotative",
                 "enable_annotation_scale",
-                if ml.enable_annotation_scale { "Yes" } else { "No" },
+                ml.enable_annotation_scale,
             ),
             // No stored annotative-scale name on the entity.
             ro("Annotative scale", "annotative_scale", String::new()),
@@ -588,11 +588,7 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
             ro("Maximum leader points", "max_leader_points", String::new()),
             ro("First segment angle", "first_segment_angle", String::new()),
             ro("Second segment angle", "second_segment_angle", String::new()),
-            ro(
-                "Landing",
-                "enable_landing",
-                if ml.enable_landing { "Yes" } else { "No" },
-            ),
+            bool_toggle("Landing", "enable_landing", ml.enable_landing),
             edit(
                 "Landing distance",
                 "landing_distance",
@@ -652,14 +648,10 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
                 format!("{:?}", ml.text_attachment_direction),
             ),
             edit("Landing gap", "landing_gap", ctx.landing_gap),
-            ro(
+            bool_toggle(
                 "Background mask",
                 "background_fill_enabled",
-                if ctx.background_fill_enabled {
-                    "Yes"
-                } else {
-                    "No"
-                },
+                ctx.background_fill_enabled,
             ),
         ],
     };
@@ -767,6 +759,13 @@ fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
         "enable_annotation_scale" => {
             ml.enable_annotation_scale = if value == "toggle" {
                 !ml.enable_annotation_scale
+            } else {
+                value == "true"
+            }
+        }
+        "background_fill_enabled" => {
+            ml.context.background_fill_enabled = if value == "toggle" {
+                !ml.context.background_fill_enabled
             } else {
                 value == "true"
             }

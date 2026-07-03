@@ -197,7 +197,7 @@ fn properties(ell: &Ellipse) -> Vec<PropSection> {
                 ro("End X", "end_x", format!("{:.4}", end.x)),
                 ro("End Y", "end_y", format!("{:.4}", end.y)),
                 ro("End Z", "end_z", format!("{:.4}", end.z)),
-                ro("Major radius", "major_r", format!("{r_major:.4}")),
+                edit("Major radius", "major_r", r_major),
                 ro("Minor radius", "minor_r", format!("{r_minor:.4}")),
                 edit("Radius ratio", "ratio", ell.minor_axis_ratio),
                 ro("Start angle", "start_angle", format!("{start_angle:.2}")),
@@ -227,6 +227,15 @@ fn apply_geom_prop(ell: &mut Ellipse, field: &str, value: &str) {
         "center_x" => ell.center.x = v,
         "center_y" => ell.center.y = v,
         "center_z" => ell.center.z = v,
+        "major_r" => {
+            let cur = ell.major_axis_length();
+            if cur > 1e-12 && v > 0.0 {
+                let s = v / cur;
+                ell.major_axis.x *= s;
+                ell.major_axis.y *= s;
+                ell.major_axis.z *= s;
+            }
+        }
         "ratio" => ell.minor_axis_ratio = v,
         "start_param" => ell.start_parameter = v,
         "end_param" => ell.end_parameter = v,

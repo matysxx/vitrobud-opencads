@@ -149,7 +149,14 @@ fn properties(h: &Hatch) -> Vec<PropSection> {
                     if h.is_associative { "Yes" } else { "No" },
                 ),
                 ro("Layer override", "layer_override", String::new()),
-                ro("Double", "double", if h.is_double { "Yes" } else { "No" }),
+                Property {
+                    label: "Double".into(),
+                    field: "double",
+                    value: PropValue::BoolToggle {
+                        field: "double",
+                        value: h.is_double,
+                    },
+                },
                 ro(
                     "Spacing",
                     "spacing",
@@ -186,6 +193,14 @@ fn properties(h: &Hatch) -> Vec<PropSection> {
 }
 
 fn apply_geom_prop(h: &mut Hatch, field: &str, value: &str) {
+    if field == "double" {
+        h.is_double = if value == "toggle" {
+            !h.is_double
+        } else {
+            value == "true"
+        };
+        return;
+    }
     let Some(v) = parse_f64(value) else {
         return;
     };
