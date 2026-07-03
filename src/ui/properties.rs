@@ -13,9 +13,7 @@ use std::fmt;
 use crate::ui::ROW_H;
 use acadrust::types::{Color as AcadColor, LineWeight};
 use acadrust::Handle;
-use iced::widget::{
-    button, column, combo_box, container, mouse_area, row, scrollable, text, text_input,
-};
+use iced::widget::{button, column, combo_box, container, row, scrollable, text, text_input};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme};
 
 // ── Row-height-derived constants ─────────────────────────────────────────
@@ -867,56 +865,17 @@ fn render_bool_row<'a>(label: &'a str, field: &'static str, value: bool) -> Elem
 }
 
 fn render_ro_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
-    let display = crate::ui::text_util::elide(value, 22);
-    let label_col = container(text(crate::ui::text_util::elide(label, 18)).size(FONT_SZ).color(LABEL_COLOR))
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(LABEL_BG)),
-            ..Default::default()
-        })
-        .width(Length::FillPortion(5))
-        .height(Length::Fixed(ROW_H))
-        .align_y(iced::Center)
-        .padding(Padding {
-            top: 0.0,
-            bottom: 0.0,
-            left: 6.0,
-            right: 6.0,
-        });
-    let value_inner = container(text(display).size(FONT_SZ).color(VALUE_COLOR))
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(VALUE_BG)),
-            ..Default::default()
-        })
-        .width(Length::FillPortion(6))
-        .height(Length::Fixed(ROW_H))
-        .align_y(iced::Center)
-        .padding(Padding {
-            top: 0.0,
-            bottom: 0.0,
-            left: 6.0,
-            right: 6.0,
-        });
-    // A read-only value is still copyable: click the value cell to copy the
-    // full (un-elided) text to the clipboard.
-    let value_col: Element<'a, Message> = if value.is_empty() {
-        value_inner.into()
-    } else {
-        mouse_area(value_inner)
-            .on_press(Message::PropCopyValue(value.to_string()))
-            .interaction(iced::mouse::Interaction::Copy)
-            .into()
-    };
-    container(row![label_col, value_col])
-        .height(Length::Fixed(ROW_H))
-        .style(|_: &Theme| container::Style {
-            border: Border {
-                color: BORDER,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+    // A read-only value is shown as a non-editable but selectable text field:
+    // the user can select the text (which carries the full, un-truncated
+    // value) and copy it with Ctrl+C. Keystrokes route to Noop, so the value
+    // can be selected/copied but never edited.
+    let field = text_input("", value)
+        .on_input(|_| Message::Noop)
+        .size(FONT_SZ)
+        .style(ro_input_style)
+        .padding([3, 6])
+        .width(Length::Fill);
+    prop_row_widget(label, field.into())
 }
 
 /// Build a label | widget property row.
@@ -1082,6 +1041,29 @@ fn text_input_style(_theme: &Theme, status: text_input::Status) -> text_input::S
 
 fn combo_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
     text_input_style(theme, status)
+}
+
+/// Style for a read-only-but-selectable value field: flat (no input box or
+/// focus highlight, so it reads as plain text, unlike the bordered editable
+/// fields) yet with a visible selection colour so Ctrl+C copy is discoverable.
+fn ro_input_style(_theme: &Theme, _status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(VALUE_BG),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 0.0.into(),
+        },
+        icon: Color::TRANSPARENT,
+        placeholder: HINT_COLOR,
+        value: VALUE_COLOR,
+        selection: Color {
+            r: 0.2,
+            g: 0.4,
+            b: 0.8,
+            a: 0.5,
+        },
+    }
 }
 
 // ── Colour constants ──────────────────────────────────────────────────────

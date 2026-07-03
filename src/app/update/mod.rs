@@ -2107,8 +2107,6 @@ impl OpenCADStudio {
 
             Message::PropGeomCommit(field) => self.on_prop_geom_commit(field),
 
-            Message::PropCopyValue(value) => iced::clipboard::write(value),
-
             Message::PropAttrInput { tag, value } => {
                 self.tabs[self.active_tab]
                     .properties
