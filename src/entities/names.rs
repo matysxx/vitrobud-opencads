@@ -92,8 +92,15 @@ pub fn dxf_name(e: &EntityType) -> &'static str {
         EntityType::AttributeDefinition(_) => "ATTDEF",
         EntityType::AttributeEntity(_) => "ATTRIB",
         EntityType::Leader(_) => "LEADER",
+        EntityType::MultiLeader(_) => "MULTILEADER",
         EntityType::Tolerance(_) => "TOLERANCE",
         EntityType::Shape(_) => "SHAPE",
+        EntityType::Solid(_) => "SOLID",
+        EntityType::Solid3D(_) => "3DSOLID",
+        EntityType::Region(_) => "REGION",
+        EntityType::Body(_) => "BODY",
+        EntityType::Surface(_) => "SURFACE",
+        EntityType::Mesh(_) => "MESH",
         _ => "ENTITY",
     }
 }

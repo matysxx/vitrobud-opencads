@@ -115,6 +115,55 @@ impl OpenCADStudio {
                 }
             }
 
+            // SELHANDLES — report the current selection for diagnostics: the
+            // active space (Model / which paper layout), a per-type and
+            // per-block breakdown, and the raw comma-separated hex handle list
+            // (so what renders on screen can be compared against the file).
+            "SELHANDLES" | "SELH" => {
+                let scene = &self.tabs[i].scene;
+                let selected = scene.selected_entities();
+                if selected.is_empty() {
+                    self.command_line
+                        .push_error("SELHANDLES: no entities selected. Select entities first.");
+                } else {
+                    use std::collections::BTreeMap;
+                    let space = if scene.current_layout == "Model" {
+                        "Model space".to_string()
+                    } else {
+                        format!("Paper space '{}'", scene.current_layout)
+                    };
+                    let mut handles: Vec<u64> = Vec::with_capacity(selected.len());
+                    let mut type_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+                    let mut block_counts: BTreeMap<String, usize> = BTreeMap::new();
+                    for (h, e) in &selected {
+                        handles.push(h.value());
+                        *type_counts
+                            .entry(crate::entities::names::dxf_name(e))
+                            .or_default() += 1;
+                        if let acadrust::EntityType::Insert(ins) = e {
+                            *block_counts.entry(ins.block_name.clone()).or_default() += 1;
+                        }
+                    }
+                    handles.sort_unstable();
+                    let types: Vec<String> =
+                        type_counts.iter().map(|(t, n)| format!("{t}×{n}")).collect();
+                    let list: Vec<String> = handles.iter().map(|h| format!("{:X}", h)).collect();
+                    let mut msg = format!(
+                        "SELHANDLES: {} selected in {}\n  Types: {}",
+                        handles.len(),
+                        space,
+                        types.join(", ")
+                    );
+                    if !block_counts.is_empty() {
+                        let blocks: Vec<String> =
+                            block_counts.iter().map(|(b, n)| format!("{b}×{n}")).collect();
+                        msg.push_str(&format!("\n  Blocks: {}", blocks.join(", ")));
+                    }
+                    msg.push_str(&format!("\n  Handles: {}", list.join(",")));
+                    self.command_line.push_output(&msg);
+                }
+            }
+
             // DBLIST — list data for every entity in the drawing (LIST over the
             // whole database rather than the current selection).
             "DBLIST" => {

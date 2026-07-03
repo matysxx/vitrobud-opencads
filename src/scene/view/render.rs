@@ -957,6 +957,18 @@ impl Scene {
         } else {
             self.images_arc()
         };
+        // The paper sheet shows the layout's own 2-D content (fills, borders,
+        // annotation) — never the model's 3-D solids. Those are drawn inside
+        // the floating content viewports, whose model camera + per-viewport
+        // scissor place and clip them correctly. Feeding the model mesh set to
+        // the sheet piles every solid onto the paper origin, because the sheet
+        // camera works in paper coordinates, not model space — the same reason
+        // the sheet excludes model hatches and wires above.
+        let meshes = if inst.paper_sheet {
+            Arc::new(Vec::new())
+        } else {
+            self.meshes_arc()
+        };
 
         Some(ViewportData {
             wires: all_wires,
@@ -966,7 +978,7 @@ impl Scene {
             hatches,
             wipeout_hatches,
             images,
-            meshes: self.meshes_arc(),
+            meshes,
             uniforms,
             cam_rotation: inst.camera.view_rotation_mat() * self.viewcube_ucs_mat(),
             compass_rotation: inst.camera.view_rotation_mat(),
