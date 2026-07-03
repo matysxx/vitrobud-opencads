@@ -1,4 +1,4 @@
-use acadrust::entities::{AttributeEntity, Insert};
+use acadrust::entities::{AttributeDefinition, AttributeEntity, Entity, Insert};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 use glam::{DVec3, Vec3};
@@ -23,11 +23,13 @@ enum Step {
     },
     /// Attribute filling: prompt the user tag by tag.
     FillAttr {
-        /// Attribute definitions: (tag, prompt_text, default_value).
-        attdefs: Vec<(String, String, String)>,
+        /// The block's attribute definitions — carried in full so the created
+        /// attributes inherit their position / alignment / height / rotation /
+        /// style, not just tag + prompt + default (#255).
+        attdefs: Vec<AttributeDefinition>,
         /// Index of the attdef currently being prompted.
         idx: usize,
-        /// (tag, value) pairs collected so far.
+        /// (tag, value) pairs collected so far, in attdef order.
         values: Vec<(String, String)>,
     },
 }
@@ -114,16 +116,16 @@ impl CadCommand for InsertBlockCommand {
                 ),
             },
             Step::FillAttr { attdefs, idx, .. } => {
-                if let Some((tag, prompt, default)) = attdefs.get(*idx) {
-                    let default_hint = if default.is_empty() {
+                if let Some(ad) = attdefs.get(*idx) {
+                    let default_hint = if ad.default_value.is_empty() {
                         String::new()
                     } else {
-                        format!("  <{default}>")
+                        format!("  <{}>", ad.default_value)
                     };
-                    let prompt_text = if prompt.is_empty() {
-                        tag.as_str()
+                    let prompt_text = if ad.prompt.is_empty() {
+                        ad.tag.as_str()
                     } else {
-                        prompt.as_str()
+                        ad.prompt.as_str()
                     };
                     format!("INSERT  {prompt_text}{default_hint}:")
                 } else {
@@ -242,7 +244,7 @@ impl CadCommand for InsertBlockCommand {
         }
     }
 
-    fn attreq_set_attdefs(&mut self, attdefs: Vec<(String, String, String)>) {
+    fn attreq_set_attdefs(&mut self, attdefs: Vec<AttributeDefinition>) {
         self.step = Step::FillAttr {
             attdefs,
             idx: 0,
@@ -263,8 +265,8 @@ impl InsertBlockCommand {
     fn accept_attr_value(&mut self, text: &str) -> CmdResult {
         let (tag, default, next_idx, total) = match &self.step {
             Step::FillAttr { attdefs, idx, .. } => {
-                let (tag, _, default) = &attdefs[*idx];
-                (tag.clone(), default.clone(), idx + 1, attdefs.len())
+                let ad = &attdefs[*idx];
+                (ad.tag.clone(), ad.default_value.clone(), idx + 1, attdefs.len())
             }
             _ => return CmdResult::Cancel,
         };
@@ -286,22 +288,25 @@ impl InsertBlockCommand {
         }
 
         if next_idx >= total {
-            // All attdefs filled — build the INSERT with AttributeEntity list.
-            let values = match &self.step {
-                Step::FillAttr { values, .. } => values.clone(),
-                _ => vec![],
+            // All attdefs filled — build the INSERT's attribute list. Each
+            // attribute inherits its ATTDEF's geometry (position, alignment,
+            // height, rotation, style) via `from_definition`, then the block's
+            // insertion transform places it into WCS so it lands where the block
+            // put it instead of stacking at the origin (#255).
+            let (attdefs, values) = match &self.step {
+                Step::FillAttr {
+                    attdefs, values, ..
+                } => (attdefs.clone(), values.clone()),
+                _ => (vec![], vec![]),
             };
             let mut ins = match self.pending_insert.take() {
                 Some(i) => i,
                 None => return CmdResult::Cancel,
             };
-            for (tag, value) in values {
-                let mut attr = AttributeEntity {
-                    tag,
-                    value: value.clone(),
-                    ..Default::default()
-                };
-                attr.set_value(&value);
+            let xform = ins.get_transform();
+            for (ad, (_tag, value)) in attdefs.iter().zip(values.iter()) {
+                let mut attr = AttributeEntity::from_definition(ad, Some(value.clone()));
+                attr.apply_transform(&xform);
                 ins.attributes.push(attr);
             }
             CmdResult::CommitAndExit(EntityType::Insert(ins))

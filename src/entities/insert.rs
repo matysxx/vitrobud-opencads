@@ -79,9 +79,21 @@ fn apply_geom_prop(ins: &mut Insert, field: &str, value: &str) {
         return;
     };
     match field {
-        "ins_x" => ins.insert_point.x = v,
-        "ins_y" => ins.insert_point.y = v,
-        "ins_z" => ins.insert_point.z = v,
+        "ins_x" | "ins_y" | "ins_z" => {
+            // Move the attributes by the same world delta as the insertion
+            // point so they follow the block instead of staying put (#255).
+            let ocs = Matrix3::arbitrary_axis(ins.normal);
+            let old_world = ocs * ins.insert_point;
+            match field {
+                "ins_x" => ins.insert_point.x = v,
+                "ins_y" => ins.insert_point.y = v,
+                _ => ins.insert_point.z = v,
+            }
+            let delta = ocs * ins.insert_point - old_world;
+            for att in &mut ins.attributes {
+                acadrust::Entity::translate(att, delta);
+            }
+        }
         "x_scale" => ins.set_x_scale(v),
         "y_scale" => ins.set_y_scale(v),
         "z_scale" => ins.set_z_scale(v),
@@ -96,13 +108,18 @@ fn apply_grip(ins: &mut Insert, _grip_id: usize, apply: GripApply) {
     // whose extrusion direction isn't +Z moves along world axes. Identity OCS
     // for a +Z normal, so this matches the old direct assignment there.
     let ocs = Matrix3::arbitrary_axis(ins.normal);
+    let old_world = ocs * ins.insert_point;
     let world = match apply {
         GripApply::Absolute(p) => Vector3::new(p.x as f64, p.y as f64, p.z as f64),
-        GripApply::Translate(d) => {
-            ocs * ins.insert_point + Vector3::new(d.x as f64, d.y as f64, d.z as f64)
-        }
+        GripApply::Translate(d) => old_world + Vector3::new(d.x as f64, d.y as f64, d.z as f64),
     };
     ins.insert_point = ocs.transpose() * world;
+    // Attributes sit in world space beside the block, so move them by the same
+    // world delta — otherwise a grip-drag leaves the attribute text behind (#255).
+    let delta = world - old_world;
+    for att in &mut ins.attributes {
+        acadrust::Entity::translate(att, delta);
+    }
 }
 
 fn apply_transform(ins: &mut Insert, t: &EntityTransform) {

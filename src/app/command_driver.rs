@@ -549,8 +549,9 @@ impl OpenCADStudio {
                 }
             }
             CmdResult::AttreqNeeded { block_name } => {
-                // Collect AttributeDefinitions owned by this block record.
-                let attdefs: Vec<(String, String, String)> = {
+                // Collect the full AttributeDefinitions owned by this block
+                // record so each created attribute keeps its geometry (#255).
+                let attdefs: Vec<acadrust::entities::AttributeDefinition> = {
                     let doc = &self.tabs[i].scene.document;
                     if let Some(br) = doc.block_records.get(&block_name) {
                         br.entity_handles
@@ -559,11 +560,7 @@ impl OpenCADStudio {
                                 if let Some(acadrust::EntityType::AttributeDefinition(ad)) =
                                     doc.get_entity(h)
                                 {
-                                    Some((
-                                        ad.tag.clone(),
-                                        ad.prompt.clone(),
-                                        ad.default_value.clone(),
-                                    ))
+                                    Some(ad.clone())
                                 } else {
                                     None
                                 }
