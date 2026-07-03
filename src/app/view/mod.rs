@@ -1478,6 +1478,7 @@ impl OpenCADStudio {
                     }
                     iced::Event::Keyboard(keyboard::Event::KeyPressed {
                         key,
+                        physical_key,
                         modifiers,
                         text,
                         ..
@@ -1496,6 +1497,22 @@ impl OpenCADStudio {
                         // those numpad digits aren't swallowed as history
                         // navigation. Whitespace / control text (Space,
                         // Enter, Tab) falls through to the named handlers.
+                        // The numpad decimal key emits the OS-layout separator
+                        // (a comma on German/European layouts), which the
+                        // coordinate parser rejects. Force it to a decimal point
+                        // from the physical key, independent of layout.
+                        if !accel
+                            && status == Status::Ignored
+                            && matches!(
+                                physical_key,
+                                keyboard::key::Physical::Code(
+                                    keyboard::key::Code::NumpadDecimal
+                                        | keyboard::key::Code::NumpadComma
+                                )
+                            )
+                        {
+                            return Some(Message::CommandAppendChar(".".to_string()));
+                        }
                         if !accel && status == Status::Ignored {
                             if let Some(t) = text.as_deref() {
                                 if !t.is_empty()
