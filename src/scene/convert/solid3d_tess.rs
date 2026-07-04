@@ -609,14 +609,17 @@ fn tess_cone_face(
     // boundary alone can't span the height — the second extent (top rim or
     // apex) lives on a different face. When the boundary collapses to one
     // height, recover the span from the solid's coaxial circle rims plus the
-    // analytic apex of a true cone, and sweep the full revolution.
+    // analytic apex of a true cone. Only sweep the full revolution when the
+    // boundary really is a closed rim; a bounded arc face (e.g. a curved
+    // mullion bar) keeps its own angular span, else it balloons to a circle.
     if (h_max - h_min).abs() < 1e-9 {
         if let Some((vmin, vmax)) = cone_axis_span(sat, cone, axis, [cx, cy, cz]) {
             h_min = vmin;
             h_max = vmax;
-            theta_min = 0.0;
-            theta_max = TAU;
-            full_circle = true;
+            if full_circle {
+                theta_min = 0.0;
+                theta_max = TAU;
+            }
         }
     }
 
@@ -1012,3 +1015,4 @@ fn norm3(v: [f64; 3]) -> [f64; 3] {
         [v[0] / len, v[1] / len, v[2] / len]
     }
 }
+

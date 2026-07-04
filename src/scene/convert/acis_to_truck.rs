@@ -177,7 +177,7 @@ fn build_face_group(
         "cone-surface" => {
             let cone = SatConeSurface::from_record(surf_rec)?;
             let tol = curve_tol(cone.radius());
-            let (faces, out) = cone_faces(sat, &cone)?;
+            let (faces, out) = cone_faces(sat, face, &cone)?;
             Some((faces, out, tol))
         }
         "sphere-surface" => {
@@ -295,8 +295,15 @@ fn loop_normal(pts: &[[f64; 3]]) -> [f64; 3] {
 // ── Cone / cylinder face ─────────────────────────────────────────────────────
 
 /// Build the lateral surface of a cone/cylinder as revolution faces. The
-/// height span comes from the solid's coaxial rims (plus a true cone's apex).
-fn cone_faces(sat: &SatDocument, cone: &SatConeSurface) -> Option<(Vec<Face>, Outward)> {
+/// height span comes from the solid's coaxial rims (plus a true cone's apex);
+/// the angular span comes from the face's own boundary loop, so a partial
+/// (arc) face — e.g. a curved mullion bar — sweeps only its arc instead of
+/// ballooning into a full circle of the surface radius.
+fn cone_faces(
+    sat: &SatDocument,
+    face: &SatFace,
+    cone: &SatConeSurface,
+) -> Option<(Vec<Face>, Outward)> {
     let (cx, cy, cz) = cone.center();
     let (ax, ay, az) = cone.axis();
     let (ux, uy, uz) = cone.major_axis();
@@ -306,6 +313,13 @@ fn cone_faces(sat: &SatDocument, cone: &SatConeSurface) -> Option<(Vec<Face>, Ou
 
     let axis = norm(Vector3::new(ax, ay, az));
     let udir = norm(Vector3::new(ux, uy, uz));
+    // v = axis × u completes the right-handed frame; angles increase from u
+    // toward v (CCW about the axis), matching `builder::rsweep`.
+    let vdir = Vector3::new(
+        axis.y * udir.z - axis.z * udir.y,
+        axis.z * udir.x - axis.x * udir.z,
+        axis.x * udir.y - axis.y * udir.x,
+    );
     let center = Point3::new(cx, cy, cz);
 
     let (hmin, hmax) = cone_axis_span(sat, cone, [axis.x, axis.y, axis.z], [cx, cy, cz])?;
@@ -317,10 +331,16 @@ fn cone_faces(sat: &SatDocument, cone: &SatConeSurface) -> Option<(Vec<Face>, Ou
         }
     };
 
-    let p0 = center + udir * r_at(hmin) + axis * hmin;
-    let p1 = center + udir * r_at(hmax) + axis * hmax;
+    // Angular extent of this face from its boundary loop (seam-robust).
+    let poly = crate::scene::convert::solid3d_tess::collect_face_polygon(sat, face, BOUNDARY_SEGS);
+    let (theta0, sweep) = cone_boundary_arc(&poly, [cx, cy, cz], axis, udir, vdir);
+    // Radial direction at the arc's start angle (u rotated by theta0 about axis).
+    let rad0 = udir * theta0.cos() + vdir * theta0.sin();
+
+    let p0 = center + rad0 * r_at(hmin) + axis * hmin;
+    let p1 = center + rad0 * r_at(hmax) + axis * hmax;
     let profile = builder::line(&builder::vertex(p0), &builder::vertex(p1));
-    let shell: Shell = builder::rsweep(&profile, center, axis, Rad(FULL));
+    let shell: Shell = builder::rsweep(&profile, center, axis, Rad(sweep));
 
     let out = Outward::Cone {
         center: [cx, cy, cz],
@@ -329,6 +349,58 @@ fn cone_faces(sat: &SatDocument, cone: &SatConeSurface) -> Option<(Vec<Face>, Ou
         cos,
     };
     Some((shell.face_iter().cloned().collect(), out))
+}
+
+/// Smallest angular arc `(theta_start, sweep)` about the cone axis enclosing the
+/// face's boundary points, robust to the ±π seam. Returns `(0.0, FULL)` when the
+/// points wrap the whole revolution (a closed rim) or the boundary is unusable,
+/// so a real cylinder/cone still sweeps a complete (overlapped) circle.
+fn cone_boundary_arc(
+    poly: &[[f64; 3]],
+    center: [f64; 3],
+    _axis: Vector3,
+    udir: Vector3,
+    vdir: Vector3,
+) -> (f64, f64) {
+    use std::f64::consts::TAU;
+    let mut angles: Vec<f64> = Vec::new();
+    for p in poly {
+        let d = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+        let ru = d[0] * udir.x + d[1] * udir.y + d[2] * udir.z;
+        let rv = d[0] * vdir.x + d[1] * vdir.y + d[2] * vdir.z;
+        if ru.hypot(rv) > 1e-9 {
+            angles.push(rv.atan2(ru));
+        }
+    }
+    if angles.len() < 2 {
+        return (0.0, FULL);
+    }
+    angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // Largest angular gap between consecutive samples (wrapping past the seam);
+    // the enclosing arc is its complement.
+    let mut max_gap = 0.0;
+    let mut gap_at = angles.len() - 1;
+    for i in 0..angles.len() {
+        let a = angles[i];
+        let b = if i + 1 < angles.len() {
+            angles[i + 1]
+        } else {
+            angles[0] + TAU
+        };
+        let g = b - a;
+        if g > max_gap {
+            max_gap = g;
+            gap_at = i;
+        }
+    }
+    let span = TAU - max_gap;
+    // Nearly a full revolution → treat as a closed rim.
+    if span > TAU * 0.98 || span < 1e-6 {
+        return (0.0, FULL);
+    }
+    // Start at the sample just after the largest gap, sweep CCW by `span`.
+    let start = angles[(gap_at + 1) % angles.len()];
+    (start, span)
 }
 
 // ── Sphere face ──────────────────────────────────────────────────────────────
