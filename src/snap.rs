@@ -166,6 +166,34 @@ impl Snapper {
         self.enabled.contains(&t)
     }
 
+    /// Whether temporary tracking points are being acquired and drawn: OTRACK
+    /// on, or the Extension object snap on. Extension tracks a segment's line
+    /// only from an acquired endpoint, and works independently of OTRACK's
+    /// on/off state (#262).
+    pub fn tracking_active(&self) -> bool {
+        self.otrack_enabled || (self.snap_enabled && self.is_on(SnapType::Extension))
+    }
+
+    /// True when `p` coincides with one of the acquired temporary tracking
+    /// points. Extension snaps a segment's line only from such acquired
+    /// endpoints (#262), so extensions aren't live for every object in the
+    /// drawing. The tolerance mirrors `edge_dirs_at`: acquired points are f32
+    /// truncations of the true vertices, so the match window scales with
+    /// coordinate magnitude with a tight floor near the origin.
+    fn is_tracked_endpoint(&self, p: glam::DVec3) -> bool {
+        if self.tracking_points.is_empty() {
+            return false;
+        }
+        let pf = p.as_vec3();
+        let tol = 1e-4_f32.max(4e-7 * pf.x.abs().max(pf.y.abs()));
+        let tol2 = tol * tol;
+        self.tracking_points.iter().any(|t| {
+            let dx = t.x - pf.x;
+            let dy = t.y - pf.y;
+            dx * dx + dy * dy < tol2
+        })
+    }
+
     pub fn toggle_global(&mut self) {
         self.snap_enabled = !self.snap_enabled;
     }
@@ -215,7 +243,11 @@ impl Snapper {
         bounds: iced::Rectangle,
         now: Instant,
     ) {
-        if !self.otrack_enabled {
+        // Temporary tracking points are acquired when OTRACK is on, OR when the
+        // Extension object snap is on: Extension tracks a segment's line only
+        // from an endpoint the user has acquired, independently of OTRACK's
+        // on/off state (#262).
+        if !self.tracking_active() {
             self.last_snap_world = None;
             self.dwell_since = None;
             self.dwell_acquired = false;
@@ -861,8 +893,11 @@ impl Snapper {
         // ── Extension — along the extension of a segment beyond endpoints ──
         // Every segment's line can be extended past either endpoint, so a
         // polyline offers an extension off each of its vertices, not just the
-        // first and last (#259).
-        if self.is_on(SnapType::Extension) {
+        // first and last (#259). Extension is live only from endpoints the user
+        // has acquired as temporary tracking points (#262), so with none
+        // acquired there is nothing to extend — skip the whole scan. That is the
+        // common case and keeps a large drawing responsive.
+        if self.is_on(SnapType::Extension) && !self.tracking_points.is_empty() {
             for wire in wires {
                 let n = wire.points.len();
                 if n < 2 {
@@ -875,29 +910,36 @@ impl Snapper {
                     if !a.x.is_finite() || !b.x.is_finite() || (a - b).length_squared() < 1e-18 {
                         continue;
                     }
+                    // Only extend from an endpoint the user has acquired as a
+                    // temporary tracking point, so the extension isn't live for
+                    // every object in the drawing (#262).
                     // Beyond `a`, away from `b`.
-                    if let Some(ext) = extension_snap(
-                        cursor_world,
-                        a,
-                        a - b,
-                        view_rot,
-                        eye,
-                        bounds,
-                        self.osnap_radius_px,
-                    ) {
-                        try_pt(ext, SnapType::Extension);
+                    if self.is_tracked_endpoint(a) {
+                        if let Some(ext) = extension_snap(
+                            cursor_world,
+                            a,
+                            a - b,
+                            view_rot,
+                            eye,
+                            bounds,
+                            self.osnap_radius_px,
+                        ) {
+                            try_pt(ext, SnapType::Extension);
+                        }
                     }
                     // Beyond `b`, away from `a`.
-                    if let Some(ext) = extension_snap(
-                        cursor_world,
-                        b,
-                        b - a,
-                        view_rot,
-                        eye,
-                        bounds,
-                        self.osnap_radius_px,
-                    ) {
-                        try_pt(ext, SnapType::Extension);
+                    if self.is_tracked_endpoint(b) {
+                        if let Some(ext) = extension_snap(
+                            cursor_world,
+                            b,
+                            b - a,
+                            view_rot,
+                            eye,
+                            bounds,
+                            self.osnap_radius_px,
+                        ) {
+                            try_pt(ext, SnapType::Extension);
+                        }
                     }
                 }
             }
@@ -915,6 +957,11 @@ impl Snapper {
                     let a0 = wp_f64(wire, k);
                     let a1 = wp_f64(wire, k + 1);
                     if !a0.x.is_finite() || !a1.x.is_finite() {
+                        continue;
+                    }
+                    // Only lines with an acquired endpoint contribute an extended
+                    // crossing, matching the per-segment extension gate (#262).
+                    if !self.is_tracked_endpoint(a0) && !self.is_tracked_endpoint(a1) {
                         continue;
                     }
                     let s0 = world_to_screen(a0, view_rot, eye, bounds);
@@ -1460,4 +1507,44 @@ fn t_on_segment(p: Point, a: Point, b: Point) -> f32 {
         return 0.0;
     }
     (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod ext_tests {
+    use super::*;
+
+    #[test]
+    fn tracking_active_covers_otrack_and_extension() {
+        let mut s = Snapper::default();
+        // OTRACK off, Extension not enabled → no acquisition.
+        s.snap_enabled = true;
+        s.otrack_enabled = false;
+        assert!(!s.tracking_active());
+        // Extension on with the snap master on → acquire, independent of OTRACK.
+        s.enabled.insert(SnapType::Extension);
+        assert!(s.tracking_active());
+        // Extension is gated by the snap master.
+        s.snap_enabled = false;
+        assert!(!s.tracking_active());
+        // OTRACK acquires regardless of the object-snap master.
+        s.enabled.remove(&SnapType::Extension);
+        s.otrack_enabled = true;
+        assert!(s.tracking_active());
+    }
+
+    #[test]
+    fn extension_only_tracks_acquired_endpoints() {
+        let mut s = Snapper::default();
+        // Nothing acquired → no endpoint is a live extension source (#262).
+        assert!(!s.is_tracked_endpoint(glam::DVec3::new(10.0, 0.0, 0.0)));
+        // Acquire an endpoint → only that vertex tracks.
+        s.tracking_points.push(Vec3::new(10.0, 0.0, 0.0));
+        assert!(s.is_tracked_endpoint(glam::DVec3::new(10.0, 0.0, 0.0)));
+        assert!(!s.is_tracked_endpoint(glam::DVec3::new(5.0, 0.0, 0.0)));
+        // The match tolerance scales with coordinate magnitude, so an acquired
+        // vertex at UTM scale still matches its f32-truncated tracking point.
+        let big = 1_234_567.0_f64;
+        s.tracking_points.push(Vec3::new(big as f32, 0.0, 0.0));
+        assert!(s.is_tracked_endpoint(glam::DVec3::new(big, 0.0, 0.0)));
+    }
 }
