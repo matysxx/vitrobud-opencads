@@ -49,22 +49,33 @@ pub fn resolve_xrefs(doc: &mut CadDocument, base_dir: &Path) -> (Vec<XrefInfo>, 
         .map(|br| (br.name.clone(), br.xref_path.clone(), br.handle))
         .collect();
 
-    let mut result = Vec::new();
+    // Phase 1 — parse every referenced file in parallel. Each `load_file`
+    // reads and decodes an independent DWG/DXF and touches nothing in the host
+    // `doc`, so the expensive parse of several large discipline files overlaps
+    // instead of running back-to-back. (The merge in phase 2 mutates `doc`, so
+    // it stays serial.) `resolve_path` is pure and `base_dir` is shared &-ref.
+    use crate::par::prelude::*;
+    let parsed: Vec<(String, String, Handle, Option<PathBuf>, Option<CadDocument>)> = xref_entries
+        .into_par_iter()
+        .map(|(block_name, raw_path, br_handle)| {
+            let resolved = resolve_path(&raw_path, base_dir);
+            let xref_doc = resolved.as_ref().and_then(|p| super::load_file(p).ok());
+            (block_name, raw_path, br_handle, resolved, xref_doc)
+        })
+        .collect();
+
+    // Phase 2 — merge each parsed xref into the host document, in the original
+    // block order (par_iter preserves it), so handle allocation is deterministic.
+    let mut result = Vec::with_capacity(parsed.len());
     let mut dropped = 0usize;
-
-    for (block_name, raw_path, br_handle) in xref_entries {
-        let resolved = resolve_path(&raw_path, base_dir);
-
-        let status = match &resolved {
-            None => XrefStatus::NotFound,
-            Some(p) => match super::load_file(p) {
-                Err(_) => XrefStatus::NotFound,
-                Ok(xref_doc) => {
-                    ensure_block_entities(doc, &block_name);
-                    dropped += merge_xref_into_block(doc, &block_name, br_handle, xref_doc);
-                    XrefStatus::Loaded
-                }
-            },
+    for (block_name, raw_path, br_handle, resolved, xref_doc) in parsed {
+        let status = if let Some(xref_doc) = xref_doc {
+            ensure_block_entities(doc, &block_name);
+            dropped += merge_xref_into_block(doc, &block_name, br_handle, xref_doc);
+            XrefStatus::Loaded
+        } else {
+            // Path unresolved or the file failed to parse — both are NotFound.
+            XrefStatus::NotFound
         };
 
         result.push(XrefInfo {
