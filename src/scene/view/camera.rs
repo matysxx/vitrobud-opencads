@@ -294,9 +294,19 @@ impl Camera {
 
         // Revolve the target around the pivot by the same rotation delta so the
         // view orbits the chosen centre instead of the fixed file centre (#229).
+        // Do it in f64: casting `self.target - p` to f32 first quantizes the
+        // offset to the drawing's extent scale (a large model at ANY origin, not
+        // just UTM), so every orbit step nudged the whole view by a visible
+        // fraction of a unit — the "jump" when starting a rotate on big files.
         if let Some(p) = pivot {
             let delta = self.rotation * old_rot.conjugate();
-            self.target = p + (delta * (self.target - p).as_vec3()).as_dvec3();
+            let delta = glam::DQuat::from_xyzw(
+                delta.x as f64,
+                delta.y as f64,
+                delta.z as f64,
+                delta.w as f64,
+            );
+            self.target = p + delta * (self.target - p);
         }
 
         // Sync legacy yaw/pitch for hit-test functions.
