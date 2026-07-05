@@ -621,6 +621,7 @@ impl<'a> From<WrapFlow<'a>> for Element<'a, Message> {
 pub struct DensitySwap<'a> {
     variants: Vec<Element<'a, Message>>,
     chosen: Cell<usize>,
+    height_out: Option<Arc<AtomicU32>>,
 }
 
 impl<'a> DensitySwap<'a> {
@@ -628,7 +629,15 @@ impl<'a> DensitySwap<'a> {
         Self {
             variants,
             chosen: Cell::new(0),
+            height_out: None,
         }
+    }
+
+    /// Report the chosen variant's height (bits of an `f32`) so callers can
+    /// anchor overlays below a possibly-taller (wrapped) tool area.
+    pub fn report_height(mut self, out: Arc<AtomicU32>) -> Self {
+        self.height_out = Some(out);
+        self
     }
 }
 
@@ -643,7 +652,7 @@ impl<'a> Widget<Message, Theme, Renderer> for DensitySwap<'a> {
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Shrink, Length::Fill)
+        Size::new(Length::Shrink, Length::Shrink)
     }
 
     fn layout(
@@ -654,10 +663,10 @@ impl<'a> Widget<Message, Theme, Renderer> for DensitySwap<'a> {
     ) -> layout::Node {
         let max_w = limits.max().width;
         let natural =
-            layout::Limits::new(Size::ZERO, Size::new(f32::INFINITY, limits.max().height));
+            layout::Limits::new(Size::ZERO, Size::new(f32::INFINITY, f32::INFINITY));
 
         // Widest-first: keep the first variant whose natural width fits; else the
-        // last (narrowest).
+        // last (which is expected to wrap to fit any width).
         let mut pick = self.variants.len().saturating_sub(1);
         for (i, v) in self.variants.iter_mut().enumerate() {
             let n = v.as_widget_mut().layout(&mut tree.children[i], renderer, &natural);
@@ -673,6 +682,9 @@ impl<'a> Widget<Message, Theme, Renderer> for DensitySwap<'a> {
                 .as_widget_mut()
                 .layout(&mut tree.children[pick], renderer, limits);
         let sz = node.size();
+        if let Some(out) = &self.height_out {
+            out.store(sz.height.to_bits(), Ordering::Relaxed);
+        }
         layout::Node::with_children(sz, vec![node])
     }
 

@@ -59,6 +59,9 @@ pub struct Ribbon {
     /// Measured tab-bar height (28 on one row, 56 when tabs wrap). Written by
     /// the `WrapBar` widget during layout, read when anchoring dropdowns.
     tab_bar_h: Arc<AtomicU32>,
+    /// Measured tool-area height (TOOL_BAR_H on one row, taller when the panels
+    /// wrap). Written by the `DensitySwap` widget, read when anchoring dropdowns.
+    tool_bar_h: Arc<AtomicU32>,
 }
 
 /// Per-layer display data shown in the ribbon layer dropdown.
@@ -114,12 +117,18 @@ impl Ribbon {
             table_style_names: vec![],
             active_table_style: String::new(),
             tab_bar_h: Arc::new(AtomicU32::new(28.0f32.to_bits())),
+            tool_bar_h: Arc::new(AtomicU32::new(TOOL_BAR_H.to_bits())),
         }
     }
 
     /// Current tab-bar height as last measured by the `WrapBar` widget.
     fn tab_bar_height(&self) -> f32 {
         f32::from_bits(self.tab_bar_h.load(Ordering::Relaxed))
+    }
+
+    /// Current tool-area height as last measured by the `DensitySwap` widget.
+    fn tool_bar_height(&self) -> f32 {
+        f32::from_bits(self.tool_bar_h.load(Ordering::Relaxed))
     }
 
     pub fn set_styles(
@@ -376,40 +385,45 @@ impl Ribbon {
                     active_table_style: self.active_table_style.clone(),
                 };
 
-                // Two density variants: full-size panels, and a compact one where
-                // large buttons shrink to icon-only columns. DensitySwap shows the
-                // widest that fits the current ribbon width.
-                let full = build_tool_row(
-                    false,
-                    &groups,
-                    &self.active_tool,
-                    &self.open_dropdown,
-                    &self.last_cmd,
-                    self.wireframe,
-                    self.ortho_mode,
-                    &self.layer_infos,
-                    &self.active_layer,
-                    self.active_color,
-                    &self.active_linetype,
-                    self.active_lineweight,
-                    &style_ctx,
-                );
-                let compact = build_tool_row(
-                    true,
-                    &groups,
-                    &self.active_tool,
-                    &self.open_dropdown,
-                    &self.last_cmd,
-                    self.wireframe,
-                    self.ortho_mode,
-                    &self.layer_infos,
-                    &self.active_layer,
-                    self.active_color,
-                    &self.active_linetype,
-                    self.active_lineweight,
-                    &style_ctx,
-                );
-                DensitySwap::new(vec![full, compact]).into()
+                // Adaptive tool area, widest→narrowest:
+                //   1. full   — full-size panels on one row
+                //   2. compact — large buttons shrink to icon-only columns
+                //   3. wrapped — compact panels flex-wrap onto extra rows
+                // DensitySwap shows the widest variant that fits the width.
+                let build = |compact: bool| {
+                    build_tool_groups(
+                        compact,
+                        &groups,
+                        &self.active_tool,
+                        &self.open_dropdown,
+                        &self.last_cmd,
+                        self.wireframe,
+                        self.ortho_mode,
+                        &self.layer_infos,
+                        &self.active_layer,
+                        self.active_color,
+                        &self.active_linetype,
+                        self.active_lineweight,
+                        &style_ctx,
+                    )
+                };
+                let full: Element<'_, Message> = build(false)
+                    .into_iter()
+                    .fold(row![].spacing(0).height(Length::Fixed(TOOL_BAR_H)), |r, w| {
+                        r.push(w)
+                    })
+                    .into();
+                let compact: Element<'_, Message> = build(true)
+                    .into_iter()
+                    .fold(row![].spacing(0).height(Length::Fixed(TOOL_BAR_H)), |r, w| {
+                        r.push(w)
+                    })
+                    .into();
+                let wrapped: Element<'_, Message> =
+                    WrapFlow::new(build(true)).spacing_x(0.0).row_h(TOOL_BAR_H).into();
+                DensitySwap::new(vec![full, compact, wrapped])
+                    .report_height(self.tool_bar_h.clone())
+                    .into()
             } else {
                 text("").into()
             };
@@ -424,8 +438,7 @@ impl Ribbon {
                 },
                 ..Default::default()
             })
-            .width(Length::Fill)
-            .height(TOOL_BAR_H);
+            .width(Length::Fill);
 
         column![tab_bar, tool_bar].into()
     }
@@ -606,7 +619,7 @@ impl Ribbon {
             })
             .width(Length::Fixed(190.0));
 
-        let top_offset = self.tab_bar_height() + TOOL_BAR_H;
+        let top_offset = self.tab_bar_height() + self.tool_bar_height();
         let left_offset = compute_dropdown_left(&groups, open_id);
         let positioned = container(panel)
             .align_left(Fill)
@@ -729,7 +742,7 @@ impl Ribbon {
             })
             .width(Length::Fixed(220.0));
 
-        let top_offset = self.tab_bar_height() + TOOL_BAR_H;
+        let top_offset = self.tab_bar_height() + self.tool_bar_height();
         let groups = self.modules.get(self.active)?.ribbon_groups();
         let left_offset = compute_layer_combo_left(&groups);
         let positioned = container(panel)
@@ -853,7 +866,7 @@ impl Ribbon {
             })
             .width(Length::Fixed(LARGE_W * 2.3));
 
-        let top_offset = self.tab_bar_height() + TOOL_BAR_H;
+        let top_offset = self.tab_bar_height() + self.tool_bar_height();
         let left_offset = compute_dropdown_left(&groups, open_id);
         let positioned = container(panel)
             .align_left(Fill)
@@ -891,7 +904,7 @@ impl Ribbon {
             })
             .width(Length::Fixed(200.0));
 
-        let top_offset = self.tab_bar_height() + TOOL_BAR_H;
+        let top_offset = self.tab_bar_height() + self.tool_bar_height();
         let groups = self.modules.get(self.active)?.ribbon_groups();
         let left_offset = compute_prop_combo_left(&groups, PROP_COLOR_ID);
         let positioned = container(panel)
@@ -980,7 +993,7 @@ impl Ribbon {
             })
             .width(Length::Fixed(220.0));
 
-        let top_offset = self.tab_bar_height() + TOOL_BAR_H;
+        let top_offset = self.tab_bar_height() + self.tool_bar_height();
         let groups = self.modules.get(self.active)?.ribbon_groups();
         let left_offset = compute_prop_combo_left(&groups, PROP_LINETYPE_ID);
         let positioned = container(list)
@@ -1056,7 +1069,7 @@ impl Ribbon {
             })
             .width(Length::Fixed(width));
 
-        let top_offset = self.tab_bar_height() + TOOL_BAR_H;
+        let top_offset = self.tab_bar_height() + self.tool_bar_height();
         let groups = self.modules.get(self.active)?.ribbon_groups();
         let left_offset = compute_prop_combo_left(&groups, dd_id);
         let positioned = container(panel)
@@ -1074,11 +1087,13 @@ impl Ribbon {
     }
 }
 
-/// Render one ribbon tool row for the active module's groups. When `compact`,
-/// large tools/dropdowns are drawn as small icon columns so the whole row is
-/// narrower; the combo groups (layer / properties / style) always stay full.
+/// Render the active module's ribbon panels as a list of group elements (with
+/// 1px dividers between them). When `compact`, large tools/dropdowns are drawn
+/// as small icon columns so each panel is narrower; the combo groups (layer /
+/// properties / style) always stay full. Each panel is a fixed `TOOL_BAR_H`
+/// tall so the list can be laid out in a row or flex-wrapped across rows.
 #[allow(clippy::too_many_arguments)]
-fn build_tool_row<'a>(
+fn build_tool_groups<'a>(
     compact: bool,
     groups: &[RibbonGroup],
     active_tool: &Option<String>,
@@ -1092,7 +1107,7 @@ fn build_tool_row<'a>(
     active_linetype: &'a str,
     active_lineweight: LineWeight,
     style_ctx: &StyleContext,
-) -> Element<'a, Message> {
+) -> Vec<Element<'a, Message>> {
     let mut widgets: Vec<Element<Message>> = Vec::new();
     let mut first_group = true;
 
@@ -1101,7 +1116,7 @@ fn build_tool_row<'a>(
             widgets.push(
                 container(text(""))
                     .width(1)
-                    .height(Fill)
+                    .height(Length::Fixed(TOOL_BAR_H))
                     .style(|_: &Theme| container::Style {
                         background: Some(Background::Color(BORDER_DARK)),
                         ..Default::default()
@@ -1169,15 +1184,12 @@ fn build_tool_row<'a>(
             .align_x(iced::Center)
             .spacing(0)
             .padding([3u16, 4])
-            .height(Length::Fill)
+            .height(Length::Fixed(TOOL_BAR_H))
             .into(),
         );
     }
 
     widgets
-        .into_iter()
-        .fold(row![].spacing(0).height(Length::Fill), |r, w| r.push(w))
-        .into()
 }
 
 impl Default for Ribbon {
