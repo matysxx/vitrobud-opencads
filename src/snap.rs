@@ -802,13 +802,24 @@ impl Snapper {
                         );
                     }
                 } else {
-                    // Tessellated curves (Circle, Arc, Ellipse): only arc endpoints.
-                    if let Some(&p) = wire.points.first() {
-                        try_pt(glam::DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64), SnapType::Endpoint);
-                    }
-                    if wire.points.len() > 1 {
-                        if let Some(&p) = wire.points.last() {
+                    // Tessellated curves (Circle, Arc, Ellipse): only an OPEN
+                    // one (an arc) has real endpoints. A full circle / ellipse is
+                    // closed — its tessellation's first/last is a seam point, not
+                    // an endpoint — and is the only tessellated curve that carries
+                    // Quadrant snap hints (arcs never do), so emit no Endpoint for
+                    // those (#275).
+                    let closed = wire
+                        .snap_pts
+                        .iter()
+                        .any(|(_, h)| matches!(h, SnapHint::Quadrant));
+                    if !closed {
+                        if let Some(&p) = wire.points.first() {
                             try_pt(glam::DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64), SnapType::Endpoint);
+                        }
+                        if wire.points.len() > 1 {
+                            if let Some(&p) = wire.points.last() {
+                                try_pt(glam::DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64), SnapType::Endpoint);
+                            }
                         }
                     }
                 }
@@ -1101,7 +1112,10 @@ impl Snapper {
                             } else {
                                 (1.0, 0.0)
                             };
-                            let w = Vec3::new(cv.x + radius * nx, cv.y, cv.y + radius * ny);
+                            // Circle lies in its own plane at cv.z; the point
+                            // facing the cursor is center + radius·(nx, ny) in XY
+                            // (the y-offset must land in Y, not Z — #274).
+                            let w = Vec3::new(cv.x + radius * nx, cv.y + radius * ny, cv.z);
                             (w, edge_d * edge_d)
                         }
                     };
