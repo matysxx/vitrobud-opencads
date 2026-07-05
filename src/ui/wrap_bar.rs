@@ -15,6 +15,7 @@
 //! anchor overlays below the possibly-taller bar.
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::cell::Cell;
 use std::sync::Arc;
 
 use iced::advanced::layout::{self, Layout};
@@ -609,6 +610,183 @@ impl<'a> Widget<Message, Theme, Renderer> for WrapFlow<'a> {
 
 impl<'a> From<WrapFlow<'a>> for Element<'a, Message> {
     fn from(w: WrapFlow<'a>) -> Self {
+        Element::new(w)
+    }
+}
+
+/// Picks the widest variant that fits the available width and shows only that
+/// one — used by the ribbon tool area to swap a full-size panel row for a
+/// compact (icon-only) one when the window is too narrow. Variants must be
+/// ordered widest-first; the last is shown when none fit.
+pub struct DensitySwap<'a> {
+    variants: Vec<Element<'a, Message>>,
+    chosen: Cell<usize>,
+}
+
+impl<'a> DensitySwap<'a> {
+    pub fn new(variants: Vec<Element<'a, Message>>) -> Self {
+        Self {
+            variants,
+            chosen: Cell::new(0),
+        }
+    }
+}
+
+impl<'a> Widget<Message, Theme, Renderer> for DensitySwap<'a> {
+    fn children(&self) -> Vec<widget::Tree> {
+        self.variants.iter().map(widget::Tree::new).collect()
+    }
+
+    fn diff(&self, tree: &mut widget::Tree) {
+        let refs: Vec<_> = self.variants.iter().map(|e| e.as_widget()).collect();
+        tree.diff_children(&refs);
+    }
+
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Shrink, Length::Fill)
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut widget::Tree,
+        renderer: &Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let max_w = limits.max().width;
+        let natural =
+            layout::Limits::new(Size::ZERO, Size::new(f32::INFINITY, limits.max().height));
+
+        // Widest-first: keep the first variant whose natural width fits; else the
+        // last (narrowest).
+        let mut pick = self.variants.len().saturating_sub(1);
+        for (i, v) in self.variants.iter_mut().enumerate() {
+            let n = v.as_widget_mut().layout(&mut tree.children[i], renderer, &natural);
+            if n.size().width <= max_w {
+                pick = i;
+                break;
+            }
+        }
+        self.chosen.set(pick);
+
+        let node =
+            self.variants[pick]
+                .as_widget_mut()
+                .layout(&mut tree.children[pick], renderer, limits);
+        let sz = node.size();
+        layout::Node::with_children(sz, vec![node])
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut widget::Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let i = self.chosen.get();
+        if let Some(child_layout) = layout.children().next() {
+            self.variants[i].as_widget_mut().update(
+                &mut tree.children[i],
+                event,
+                child_layout,
+                cursor,
+                renderer,
+                clipboard,
+                shell,
+                viewport,
+            );
+        }
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &widget::Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        let i = self.chosen.get();
+        layout
+            .children()
+            .next()
+            .map(|child_layout| {
+                self.variants[i].as_widget().mouse_interaction(
+                    &tree.children[i],
+                    child_layout,
+                    cursor,
+                    viewport,
+                    renderer,
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut widget::Tree,
+        layout: Layout<'_>,
+        renderer: &Renderer,
+        operation: &mut dyn widget::Operation,
+    ) {
+        let i = self.chosen.get();
+        if let Some(child_layout) = layout.children().next() {
+            self.variants[i]
+                .as_widget_mut()
+                .operate(&mut tree.children[i], child_layout, renderer, operation);
+        }
+    }
+
+    fn draw(
+        &self,
+        tree: &widget::Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let i = self.chosen.get();
+        if let Some(child_layout) = layout.children().next() {
+            self.variants[i].as_widget().draw(
+                &tree.children[i],
+                renderer,
+                theme,
+                style,
+                child_layout,
+                cursor,
+                viewport,
+            );
+        }
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut widget::Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        let i = self.chosen.get();
+        let child_layout = layout.children().next()?;
+        self.variants[i].as_widget_mut().overlay(
+            &mut tree.children[i],
+            child_layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+impl<'a> From<DensitySwap<'a>> for Element<'a, Message> {
+    fn from(w: DensitySwap<'a>) -> Self {
         Element::new(w)
     }
 }

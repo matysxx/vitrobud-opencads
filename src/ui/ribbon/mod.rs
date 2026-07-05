@@ -16,13 +16,13 @@ use iced::widget::{button, column, container, mouse_area, row, scrollable, svg, 
 use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use crate::app::Message;
-use crate::modules::{CadModule, IconKind, RibbonItem};
+use crate::modules::{CadModule, IconKind, RibbonGroup, RibbonItem};
 use crate::plugin::all_ribbon_modules;
 use crate::ui::properties::{lw_options, LinetypeItem};
 
 mod widgets;
 use widgets::{StyleContext, *};
-use crate::ui::wrap_bar::{WrapBar, WrapFlow};
+use crate::ui::wrap_bar::{DensitySwap, WrapBar, WrapFlow};
 
 // ── Ribbon state ───────────────────────────────────────────────────────────
 
@@ -365,16 +365,6 @@ impl Ribbon {
         let tool_area: Element<'_, Message> =
             if let Some(module) = self.modules.get(effective_active) {
                 let groups = module.ribbon_groups();
-                let wireframe = self.wireframe;
-                let ortho_mode = self.ortho_mode;
-                let active_tool = self.active_tool.clone();
-                let open_dd = self.open_dropdown.clone();
-                let last_cmd = &self.last_cmd;
-                let layer_infos = &self.layer_infos;
-                let active_layer = &self.active_layer;
-                let active_color = self.active_color;
-                let active_linetype = &self.active_linetype;
-                let active_lineweight = self.active_lineweight;
                 let style_ctx = StyleContext {
                     text_style_names: self.text_style_names.clone(),
                     active_text_style: self.active_text_style.clone(),
@@ -386,92 +376,40 @@ impl Ribbon {
                     active_table_style: self.active_table_style.clone(),
                 };
 
-                let mut widgets: Vec<Element<Message>> = Vec::new();
-                let mut first_group = true;
-
-                for group in groups {
-                    if !first_group {
-                        widgets.push(
-                            container(text(""))
-                                .width(1)
-                                .height(Fill)
-                                .style(|_: &Theme| container::Style {
-                                    background: Some(Background::Color(BORDER_DARK)),
-                                    ..Default::default()
-                                })
-                                .into(),
-                        );
-                    }
-                    first_group = false;
-
-                    let mut items_row: Vec<Element<Message>> = Vec::new();
-                    let mut small_buf: Vec<Element<Message>> = Vec::new();
-
-                    for item in &group.tools {
-                        let is_large = matches!(
-                            &item,
-                            RibbonItem::LargeTool(_)
-                                | RibbonItem::LargeDropdown { .. }
-                                | RibbonItem::LayerComboGroup { .. }
-                                | RibbonItem::PropertiesGroup { .. }
-                                | RibbonItem::StyleComboGroup { .. }
-                        );
-
-                        if is_large {
-                            flush_small_col(&mut small_buf, &mut items_row);
-                            items_row.push(render_large(
-                                item,
-                                &active_tool,
-                                &open_dd,
-                                last_cmd,
-                                wireframe,
-                                ortho_mode,
-                                layer_infos,
-                                active_layer,
-                                active_color,
-                                active_linetype,
-                                active_lineweight,
-                                &style_ctx,
-                            ));
-                        } else {
-                            small_buf.push(render_small(
-                                item,
-                                &active_tool,
-                                &open_dd,
-                                last_cmd,
-                                wireframe,
-                                ortho_mode,
-                            ));
-                            if small_buf.len() == 3 {
-                                flush_small_col(&mut small_buf, &mut items_row);
-                            }
-                        }
-                    }
-                    flush_small_col(&mut small_buf, &mut items_row);
-
-                    let tools_el = items_row
-                        .into_iter()
-                        .fold(row![].spacing(2).height(Fill).align_y(iced::Top), |r, e| {
-                            r.push(e)
-                        });
-
-                    widgets.push(
-                        column![
-                            tools_el,
-                            container(text(group.title).size(9).color(GROUP_LABEL)).padding([1, 4]),
-                        ]
-                        .align_x(iced::Center)
-                        .spacing(0)
-                        .padding([3u16, 4])
-                        .height(Length::Fill)
-                        .into(),
-                    );
-                }
-
-                widgets
-                    .into_iter()
-                    .fold(row![].spacing(0).height(Length::Fill), |r, w| r.push(w))
-                    .into()
+                // Two density variants: full-size panels, and a compact one where
+                // large buttons shrink to icon-only columns. DensitySwap shows the
+                // widest that fits the current ribbon width.
+                let full = build_tool_row(
+                    false,
+                    &groups,
+                    &self.active_tool,
+                    &self.open_dropdown,
+                    &self.last_cmd,
+                    self.wireframe,
+                    self.ortho_mode,
+                    &self.layer_infos,
+                    &self.active_layer,
+                    self.active_color,
+                    &self.active_linetype,
+                    self.active_lineweight,
+                    &style_ctx,
+                );
+                let compact = build_tool_row(
+                    true,
+                    &groups,
+                    &self.active_tool,
+                    &self.open_dropdown,
+                    &self.last_cmd,
+                    self.wireframe,
+                    self.ortho_mode,
+                    &self.layer_infos,
+                    &self.active_layer,
+                    self.active_color,
+                    &self.active_linetype,
+                    self.active_lineweight,
+                    &style_ctx,
+                );
+                DensitySwap::new(vec![full, compact]).into()
             } else {
                 text("").into()
             };
@@ -1134,6 +1072,112 @@ impl Ribbon {
 
         Some(dropdown_backdrop(positioned.into()))
     }
+}
+
+/// Render one ribbon tool row for the active module's groups. When `compact`,
+/// large tools/dropdowns are drawn as small icon columns so the whole row is
+/// narrower; the combo groups (layer / properties / style) always stay full.
+#[allow(clippy::too_many_arguments)]
+fn build_tool_row<'a>(
+    compact: bool,
+    groups: &[RibbonGroup],
+    active_tool: &Option<String>,
+    open_dd: &Option<String>,
+    last_cmd: &HashMap<&'static str, &'static str>,
+    wireframe: bool,
+    ortho_mode: bool,
+    layer_infos: &'a [LayerInfo],
+    active_layer: &'a str,
+    active_color: AcadColor,
+    active_linetype: &'a str,
+    active_lineweight: LineWeight,
+    style_ctx: &StyleContext,
+) -> Element<'a, Message> {
+    let mut widgets: Vec<Element<Message>> = Vec::new();
+    let mut first_group = true;
+
+    for group in groups {
+        if !first_group {
+            widgets.push(
+                container(text(""))
+                    .width(1)
+                    .height(Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(Background::Color(BORDER_DARK)),
+                        ..Default::default()
+                    })
+                    .into(),
+            );
+        }
+        first_group = false;
+
+        let mut items_row: Vec<Element<Message>> = Vec::new();
+        let mut small_buf: Vec<Element<Message>> = Vec::new();
+
+        for item in &group.tools {
+            let is_large = match item {
+                RibbonItem::LargeTool(_) | RibbonItem::LargeDropdown { .. } => !compact,
+                RibbonItem::LayerComboGroup { .. }
+                | RibbonItem::PropertiesGroup { .. }
+                | RibbonItem::StyleComboGroup { .. } => true,
+                _ => false,
+            };
+
+            if is_large {
+                flush_small_col(&mut small_buf, &mut items_row);
+                items_row.push(render_large(
+                    item,
+                    active_tool,
+                    open_dd,
+                    last_cmd,
+                    wireframe,
+                    ortho_mode,
+                    layer_infos,
+                    active_layer,
+                    active_color,
+                    active_linetype,
+                    active_lineweight,
+                    style_ctx,
+                ));
+            } else {
+                small_buf.push(render_small(
+                    item,
+                    active_tool,
+                    open_dd,
+                    last_cmd,
+                    wireframe,
+                    ortho_mode,
+                ));
+                if small_buf.len() == 3 {
+                    flush_small_col(&mut small_buf, &mut items_row);
+                }
+            }
+        }
+        flush_small_col(&mut small_buf, &mut items_row);
+
+        let tools_el = items_row
+            .into_iter()
+            .fold(row![].spacing(2).height(Fill).align_y(iced::Top), |r, e| {
+                r.push(e)
+            });
+
+        widgets.push(
+            column![
+                tools_el,
+                container(text(group.title).size(9).color(GROUP_LABEL)).padding([1, 4]),
+            ]
+            .align_x(iced::Center)
+            .spacing(0)
+            .padding([3u16, 4])
+            .height(Length::Fill)
+            .into(),
+        );
+    }
+
+    widgets
+        .into_iter()
+        .fold(row![].spacing(0).height(Length::Fill), |r, w| r.push(w))
+        .into()
 }
 
 impl Default for Ribbon {

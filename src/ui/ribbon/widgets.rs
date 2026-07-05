@@ -344,7 +344,9 @@ pub(super) fn render_small<'a>(
     ortho_mode: bool,
 ) -> Element<'a, Message> {
     match item {
-        RibbonItem::Tool(t) => {
+        // Large variants render small too, so the ribbon can shrink a panel of
+        // large buttons to icon-only columns when the width is tight.
+        RibbonItem::Tool(t) | RibbonItem::LargeTool(t) => {
             let active = is_active_tool(t.id, active_tool, wireframe, ortho_mode);
             let event = t.event.clone();
             let tool_id = t.id.to_string();
@@ -363,6 +365,13 @@ pub(super) fn render_small<'a>(
         }
 
         RibbonItem::Dropdown {
+            id,
+            icon,
+            items,
+            default,
+            ..
+        }
+        | RibbonItem::LargeDropdown {
             id,
             icon,
             items,
