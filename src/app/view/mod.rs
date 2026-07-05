@@ -6,6 +6,7 @@ use super::{Message, OpenCADStudio};
 use crate::scene::pick::grip::{grips_to_screen, grips_to_screen_paper, grips_to_screen_rte};
 use crate::scene::view::viewport_pane::ViewportPane;
 use crate::scene::{VIEWCUBE_PAD, VIEWCUBE_REGION_PX};
+use crate::ui::wrap_bar::WrapFlow;
 use iced::widget::{
     button, column, container, mouse_area, pane_grid, responsive, row, shader, stack, text, Row,
     Space,
@@ -1765,7 +1766,9 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
         a: 1.0,
     };
 
-    let mut bar = Row::new().spacing(0).align_y(iced::Center);
+    // Document tabs live in a flex-wrap flow so they spill onto lower rows when
+    // there are more tabs than the width can hold on one line.
+    let mut items: Vec<Element<'_, Message>> = Vec::new();
 
     for (idx, tab) in tabs.iter().enumerate() {
         let is_active = idx == active_tab;
@@ -1854,19 +1857,21 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
             row![title_btn, close_btn].spacing(0).align_y(iced::Center)
         };
 
-        bar = bar.push(
-            container(row_inner).style(move |_: &Theme| container::Style {
-                border: Border {
-                    color: if is_active {
-                        BORDER_COLOR
-                    } else {
-                        Color::TRANSPARENT
+        items.push(
+            container(row_inner)
+                .style(move |_: &Theme| container::Style {
+                    border: Border {
+                        color: if is_active {
+                            BORDER_COLOR
+                        } else {
+                            Color::TRANSPARENT
+                        },
+                        width: if is_active { 1.0 } else { 0.0 },
+                        radius: 0.0.into(),
                     },
-                    width: if is_active { 1.0 } else { 0.0 },
-                    radius: 0.0.into(),
-                },
-                ..Default::default()
-            }),
+                    ..Default::default()
+                })
+                .into(),
         );
     }
 
@@ -1890,10 +1895,9 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
         ..Default::default()
     });
 
-    bar = bar.push(new_btn);
-    bar = bar.push(iced::widget::Space::new().width(Fill));
+    items.push(new_btn.into());
 
-    container(bar)
+    container(WrapFlow::new(items).spacing_x(0.0).row_h(30.0))
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(BAR_BG)),
             border: Border {
@@ -1903,7 +1907,6 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
             },
             ..Default::default()
         })
-        .height(30)
         .width(Fill)
         .padding([0, 2])
         .into()
