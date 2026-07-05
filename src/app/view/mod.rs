@@ -1262,7 +1262,13 @@ impl OpenCADStudio {
         .height(Fill);
 
         let snap_layer: Element<'_, Message> = if self.snap_popup_open {
-            crate::ui::popup::snap_popup::snap_popup_overlay(&self.snapper, 4.0)
+            crate::ui::popup::snap_popup::snap_popup_overlay(
+                &self.snapper,
+                crate::ui::statusbar::osnap_popup_right_offset(
+                    &self.statusbar_config,
+                    tab.scene.viewport_count(),
+                ),
+            )
         } else {
             iced::widget::Space::new().width(0).height(0).into()
         };

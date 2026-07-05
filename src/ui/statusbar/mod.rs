@@ -404,6 +404,41 @@ fn tip_node<'a>(content: Element<'a, Message>, body: Element<'a, Message>) -> El
 /// A status-bar toggle, drawn as a tinted icon (issue #216: the old size-10
 /// text labels were too small to read). The name lives in the tooltip each
 /// call site already wraps it with.
+/// Approximate distance (px) from the window's right edge to the right edge of
+/// the Osnap button — used to anchor the OSNAP settings popup above the button
+/// instead of at the window corner (#248). The status-bar pills that follow
+/// Osnap are summed by estimated width (icon pills are fixed; labelled pills are
+/// approximate), honouring the user's per-pill visibility. iced gives the view
+/// no real layout metrics, so this positions the popup near the button rather
+/// than pixel-exact.
+pub fn osnap_popup_right_offset(config: &StatusBarConfig, viewport_count: usize) -> f32 {
+    const SP: f32 = 2.0; // right_status row spacing between pills
+    const TOGGLE: f32 = 33.0; // icon toggle pill (17px icon + [4,7] pad + border)
+    // Pills after Osnap, in bar order, with estimated widths.
+    let after = [
+        (StatusPill::Space, 58.0),
+        (StatusPill::Scale, 92.0),
+        (StatusPill::Units, 42.0),
+        (StatusPill::Transparency, TOGGLE),
+        (StatusPill::Isolate, TOGGLE),
+        (StatusPill::QuickProps, TOGGLE),
+        (StatusPill::SelFilter, TOGGLE),
+        (StatusPill::SelCycle, TOGGLE),
+        (StatusPill::Vp, 46.0),
+        (StatusPill::CleanScreen, TOGGLE),
+    ];
+    // Bar right margin + the always-present customization button.
+    let mut w = 6.0 + 30.0 + SP;
+    for (pill, pw) in after {
+        let shown =
+            config.is_visible(pill) && !(matches!(pill, StatusPill::Vp) && viewport_count == 0);
+        if shown {
+            w += pw + SP;
+        }
+    }
+    w
+}
+
 fn toggle_pill(icon: &'static [u8], active: bool, msg: Message) -> Element<'static, Message> {
     let color = if active { OSNAP_ON_TEXT } else { OSNAP_OFF_TEXT };
     button(crate::ui::icons::tinted(icon, 17.0, color))
