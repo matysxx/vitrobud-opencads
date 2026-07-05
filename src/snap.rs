@@ -1093,29 +1093,51 @@ impl Snapper {
                         }
                         TangentGeom::Circle { center, radius } => {
                             let cv = Vec3::from(*center);
+                            let r = *radius;
                             let sc = world_to_screen(cv.as_dvec3(), view_rot, eye, bounds);
                             let rim = world_to_screen(
-                                glam::DVec3::new((cv.x + radius) as f64, cv.y as f64, cv.z as f64),
+                                glam::DVec3::new((cv.x + r) as f64, cv.y as f64, cv.z as f64),
                                 view_rot,
                                 eye,
                                 bounds,
                             );
                             let sr = dist2(sc, rim).sqrt();
                             let dc = dist2(cursor_screen, sc).sqrt();
+                            // Trigger by proximity to the circle EDGE (hovering
+                            // the circle), independent of where the tangent point
+                            // lands.
                             let edge_d = (dc - sr).abs();
-                            // Snap point: point on circle edge facing cursor
-                            let dx = cursor_screen.x - sc.x;
-                            let dy = cursor_screen.y - sc.y;
-                            let dl = (dx * dx + dy * dy).sqrt();
-                            let (nx, ny) = if dl > 1e-6 {
-                                (dx / dl, -dy / dl)
-                            } else {
-                                (1.0, 0.0)
-                            };
-                            // Circle lies in its own plane at cv.z; the point
-                            // facing the cursor is center + radius·(nx, ny) in XY
-                            // (the y-offset must land in Y, not Z — #274).
-                            let w = Vec3::new(cv.x + radius * nx, cv.y + radius * ny, cv.z);
+                            // A TRUE tangent: from the point the command draws
+                            // from (P), the tangent point T on the circle has the
+                            // radius CT perpendicular to PT, so T lies at the
+                            // half-angle acos(r/|CP|) either side of the C→P
+                            // direction. Two solutions — take the one nearer the
+                            // cursor. Without P (a deferred tangent picked first)
+                            // or with P inside the circle, fall back to the circle
+                            // point facing the cursor. Previously this always used
+                            // the facing point, so Tangent behaved like Nearest
+                            // (#274).
+                            let w = self
+                                .from_point
+                                .and_then(|p| circle_tangent_points(p, cv, r))
+                                .map(|(t0, t1)| {
+                                    // Two tangents — take the one nearer the cursor.
+                                    let s0 = world_to_screen(t0.as_dvec3(), view_rot, eye, bounds);
+                                    let s1 = world_to_screen(t1.as_dvec3(), view_rot, eye, bounds);
+                                    if dist2(s0, cursor_screen) <= dist2(s1, cursor_screen) {
+                                        t0
+                                    } else {
+                                        t1
+                                    }
+                                })
+                                .unwrap_or_else(|| {
+                                    let dx = cursor_screen.x - sc.x;
+                                    let dy = cursor_screen.y - sc.y;
+                                    let dl = (dx * dx + dy * dy).sqrt();
+                                    let (nx, ny) =
+                                        if dl > 1e-6 { (dx / dl, -dy / dl) } else { (1.0, 0.0) };
+                                    Vec3::new(cv.x + r * nx, cv.y + r * ny, cv.z)
+                                });
                             (w, edge_d * edge_d)
                         }
                     };
@@ -1394,6 +1416,26 @@ fn seg_intersect_2d(a0: Point, a1: Point, b0: Point, b1: Point) -> Option<(f32, 
     Some((t, s))
 }
 
+/// The two points on a circle (`center`, `radius`, in its XY plane) where a
+/// line drawn from `p` touches tangentially, or `None` when `p` is inside or on
+/// the circle (no external tangent). Each tangent point's radius is
+/// perpendicular to the line from `p`, so it sits at the half-angle
+/// `acos(radius / |center→p|)` on either side of the center→p direction. This
+/// is the real Tangent osnap; snapping to the circle point merely facing the
+/// cursor made Tangent behave like Nearest (#274).
+fn circle_tangent_points(p: Vec3, center: Vec3, radius: f32) -> Option<(Vec3, Vec3)> {
+    let vx = p.x - center.x;
+    let vy = p.y - center.y;
+    let d = (vx * vx + vy * vy).sqrt();
+    if d <= radius + 1e-6 {
+        return None;
+    }
+    let base = vy.atan2(vx);
+    let off = (radius / d).acos();
+    let at = |a: f32| Vec3::new(center.x + radius * a.cos(), center.y + radius * a.sin(), center.z);
+    Some((at(base + off), at(base - off)))
+}
+
 /// Snap to the extension of a ray beyond `origin` in `dir` direction.
 /// Returns `None` if the cursor is not near the extension line.
 fn extension_snap(
@@ -1617,5 +1659,28 @@ mod ext_tests {
         // OTRACK (endpoints_only = false) still acquires any snap point.
         s.acquire_tracking_point(Vec3::new(5.0, 0.0, 0.0), &wires, false);
         assert_eq!(s.tracking_points.len(), 2);
+    }
+
+    #[test]
+    fn tangent_points_are_perpendicular_to_the_radius() {
+        let c = Vec3::new(0.0, 0.0, 0.0);
+        let p = Vec3::new(10.0, 0.0, 0.0);
+        let (t0, t1) = circle_tangent_points(p, c, 5.0).expect("external tangents exist");
+        for t in [t0, t1] {
+            // On the circle...
+            assert!(((t - c).length() - 5.0).abs() < 1e-3, "{t:?} off circle");
+            // ...and the radius C→T is perpendicular to the line P→T — the
+            // defining property of a tangent (not just the nearest point).
+            let ct = t - c;
+            let pt = t - p;
+            assert!(
+                (ct.x * pt.x + ct.y * pt.y).abs() < 1e-3,
+                "radius not perpendicular to the line at {t:?}"
+            );
+        }
+        // Known geometry: acos(5/10) = 60°, so the tangents are at (2.5, ±4.330).
+        assert!((t0.x - 2.5).abs() < 1e-2 && (t0.y.abs() - 4.330).abs() < 1e-2);
+        // A point inside the circle has no external tangent.
+        assert!(circle_tangent_points(Vec3::new(1.0, 0.0, 0.0), c, 5.0).is_none());
     }
 }
