@@ -2117,12 +2117,18 @@ impl Scene {
             }
         }
         let layout_block = self.current_layout_block_handle();
-        // Model space: paper_sheet_wires_arc IS the full entity wire set — share the Arc,
-        // no Vec clone needed.
+        // Model space: reuse the resident, camera-independent static wire set the
+        // render already holds (keyed on geometry_epoch only). This is the FULL
+        // entity set — pick / snap want every entity, not a view-culled subset —
+        // and it does NOT re-tessellate on a camera move. The old path went
+        // through the camera_generation-keyed, view-culled paper_sheet set, so
+        // every pan/rotate cold-missed it and paid a full O(visible) re-tess
+        // (~300 ms on large drawings) the first time hit-testing ran after the
+        // move — the "jump" at the start of each gesture. The tile args are
+        // unused by `model_tile_wires_arc`.
         if self.current_layout == "Model" {
-            let arc = self.paper_sheet_wires_arc();
-            *self.wire_cache.borrow_mut() = Some((key, Arc::clone(&arc)));
-            return arc;
+            let cam = self.camera.borrow().clone();
+            return self.model_tile_wires_arc(0, &cam, 1.0, 1.0);
         }
         // Paper space: extend sheet wires with projected viewport content.
         let mut wires = (*self.paper_sheet_wires_arc()).clone();
