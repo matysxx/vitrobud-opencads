@@ -42,6 +42,7 @@ pub fn snap_popup_overlay<'a>(snapper: &'a Snapper, right_offset: f32) -> Elemen
 
     let panel_content = column![header, divider, column(rows)];
 
+    const PANEL_W: f32 = 210.0;
     let panel = container(panel_content)
         .style(|_: &Theme| container::Style {
             background: Some(Background::Color(PANEL_BG)),
@@ -52,15 +53,20 @@ pub fn snap_popup_overlay<'a>(snapper: &'a Snapper, right_offset: f32) -> Elemen
             },
             ..Default::default()
         })
-        .width(Length::Fixed(210.0));
+        .width(Length::Fixed(PANEL_W));
 
-    // ── Position: bottom-right, above the status bar (26 px) ─────────────
+    // ── Position above the status bar, anchored by its bottom-LEFT corner at
+    // `right_offset` from the window's right edge (the Osnap button), so it
+    // opens up and to the right of the button. `align_right` positions by the
+    // panel's right edge, so pad by the anchor minus the panel width; clamp so
+    // a narrow bar can't push it off-screen. (#248)
+    let right = (right_offset - PANEL_W).max(4.0);
     let positioned = container(panel)
         .align_right(Fill)
         .align_bottom(Fill)
         .padding(Padding {
             bottom: 27.0,
-            right: right_offset,
+            right,
             top: 0.0,
             left: 0.0,
         })
