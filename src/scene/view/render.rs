@@ -39,6 +39,8 @@ pub struct ViewportData {
     /// 3DFACE entity wires — separated so they are uploaded to the dedicated
     /// face3d pipeline (fill + batched edges) instead of N individual WireGpu.
     pub(in crate::scene) face3d_wires: Arc<Vec<WireModel>>,
+    /// SDF text-quad vertices (Phase 2b). Empty unless `OCS_TEXT_SDF` is set.
+    pub(in crate::scene) text_verts: Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>,
     /// Per-entity normalized draw-order depth (handle.value() → (0,1)), used
     /// by the wire / face3d pipelines as a clip-z bias. WireModels carry no
     /// depth field (84 construction sites); the bias is looked up by handle
@@ -298,6 +300,7 @@ impl shader::Primitive for Primitive {
                 }
                 if geo_changed {
                     inner.upload_images(device, queue, &vp.images[..]);
+                    inner.upload_text(device, queue, &vp.text_verts[..]);
                 }
                 inner.cached_epoch = cur_key;
             }
@@ -772,6 +775,59 @@ pub(crate) fn adapt_to_bg(color: [f32; 4], bg: [f32; 4]) -> [f32; 4] {
 // ── Primitive builder helpers (called by ViewportPane's shader::Program impl) ──
 
 impl Scene {
+    /// SDF text-quad vertices for the current document's TEXT entities. Behind
+    /// the `OCS_TEXT_SDF` env flag (Phase 2b bring-up) so the default render
+    /// path is untouched; empty otherwise. Glyphs are baked into the shared
+    /// atlas as a side effect. Both the stroke path and this share
+    /// `text_run_placement`, so quads land exactly where the strokes do.
+    #[allow(dead_code)] // consumed by the text render pass in the GPU integration step
+    pub(in crate::scene) fn sdf_text_vertices(
+        &self,
+    ) -> Vec<crate::scene::pipeline::text_gpu::TextVertex> {
+        self.sdf_text_vertices_enabled(std::env::var_os("OCS_TEXT_SDF").is_some())
+    }
+
+    #[allow(dead_code)]
+    fn sdf_text_vertices_enabled(
+        &self,
+        enabled: bool,
+    ) -> Vec<crate::scene::pipeline::text_gpu::TextVertex> {
+        use crate::scene::pipeline::text_gpu;
+        use crate::scene::text::{glyph_quads, sdf_atlas};
+        if !enabled {
+            return Vec::new();
+        }
+        let Ok(mut atlas) = sdf_atlas::text_atlas().lock() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for e in self.document.entities() {
+            if let acadrust::EntityType::Text(t) = e {
+                let p = crate::entities::text::text_run_placement(t, &self.document);
+                let color = self.render_style(e).0;
+                let quads = glyph_quads::layout_glyph_quads(
+                    &mut atlas,
+                    p.height,
+                    p.rotation,
+                    p.width_factor,
+                    p.oblique_angle,
+                    1.0,
+                    &p.font,
+                    &p.value,
+                );
+                text_gpu::push_glyph_vertices(
+                    &mut out,
+                    &quads,
+                    [p.origin[0], p.origin[1], p.elevation],
+                    1.0,
+                    color,
+                    0.0,
+                );
+            }
+        }
+        out
+    }
+
     /// Build the unified multi-viewport `Primitive` for the current layout.
     /// Model layout → one full-window viewport (more once tiled); paper
     /// layout → one viewport per floating content viewport. Each entry is
@@ -1053,10 +1109,18 @@ impl Scene {
             self.meshes_arc()
         };
 
+        // SDF text quads (Phase 2b, behind OCS_TEXT_SDF). Model/content only —
+        // the paper sheet must not draw model-space text onto the sheet.
+        let text_verts = if inst.paper_sheet {
+            Arc::new(Vec::new())
+        } else {
+            Arc::new(self.sdf_text_vertices())
+        };
         Some(ViewportData {
             wires: all_wires,
             preview_wires,
             face3d_wires,
+            text_verts,
             draw_depths: self.draw_depth_map(),
             hatches,
             wipeout_hatches,

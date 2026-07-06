@@ -47,7 +47,55 @@ pub(crate) fn sync_text_alignment_point(t: &mut Text) {
     }
 }
 
+/// Resolved placement of a TEXT run: the baseline-anchored run origin (WCS xy)
+/// plus every parameter needed to lay the glyphs out. Shared by `to_truck` (the
+/// stroke path) and the SDF-quad text collector so both place text identically.
+pub struct TextPlacement {
+    /// Run-local origin (glyph space `[0,0]` maps here), WCS xy, kept f64.
+    pub origin: [f64; 2],
+    /// Entity elevation (WCS z).
+    pub elevation: f64,
+    pub height: f32,
+    pub rotation: f32,
+    pub width_factor: f32,
+    pub oblique_angle: f32,
+    pub font: String,
+    /// Raw entity value (as passed to the tessellator).
+    pub value: String,
+    /// Full WCS insertion point, for the Insertion snap.
+    pub wcs_insertion: [f64; 3],
+}
+
 fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
+    let p = text_run_placement(t, document);
+    let snap_pt = glam::DVec3::new(p.wcs_insertion[0], p.wcs_insertion[1], p.wcs_insertion[2]);
+    // Strokes are in glyph-local space (origin = [0,0]).
+    let (strokes, fill_tris) = lff::tessellate_text_ex(
+        [0.0, 0.0],
+        p.height,
+        p.rotation,
+        p.width_factor,
+        p.oblique_angle,
+        &p.font,
+        &p.value,
+    );
+    TruckEntity {
+        object: TruckObject::Text(vec![TextStroke {
+            strokes,
+            origin: p.origin,
+            color: None,
+            fill_tris,
+        }]),
+        snap_pts: vec![(snap_pt, SnapHint::Insertion)],
+        tangent_geoms: vec![],
+        key_vertices: vec![],
+        fill_tris: vec![],
+    }
+}
+
+/// Compute a TEXT entity's run placement (origin + layout params). Extracted
+/// from `to_truck` verbatim so the stroke and SDF-quad paths agree exactly.
+pub fn text_run_placement(t: &Text, document: &acadrust::CadDocument) -> TextPlacement {
     let normal = (t.normal.x, t.normal.y, t.normal.z);
     let (wsx, wsy, wsz) = crate::scene::view::transform::ocs_point_to_wcs(
         (
@@ -57,7 +105,6 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
         ),
         normal,
     );
-    let snap_pt = glam::DVec3::new(wsx, wsy, wsz);
     let resolved_style = resolve_text_style(&t.style, document);
     let font_name = resolved_style.font_name;
     // AutoCAD text geometry rule: the entity stores the FINAL width factor /
@@ -142,27 +189,16 @@ fn to_truck(t: &Text, document: &acadrust::CadDocument) -> TruckEntity {
         anchor_f64[0] - (anchor_local_x as f64 * cos_r - anchor_local_y as f64 * sin_r),
         anchor_f64[1] - (anchor_local_x as f64 * sin_r + anchor_local_y as f64 * cos_r),
     ];
-    // Strokes are in glyph-local space (origin = [0,0]).
-    let (strokes, fill_tris) = lff::tessellate_text_ex(
-        [0.0, 0.0],
-        t.height as f32,
+    TextPlacement {
+        origin,
+        elevation: wsz,
+        height: t.height as f32,
         rotation,
         width_factor,
         oblique_angle,
-        &font_name,
-        &t.value,
-    );
-    TruckEntity {
-        object: TruckObject::Text(vec![TextStroke {
-            strokes,
-            origin,
-            color: None,
-            fill_tris,
-        }]),
-        snap_pts: vec![(snap_pt, SnapHint::Insertion)],
-        tangent_geoms: vec![],
-        key_vertices: vec![],
-        fill_tris: vec![],
+        font: font_name,
+        value: t.value.clone(),
+        wcs_insertion: [wsx, wsy, wsz],
     }
 }
 

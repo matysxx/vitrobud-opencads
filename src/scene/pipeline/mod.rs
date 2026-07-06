@@ -48,6 +48,9 @@ pub struct Pipeline {
     /// vertex-stage storage buffers.
     hatch_batched_pipeline: Option<wgpu::RenderPipeline>,
     image_pipeline: wgpu::RenderPipeline,
+    /// SDF text-quad pipeline (Phase 2b): draws per-glyph quads sampling the
+    /// shared glyph atlas. Fed only when `OCS_TEXT_SDF` is set (else no verts).
+    text_pipeline: wgpu::RenderPipeline,
     mesh_pipeline: wgpu::RenderPipeline,
     /// Depth-write-disabled variant of `mesh_pipeline` for non-opaque solids.
     mesh_transparent_pipeline: wgpu::RenderPipeline,
@@ -74,6 +77,14 @@ pub struct Pipeline {
     /// for instances / boundary / families / dashes). `None` on WebGL2.
     hatch_batched_bgl1: Option<wgpu::BindGroupLayout>,
     image_bgl1: wgpu::BindGroupLayout,
+    /// Group-1 layout for the text pipeline (atlas texture + sampler).
+    text_atlas_bgl: wgpu::BindGroupLayout,
+    /// GPU glyph atlas (texture + sampler + bind group). Rebuilt when the shared
+    /// CPU atlas grows (new glyphs baked). `None` until the first text upload.
+    text_atlas_gpu: Option<text_gpu::TextAtlasGpu>,
+    /// All glyph-quad vertices for the frame, one buffer, `None` when empty.
+    text_vbuf: Option<wgpu::Buffer>,
+    text_vcount: u32,
     depth_texture_size: Size<u32>,
     depth_view: wgpu::TextureView,
     /// 4× MSAA color buffer for the main drawing passes.
@@ -986,6 +997,11 @@ impl Pipeline {
             cache: None,
         });
 
+        // ── Text (SDF glyph quads) ─────────────────────────────────────────
+        let text_atlas_bgl = text_gpu::TextAtlasGpu::bind_group_layout(device);
+        let text_pipeline =
+            text_gpu::create_pipeline(device, &frame_bgl, &text_atlas_bgl, format, MSAA_SAMPLES);
+
         let viewcube = ViewCubePipeline::new(device, queue, format);
 
         let init_size = Size::new(1, 1);
@@ -1125,6 +1141,11 @@ impl Pipeline {
             hatch_pipeline,
             hatch_batched_pipeline,
             image_pipeline,
+            text_pipeline,
+            text_atlas_bgl,
+            text_atlas_gpu: None,
+            text_vbuf: None,
+            text_vcount: 0,
             mesh_pipeline,
             mesh_transparent_pipeline,
             mesh_highlight_pipeline,
@@ -1526,6 +1547,30 @@ impl Pipeline {
             .iter()
             .filter_map(|m| ImageGpu::new(device, queue, m, &self.image_bgl1))
             .collect();
+    }
+
+    /// Upload the frame's SDF text-quad vertices, and (re)build the GPU glyph
+    /// atlas from the shared CPU atlas when it grew (new glyphs baked by the
+    /// text collector). `verts` empty (flag off) leaves nothing to draw.
+    pub fn upload_text(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        verts: &[text_gpu::TextVertex],
+    ) {
+        if let Ok(mut atlas) = crate::scene::text::sdf_atlas::text_atlas().lock() {
+            if self.text_atlas_gpu.is_none() || atlas.is_dirty() {
+                self.text_atlas_gpu = Some(text_gpu::TextAtlasGpu::upload(
+                    device,
+                    queue,
+                    &atlas,
+                    &self.text_atlas_bgl,
+                ));
+                atlas.clear_dirty();
+            }
+        }
+        self.text_vbuf = text_gpu::upload_vertices(device, verts);
+        self.text_vcount = verts.len() as u32;
     }
 
     pub fn upload_uniforms(&self, queue: &wgpu::Queue, uniforms: &Uniforms) {
@@ -2017,6 +2062,40 @@ impl Pipeline {
                         pass.draw(0..6, 0..pw.instance_count);
                     }
                 }
+            }
+        }
+
+        // ── Pass 5c: SDF text quads (drawn over wires) ────────────────────
+        if let (Some(vbuf), Some(atlas)) = (&self.text_vbuf, &self.text_atlas_gpu) {
+            if self.text_vcount > 0 {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("text.render_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: msaa,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
+                pass.set_pipeline(&self.text_pipeline);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                pass.set_bind_group(1, &atlas.bind_group, &[]);
+                pass.set_vertex_buffer(0, vbuf.slice(..));
+                pass.draw(0..self.text_vcount, 0..1);
             }
         }
 

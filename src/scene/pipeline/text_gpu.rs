@@ -22,7 +22,7 @@ use crate::scene::text::sdf_atlas::GlyphAtlas;
 // ── Vertex ────────────────────────────────────────────────────────────────
 
 #[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TextVertex {
     pub pos: [f32; 3],
     pub pos_low: [f32; 3],

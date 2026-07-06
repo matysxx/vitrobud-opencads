@@ -26,9 +26,18 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::scene::text::font_face::Face;
 use crate::scene::text::lff::Glyph;
+
+/// Process-wide glyph atlas, shared by the text collector (which bakes glyphs
+/// while building draw data) and the GPU upload (which reads the texels).
+/// Mirrors the existing global font-glyph caches (see `ttf_glyph`).
+pub fn text_atlas() -> &'static Mutex<GlyphAtlas> {
+    static ATLAS: OnceLock<Mutex<GlyphAtlas>> = OnceLock::new();
+    ATLAS.get_or_init(|| Mutex::new(GlyphAtlas::new(1024, 1024)))
+}
 
 // ── Bake configuration ──────────────────────────────────────────────────────
 
