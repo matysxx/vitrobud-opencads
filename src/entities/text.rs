@@ -71,7 +71,7 @@ pub struct TextPlacement {
 /// inline grammar: specials arrive resolved to Unicode, and `%%u`/`%%o`
 /// underline/overline become `\L…\l` / `\O…\o` decoration markers. This keeps
 /// TEXT parsing in acadrust rather than OCS's own tokenizer.
-fn acad_text_encode(value: &str) -> String {
+pub(crate) fn acad_text_encode(value: &str) -> String {
     use acadrust::entities::mtext_format::parse_plain_text;
     let doc = parse_plain_text(value);
     let mut out = String::new();

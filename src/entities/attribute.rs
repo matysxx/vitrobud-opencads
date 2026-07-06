@@ -278,6 +278,9 @@ fn build_attr_truck(input: AttrTextInputs<'_>, document: &acadrust::CadDocument)
             anchor_f64[0] - (anchor_local_x as f64 * cos_r - local_y_for_line as f64 * sin_r),
             anchor_f64[1] - (anchor_local_x as f64 * sin_r + local_y_for_line as f64 * cos_r),
         ];
+        // Parse `%%` codes through acadrust (same as TEXT), re-encoded for the
+        // stroke tessellator, so attribute text shares the one parser.
+        let encoded = crate::entities::text::acad_text_encode(line);
         let (strokes, fill_tris) = lff::tessellate_text_ex(
             [0.0, 0.0],
             input.height as f32,
@@ -285,7 +288,7 @@ fn build_attr_truck(input: AttrTextInputs<'_>, document: &acadrust::CadDocument)
             width_factor,
             oblique_angle,
             &resolved.font_name,
-            line,
+            &encoded,
         );
         strokes_all.push(TextStroke {
             strokes,
