@@ -2012,6 +2012,35 @@ impl OpenCADStudio {
                 if let Some(t) = &translate {
                     crate::scene::view::dispatch::apply_transform(&mut entity, t);
                 }
+                // A dimension draws from its baked `*D` block (baked in WCS), so
+                // give the paste its own transformed copy of that block and
+                // re-point it — otherwise the pasted dimension renders at the
+                // source location instead of the paste point. The block was
+                // snapshotted into the clipboard at copy time, so this works
+                // cross-drawing too. Mirrors the in-drawing copy. (#290, #161)
+                if let acadrust::EntityType::Dimension(d) = &entity {
+                    let bn = d.base().block_name.clone();
+                    if !bn.trim().is_empty() {
+                        let subs = self
+                            .clipboard_deps
+                            .dim_blocks
+                            .iter()
+                            .find(|b| b.name.eq_ignore_ascii_case(&bn))
+                            .map(|def| def.entities.clone());
+                        if let Some(subs) = subs {
+                            let bt = translate.clone().unwrap_or(
+                                crate::command::EntityTransform::Translate(glam::DVec3::ZERO),
+                            );
+                            if let Some(new_bn) =
+                                self.tabs[i].scene.define_transformed_block(&subs, &bt)
+                            {
+                                if let acadrust::EntityType::Dimension(d) = &mut entity {
+                                    d.base_mut().block_name = new_bn;
+                                }
+                            }
+                        }
+                    }
+                }
                 self.tabs[i].scene.add_entity_clone(entity)
             })
             .collect();

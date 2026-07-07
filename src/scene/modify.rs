@@ -223,7 +223,26 @@ impl Scene {
             .iter()
             .find(|br| br.name.eq_ignore_ascii_case(src_name))
             .map(|br| br.entity_handles.clone())?;
-        if sub_handles.is_empty() {
+        let subs: Vec<EntityType> = sub_handles
+            .iter()
+            .filter_map(|&sh| self.document.get_entity(sh).cloned())
+            .collect();
+        self.define_transformed_block(&subs, t)
+    }
+
+    /// Build a fresh anonymous `*D<n>` block from `subs` — a source block's
+    /// sub-entities in its own (WCS-baked) coordinates — transforming each by
+    /// `t`, and return the new block's name. Shared by the in-drawing copy
+    /// (source block still lives in this document, via `clone_transformed_block`)
+    /// and clipboard paste (source block snapshotted into the clipboard, so a
+    /// pasted dimension gets its own transformed block cross-drawing too — see
+    /// `finalize_paste`, #290). Returns None when `subs` is empty.
+    pub(crate) fn define_transformed_block(
+        &mut self,
+        subs: &[EntityType],
+        t: &EntityTransform,
+    ) -> Option<String> {
+        if subs.is_empty() {
             return None;
         }
         // Smallest free `*D<n>` anonymous name.
@@ -252,14 +271,13 @@ impl Scene {
         block_end.common.handle = end_handle;
         block_end.common.owner_handle = br_handle;
         self.document.add_entity(EntityType::BlockEnd(block_end)).ok()?;
-        for sh in sub_handles {
-            if let Some(mut sub) = self.document.get_entity(sh).cloned() {
-                view::dispatch::apply_transform(&mut sub, t);
-                Self::reset_clone_subhandles(&mut self.document, &mut sub);
-                sub.common_mut().handle = Handle::NULL;
-                sub.common_mut().owner_handle = br_handle;
-                let _ = self.document.add_entity(sub);
-            }
+        for sub in subs {
+            let mut sub = sub.clone();
+            view::dispatch::apply_transform(&mut sub, t);
+            Self::reset_clone_subhandles(&mut self.document, &mut sub);
+            sub.common_mut().handle = Handle::NULL;
+            sub.common_mut().owner_handle = br_handle;
+            let _ = self.document.add_entity(sub);
         }
         Some(new_name)
     }

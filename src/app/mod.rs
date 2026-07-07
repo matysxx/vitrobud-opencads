@@ -779,6 +779,12 @@ pub struct ClipboardDeps {
     /// reference doesn't render empty in a drawing that lacks the
     /// definition. (#135)
     pub blocks: Vec<BlockDef>,
+    /// Baked `*D` blocks referenced by copied dimensions, snapshotted from the
+    /// source drawing. On paste each pasted dimension gets its own transformed
+    /// copy of its block (its geometry is baked in WCS, so without this the
+    /// paste renders at the source location — or, cross-drawing, not at all).
+    /// See #290 (mirrors the in-drawing copy's #161 fix).
+    pub dim_blocks: Vec<BlockDef>,
     /// Extension-dictionary object subtrees hanging off the copied entities
     /// (XCLIP spatial filters, attached XRecords, …). Each entity's whole
     /// `xdictionary` graph is snapshotted so a cross-drawing paste recreates it
@@ -878,6 +884,27 @@ impl ClipboardDeps {
             }
         }
 
+        // Baked `*D` blocks for copied dimensions (top-level and inside captured
+        // blocks), so a pasted dimension can be given its own transformed block
+        // instead of aliasing the source's — whose geometry is baked in WCS at
+        // the source location. (#290)
+        let mut dim_block_names: BTreeSet<String> = BTreeSet::new();
+        for e in entities
+            .iter()
+            .chain(blocks.iter().flat_map(|d| d.entities.iter()))
+        {
+            if let EntityType::Dimension(d) = e {
+                let bn = d.base().block_name.clone();
+                if !bn.trim().is_empty() {
+                    dim_block_names.insert(bn);
+                }
+            }
+        }
+        let dim_blocks: Vec<BlockDef> = dim_block_names
+            .iter()
+            .filter_map(|n| Self::snapshot_block(doc, n))
+            .collect();
+
         ClipboardDeps {
             layers: layers
                 .iter()
@@ -896,6 +923,7 @@ impl ClipboardDeps {
                 .filter_map(|n| doc.dim_styles.get(n).cloned())
                 .collect(),
             blocks,
+            dim_blocks,
             ext_objects,
         }
     }
@@ -958,41 +986,53 @@ impl ClipboardDeps {
         }
         let mut defs = Vec::new();
         while let Some(name) = queue.pop() {
-            let Some(br) = doc.block_records.get(&name) else {
+            let Some(def) = Self::snapshot_block(doc, &name) else {
                 continue;
             };
-            if name.starts_with("*Model_Space")
-                || name.starts_with("*Paper_Space")
-                || br.flags.is_xref
-            {
-                continue;
-            }
-            let base_point = match doc.get_entity(br.block_entity_handle) {
-                Some(EntityType::Block(b)) => b.base_point,
-                _ => acadrust::types::Vector3::ZERO,
-            };
-            let mut owned = Vec::new();
-            for &eh in &br.entity_handles {
-                let Some(e) = doc.get_entity(eh) else {
-                    continue;
-                };
-                if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
-                    continue;
-                }
+            // Follow nested INSERTs so their definitions are captured too.
+            for e in &def.entities {
                 if let EntityType::Insert(ins) = e {
                     if seen.insert(ins.block_name.clone()) {
                         queue.push(ins.block_name.clone());
                     }
                 }
-                owned.push(e.clone());
             }
-            defs.push(BlockDef {
-                name,
-                base_point,
-                entities: owned,
-            });
+            defs.push(def);
         }
         defs
+    }
+
+    /// Snapshot one block definition as a portable `BlockDef`: its base point
+    /// and owned entities, minus the structural Block/BlockEnd markers. Returns
+    /// None for model/paper space and xref blocks (not portable definitions).
+    fn snapshot_block(doc: &acadrust::CadDocument, name: &str) -> Option<BlockDef> {
+        use acadrust::EntityType;
+        let br = doc.block_records.get(name)?;
+        if name.starts_with("*Model_Space")
+            || name.starts_with("*Paper_Space")
+            || br.flags.is_xref
+        {
+            return None;
+        }
+        let base_point = match doc.get_entity(br.block_entity_handle) {
+            Some(EntityType::Block(b)) => b.base_point,
+            _ => acadrust::types::Vector3::ZERO,
+        };
+        let mut owned = Vec::new();
+        for &eh in &br.entity_handles {
+            let Some(e) = doc.get_entity(eh) else {
+                continue;
+            };
+            if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
+                continue;
+            }
+            owned.push(e.clone());
+        }
+        Some(BlockDef {
+            name: name.to_string(),
+            base_point,
+            entities: owned,
+        })
     }
 
     pub fn is_empty(&self) -> bool {
