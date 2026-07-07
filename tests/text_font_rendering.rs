@@ -3,12 +3,19 @@ use acadrust::tables::{BlockRecord, TextStyle};
 use acadrust::types::Vector3;
 use acadrust::{CadDocument, EntityType, Handle};
 use OpenCADStudio::scene::cache::block_cache::{expand_insert, BlockCache};
+use OpenCADStudio::scene::view::render::InheritStyle;
 use OpenCADStudio::scene::WireModel;
 
 fn drawable_point_count(wires: &[WireModel]) -> usize {
+    // SDF text carries glyph quads on `text_verts` (no stroke points/fills), so
+    // count those too — otherwise "did the text render?" reads as zero.
     wires
         .iter()
-        .map(|w| w.points.iter().filter(|p| p[0].is_finite()).count() + w.fill_tris.len())
+        .map(|w| {
+            w.points.iter().filter(|p| p[0].is_finite()).count()
+                + w.fill_tris.len()
+                + w.text_verts.len()
+        })
         .sum()
 }
 
@@ -51,6 +58,14 @@ fn expand_block_mtext(
         0.0,
         [0.0; 8],
         1.0,
+        // The INSERT sits on layer "0" which resolves to the white/Continuous
+        // fallback — matching the resolved style passed above.
+        InheritStyle {
+            color: [1.0, 1.0, 1.0, 1.0],
+            pat_len: 0.0,
+            pat: [0.0; 8],
+            lw_px: 1.0,
+        },
         false,
         1.0,
         None,
@@ -91,9 +106,10 @@ fn block_nested_mtext_uses_its_style_font() {
 #[test]
 fn block_nested_colour_split_mtext_keeps_per_wire_colour() {
     // `\C1;` = ACI red, `\C2;` = ACI yellow → two colour bins. The block cache
-    // must keep them as separate per-wire colours; the fold-to-one-colour bug
-    // this PR fixes silently collapsed every segment to the first colour. Uses
-    // the builtin stroke font so the split is observable without a system TTF.
+    // must keep them as separate per-glyph colours; the fold-to-one-colour bug
+    // (PR #301, Kevin Griffin) collapsed every segment to the inherited colour.
+    // SDF text carries per-glyph colour on `text_verts`, so the split is checked
+    // there (not per-wire). Uses the builtin stroke font so it works without TTF.
     let wires = expand_block_mtext(
         "\\C1;AAA\\C2;BBB",
         "txt",
@@ -103,12 +119,12 @@ fn block_nested_colour_split_mtext_keeps_per_wire_colour() {
 
     let mut colours: Vec<[u8; 3]> = wires
         .iter()
-        .filter(|w| !w.points.is_empty() || !w.fill_tris.is_empty())
-        .map(|w| {
+        .flat_map(|w| w.text_verts.iter())
+        .map(|v| {
             [
-                (w.color[0] * 255.0).round() as u8,
-                (w.color[1] * 255.0).round() as u8,
-                (w.color[2] * 255.0).round() as u8,
+                (v.color[0] * 255.0).round() as u8,
+                (v.color[1] * 255.0).round() as u8,
+                (v.color[2] * 255.0).round() as u8,
             ]
         })
         .collect();
@@ -117,7 +133,7 @@ fn block_nested_colour_split_mtext_keeps_per_wire_colour() {
 
     assert!(
         colours.len() >= 2,
-        "colour-split MTEXT in a block must keep ≥2 distinct wire colours, got {colours:?}"
+        "colour-split MTEXT in a block must keep ≥2 distinct glyph colours, got {colours:?}"
     );
 }
 

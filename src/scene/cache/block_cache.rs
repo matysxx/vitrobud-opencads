@@ -447,6 +447,13 @@ fn tessellate_sub_local(
                 .chain(wire.text_verts.iter().map(|v| v.pos)),
         );
         let is_fill_only = wire.points.is_empty() && !wire.fill_tris.is_empty();
+        // A wire whose colour differs from the entity's resolved base colour
+        // carries an explicit per-segment override (e.g. an MTEXT `\C1;` inline
+        // colour). ByBlock / layer-0 inheritance applies only to wires still on
+        // the base colour — folding an explicit segment into the inherited
+        // colour would collapse colour-split geometry to one colour. (PR #301,
+        // Kevin Griffin — extended to SDF text per-vertex in emit_wire.)
+        let wire_on_base_color = wire.color == sub_color;
 
         result.push(LocalWire {
             points: wire.points,
@@ -464,10 +471,10 @@ fn tessellate_sub_local(
             line_weight_px: lw_px,
             plinegen: wire.plinegen,
             is_fill_only,
-            color_is_byblock,
+            color_is_byblock: color_is_byblock && wire_on_base_color,
             lt_is_byblock,
             lw_is_byblock,
-            color_l0,
+            color_l0: color_l0 && wire_on_base_color,
             lt_l0,
             lw_l0,
             aabb_local,
@@ -1243,11 +1250,22 @@ fn emit_wire(
         if hy > entry.max_y {
             entry.max_y = hy;
         }
+        // Base glyphs inherit the resolved (ByBlock / layer-0) colour; a glyph
+        // carrying an inline `\C` / `\c` override — colour differs from the
+        // wire's base — keeps it, so block-nested colour-split MTEXT stays
+        // multi-colour. Per-vertex analogue of PR #301's wire-level gate.
+        let rgb = if [tv.color[0], tv.color[1], tv.color[2]]
+            == [lw.color[0], lw.color[1], lw.color[2]]
+        {
+            [final_color[0], final_color[1], final_color[2]]
+        } else {
+            [tv.color[0], tv.color[1], tv.color[2]]
+        };
         entry.text_verts.push(crate::scene::pipeline::text_gpu::TextVertex {
             pos: [hx, hy, hz],
             pos_low: [lx, ly, lz],
             uv: tv.uv,
-            color: [final_color[0], final_color[1], final_color[2], tv.color[3]],
+            color: [rgb[0], rgb[1], rgb[2], tv.color[3]],
             draw_depth: tv.draw_depth,
         });
     }
