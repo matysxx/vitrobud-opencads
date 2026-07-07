@@ -204,7 +204,6 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
     // Absolute line-space distance for single spacing (~1.66 * height) scaled
     // by the line-spacing factor.
     let line_space_distance = t.height * 1.666_666_666_666_667 * t.line_spacing_factor;
-    let bg_mask_on = (t.background_fill_flags & 0x03) != 0;
     let text_frame_on = (t.background_fill_flags & 0x10) != 0;
     vec![
         PropSection {
@@ -280,18 +279,38 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
                         _ => "At least",
                     },
                 ),
-                ro(
-                    "Background mask",
-                    "background_mask",
-                    if bg_mask_on { "On" } else { "Off" },
-                ),
+                Property {
+                    label: "Background mask".into(),
+                    field: "background_mask",
+                    value: PropValue::Choice {
+                        selected: if t.background_fill_flags & 0x01 != 0 {
+                            "Fill".into()
+                        } else if t.background_fill_flags & 0x02 != 0 {
+                            "Mask".into()
+                        } else {
+                            "Off".into()
+                        },
+                        options: ["Off", "Fill", "Mask"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                },
+                Property {
+                    label: "Background color".into(),
+                    field: "background_color",
+                    value: PropValue::ColorChoice(t.background_color.clone()),
+                },
                 edit("Defined width", "rect_w", t.rectangle_width),
                 edit("Defined height", "rect_h", t.rectangle_height.unwrap_or(0.0)),
-                ro(
-                    "Text frame",
-                    "text_frame",
-                    if text_frame_on { "On" } else { "Off" },
-                ),
+                Property {
+                    label: "Text frame".into(),
+                    field: "text_frame",
+                    value: PropValue::BoolToggle {
+                        field: "text_frame",
+                        value: text_frame_on,
+                    },
+                },
                 ro(
                     "Columns",
                     "columns",
@@ -333,6 +352,27 @@ fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {
                 mtext_attachment_from_align(mtext_halign_str(&t.attachment_point), value)
             {
                 t.attachment_point = next;
+            }
+            return;
+        }
+        "background_mask" => {
+            // Clear both fill bits, then set the chosen one. 0x01 = use the
+            // background-fill colour, 0x02 = use the drawing-window colour (mask).
+            t.background_fill_flags &= !0x03;
+            match value {
+                "Fill" => t.background_fill_flags |= 0x01,
+                "Mask" => t.background_fill_flags |= 0x02,
+                _ => {}
+            }
+            return;
+        }
+        "text_frame" => {
+            // Rendered as a checkbox (BoolToggle) → the toggle sends "toggle";
+            // flip the frame bit. Accept explicit "On"/"Off" too for safety.
+            match value {
+                "toggle" => t.background_fill_flags ^= 0x10,
+                "On" => t.background_fill_flags |= 0x10,
+                _ => t.background_fill_flags &= !0x10,
             }
             return;
         }

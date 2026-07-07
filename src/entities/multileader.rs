@@ -1071,6 +1071,7 @@ pub trait MultiLeaderTess {
         line_weight_px: f32,
         anno_scale: f32,
         world_per_pixel: Option<f32>,
+        bg_color: [f32; 4],
     ) -> Vec<crate::scene::model::wire_model::WireModel>;
 }
 
@@ -1084,6 +1085,7 @@ impl MultiLeaderTess for MultiLeader {
         line_weight_px: f32,
         anno_scale: f32,
         world_per_pixel: Option<f32>,
+        bg_color: [f32; 4],
     ) -> Vec<crate::scene::model::wire_model::WireModel> {
         use crate::scene::convert::tessellate::{
             append_arrow, arrow_from_block, color_or_inherit, tessellate, ArrowKind, DimGeom,
@@ -1354,6 +1356,7 @@ impl MultiLeaderTess for MultiLeader {
                         leader_lw_px,
                         1.0,
                         None,
+                        bg_color,
                     );
                     for w in &mut sub_wires {
                         w.name = name.clone();

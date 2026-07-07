@@ -429,7 +429,7 @@ fn tessellate_sub_local(
     // before casting to f32 — same precision-preservation trick used for
     // top-level entities, applied per-defn.
     let wires_out = tessellate::tessellate(
-        doc, h, sub, false, sub_color, pat_len, pat, lw_px, anno_scale, None,
+        doc, h, sub, false, sub_color, pat_len, pat, lw_px, anno_scale, None, bg_color,
     );
     if wires_out.is_empty() {
         return vec![];

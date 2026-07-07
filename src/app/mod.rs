@@ -1504,6 +1504,11 @@ pub enum Message {
     PropAttrCommit(String),
     /// Toggle the inline color picker dropdown open/closed.
     PropColorPickerToggle,
+    /// Toggle the MTEXT background-colour picker dropdown open/closed.
+    PropBgColorPickerToggle,
+    /// User picked an MTEXT background fill colour — sets `background_color`
+    /// and switches the background mode to Fill so it shows immediately.
+    PropBgColorChanged(AcadColor),
     /// Collapse the inline color picker dropdown. Fired when another
     /// properties-panel dropdown (a combo_box) opens, so at most one panel
     /// dropdown is open at a time and they can't overlap. (#235)

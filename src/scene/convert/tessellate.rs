@@ -86,6 +86,10 @@ pub fn tessellate(
     line_weight_px: f32,
     anno_scale: f32,
     world_per_pixel: Option<f32>,
+    // Canvas background colour — used for the MTEXT background *mask* fill
+    // (flag 0x02, "use drawing window colour") so the mask erases geometry
+    // behind the text the way a wipeout does.
+    bg_color: [f32; 4],
 ) -> Vec<WireModel> {
     let color = if selected {
         WireModel::SELECTED
@@ -327,6 +331,100 @@ pub fn tessellate(
                     } else {
                         WireModel::UNBOUNDED_AABB
                     };
+                    // MTEXT background fill / mask: an opaque rectangle behind
+                    // the glyphs, emitted first so it renders under the text.
+                    // Flag 0x01 → the entity's background-fill colour; 0x02 →
+                    // the drawing-window (canvas) colour, which masks geometry
+                    // behind the text like a wipeout. Box = glyph bounds padded
+                    // by (background_scale - 1) × text height.
+                    if sdf_text && text_aabb != WireModel::UNBOUNDED_AABB {
+                        if let EntityType::MText(m) = entity {
+                            let has_fill = m.background_fill_flags & 0x03 != 0;
+                            let has_frame = m.background_fill_flags & 0x10 != 0;
+                            if has_fill || has_frame {
+                                // Padded box shared by the fill and the frame.
+                                let th = (m.height * anno) as f32;
+                                let pad = ((m.background_scale as f32) - 1.0).max(0.0) * th;
+                                let [bnx, bny, bxx, bxy] = text_aabb;
+                                let (l, b, r, t) = (
+                                    (bnx - pad) as f64,
+                                    (bny - pad) as f64,
+                                    (bxx + pad) as f64,
+                                    (bxy + pad) as f64,
+                                );
+                                // Fill / mask — two triangles behind the glyphs.
+                                if has_fill {
+                                    let fill_color = if m.background_fill_flags & 0x01 != 0 {
+                                        color_or_inherit(&m.background_color, bg_color)
+                                    } else {
+                                        bg_color
+                                    };
+                                    let corners = [[l, b], [r, b], [r, t], [l, t]];
+                                    let mut ft = Vec::with_capacity(6);
+                                    let mut ftl = Vec::with_capacity(6);
+                                    for &k in &[0usize, 1, 2, 0, 2, 3] {
+                                        let (h, lo) =
+                                            split_ds_xyz(corners[k][0], corners[k][1], elev_v);
+                                        ft.push(h);
+                                        ftl.push(lo);
+                                    }
+                                    wires.push(WireModel {
+                                        text_verts: Vec::new(),
+                                        name: name.clone(),
+                                        points: vec![],
+                                        points_low: Vec::new(),
+                                        color: fill_color,
+                                        selected,
+                                        aci: 0,
+                                        pattern_length: 0.0,
+                                        pattern: [0.0; 8],
+                                        line_weight_px,
+                                        snap_pts: vec![],
+                                        tangent_geoms: vec![],
+                                        key_vertices: vec![],
+                                        aabb: WireModel::UNBOUNDED_AABB,
+                                        plinegen: true,
+                                        vp_scissor: None,
+                                        fill_tris: ft,
+                                        fill_tris_low: ftl,
+                                    });
+                                }
+                                // Text frame — a closed rectangle in the text
+                                // colour around the same box.
+                                if has_frame {
+                                    let loop_xy =
+                                        [[l, b], [r, b], [r, t], [l, t], [l, b]];
+                                    let mut fp = Vec::with_capacity(5);
+                                    let mut fpl = Vec::with_capacity(5);
+                                    for &[x, y] in &loop_xy {
+                                        let (h, lo) = split_ds_xyz(x, y, elev_v);
+                                        fp.push(h);
+                                        fpl.push(lo);
+                                    }
+                                    wires.push(WireModel {
+                                        text_verts: Vec::new(),
+                                        name: name.clone(),
+                                        points: fp,
+                                        points_low: fpl,
+                                        color: entity_color,
+                                        selected,
+                                        aci: 0,
+                                        pattern_length: 0.0,
+                                        pattern: [0.0; 8],
+                                        line_weight_px,
+                                        snap_pts: vec![],
+                                        tangent_geoms: vec![],
+                                        key_vertices: vec![],
+                                        aabb: WireModel::UNBOUNDED_AABB,
+                                        plinegen: true,
+                                        vp_scissor: None,
+                                        fill_tris: vec![],
+                                        fill_tris_low: Vec::new(),
+                                    });
+                                }
+                            }
+                        }
+                    }
                     // Debug (env OCS_TEXT_BOX): draw a rectangle around the glyph
                     // bounds as a separate outline wire so the text box is
                     // visible for testing. The empty text wire below is left

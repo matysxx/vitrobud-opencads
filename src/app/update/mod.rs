@@ -2214,6 +2214,36 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::PropBgColorPickerToggle => {
+                let i = self.active_tab;
+                self.tabs[i].properties.bg_color_picker_open =
+                    !self.tabs[i].properties.bg_color_picker_open;
+                Task::none()
+            }
+
+            Message::PropBgColorChanged(color) => {
+                let i = self.active_tab;
+                let handles = self.property_target_handles(i);
+                if !handles.is_empty() {
+                    self.push_undo_snapshot(i, "CHPROP");
+                    for &handle in &handles {
+                        if let Some(acadrust::EntityType::MText(m)) =
+                            self.tabs[i].scene.document.get_entity_mut(handle)
+                        {
+                            m.background_color = color.clone();
+                            // Picking a colour turns the background on in Fill
+                            // mode (specific colour), preserving the frame bit.
+                            m.background_fill_flags = (m.background_fill_flags & !0x02) | 0x01;
+                        }
+                    }
+                    self.invalidate_property_targets(i, &handles);
+                    self.tabs[i].properties.bg_color_picker_open = false;
+                    self.tabs[i].dirty = true;
+                    self.refresh_properties();
+                }
+                Task::none()
+            }
+
             Message::PropColorPickerClose => {
                 let i = self.active_tab;
                 self.tabs[i].properties.color_picker_open = false;

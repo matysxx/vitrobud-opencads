@@ -396,6 +396,7 @@ impl super::OpenCADStudio {
         let mt = ed.build_mtext();
         let entity = EntityType::MText(mt.clone());
         let anno = self.tabs[i].scene.annotation_scale;
+        let bg = self.tabs[i].scene.bg_color;
         let wires: Vec<WireModel> = tessellate::tessellate(
             &self.tabs[i].scene.document,
             ed.editing.unwrap_or(Handle::new(1)),
@@ -407,6 +408,7 @@ impl super::OpenCADStudio {
             1.0,
             anno,
             None,
+            bg,
         );
         // Per-character boxes share the preview wires' absolute coordinate frame.
         let boxes = crate::entities::mtext::glyph_boxes(&mt, &self.tabs[i].scene.document);

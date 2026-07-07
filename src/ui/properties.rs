@@ -145,6 +145,10 @@ pub struct PropertiesPanel {
     pub color_picker_open: bool,
     /// Whether the full 16×16 ACI palette is expanded inside the color picker.
     pub color_palette_open: bool,
+    /// Whether the MTEXT background-colour picker dropdown is open. Separate
+    /// from `color_picker_open` so the entity colour and the background colour
+    /// pickers are independent.
+    pub bg_color_picker_open: bool,
 }
 
 impl Default for PropertiesPanel {
@@ -165,6 +169,7 @@ impl Default for PropertiesPanel {
             source_handles: vec![],
             color_picker_open: false,
             color_palette_open: false,
+            bg_color_picker_open: false,
         }
     }
 }
@@ -320,7 +325,7 @@ impl PropertiesPanel {
         for prop in &section.props {
             match &prop.value {
                 PropValue::ColorChoice(color) => {
-                    col = col.push(self.render_color_row(&prop.label, *color));
+                    col = col.push(self.render_color_row(&prop.label, prop.field, *color));
                 }
                 PropValue::ColorVaries => {
                     col = col.push(self.render_color_varies_row(&prop.label));
@@ -396,7 +401,28 @@ impl PropertiesPanel {
 
     // ── Color row (custom picker) ─────────────────────────────────────────
 
-    fn render_color_row<'a>(&'a self, label: &'a str, color: AcadColor) -> Element<'a, Message> {
+    fn render_color_row<'a>(
+        &'a self,
+        label: &'a str,
+        field: &'static str,
+        color: AcadColor,
+    ) -> Element<'a, Message> {
+        // MTEXT background colour uses its own picker state + messages so it
+        // routes to `background_color`, not the entity's main colour.
+        if field == "background_color" {
+            let selector = crate::ui::color_select::color_selector(
+                color,
+                self.bg_color_picker_open,
+                crate::ui::color_select::ColorExtras {
+                    by_layer: true,
+                    by_block: true,
+                },
+                Message::PropBgColorChanged,
+                Message::PropBgColorPickerToggle,
+                Message::PropBgColorPickerToggle,
+            );
+            return prop_row_widget(label, selector);
+        }
         let selector = crate::ui::color_select::color_selector(
             color,
             self.color_picker_open,

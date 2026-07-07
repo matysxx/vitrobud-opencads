@@ -239,6 +239,7 @@ pub(crate) fn append_insert_attribute_wires(
             sub_lw_px,
             anno_scale,
             None,
+            bg_color,
         );
         // Use the INSERT's handle so selection / picking groups attribute
         // text with the parent insert instead of treating it as a stray text.

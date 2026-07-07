@@ -196,6 +196,7 @@ pub(crate) fn tessellate_entity(
             1.5,
             1.0,
             world_per_pixel,
+            bg_color,
         );
         let ab = entity_aabb(e);
         for w in &mut wires {
@@ -343,6 +344,7 @@ pub(crate) fn tessellate_entity(
             line_weight_px,
             anno_scale,
             world_per_pixel,
+            bg_color,
         );
         for w in &mut wires {
             w.aci = aci;
@@ -579,6 +581,7 @@ pub(crate) fn tessellate_entity(
                     sub_line_weight_px,
                     anno_scale,
                     world_per_pixel,
+                    bg_color,
                 );
                 for w in &mut wires {
                     w.name = h.value().to_string();
@@ -753,6 +756,7 @@ pub(crate) fn tessellate_entity(
         line_weight_px,
         anno_scale,
         world_per_pixel,
+        bg_color,
     );
     for b in &mut bases {
         b.aci = aci;
