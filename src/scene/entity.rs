@@ -618,6 +618,11 @@ impl Scene {
         // contain a hatch still explode exactly as before, so output is unchanged.
         let mut hatch_block_memo: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
+        // Same gate for wide LwPolyline / Polyline2D fills — a block with a wide
+        // polyline (but no hatch) must still explode so its width band renders
+        // at world position, like a block-internal hatch. (#222)
+        let mut wide_block_memo: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
         for entity in self.document.entities() {
             let EntityType::Insert(ins) = entity else {
                 continue;
@@ -632,7 +637,9 @@ impl Scene {
             ) {
                 continue;
             }
-            if !self.block_has_hatch(&ins.block_name, &mut hatch_block_memo) {
+            if !self.block_has_hatch(&ins.block_name, &mut hatch_block_memo)
+                && !self.block_has_wide_poly(&ins.block_name, &mut wide_block_memo)
+            {
                 continue;
             }
             let selected = tint_selected && self.selected.contains(&ins.common.handle);
@@ -741,11 +748,107 @@ impl Scene {
                             models.push(model);
                         }
                     }
+                    // Wide LwPolyline / Polyline2D inside a block: materialize its
+                    // width bands at world position, same as a block-internal
+                    // hatch. Without this a wide polyline in a block drew at zero
+                    // width (its centreline came from the wire path, the band
+                    // fill only from the model-space loop that skips blocks). (#222)
+                    EntityType::LwPolyline(pl) => {
+                        if pl.common.invisible || layer_hidden(&pl.common.layer) {
+                            continue;
+                        }
+                        let (origin, fills) =
+                            crate::entities::lwpolyline::wide_fills(&pl);
+                        self.push_block_wide_fills(
+                            &mut models,
+                            &EntityType::LwPolyline(pl),
+                            origin,
+                            fills,
+                            sub_ins_color,
+                            sub_l0,
+                            &clip_poly,
+                            selected,
+                        );
+                    }
+                    EntityType::Polyline2D(pl) => {
+                        if pl.common.invisible || layer_hidden(&pl.common.layer) {
+                            continue;
+                        }
+                        let (origin, fills) =
+                            crate::entities::polyline::wide_fills(&pl);
+                        self.push_block_wide_fills(
+                            &mut models,
+                            &EntityType::Polyline2D(pl),
+                            origin,
+                            fills,
+                            sub_ins_color,
+                            sub_l0,
+                            &clip_poly,
+                            selected,
+                        );
+                    }
                     _ => {}
                 }
             }
         }
         models
+    }
+
+    /// Materialize a block-exploded wide polyline's width bands (from
+    /// `wide_fills`, already in world coords) as solid `HatchModel`s: resolve the
+    /// block-child colour inheritance (NO background adaptation — a width band is
+    /// the polyline's own colour, not a hatch) and apply any XCLIP. Shared by the
+    /// LwPolyline / Polyline2D arms of the block-explode fill walk. (#222)
+    #[allow(clippy::too_many_arguments)]
+    fn push_block_wide_fills(
+        &self,
+        models: &mut Vec<HatchModel>,
+        sub_entity: &EntityType,
+        origin: [f64; 2],
+        fills: Vec<Vec<[f32; 2]>>,
+        sub_ins_color: [f32; 4],
+        sub_l0: crate::scene::view::render::InheritStyle,
+        clip_poly: &Option<Vec<[f32; 2]>>,
+        selected: bool,
+    ) {
+        if fills.is_empty() {
+            return;
+        }
+        let mut color = crate::scene::view::render::render_style_for_block_sub(
+            &self.document,
+            sub_entity,
+            sub_ins_color,
+            0.0,
+            [0.0; 8],
+            0.0,
+            sub_l0,
+        )
+        .0;
+        if selected {
+            color = [0.15, 0.55, 1.00, color[3]];
+        }
+        for boundary in fills {
+            let ring = if let Some(poly) = clip_poly {
+                let clipped = pick::xclip::clip_hatch_boundary(&boundary, origin, poly);
+                if clipped.is_empty() {
+                    continue;
+                }
+                clipped
+            } else {
+                boundary
+            };
+            models.push(HatchModel {
+                boundary: Arc::new(ring),
+                pattern: model::hatch_model::HatchPattern::Solid,
+                name: "SOLID".into(),
+                color,
+                angle_offset: 0.0,
+                scale: 1.0,
+                world_origin: origin,
+                vp_scissor: None,
+                draw_depth: 0.0,
+            });
+        }
     }
 
     /// Wipeout fill models — rendered in a separate pass AFTER wires so that

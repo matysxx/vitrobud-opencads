@@ -2707,6 +2707,50 @@ impl Scene {
         result
     }
 
+    /// Transitively true when a block (or a block it nests) contains a wide
+    /// LwPolyline / Polyline2D — one carrying a non-zero width. Gate for the
+    /// block-explode wide-fill pass, mirroring [`Self::block_has_hatch`] so a
+    /// solid-only block is never exploded just to look for width bands. (#222)
+    fn block_has_wide_poly(
+        &self,
+        block_name: &str,
+        memo: &mut std::collections::HashMap<String, bool>,
+    ) -> bool {
+        if let Some(&v) = memo.get(block_name) {
+            return v;
+        }
+        // Seed `false` first so a cyclic block reference terminates.
+        memo.insert(block_name.to_string(), false);
+        let result = self
+            .document
+            .block_records
+            .get(block_name)
+            .map(|br| {
+                br.entity_handles.iter().any(|&h| match self.document.get_entity(h) {
+                    Some(EntityType::LwPolyline(p)) => {
+                        p.constant_width > 1e-9
+                            || p.vertices
+                                .iter()
+                                .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
+                    }
+                    Some(EntityType::Polyline2D(p)) => {
+                        p.start_width > 1e-9
+                            || p.end_width > 1e-9
+                            || p.vertices
+                                .iter()
+                                .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
+                    }
+                    Some(EntityType::Insert(ins)) => {
+                        self.block_has_wide_poly(&ins.block_name, memo)
+                    }
+                    _ => false,
+                })
+            })
+            .unwrap_or(false);
+        memo.insert(block_name.to_string(), result);
+        result
+    }
+
     pub fn insert_hatches_for_click(&self) -> Arc<Vec<(Handle, HatchModel)>> {
         {
             let c = self.insert_hatch_cache.borrow();
