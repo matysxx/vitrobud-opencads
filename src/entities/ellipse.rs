@@ -176,47 +176,53 @@ fn properties(ell: &Ellipse) -> Vec<PropSection> {
     let n = glam::DVec3::new(ell.normal.x, ell.normal.y, ell.normal.z);
     let v = n.cross(u);
 
-    // Parametric end point in WCS: center + r_major·cos(t1)·u + r_minor·sin(t1)·v.
-    let t1 = ell.end_parameter;
-    let end = glam::DVec3::new(ell.center.x, ell.center.y, ell.center.z)
-        + u * (r_major * t1.cos())
-        + v * (r_minor * t1.sin());
+    // Parametric points in WCS: center + r_major·cos(t)·u + r_minor·sin(t)·v.
+    let center = glam::DVec3::new(ell.center.x, ell.center.y, ell.center.z);
+    let pt_at = |t: f64| center + u * (r_major * t.cos()) + v * (r_minor * t.sin());
+    let start = pt_at(ell.start_parameter);
+    let end = pt_at(ell.end_parameter);
+
+    // Axis vectors (center → axis endpoint) in WCS.
+    let major_vec = u * r_major;
+    let minor_vec = v * r_minor;
 
     let start_angle = ell.start_parameter.to_degrees().rem_euclid(360.0);
     let end_angle = ell.end_parameter.to_degrees().rem_euclid(360.0);
 
     let props = ell.mass_props();
 
-    vec![
-        PropSection {
-            title: "Geometry".into(),
-            props: vec![
-                edit("Center X", "center_x", ell.center.x),
-                edit("Center Y", "center_y", ell.center.y),
-                edit("Center Z", "center_z", ell.center.z),
-                ro("End X", "end_x", format!("{:.4}", end.x)),
-                ro("End Y", "end_y", format!("{:.4}", end.y)),
-                ro("End Z", "end_z", format!("{:.4}", end.z)),
-                edit("Major radius", "major_r", r_major),
-                ro("Minor radius", "minor_r", format!("{r_minor:.4}")),
-                edit("Radius ratio", "ratio", ell.minor_axis_ratio),
-                ro("Start angle", "start_angle", format!("{start_angle:.2}")),
-                ro("End angle", "end_angle", format!("{end_angle:.2}")),
-                edit("Start parameter", "start_param", ell.start_parameter),
-                edit("End parameter", "end_param", ell.end_parameter),
-                ro("Area", "area", format!("{:.4}", props.area)),
-                ro("Length", "length", format!("{:.4}", props.perimeter)),
-            ],
-        },
-        PropSection {
-            title: "Misc".into(),
-            props: vec![
-                edit("Normal X", "normal_x", ell.normal.x),
-                edit("Normal Y", "normal_y", ell.normal.y),
-                edit("Normal Z", "normal_z", ell.normal.z),
-            ],
-        },
-    ]
+    vec![PropSection {
+        title: "Geometry".into(),
+        props: vec![
+            ro("Start X", "start_x", format!("{:.4}", start.x)),
+            ro("Start Y", "start_y", format!("{:.4}", start.y)),
+            ro("Start Z", "start_z", format!("{:.4}", start.z)),
+            edit("Center X", "center_x", ell.center.x),
+            edit("Center Y", "center_y", ell.center.y),
+            edit("Center Z", "center_z", ell.center.z),
+            ro("End X", "end_x", format!("{:.4}", end.x)),
+            ro("End Y", "end_y", format!("{:.4}", end.y)),
+            ro("End Z", "end_z", format!("{:.4}", end.z)),
+            edit("Major radius", "major_r", r_major),
+            edit("Minor radius", "minor_r", r_minor),
+            edit("Radius ratio", "ratio", ell.minor_axis_ratio),
+            edit("Start angle", "start_angle", start_angle),
+            edit("End angle", "end_angle", end_angle),
+            ro("Major axis vector X", "major_x", format!("{:.4}", major_vec.x)),
+            ro("Major axis vector Y", "major_y", format!("{:.4}", major_vec.y)),
+            ro("Major axis vector Z", "major_z", format!("{:.4}", major_vec.z)),
+            ro("Minor axis vector X", "minor_x", format!("{:.4}", minor_vec.x)),
+            ro("Minor axis vector Y", "minor_y", format!("{:.4}", minor_vec.y)),
+            ro("Minor axis vector Z", "minor_z", format!("{:.4}", minor_vec.z)),
+            ro("Area", "area", format!("{:.4}", props.area)),
+            ro("Start parameter", "start_param", format!("{:.4}", ell.start_parameter)),
+            ro("End parameter", "end_param", format!("{:.4}", ell.end_parameter)),
+            ro("Length", "length", format!("{:.4}", props.perimeter)),
+            ro("Normal X", "normal_x", format!("{:.4}", ell.normal.x)),
+            ro("Normal Y", "normal_y", format!("{:.4}", ell.normal.y)),
+            ro("Normal Z", "normal_z", format!("{:.4}", ell.normal.z)),
+        ],
+    }]
 }
 
 fn apply_geom_prop(ell: &mut Ellipse, field: &str, value: &str) {
@@ -236,12 +242,15 @@ fn apply_geom_prop(ell: &mut Ellipse, field: &str, value: &str) {
                 ell.major_axis.z *= s;
             }
         }
-        "ratio" => ell.minor_axis_ratio = v,
-        "start_param" => ell.start_parameter = v,
-        "end_param" => ell.end_parameter = v,
-        "normal_x" => ell.normal.x = v,
-        "normal_y" => ell.normal.y = v,
-        "normal_z" => ell.normal.z = v,
+        "minor_r" => {
+            let major = ell.major_axis_length();
+            if major > 1e-12 && v > 0.0 {
+                ell.minor_axis_ratio = v / major;
+            }
+        }
+        "ratio" if v > 0.0 => ell.minor_axis_ratio = v,
+        "start_angle" => ell.start_parameter = v.to_radians(),
+        "end_angle" => ell.end_parameter = v.to_radians(),
         _ => {}
     }
 }
