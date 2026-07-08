@@ -38,15 +38,18 @@ pub struct PasteCommand {
 }
 
 impl PasteCommand {
-    /// Per-frame preview cost is proportional to the total point count across
-    /// the ghost wires. Above this, switch to the bounding-box outline so
-    /// placement stays smooth. ~50k points is well under a frame budget yet
-    /// still shows the full ghost for typical multi-object pastes.
-    const MAX_PREVIEW_POINTS: usize = 50_000;
+    /// `on_preview_wires` clones and re-uploads the whole ghost every cursor
+    /// move, so its cost scales with the wire count and the total point count.
+    /// Past either budget the per-move work floods the event loop, so switch to
+    /// a bounding-box outline; below them the full ghost still shows.
+    const MAX_PREVIEW_WIRES: usize = 20_000;
+    const MAX_PREVIEW_POINTS: usize = 300_000;
 
     pub fn new(wires: Vec<WireModel>, centroid: Vec3) -> Self {
         let total_points: usize = wires.iter().map(|w| w.points.len()).sum();
-        if total_points > Self::MAX_PREVIEW_POINTS {
+        let too_heavy =
+            wires.len() > Self::MAX_PREVIEW_WIRES || total_points > Self::MAX_PREVIEW_POINTS;
+        if too_heavy {
             if let Some(bbox_wire) = Self::bbox_outline(&wires) {
                 // Drop the full wires — the box is all the ghost needs now.
                 return Self { wires: Vec::new(), bbox_wire: Some(bbox_wire), centroid };
