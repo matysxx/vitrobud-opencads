@@ -93,9 +93,9 @@ pub fn general_section(entity: &EntityType) -> PropSection {
     section
 }
 
-/// The "3D Visualization" group (Material + Shadow display), common to every
-/// graphical object. Material / plot-style / shadow source is flag-based; a
-/// custom material handle is shown as "Custom" (name resolution needs the doc).
+/// The "3D Visualization" group (Material), common to every graphical object.
+/// Material source is flag-based; a custom material handle is shown as "Custom"
+/// (name resolution needs the doc).
 pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
     if matches!(
         entity,
@@ -112,26 +112,13 @@ pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
         1 => "ByBlock",
         _ => "Custom",
     };
-    let shadow = match common.shadow_flags {
-        0 => "Casts and Receives Shadows",
-        1 => "Casts Shadows",
-        2 => "Receives Shadows",
-        _ => "Ignores Shadows",
-    };
     Some(PropSection {
         title: "3D Visualization".into(),
-        props: vec![
-            Property {
-                label: "Material".into(),
-                field: "material",
-                value: PropValue::ReadOnly(material.into()),
-            },
-            Property {
-                label: "Shadow display".into(),
-                field: "shadow_display",
-                value: PropValue::ReadOnly(shadow.into()),
-            },
-        ],
+        props: vec![Property {
+            label: "Material".into(),
+            field: "material",
+            value: PropValue::ReadOnly(material.into()),
+        }],
     })
 }
 
