@@ -486,6 +486,24 @@ impl Snapper {
                     });
                 }
             }
+            // Ray from the command's base point toward this acquired corner:
+            // once the first point is placed, the cursor can lock onto the line
+            // joining that base point and an existing corner — the direction
+            // *between* them, not only the ortho/polar axes or the corner's own
+            // edges. Grouped with the corner so it never self-intersects with
+            // that corner's other rays (they meet only at the corner).
+            if let Some(bp) = last_point {
+                let d = tp - bp;
+                let len2 = d.x * d.x + d.y * d.y;
+                if len2 > 1e-12 {
+                    let inv = 1.0 / len2.sqrt();
+                    rays.push(Ray {
+                        origin: bp,
+                        dir: Vec3::new(d.x * inv, d.y * inv, 0.0),
+                        group: gi,
+                    });
+                }
+            }
         }
         // OTRACK rays come first; the auxiliary rays appended below (polar from
         // last_point, ortho axis from last_point) only participate in
@@ -1849,6 +1867,65 @@ mod ext_tests {
         // OTRACK (endpoints_only = false) still acquires any snap point.
         s.acquire_tracking_point(Vec3::new(5.0, 0.0, 0.0), &wires, false);
         assert_eq!(s.tracking_points.len(), 2);
+    }
+
+    #[test]
+    fn base_to_corner_direction_is_tracked() {
+        let mut s = Snapper::default();
+        s.otrack_enabled = true;
+        s.osnap_radius_px = 10.0;
+        // An acquired corner of an existing line, and the base point (first
+        // point) of the line currently being drawn.
+        let corner = Vec3::new(4.0, 2.0, 0.0);
+        s.tracking_points.push(corner);
+        s.tracking_dirs.push(Vec::new());
+        let base = Vec3::new(0.0, 0.0, 0.0);
+
+        // A plain orthographic camera: world * 0.1 → NDC, eye at the origin.
+        let view_rot = Mat4::from_scale(Vec3::splat(0.1));
+        let eye = glam::DVec3::ZERO;
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 1000.0,
+        };
+
+        // Cursor past the corner along base→corner (≈26.57°, not an ortho/polar
+        // axis), nudged a hair off the line — only the new base→corner ray can
+        // lock it.
+        let dir = (corner - base).normalize();
+        let perp = Vec3::new(-dir.y, dir.x, 0.0);
+        let cursor = base + dir * 6.0 + perp * 0.05;
+
+        let hit = s
+            .otrack_snap(
+                cursor,
+                view_rot,
+                eye,
+                bounds,
+                None,
+                Some(base),
+                false,
+                Mat4::IDENTITY,
+            )
+            .expect("base→corner alignment should lock");
+        // The aligned point lies on the base→corner line, and the reported base
+        // is the command's base point (so typed-distance runs from there).
+        let off = hit.aligned - base;
+        let cross = off.x * dir.y - off.y * dir.x;
+        assert!(
+            cross.abs() < 1e-3,
+            "aligned point off the base→corner line: {:?}",
+            hit.aligned
+        );
+        assert!((hit.base - base).length() < 1e-3, "ray base is not the command base");
+
+        // Without a base point the alignment does not exist (nothing to join).
+        let none = s.otrack_snap(
+            cursor, view_rot, eye, bounds, None, None, false, Mat4::IDENTITY,
+        );
+        assert!(none.is_none(), "no base point → no base→corner alignment");
     }
 
     #[test]
