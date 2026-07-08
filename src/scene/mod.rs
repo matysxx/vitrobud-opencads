@@ -948,6 +948,16 @@ pub struct Scene {
     /// Hash of the tessellation parameters `tess_memo` was built under. When
     /// the current call's parameters differ, the memo is stale and cleared.
     tess_memo_guard: std::cell::Cell<u64>,
+    /// Per-entity memo for the **resident** model wire set (`model_tile_wires_arc`,
+    /// the one the main GPU render holds). Kept separate from `tess_memo` because
+    /// the resident set is camera-INDEPENDENT (no view cull, no zoom LOD), so its
+    /// guard depends only on anno-scale / background — it survives pan/zoom, and a
+    /// single-entity edit re-tessellates just the changed entity instead of the
+    /// whole model. Sharing `tess_memo` would let the camera-dependent culled path
+    /// thrash it on every zoom. (#perf)
+    resident_tess_memo: RefCell<HashMap<Handle, Arc<Vec<WireModel>>>>,
+    /// Guard hash for `resident_tess_memo` (anno-scale / bg only).
+    resident_tess_guard: std::cell::Cell<u64>,
 }
 
 impl Scene {
@@ -1025,6 +1035,8 @@ impl Scene {
             split_cache: RefCell::new(None),
             tess_memo: RefCell::new(HashMap::default()),
             tess_memo_guard: std::cell::Cell::new(0),
+            resident_tess_memo: RefCell::new(HashMap::default()),
+            resident_tess_guard: std::cell::Cell::new(0),
         }
     }
 
@@ -1150,8 +1162,9 @@ impl Scene {
         // Default: also invalidate block definitions. Safe for every caller;
         // operations that know blocks are untouched use `bump_geometry_no_blocks`.
         self.block_epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
-        // Structural change — drop the whole per-entity tessellation memo.
+        // Structural change — drop both per-entity tessellation memos.
         self.tess_memo.borrow_mut().clear();
+        self.resident_tess_memo.borrow_mut().clear();
     }
 
     /// Drop a single entity from the tessellation memo so the next render
@@ -1159,6 +1172,7 @@ impl Scene {
     /// [`bump_geometry_no_blocks`] for an incremental single-entity edit.
     pub fn mark_entity_dirty(&mut self, handle: Handle) {
         self.tess_memo.borrow_mut().remove(&handle);
+        self.resident_tess_memo.borrow_mut().remove(&handle);
     }
 
     /// Invalidate the visible-wire tessellation but KEEP the cached block
@@ -3162,20 +3176,35 @@ impl Scene {
             crate::scene::convert::truck_tess::set_curve_tol_override(Some((w * 0.5) as f64));
             CurveTolGuard
         });
-        // Per-entity tessellation memo (Phase 2.2) — only on the culled Model
-        // render path. A single-entity edit re-tessellates just the changed
-        // entity (dropped from the memo via `mark_entity_dirty`) and reuses the
-        // rest, instead of re-running every visible entity. The hit-test path
-        // (`view_aabb == None`) and paper / per-viewport paths bypass it so
-        // their different cull parameters don't thrash the memo.
-        let memo_active = view_aabb.is_some()
-            && is_model_block
-            && frozen_layers.is_none()
-            && anno_scale_override.is_none();
+        // Per-entity tessellation memo. Same classify/tessellate logic, two
+        // SEPARATE stores so they can't thrash each other:
+        //   * culled path (`view_aabb == Some`) → `tess_memo`, guard keyed on the
+        //     per-view cull params (zoom/tol, frustum, entered viewport);
+        //   * resident path (`view_aabb == None`, no per-view cull, Model block) →
+        //     the camera-INDEPENDENT `resident_tess_memo`, guard keyed only on
+        //     anno / bg. This is the set the main GPU render holds
+        //     (`model_tile_wires_arc`), so memoizing it makes a single-entity edit
+        //     re-tessellate just the changed entity instead of the whole model.
+        // Frozen-layer / anno-override viewport paths bypass (their params would
+        // thrash a shared memo). Hit-test also passes `view_aabb == None` but is
+        // not the Model block, so it never lands on the resident branch.
+        let base_ok =
+            is_model_block && frozen_layers.is_none() && anno_scale_override.is_none();
+        // Kill-switch: `OCS_NO_RESIDENT_MEMO` reverts the resident set to the old
+        // full re-tessellation on every edit, in case a mutation site is ever
+        // found that edits geometry without dropping its handle from the memo.
+        fn resident_memo_enabled() -> bool {
+            static EN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *EN.get_or_init(|| std::env::var("OCS_NO_RESIDENT_MEMO").is_err())
+        }
+        let resident =
+            base_ok && view_aabb.is_none() && wpp.is_none() && resident_memo_enabled();
+        let memo_active = base_ok && (view_aabb.is_some() || resident);
         let mut wires: Vec<WireModel> = if memo_active {
             // Guard hash of everything tessellate_entity output depends on
             // besides the entity itself. A mismatch (zoom/tol, view, anno,
-            // offset, bg, entered viewport) means the memo is stale.
+            // offset, bg, entered viewport) means the memo is stale. For the
+            // resident path wpp/view_aabb are None, so this collapses to anno/bg.
             let guard = {
                 let mut g: u64 = 0xcbf2_9ce4_8422_2325;
                 let mut mix = |x: u64| g = g.rotate_left(13) ^ x;
@@ -3192,15 +3221,20 @@ impl Scene {
                 mix(avp.map(|h| h.value()).unwrap_or(0));
                 g
             };
-            if self.tess_memo_guard.get() != guard {
-                self.tess_memo.borrow_mut().clear();
-                self.tess_memo_guard.set(guard);
+            let (memo_cell, guard_cell) = if resident {
+                (&self.resident_tess_memo, &self.resident_tess_guard)
+            } else {
+                (&self.tess_memo, &self.tess_memo_guard)
+            };
+            if guard_cell.get() != guard {
+                memo_cell.borrow_mut().clear();
+                guard_cell.set(guard);
             }
             // Classify (serial, cheap): reuse memoized Arcs, collect misses.
             let mut hit_arcs: Vec<Arc<Vec<WireModel>>> = Vec::new();
             let mut misses: Vec<&EntityType> = Vec::new();
             {
-                let memo = self.tess_memo.borrow();
+                let memo = memo_cell.borrow();
                 for e in &visible {
                     let h = e.common().handle;
                     match memo.get(&h) {
@@ -3224,7 +3258,7 @@ impl Scene {
                 .collect();
             let mut out = hit_wires;
             {
-                let mut memo = self.tess_memo.borrow_mut();
+                let mut memo = memo_cell.borrow_mut();
                 for (h, a) in &miss_pairs {
                     out.extend(a.iter().cloned());
                     memo.insert(*h, Arc::clone(a));
