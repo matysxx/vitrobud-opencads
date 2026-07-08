@@ -1073,6 +1073,50 @@ pub fn bake_dimension_blocks(doc: &mut CadDocument) {
     }
 }
 
+/// Drop a dimension's baked `*D` block so the next save regenerates it from the
+/// dimension's current definition points / text / style.
+///
+/// OCS renders a dimension live from its definition points, but exports a baked
+/// `*D` block that other applications (BricsCAD / ODA) draw instead. An in-place
+/// edit — grip drag, DIMTEDIT, restyle, text edit, DIMSPACE — changes the
+/// definition points while leaving the old block, so without this the export
+/// keeps the pre-edit graphics and the dimension appears wrong everywhere but in
+/// OCS. Call this after any such edit; [`bake_dimension_blocks`] then rebuilds a
+/// fresh block on save.
+///
+/// The transform path (MOVE / COPY / PASTE) keeps its own block in sync via
+/// `define_transformed_block` and must NOT call this. The removed block's record
+/// and owned entities are deleted too, so re-baking on every edit can't
+/// accumulate orphan `*D` blocks. No-op when the dimension has no baked block
+/// yet (the pending path bakes it fresh on save). (#181)
+pub fn invalidate_dim_block(doc: &mut CadDocument, handle: Handle) {
+    let bn = match doc.get_entity(handle) {
+        Some(EntityType::Dimension(d)) => d.base().block_name.clone(),
+        _ => return,
+    };
+    if bn.trim().is_empty() {
+        return;
+    }
+    // Dimension graphics live in an anonymous "*D…" block, unique to the one
+    // dimension, so it is safe to delete along with its sub-entities. Guard on
+    // the anonymous prefix so a hand-referenced named block is never removed.
+    if bn.starts_with("*D") || bn.starts_with("*d") {
+        if let Some(rec) = doc.block_records.remove(&bn) {
+            let mut owned = rec.entity_handles.clone();
+            owned.push(rec.block_entity_handle);
+            owned.push(rec.block_end_handle);
+            for h in owned {
+                if !h.is_null() {
+                    doc.remove_entity(h);
+                }
+            }
+        }
+    }
+    if let Some(EntityType::Dimension(d)) = doc.get_entity_mut(handle) {
+        d.base_mut().block_name.clear();
+    }
+}
+
 // ── Command stub (kept for future interactive selection mode) ───────────────
 
 pub struct ExplodeCommand;
@@ -1173,6 +1217,65 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0),
             "baked dimension must carry a zero insertion point (#181)"
         );
+    }
+
+    /// Invalidating a baked dimension removes its `*D` block record AND the
+    /// sub-entities it owned (no orphans), and clears `block_name` so the next
+    /// save re-bakes a fresh block. Guards the stale-export fix for #181.
+    #[test]
+    fn invalidate_removes_block_and_leaves_no_orphan() {
+        let mut doc = CadDocument::new();
+
+        let mut d = DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        d.definition_point = Vector3::new(0.0, 5.0, 0.0);
+        d.base.text_middle_point = Vector3::new(5.0, 5.0, 0.0);
+        let handle = doc
+            .add_entity(EntityType::Dimension(Dimension::Linear(d)))
+            .unwrap();
+
+        bake_dimension_blocks(&mut doc);
+        let block_name = match doc.get_entity(handle) {
+            Some(EntityType::Dimension(d)) => d.base().block_name.clone(),
+            _ => panic!("dimension missing"),
+        };
+        assert!(!block_name.trim().is_empty());
+        let owned: Vec<Handle> = doc
+            .block_records
+            .get(&block_name)
+            .unwrap()
+            .entity_handles
+            .clone();
+        assert!(!owned.is_empty(), "baked block should own sub-entities");
+
+        invalidate_dim_block(&mut doc, handle);
+
+        // block_name cleared → the dimension is pending again.
+        match doc.get_entity(handle) {
+            Some(EntityType::Dimension(d)) => {
+                assert!(d.base().block_name.trim().is_empty(), "block_name must be cleared");
+            }
+            _ => panic!("dimension missing"),
+        }
+        // Block record gone.
+        assert!(
+            doc.block_records.get(&block_name).is_none(),
+            "stale block record must be removed"
+        );
+        // No orphaned sub-entities left behind.
+        for h in owned {
+            assert!(
+                doc.get_entity(h).is_none(),
+                "sub-entity {h:?} of the dropped block leaked"
+            );
+        }
+
+        // A fresh bake re-creates a block, so the round-trip stays valid.
+        bake_dimension_blocks(&mut doc);
+        let rebaked = match doc.get_entity(handle) {
+            Some(EntityType::Dimension(d)) => d.base().block_name.clone(),
+            _ => panic!("dimension missing"),
+        };
+        assert!(!rebaked.trim().is_empty(), "re-bake must assign a new block");
     }
 
     // Collect the line segments baked into the dimension's `*D` block.

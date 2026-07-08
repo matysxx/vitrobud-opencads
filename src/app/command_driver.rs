@@ -429,7 +429,17 @@ impl OpenCADStudio {
                 for (handle, entities) in replacements {
                     self.tabs[i].scene.erase_entities(&[handle]);
                     for entity in entities {
-                        self.tabs[i].scene.add_entity(entity);
+                        let nh = self.tabs[i].scene.add_entity(entity);
+                        // Drop a stale *D block on any replaced dimension (#181).
+                        if matches!(
+                            self.tabs[i].scene.document.get_entity(nh),
+                            Some(acadrust::EntityType::Dimension(_))
+                        ) {
+                            crate::modules::draw::modify::explode::invalidate_dim_block(
+                                &mut self.tabs[i].scene.document,
+                                nh,
+                            );
+                        }
                     }
                 }
                 for entity in additions {
@@ -539,6 +549,21 @@ impl OpenCADStudio {
                     .into_iter()
                     .map(|e| self.tabs[i].scene.add_entity(e))
                     .collect();
+                // A replaced dimension carries edited geometry/text but still
+                // names its old *D block; drop that stale block so the next save
+                // re-bakes it — otherwise BricsCAD/ODA draw the pre-edit
+                // graphics while OCS shows the edit. (#181)
+                for &nh in &new_handles {
+                    if matches!(
+                        self.tabs[i].scene.document.get_entity(nh),
+                        Some(acadrust::EntityType::Dimension(_))
+                    ) {
+                        crate::modules::draw::modify::explode::invalidate_dim_block(
+                            &mut self.tabs[i].scene.document,
+                            nh,
+                        );
+                    }
+                }
                 if let Some(cmd) = &mut self.tabs[i].active_cmd {
                     cmd.on_entity_replaced(handle, &new_handles);
                 }
@@ -1872,6 +1897,7 @@ impl OpenCADStudio {
             }
             CmdResult::DdeditEntity { handle, new_text } => {
                 let mut updated = false;
+                let mut is_dim = false;
                 if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
                     match entity {
                         acadrust::EntityType::Text(t) => {
@@ -1895,9 +1921,18 @@ impl OpenCADStudio {
                             let base = d.base_mut();
                             base.text = new_text;
                             updated = true;
+                            is_dim = true;
                         }
                         _ => {}
                     }
+                }
+                if is_dim {
+                    // The edited override changed the dimension text; drop its
+                    // stale *D block so save re-bakes it. (#181)
+                    crate::modules::draw::modify::explode::invalidate_dim_block(
+                        &mut self.tabs[i].scene.document,
+                        handle,
+                    );
                 }
                 if updated {
                     self.push_undo_snapshot(i, "DDEDIT");
@@ -2269,6 +2304,9 @@ fn apply_dimspace(scene: &mut crate::scene::Scene, encoded: &str) {
                 _ => {}
             }
         }
+        // The dimension line moved, so its baked *D block is stale — drop it so
+        // the next save re-bakes it (no-op for non-dimensions). (#181)
+        crate::modules::draw::modify::explode::invalidate_dim_block(&mut scene.document, h);
     }
     scene.bump_geometry();
 }
