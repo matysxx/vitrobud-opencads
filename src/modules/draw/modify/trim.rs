@@ -213,6 +213,7 @@ const TRIM_EXTENT: f64 = 1_000_000.0;
 /// If a trim interval endpoint is beyond this threshold it is treated as "infinite".
 const INF_T: f64 = 0.9999;
 
+#[derive(Clone)]
 enum Geo {
     Line {
         handle: Handle,
@@ -2806,3 +2807,504 @@ mod tests {
         assert!(trim_circle(&c, &[0.4], 0.3).is_empty());
     }
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// ExtrimCommand — EXTRIM (Express-Tools cookie-cutter trim). #253
+//
+// Pick one boundary, then a side: every object crossing the boundary is trimmed
+// on the picked side, and objects lying wholly on that side are erased. The side
+// test is a parity count — a segment from a candidate point to the pick point
+// that crosses the boundary an even number of times lands on the pick side.
+// ══════════════════════════════════════════════════════════════════════════
+
+/// Extend `Geo::Line` boundary edges so a line boundary cuts across the whole
+/// drawing (EXTRIM treats a line boundary as infinite).
+fn extend_line_geos(geos: &mut [Geo]) {
+    for g in geos.iter_mut() {
+        if let Geo::Line { p1, p2, .. } = g {
+            let (dx, dy) = (p2[0] - p1[0], p2[1] - p1[1]);
+            let len = dx.hypot(dy);
+            if len > 1e-9 {
+                let (ux, uy) = (dx / len, dy / len);
+                let mid = [(p1[0] + p2[0]) * 0.5, (p1[1] + p2[1]) * 0.5];
+                *p1 = [mid[0] - ux * TRIM_EXTENT, mid[1] - uy * TRIM_EXTENT];
+                *p2 = [mid[0] + ux * TRIM_EXTENT, mid[1] + uy * TRIM_EXTENT];
+            }
+        }
+    }
+}
+
+/// Kept parametric intervals — those whose midpoint is NOT on the pick side.
+fn extrim_keep(
+    ts: &[f64],
+    point_at: &dyn Fn(f64) -> [f64; 2],
+    on_pick_side: &dyn Fn([f64; 2]) -> bool,
+) -> Vec<(f64, f64)> {
+    let mut bounds = vec![0.0f64];
+    bounds.extend_from_slice(ts);
+    bounds.push(1.0);
+    bounds.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    bounds
+        .windows(2)
+        .filter_map(|w| {
+            if w[1] - w[0] <= 1e-6 {
+                return None;
+            }
+            let mid = point_at((w[0] + w[1]) * 0.5);
+            if on_pick_side(mid) {
+                None
+            } else {
+                Some((w[0], w[1]))
+            }
+        })
+        .collect()
+}
+
+fn extrim_line(orig: &LineEnt, ts: &[f64], side: &dyn Fn([f64; 2]) -> bool) -> Vec<EntityType> {
+    let p1 = [orig.start.x, orig.start.y];
+    let p2 = [orig.end.x, orig.end.y];
+    let z = orig.start.z;
+    let pa = |t: f64| lerp2(p1, p2, t);
+    extrim_keep(ts, &pa, side)
+        .into_iter()
+        .filter_map(|(ta, tb)| {
+            let a = lerp2(p1, p2, ta);
+            let b = lerp2(p1, p2, tb);
+            if (b[0] - a[0]).hypot(b[1] - a[1]) < 1e-6 {
+                return None;
+            }
+            let mut l = orig.clone();
+            l.common.handle = Handle::NULL;
+            l.start = Vector3::new(a[0], a[1], z);
+            l.end = Vector3::new(b[0], b[1], z);
+            Some(EntityType::Line(l))
+        })
+        .collect()
+}
+
+fn extrim_arc(orig: &ArcEnt, ts: &[f64], side: &dyn Fn([f64; 2]) -> bool) -> Vec<EntityType> {
+    let a0 = orig.start_angle;
+    let a1 = orig.end_angle;
+    let span = {
+        let s = norm(a1) - norm(a0);
+        if s <= 0.0 {
+            s + TAU
+        } else {
+            s
+        }
+    };
+    let angle_at = |t: f64| norm(a0) + span * t;
+    let (cx, cy, r) = (orig.center.x, orig.center.y, orig.radius);
+    let pt = |t: f64| {
+        let a = angle_at(t);
+        [cx + r * a.cos(), cy + r * a.sin()]
+    };
+    extrim_keep(ts, &pt, side)
+        .into_iter()
+        .filter_map(|(ta, tb)| {
+            if (tb - ta).abs() < 1e-6 {
+                return None;
+            }
+            let mut a = orig.clone();
+            a.common.handle = Handle::NULL;
+            a.start_angle = angle_at(ta);
+            a.end_angle = angle_at(tb);
+            Some(EntityType::Arc(a))
+        })
+        .collect()
+}
+
+fn extrim_circle(orig: &CircleEnt, ts: &[f64], side: &dyn Fn([f64; 2]) -> bool) -> Vec<EntityType> {
+    if ts.len() < 2 {
+        return vec![];
+    }
+    let (cx, cy, r) = (orig.center.x, orig.center.y, orig.radius);
+    let mut s = ts.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = s.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let ta = s[i];
+        let tb = if i + 1 < n { s[i + 1] } else { s[0] + 1.0 };
+        let mt = ((ta + tb) * 0.5).rem_euclid(1.0) * TAU;
+        let mid = [cx + r * mt.cos(), cy + r * mt.sin()];
+        if side(mid) {
+            continue; // removed side
+        }
+        let mut arc = ArcEnt::new();
+        arc.common = orig.common.clone();
+        arc.common.handle = Handle::NULL;
+        arc.center = orig.center;
+        arc.radius = orig.radius;
+        arc.thickness = orig.thickness;
+        arc.normal = orig.normal;
+        arc.start_angle = ta.rem_euclid(1.0) * TAU;
+        arc.end_angle = tb.rem_euclid(1.0) * TAU;
+        out.push(EntityType::Arc(arc));
+    }
+    out
+}
+
+/// Sample any entity to a dense XY polyline for the sampled trim path.
+fn sample_entity_xy(e: &EntityType) -> Vec<[f64; 2]> {
+    match e {
+        EntityType::Line(l) => vec![[l.start.x, l.start.y], [l.end.x, l.end.y]],
+        EntityType::Arc(a) => {
+            let span = {
+                let s = norm(a.end_angle) - norm(a.start_angle);
+                if s <= 0.0 {
+                    s + TAU
+                } else {
+                    s
+                }
+            };
+            let steps = (span.abs() * 16.0).ceil().max(4.0) as usize;
+            (0..=steps)
+                .map(|i| {
+                    let ang = norm(a.start_angle) + span * (i as f64 / steps as f64);
+                    [
+                        a.center.x + a.radius * ang.cos(),
+                        a.center.y + a.radius * ang.sin(),
+                    ]
+                })
+                .collect()
+        }
+        EntityType::LwPolyline(_)
+        | EntityType::Polyline(_)
+        | EntityType::Polyline2D(_)
+        | EntityType::Polyline3D(_) => {
+            let mut pts: Vec<[f64; 2]> = Vec::new();
+            for seg in crate::modules::draw::modify::explode::explode_polyline_segments(e) {
+                let sp = sample_entity_xy(&seg);
+                if pts.last() == sp.first() {
+                    pts.extend_from_slice(&sp[1..]);
+                } else {
+                    pts.extend(sp);
+                }
+            }
+            pts
+        }
+        EntityType::Ellipse(el) => {
+            let mx = el.major_axis.x;
+            let my = el.major_axis.y;
+            let a = (mx * mx + my * my).sqrt();
+            if a < 1e-9 {
+                return vec![];
+            }
+            let (nx, ny) = (mx / a, my / a);
+            let b = a * el.minor_axis_ratio;
+            let t0 = el.start_parameter;
+            let mut t1 = el.end_parameter;
+            if t1 <= t0 {
+                t1 += TAU;
+            }
+            ellipse_pts(el.center.x, el.center.y, a, b, nx, ny, t0, t1, el.center.z)
+                .into_iter()
+                .map(|p| [p[0] as f64, p[1] as f64])
+                .collect()
+        }
+        EntityType::Spline(s) => {
+            let (_, pts) = spline_sample_xy(s, 96);
+            pts.into_iter().map(|p| [p[0], p[1]]).collect()
+        }
+        _ => vec![],
+    }
+}
+
+/// Dense XY sampling of any entity for the removal preview (lines are
+/// subdivided and circles closed so the preview cut follows the boundary).
+fn preview_sample_xy(e: &EntityType) -> Vec<[f64; 2]> {
+    match e {
+        EntityType::Line(l) => {
+            let p1 = [l.start.x, l.start.y];
+            let p2 = [l.end.x, l.end.y];
+            (0..=24).map(|i| lerp2(p1, p2, i as f64 / 24.0)).collect()
+        }
+        EntityType::Circle(c) => {
+            let steps = 64usize;
+            (0..=steps)
+                .map(|i| {
+                    let a = TAU * (i as f64 / steps as f64);
+                    [c.center.x + c.radius * a.cos(), c.center.y + c.radius * a.sin()]
+                })
+                .collect()
+        }
+        _ => sample_entity_xy(e),
+    }
+}
+
+/// Append the sub-runs of `pts` for which `take` holds to `out` as one wire's
+/// point list, separated from earlier content by a NaN pen-up.
+fn collect_runs(pts: &[[f64; 2]], take: &dyn Fn([f64; 2]) -> bool, out: &mut Vec<[f32; 3]>) {
+    let mut run: Vec<[f64; 2]> = Vec::new();
+    let flush = |run: &mut Vec<[f64; 2]>, out: &mut Vec<[f32; 3]>| {
+        if run.len() >= 2 {
+            if !out.is_empty() {
+                out.push([f32::NAN, f32::NAN, f32::NAN]);
+            }
+            out.extend(run.iter().map(|p| [p[0] as f32, p[1] as f32, 0.0]));
+        }
+        run.clear();
+    };
+    for &p in pts {
+        if take(p) {
+            run.push(p);
+        } else {
+            flush(&mut run, out);
+        }
+    }
+    flush(&mut run, out);
+}
+
+/// Build a preview wire from a NaN-break point list.
+fn preview_wire(points: Vec<[f32; 3]>, color: [f32; 4], name: &str) -> WireModel {
+    WireModel {
+        text_verts: Vec::new(),
+        name: name.into(),
+        points,
+        points_low: Vec::new(),
+        color,
+        selected: false,
+        pattern_length: 0.0,
+        pattern: [0.0; 8],
+        line_weight_px: 1.0,
+        snap_pts: vec![],
+        tangent_geoms: vec![],
+        aci: 0,
+        key_vertices: vec![],
+        aabb: WireModel::UNBOUNDED_AABB,
+        plinegen: true,
+        vp_scissor: None,
+        fill_tris: vec![],
+        fill_tris_low: Vec::new(),
+    }
+}
+
+/// Sampled trim: `None` leaves the entity unchanged, `Some(vec![])` erases it,
+/// `Some(runs)` replaces it with the surviving pieces as LwPolylines.
+fn extrim_sampled(pts: &[[f64; 2]], side: &dyn Fn([f64; 2]) -> bool) -> Option<Vec<EntityType>> {
+    if pts.len() < 2 {
+        return None;
+    }
+    let any_removed = pts.iter().any(|p| side(*p));
+    if !any_removed {
+        return None; // wholly on the kept side — untouched
+    }
+    let any_kept = pts.iter().any(|p| !side(*p));
+    if !any_kept {
+        return Some(vec![]); // wholly on the pick side — erased
+    }
+    let mut runs: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut cur: Vec<[f64; 2]> = Vec::new();
+    for &p in pts {
+        if side(p) {
+            if cur.len() >= 2 {
+                runs.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        } else {
+            cur.push(p);
+        }
+    }
+    if cur.len() >= 2 {
+        runs.push(cur);
+    }
+    Some(
+        runs.into_iter()
+            .map(|run| {
+                let mut pl = LwPolyline::new();
+                pl.common.handle = Handle::NULL;
+                pl.is_closed = false;
+                pl.vertices = run
+                    .into_iter()
+                    .map(|p| LwVertex::from_coords(p[0], p[1]))
+                    .collect();
+                EntityType::LwPolyline(pl)
+            })
+            .collect(),
+    )
+}
+
+pub struct ExtrimCommand {
+    all: Vec<(Handle, EntityType)>,
+    boundary: Option<Handle>,
+    geos: Vec<Geo>,
+}
+
+impl ExtrimCommand {
+    pub fn new(all: Vec<(Handle, EntityType)>) -> Self {
+        Self { all, boundary: None, geos: Vec::new() }
+    }
+}
+
+impl CadCommand for ExtrimCommand {
+    fn name(&self) -> &'static str {
+        "EXTRIM"
+    }
+
+    fn prompt(&self) -> String {
+        if self.boundary.is_none() {
+            "EXTRIM  Select cutting boundary:".into()
+        } else {
+            "EXTRIM  Click the side to trim away:".into()
+        }
+    }
+
+    fn needs_entity_pick(&self) -> bool {
+        self.boundary.is_none()
+    }
+
+    fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
+        if handle.is_null() {
+            return CmdResult::NeedPoint;
+        }
+        let Some((_, e)) = self.all.iter().find(|(h, _)| *h == handle) else {
+            return CmdResult::NeedPoint;
+        };
+        let mut geos = build_geos(std::slice::from_ref(e));
+        extend_line_geos(&mut geos);
+        if geos.is_empty() {
+            return CmdResult::NeedPoint; // not a usable boundary; keep asking
+        }
+        self.boundary = Some(handle);
+        self.geos = geos;
+        CmdResult::NeedPoint
+    }
+
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
+        let Some(bh) = self.boundary else {
+            return CmdResult::NeedPoint;
+        };
+        let q = [pt.x, pt.y];
+        let geos = self.geos.clone();
+        let side =
+            |m: [f64; 2]| line_seg_ts(m[0], m[1], q[0], q[1], Handle::NULL, &geos).len() % 2 == 0;
+        let mut repl: Vec<(Handle, Vec<EntityType>)> = Vec::new();
+        for (h, e) in &self.all {
+            if *h == bh {
+                continue;
+            }
+            match e {
+                EntityType::Line(l) => {
+                    let ts = line_seg_ts(l.start.x, l.start.y, l.end.x, l.end.y, *h, &geos);
+                    if ts.is_empty() {
+                        let mid = [(l.start.x + l.end.x) * 0.5, (l.start.y + l.end.y) * 0.5];
+                        if side(mid) {
+                            repl.push((*h, vec![]));
+                        }
+                    } else {
+                        repl.push((*h, extrim_line(l, &ts, &side)));
+                    }
+                }
+                EntityType::Arc(a) => {
+                    let ts = arc_seg_ts(
+                        a.center.x,
+                        a.center.y,
+                        a.radius,
+                        a.start_angle,
+                        a.end_angle,
+                        *h,
+                        &geos,
+                    );
+                    if ts.is_empty() {
+                        let am = norm(a.start_angle);
+                        let mid =
+                            [a.center.x + a.radius * am.cos(), a.center.y + a.radius * am.sin()];
+                        if side(mid) {
+                            repl.push((*h, vec![]));
+                        }
+                    } else {
+                        repl.push((*h, extrim_arc(a, &ts, &side)));
+                    }
+                }
+                EntityType::Circle(c) => {
+                    let ts = arc_seg_ts(c.center.x, c.center.y, c.radius, 0.0, TAU, *h, &geos);
+                    if ts.len() < 2 {
+                        if side([c.center.x, c.center.y]) {
+                            repl.push((*h, vec![]));
+                        }
+                    } else {
+                        repl.push((*h, extrim_circle(c, &ts, &side)));
+                    }
+                }
+                EntityType::LwPolyline(_)
+                | EntityType::Polyline(_)
+                | EntityType::Polyline2D(_)
+                | EntityType::Polyline3D(_)
+                | EntityType::Ellipse(_)
+                | EntityType::Spline(_) => {
+                    let pts = sample_entity_xy(e);
+                    if let Some(res) = extrim_sampled(&pts, &side) {
+                        repl.push((*h, res));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if repl.is_empty() {
+            return CmdResult::Cancel;
+        }
+        CmdResult::ReplaceMany(repl, Vec::new())
+    }
+
+    fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> {
+        let Some(bh) = self.boundary else {
+            return Vec::new();
+        };
+        if self.geos.is_empty() {
+            return Vec::new();
+        }
+        let q = [pt.x, pt.y];
+        let geos = &self.geos;
+        let side =
+            |m: [f64; 2]| line_seg_ts(m[0], m[1], q[0], q[1], Handle::NULL, geos).len() % 2 == 0;
+        // Removed (pick side) → red, surviving → blue; the boundary → yellow.
+        let mut removed: Vec<[f32; 3]> = Vec::new();
+        let mut kept: Vec<[f32; 3]> = Vec::new();
+        for (h, e) in &self.all {
+            if *h == bh {
+                continue;
+            }
+            let pts = preview_sample_xy(e);
+            if pts.len() < 2 {
+                continue;
+            }
+            collect_runs(&pts, &side, &mut removed);
+            collect_runs(&pts, &|p| !side(p), &mut kept);
+        }
+        let mut boundary_pts: Vec<[f32; 3]> = Vec::new();
+        if let Some((_, be)) = self.all.iter().find(|(h, _)| *h == bh) {
+            boundary_pts = preview_sample_xy(be)
+                .into_iter()
+                .map(|p| [p[0] as f32, p[1] as f32, 0.0])
+                .collect();
+        }
+
+        const YELLOW: [f32; 4] = [1.0, 0.90, 0.15, 1.0];
+        const REMOVE_RED: [f32; 4] = [0.95, 0.30, 0.30, 1.0];
+        let mut out = Vec::new();
+        if boundary_pts.len() >= 2 {
+            out.push(preview_wire(boundary_pts, YELLOW, "extrim_boundary"));
+        }
+        if kept.len() >= 2 {
+            out.push(preview_wire(kept, WireModel::SELECTED, "extrim_keep"));
+        }
+        if removed.len() >= 2 {
+            out.push(preview_wire(removed, REMOVE_RED, "extrim_remove"));
+        }
+        out
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+
+    fn on_escape(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
+
+inventory::submit!(crate::command::CommandRegistration {
+    names: &["EXTRIM"]
+}); // ExtrimCommand

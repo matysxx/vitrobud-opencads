@@ -914,6 +914,22 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
+            "EXTRIM" => {
+                use crate::modules::draw::modify::trim::ExtrimCommand;
+                let all: Vec<_> = self.tabs[i]
+                    .scene
+                    .entity_wires()
+                    .iter()
+                    .filter_map(|w| {
+                        let h = Scene::handle_from_wire_name(&w.name)?;
+                        self.tabs[i].scene.document.get_entity(h).cloned().map(|e| (h, e))
+                    })
+                    .collect();
+                let new_cmd = ExtrimCommand::new(all);
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
+            }
+
             "EXTEND" | "EX" => {
                 use crate::modules::draw::modify::trim::ExtendCommand;
                 let entities: Vec<_> = self.tabs[i]

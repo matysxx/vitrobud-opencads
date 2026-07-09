@@ -462,6 +462,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "EXPORT",
         "EXPORTSTEP",
         "EXPORTSTL",
+        "EXTRIM",
         "FILETAB",
         "FIND",
         "FLATTEN",
