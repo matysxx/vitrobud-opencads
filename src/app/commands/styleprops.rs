@@ -527,6 +527,7 @@ impl OpenCADStudio {
             cmd if matches!(
                 cmd.split_whitespace().next().unwrap_or(""),
                 "MIRRTEXT"
+                    | "TEXTFILL"
                     | "ATTREQ"
                     | "ATTDIA"
                     | "DIMASSOC"
@@ -677,6 +678,23 @@ impl OpenCADStudio {
                                     })
                                     .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
                                 None => Ok((format!("MIRRTEXT = {}", h.mirror_text as i32), false)),
+                            },
+                            // Global (not stored in the drawing): fill vs. hollow
+                            // TrueType text. The active tab re-tessellates below.
+                            "TEXTFILL" => match &value {
+                                Some(v) => parse_bool(v)
+                                    .map(|b| {
+                                        crate::scene::text::sdf_atlas::set_textfill(b);
+                                        (format!("TEXTFILL = {}", b as i32), true)
+                                    })
+                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!(
+                                        "TEXTFILL = {}",
+                                        crate::scene::text::sdf_atlas::textfill() as i32
+                                    ),
+                                    false,
+                                )),
                             },
                             "ATTREQ" => match &value {
                                 Some(v) => parse_bool(v)
@@ -1226,6 +1244,11 @@ impl OpenCADStudio {
                             }
                         }
                         Err(e) => self.command_line.push_error(&e),
+                    }
+                    // TEXTFILL reset the glyph atlas; re-tessellate so text picks
+                    // up the re-baked filled / hollow tiles.
+                    if name == "TEXTFILL" {
+                        self.tabs[i].scene.bump_geometry();
                     }
                 }
             }

@@ -328,6 +328,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "TCASE",
         "TEXTMASK",
         "TEXTFIT",
+        "TEXTFILL",
         "TCOUNT",
         "ARCTEXT",
         // Jogged radius dimension.

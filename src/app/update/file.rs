@@ -79,6 +79,7 @@ impl OpenCADStudio {
             },
             plugin_repos: self.plugin_repos.clone(),
             texteditmode: self.texteditmode,
+            textfill: crate::scene::text::sdf_atlas::textfill(),
             backup_on_save: self.backup_on_save,
             file_assoc_enabled: self.file_assoc_enabled,
             savetime_min: self.savetime_min,
@@ -100,6 +101,7 @@ impl OpenCADStudio {
         self.disabled_plugins = s.disabled_plugins.iter().cloned().collect();
         self.plugin_repos = s.plugin_repos.clone();
         self.texteditmode = s.texteditmode;
+        crate::scene::text::sdf_atlas::set_textfill(s.textfill);
         self.backup_on_save = s.backup_on_save;
         self.file_assoc_enabled = s.file_assoc_enabled;
         self.savetime_min = s.savetime_min;

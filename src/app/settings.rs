@@ -103,6 +103,8 @@ pub struct UserSettings {
     pub plugin_repos: Vec<String>,
     /// Controls whether the TEXTEDIT command repeats automatically (0 = Multiple, 1 = Single).
     pub texteditmode: bool,
+    /// TEXTFILL: fill TrueType glyphs (true) or draw them hollow (false).
+    pub textfill: bool,
     /// When true, saving over an existing file first copies it to a sibling
     /// `<name>.bak` so a faulty or accidental save can be recovered (#205).
     pub backup_on_save: bool,
@@ -142,6 +144,7 @@ impl Default for UserSettings {
             disabled_plugins: Vec::new(),
             plugin_repos: Vec::new(),
             texteditmode: false,
+            textfill: true,
             backup_on_save: true,
             file_assoc_enabled: true,
             savetime_min: 10,
@@ -190,6 +193,7 @@ impl UserSettings {
                     }
                 }
                 "backup_on_save" => s.backup_on_save = val == "1",
+                "textfill" => s.textfill = val == "1",
                 "file_assoc_enabled" => s.file_assoc_enabled = val == "1",
                 "savetime_min" => {
                     if let Ok(v) = val.parse::<i32>() {
@@ -237,7 +241,7 @@ impl UserSettings {
             .collect::<Vec<_>>()
             .join(",");
         let body = format!(
-            "dyn={}\northo={}\npolar={}\npolar_increment_deg={}\nosnap={}\notrack={}\ndefault_assoc_prompted={}\nsnap_modes={}\ndisabled_plugins={}\nplugin_repos={}\ntexteditmode={}\nbackup_on_save={}\nfile_assoc_enabled={}\nsavetime_min={}\nbg_color={}\npaper_bg_color={}\n",
+            "dyn={}\northo={}\npolar={}\npolar_increment_deg={}\nosnap={}\notrack={}\ndefault_assoc_prompted={}\nsnap_modes={}\ndisabled_plugins={}\nplugin_repos={}\ntexteditmode={}\ntextfill={}\nbackup_on_save={}\nfile_assoc_enabled={}\nsavetime_min={}\nbg_color={}\npaper_bg_color={}\n",
             b(self.dyn_input),
             b(self.ortho),
             b(self.polar),
@@ -249,6 +253,7 @@ impl UserSettings {
             self.disabled_plugins.join(","),
             self.plugin_repos.join(","),
             self.texteditmode,
+            b(self.textfill),
             b(self.backup_on_save),
             b(self.file_assoc_enabled),
             self.savetime_min,

@@ -39,6 +39,24 @@ pub fn text_atlas() -> &'static Mutex<GlyphAtlas> {
     ATLAS.get_or_init(|| Mutex::new(GlyphAtlas::new(1024, 1024)))
 }
 
+/// TEXTFILL system variable — `true` fills TrueType glyphs (default), `false`
+/// draws them hollow (outline only). Global, like the AutoCAD system variable.
+static TEXTFILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn textfill() -> bool {
+    TEXTFILL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set TEXTFILL and drop the cached glyphs so they re-bake filled / hollow.
+/// Callers must re-tessellate text (`bump_geometry`) so quads pick up the
+/// re-baked tiles.
+pub fn set_textfill(on: bool) {
+    TEXTFILL.store(on, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut a) = text_atlas().lock() {
+        a.reset();
+    }
+}
+
 /// Debug: when env `OCS_TEXT_BOX` is set, each SDF text run also emits a
 /// rectangle outline around its glyph bounds so the text pick box is visible.
 /// Read once.
@@ -173,6 +191,12 @@ impl GlyphAtlas {
         self.dirty = false;
     }
 
+    /// Drop every cached glyph and re-init the texture, so glyphs re-bake on
+    /// next use (e.g. after TEXTFILL toggles between fill and outline).
+    pub fn reset(&mut self) {
+        *self = GlyphAtlas::new(self.width, self.height);
+    }
+
     /// Look up a glyph's atlas placement, baking + packing it on first use.
     /// Returns `None` for whitespace/empty glyphs (nothing to draw) and when the
     /// atlas is full (Phase 1 is single-page; callers should treat `None` as
@@ -229,7 +253,10 @@ impl GlyphAtlas {
 
 /// Rasterize a glyph into an SDF tile. `None` if the glyph has no ink.
 fn bake_glyph(g: &Glyph) -> Option<BakedTile> {
-    let filled = !g.fill_tris.is_empty();
+    // TEXTFILL 0 renders TrueType glyphs hollow: bake them as a stroke field
+    // (outline) instead of a signed fill field. Stroke fonts (no fill tris) are
+    // unaffected.
+    let filled = textfill() && !g.fill_tris.is_empty();
 
     // Ink bounding box over all strokes (and fill triangles, for safety).
     let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
