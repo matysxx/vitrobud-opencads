@@ -707,11 +707,22 @@ impl OpenCADStudio {
             Message::TabClose(idx) => self.on_tab_close(idx),
 
             Message::CommandInput(s) => {
-                // Space is a literal character so a whole command line — `UCS Z
-                // 90`, `LINE 0,0 10,10`, `PDMODE 3` — can be typed before Enter.
-                // CommandSubmit (Enter) tokenises and runs the line through the
-                // shared runner. (Unfocused Space still repeats the last command
-                // via CommandSpace.)
+                // Space submits (acts like Enter) so a command advances
+                // token-by-token, matching CAD convention. A leading `>` switches
+                // to literal-space mode so an argument containing spaces (a text
+                // string, a path, `UCS Z 90` as one line) can be typed; the `>`
+                // is stripped on submit. (Unfocused Space repeats the last
+                // command via CommandSpace.)
+                // Command-line entry is shown uppercase.
+                let s = s.to_uppercase();
+                // A space submits (acts like Enter). The whole value is handed to
+                // the submit path, which tokenises multi-token lines — so a typed
+                // token, a pasted `LINE 0,0 10,10`, or API-fed text all run their
+                // spaces as step separators. A leading `>` keeps spaces literal.
+                if !s.starts_with('>') && s.contains(' ') {
+                    self.command_line.input = s;
+                    return self.update(Message::CommandSubmit);
+                }
                 self.command_line.input = s;
                 // Typing invalidates the previous arrow-key cursor —
                 // the matches list has likely changed.
@@ -860,6 +871,13 @@ impl OpenCADStudio {
                 // it finalises the active command like Enter.
                 if self.mtext_editor.as_ref().is_some_and(|e| e.show_preview) {
                     self.mtext_type(" ");
+                    return Task::none();
+                }
+                // A leading `>` puts the command line in "literal space" mode so
+                // the user can type arguments that contain spaces; otherwise
+                // Space works like Enter. The `>` is stripped on submit.
+                if self.command_line.input.starts_with('>') {
+                    self.command_line.input.push(' ');
                     return Task::none();
                 }
                 return self.update(Message::CommandFinalize);

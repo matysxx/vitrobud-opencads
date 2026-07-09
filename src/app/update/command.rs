@@ -103,7 +103,8 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             .get_or_insert_with(String::new)
                             .push_str(&s);
                     } else {
-                        self.command_line.input.push_str(&s);
+                        // Command-line entry is shown uppercase.
+                        self.command_line.input.push_str(&s.to_uppercase());
                     }
                 }
                 self.command_line.autocomplete_cursor = None;
@@ -140,6 +141,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 // dropdown so the dispatched command's new prompt is
                 // immediately visible on the overlay.
                 self.command_line.close_history();
+                // A leading `>` was only a "literal spaces" typing hint (see
+                // CommandSpace) — drop it before the input is interpreted.
+                if self.command_line.input.starts_with('>') {
+                    self.command_line.input.remove(0);
+                }
                 // Grip-menu value prompt — consume the typed number and
                 // route it through `apply_grip_menu_value`.
                 if let Some(pending) = self.grip_pending.take() {
