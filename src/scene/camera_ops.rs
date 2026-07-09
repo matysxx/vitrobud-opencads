@@ -3,6 +3,16 @@
 // hit-testing lives in `scene::pick::hit_test`.)
 use super::*;
 
+/// The model-space active viewport is reserved as `*Active`, but that name is
+/// case-insensitive in DXF/DWG — a file may store it as `*ACTIVE`. Match it
+/// accordingly, otherwise an uppercased record reads as a *distinct* viewport:
+/// on save it survives the "drop the old *Active" filter and sits next to the
+/// fresh entry we add, so the file gets two overlapping full-window viewports
+/// that render "one on top of the other". (#319)
+fn is_active_vport_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("*Active")
+}
+
 impl Scene {
     // ── Hit-test convenience: wire name → Handle ──────────────────────────
 
@@ -131,7 +141,7 @@ impl Scene {
     fn apply_active_vport_camera(&mut self) -> bool {
         // Restore the single tile's visual style + grid/snap from the *Active
         // entry, independent of where the camera itself comes from below.
-        if let Some(vp) = self.document.vports.iter().find(|v| v.name == "*Active") {
+        if let Some(vp) = self.document.vports.iter().find(|v| is_active_vport_name(&v.name)) {
             let mode = vp.render_mode;
             let (grid_on, snap_on) = (vp.grid_on, vp.snap_on);
             let mut tiles = self.model_tiles.borrow_mut();
@@ -146,7 +156,7 @@ impl Scene {
         // wrote an app-specific "OpenCADStudio_Camera_Model" View record and
         // preferred it here — that polluted the file for other CAD programs and
         // is no longer written or read; the view round-trips fine via VPORT.)
-        let vp = match self.document.vports.iter().find(|v| v.name == "*Active") {
+        let vp = match self.document.vports.iter().find(|v| is_active_vport_name(&v.name)) {
             Some(v) => v.clone(),
             None => return false,
         };
@@ -317,7 +327,7 @@ impl Scene {
             .document
             .vports
             .iter()
-            .filter(|v| v.name == "*Active")
+            .filter(|v| is_active_vport_name(&v.name))
             .cloned()
             .collect();
 
@@ -372,7 +382,7 @@ impl Scene {
             .document
             .vports
             .iter()
-            .filter(|v| v.name != "*Active")
+            .filter(|v| !is_active_vport_name(&v.name))
             .cloned()
             .collect();
         let mut new_vports = acadrust::tables::Table::with_handle(table_handle);
@@ -544,7 +554,7 @@ impl Scene {
                 .document
                 .vports
                 .iter_mut()
-                .find(|v| v.name == "*Active")
+                .find(|v| is_active_vport_name(&v.name))
             {
                 vp.view_target = target_wcs;
                 vp.view_center = acadrust::types::Vector2::ZERO;
