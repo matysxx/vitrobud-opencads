@@ -846,6 +846,7 @@ impl Scene {
         bounds: Rectangle,
         model_render_mode: acadrust::entities::ViewportRenderMode,
         _hover_region: Option<usize>,
+        show_viewcube: bool,
     ) -> Primitive {
         // Hover comes from the scene cell driven by the app-level
         // `CursorMoved` handler — the cube overlay sits above the shader
@@ -864,7 +865,7 @@ impl Scene {
         let bg_color = [0.0, 0.0, 0.0, 0.0];
         let viewports: Vec<ViewportData> = instances
             .iter()
-            .filter_map(|inst| self.viewport_data_for(inst, canvas, hover_region))
+            .filter_map(|inst| self.viewport_data_for(inst, canvas, hover_region, show_viewcube))
             .collect();
         // Empty viewports → blit nothing; the container background (model bg
         // or the paper desk colour) stays visible.
@@ -886,6 +887,7 @@ impl Scene {
         bounds: Rectangle,
         tile_idx: usize,
         model_render_mode: acadrust::entities::ViewportRenderMode,
+        show_viewcube: bool,
     ) -> Primitive {
         let hover_region = self.viewcube_hover.get();
         let canvas = (bounds.width.max(1.0), bounds.height.max(1.0));
@@ -926,7 +928,7 @@ impl Scene {
             paper_sheet: false,
         };
         let viewports = self
-            .viewport_data_for(&inst, canvas, hover_region)
+            .viewport_data_for(&inst, canvas, hover_region, show_viewcube)
             .into_iter()
             .collect();
         Primitive {
@@ -945,6 +947,7 @@ impl Scene {
         inst: &ViewportInstance,
         canvas: (f32, f32),
         hover_region: Option<usize>,
+        show_viewcube: bool,
     ) -> Option<ViewportData> {
         let flags = render_mode_flags(inst.render_mode);
         let view_wireframe = !flags.face3d_fill;
@@ -1159,7 +1162,10 @@ impl Scene {
             compass_rotation: inst.camera.view_rotation_mat(),
             // Only the active viewport gets the hovered-region highlight.
             hover_region: if inst.active { hover_region } else { None },
-            show_viewcube: inst.active,
+            // The cube shows only on the active viewport, and only while the
+            // caller (the widget) says there is room for it beside the render
+            // bar — so it hides adaptively when the viewport gets narrow.
+            show_viewcube: inst.active && show_viewcube,
             fill_mode: self.document.header.fill_mode,
             view_wireframe,
             mesh_fill: flags.mesh_fill,

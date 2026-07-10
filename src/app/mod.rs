@@ -398,6 +398,11 @@ pub(super) struct OpenCADStudio {
     ucs_icon_at_origin: bool,
     /// Whether the ViewCube 3D gizmo is visible in model space (NAVVCUBE).
     show_viewcube: bool,
+    /// Measured natural width (px, as `f32` bits) of the active viewport's
+    /// render-mode control bar, written each frame by its `DensitySwap` and read
+    /// next frame to decide whether the ViewCube still has room beside it — so
+    /// the two corner widgets adapt to the bar's real width, not an estimate.
+    render_bar_w: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// Whether the Properties panel is shown on the left (PROPERTIES).
     show_properties: bool,
     /// Whether the document file tabs are shown at the top (FILETAB).
@@ -2145,6 +2150,7 @@ impl OpenCADStudio {
             show_ucs_icon: true,
             ucs_icon_at_origin: true,
             show_viewcube: true,
+            render_bar_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             show_properties: true,
             show_file_tabs: true,
             show_layout_tabs: true,

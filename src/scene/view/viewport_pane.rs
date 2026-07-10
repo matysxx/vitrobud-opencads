@@ -69,12 +69,18 @@ impl<'a, Msg: std::fmt::Debug + Clone> shader::Program<Msg> for ViewportPane<'a>
         bounds: Rectangle,
     ) -> Self::Primitive {
         match self.pane {
-            Some(idx) => self
-                .scene
-                .build_viewport_for_pane(bounds, idx, self.render_mode),
-            None => self
-                .scene
-                .build_viewports(bounds, self.render_mode, state.hover_region),
+            Some(idx) => self.scene.build_viewport_for_pane(
+                bounds,
+                idx,
+                self.render_mode,
+                self.show_viewcube,
+            ),
+            None => self.scene.build_viewports(
+                bounds,
+                self.render_mode,
+                state.hover_region,
+                self.show_viewcube,
+            ),
         }
     }
 

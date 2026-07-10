@@ -6,6 +6,7 @@ use super::{Message, OpenCADStudio};
 use crate::scene::pick::grip::{grips_to_screen, grips_to_screen_paper, grips_to_screen_rte};
 use crate::scene::view::viewport_pane::ViewportPane;
 use crate::scene::{VIEWCUBE_PAD, VIEWCUBE_REGION_PX};
+use crate::ui::wrap_bar::DensitySwap;
 use crate::ui::wrap_bar::WrapFlow;
 use iced::widget::{
     button, canvas, column, container, mouse_area, pane_grid, responsive, row, shader, stack, text,
@@ -31,6 +32,18 @@ use viewcube::{viewcube_nav_controls, viewcube_ucs_picker, UCS_PICKER_W};
 pub(in crate::app) use overlay::{MTEXT_TEXT_ID, TEXT_INLINE_ID};
 
 const VIEWCUBE_HIT_SIZE: f32 = VIEWCUBE_REGION_PX;
+
+/// Clear gap (px) kept between the render-mode bar (top-left) and the ViewCube
+/// (top-right) before the cube is judged to collide and hides.
+const VIEWCUBE_GAP: f32 = 12.0;
+
+/// True when a viewport `tile_w` px wide still has room for the ViewCube beside
+/// a render-mode bar of measured width `bar_w`. When it doesn't, the cube hides
+/// first (the bar keeps priority); the bar itself hides separately, only when it
+/// no longer fits at all (its `DensitySwap`).
+fn viewcube_has_room(bar_w: f32, tile_w: f32) -> bool {
+    bar_w + VIEWCUBE_GAP + VIEWCUBE_REGION_PX + VIEWCUBE_PAD <= tile_w
+}
 
 /// `ViewportRenderMode` enum carries the raw DXF integers, not a label,
 /// so wrap it locally with a friendly name renderer.
@@ -69,6 +82,30 @@ impl OpenCADStudio {
         let i = self.active_tab;
         let tab = &self.tabs[i];
         let is_paper = tab.scene.current_layout != "Model";
+        // Adaptive corner widgets: the ViewCube shows only while the active
+        // viewport is wide enough to hold it *beside* the render-mode bar, whose
+        // real width is measured each frame by its `DensitySwap` and read back
+        // here (from the previous frame). This drives the GPU cube (via the pane
+        // flag), the ViewCube nav/UCS widgets, and the hover hit-test alike, so
+        // they never overlap. The bar itself hides independently (its own
+        // DensitySwap) only when it no longer fits at all.
+        let render_bar_w =
+            f32::from_bits(self.render_bar_w.load(std::sync::atomic::Ordering::Relaxed));
+        let active_vp_w = if is_paper {
+            tab.scene
+                .active_viewport
+                .and_then(|h| {
+                    let (cw, ch) = tab.scene.selection.borrow().vp_size;
+                    tab.scene.viewport_screen_rect(h, (cw, ch))
+                })
+                .map(|r| r.width)
+                .unwrap_or(f32::INFINITY)
+        } else {
+            let (vw, vh) = tab.scene.selection.borrow().vp_size;
+            tab.scene.active_model_tile_bounds(vw, vh).width
+        };
+        let viewcube_visible =
+            self.show_viewcube && !tab.is_start && viewcube_has_room(render_bar_w, active_vp_w);
         // Start tab: render welcome page in place of the viewport.
         // Surrounding chrome (tab bar, status bar) stays; the welcome widget
         // returned here also flags the rest of `view` to skip drawing-only
@@ -89,7 +126,7 @@ impl OpenCADStudio {
         } else if is_paper {
             shader(ViewportPane::model(
                 &tab.scene,
-                self.show_viewcube,
+                viewcube_visible,
                 tab.render_mode,
             ))
             .width(Fill)
@@ -106,7 +143,7 @@ impl OpenCADStudio {
             // current (building the pane_grid inside `responsive` resets the
             // mouse_areas' hover state and drops their move events).
             let scene = &tab.scene;
-            let show_viewcube = self.show_viewcube;
+            let show_viewcube = viewcube_visible;
             let render_mode = tab.render_mode;
             let size_probe: Element<'_, Message> = responsive(move |size| {
                 {
@@ -468,7 +505,8 @@ impl OpenCADStudio {
                 ost_points,
                 otrack_line,
                 parallel_ref_marker,
-                !is_paper && self.show_viewcube,
+                // ViewCube hover region matches the drawn cube — gone when hidden.
+                !is_paper && viewcube_visible,
                 dividers,
                 pane_move_rect,
                 pane_drop_rect,
@@ -657,6 +695,8 @@ impl OpenCADStudio {
         // viewport drawing / selection is unaffected. In a paper layout
         // the active viewport gets its own picker (below) instead.
         if !is_paper && !tab.is_start {
+            let (vw, vh) = tab.scene.selection.borrow().vp_size;
+            let rect = tab.scene.active_model_tile_bounds(vw, vh);
             // Unified control chip: split buttons + render-mode picker +
             // grid / grid-snap toggles, for the active Model tile.
             let bar = viewport_controls(
@@ -666,16 +706,28 @@ impl OpenCADStudio {
                 true,
                 tab.scene.model_tiles.borrow().len(),
             );
-            // Position the bar at the active model tile's top-left corner so
-            // it follows the active panel in a tiled layout (full canvas when
-            // a single tile fills the window). Leading Spaces offset it.
-            let (vw, vh) = tab.scene.selection.borrow().vp_size;
-            let rect = tab.scene.active_model_tile_bounds(vw, vh);
+            // Adaptive: DensitySwap measures the bar's real width every frame
+            // (reported into `render_bar_w`, which the ViewCube reads to decide
+            // overlap) and swaps it for an empty spacer only when it no longer
+            // fits the tile. The fixed-width container bounds that fit decision
+            // to the tile, not the whole canvas.
+            let adaptive: Element<'_, Message> = DensitySwap::new(vec![
+                iced::widget::opaque(bar),
+                Space::new()
+                    .width(iced::Length::Fixed(0.0))
+                    .height(iced::Length::Fixed(0.0))
+                    .into(),
+            ])
+            .report_width0(self.render_bar_w.clone())
+            .into();
+            // Position the bar at the active model tile's top-left corner so it
+            // follows the active panel in a tiled layout (full canvas when a
+            // single tile fills the window). Leading Spaces offset it.
             let bar_layer = column![
                 Space::new().height(iced::Length::Fixed(rect.y.max(0.0))),
                 row![
                     Space::new().width(iced::Length::Fixed(rect.x.max(0.0))),
-                    iced::widget::opaque(bar),
+                    container(adaptive).width(iced::Length::Fixed(rect.width.max(1.0))),
                 ],
             ]
             .width(Fill)
@@ -740,24 +792,38 @@ impl OpenCADStudio {
                 .scene
                 .active_viewport_render_mode()
                 .unwrap_or(acadrust::entities::ViewportRenderMode::Wireframe2D);
+            // Adaptive (same as model): the picker measures its real width into
+            // `render_bar_w` and swaps to an empty spacer only when the viewport
+            // can't hold it; the ViewCube reads that width to decide overlap.
+            let bar = viewport_controls(
+                vp_mode,
+                self.show_grid,
+                self.snapper.grid_snap(),
+                false,
+                0,
+            );
+            let adaptive: Element<'_, Message> = DensitySwap::new(vec![
+                iced::widget::opaque(bar),
+                Space::new()
+                    .width(iced::Length::Fixed(0.0))
+                    .height(iced::Length::Fixed(0.0))
+                    .into(),
+            ])
+            .report_width0(self.render_bar_w.clone())
+            .into();
             let picker_layer = column![
                 Space::new().height(iced::Length::Fixed(y + 4.0)),
                 row![
                     Space::new().width(iced::Length::Fixed(x + 4.0)),
-                    iced::widget::opaque(viewport_controls(
-                        vp_mode,
-                        self.show_grid,
-                        self.snapper.grid_snap(),
-                        false,
-                        0,
-                    )),
+                    container(adaptive).width(iced::Length::Fixed(rect.width.max(1.0))),
                 ],
             ]
             .width(Fill)
             .height(Fill);
             viewport_stack = viewport_stack.push(picker_layer);
 
-            if self.show_viewcube {
+            // Hide the ViewCube first — before the render bar — when they collide.
+            if viewcube_visible {
                 let cube_x = (rect.x + rect.width - VIEWCUBE_HIT_SIZE - VIEWCUBE_PAD).max(0.0);
                 let cube_y = (rect.y + VIEWCUBE_PAD).max(0.0);
 
@@ -799,7 +865,7 @@ impl OpenCADStudio {
             }
         }
 
-        if self.show_viewcube && !is_paper && !tab.is_start {
+        if viewcube_visible && !is_paper {
             // Place the ViewCube hit area in the active model tile's top-right
             // corner so it tracks the active panel in a tiled layout. The hit
             // test in update.rs already maps clicks through the active tile.
