@@ -1458,6 +1458,8 @@ pub enum Message {
     ToggleLayoutList,
     /// Close the Model/layout list dropdown.
     CloseLayoutList,
+    /// Cycle the coordinate readout mode ($COORDS): static → live → polar.
+    CycleCoordsMode,
     /// Toggle the status-bar customization menu open/closed.
     ToggleStatusBarMenu,
     /// Close the status-bar customization menu.

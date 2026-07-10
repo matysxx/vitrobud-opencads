@@ -79,6 +79,13 @@ impl StatusBar {
         lineweight_display: bool,
         // Live cursor position in model coordinates, for the coordinate readout.
         cursor_world: glam::Vec3,
+        // $COORDS readout mode: 0 = static (updates only on a pick), 1 = live
+        // absolute, 2 = polar (distance<angle from the last point while picking).
+        coords_mode: i16,
+        // The last committed point, for the static (0) and polar (2) readouts.
+        last_point: Option<glam::Vec3>,
+        // True while a command is prompting for a point (enables the polar readout).
+        picking: bool,
         // True while clean-screen mode hides the ribbon and side panels.
         clean_screen: bool,
         // Drawing units (INSUNITS) for the units pill.
@@ -153,10 +160,11 @@ impl StatusBar {
         let vis = |p: StatusPill| config.is_visible(p);
         let mut pills: Vec<Element<'_, Message>> = Vec::new();
         if vis(StatusPill::Coords) {
+            let coords_label = format_coords(cursor_world, last_point, coords_mode, picking);
             pills.push(
                 tip(
-                    status_pill(format_coords(cursor_world)).into(),
-                    "Cursor coordinates (X, Y, Z)",
+                    popup_pill(&coords_label, false, Message::CycleCoordsMode),
+                    "Cursor coordinates ($COORDS)\nClick to cycle: static / live / polar",
                 )
                 .into(),
             );
@@ -377,8 +385,28 @@ impl StatusBar {
 
 // ── Coordinate readout ────────────────────────────────────────────────────
 
-fn format_coords(p: glam::Vec3) -> String {
-    format!("{:.4}, {:.4}, {:.4}", p.x, p.y, p.z)
+fn format_coords(cursor: glam::Vec3, last: Option<glam::Vec3>, mode: i16, picking: bool) -> String {
+    let abs = |p: glam::Vec3| format!("{:.4}, {:.4}, {:.4}", p.x, p.y, p.z);
+    match mode {
+        // Static: show the last picked point; the readout freezes between picks.
+        0 => abs(last.unwrap_or(cursor)),
+        // Polar: distance < angle relative to the last point while a command is
+        // prompting for a point; absolute otherwise.
+        2 => match (picking, last) {
+            (true, Some(l)) => {
+                let d = cursor - l;
+                let dist = (d.x * d.x + d.y * d.y).sqrt();
+                let mut ang = d.y.atan2(d.x).to_degrees();
+                if ang < 0.0 {
+                    ang += 360.0;
+                }
+                format!("{dist:.4} < {ang:.2}\u{b0}")
+            }
+            _ => abs(cursor),
+        },
+        // 1 (default) and anything else: live absolute.
+        _ => abs(cursor),
+    }
 }
 
 // ── Customization handle ──────────────────────────────────────────────────

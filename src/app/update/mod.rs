@@ -1541,6 +1541,26 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            Message::CycleCoordsMode => {
+                // $COORDS 0 (static) → 1 (live absolute) → 2 (polar) → 0.
+                let i = self.active_tab;
+                if i < self.tabs.len() {
+                    let mode = {
+                        let h = &mut self.tabs[i].scene.document.header;
+                        h.coords_mode = (h.coords_mode + 1).rem_euclid(3);
+                        h.coords_mode
+                    };
+                    self.tabs[i].dirty = true;
+                    let label = match mode {
+                        0 => "static",
+                        2 => "polar",
+                        _ => "live",
+                    };
+                    self.command_line
+                        .push_output(&format!("COORDS = {mode} ({label})"));
+                }
+                Task::none()
+            }
             Message::TogglePolar => {
                 self.polar_mode ^= true;
                 if self.polar_mode {

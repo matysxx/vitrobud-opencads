@@ -1303,16 +1303,21 @@ impl OpenCADStudio {
                     // drawing coordinates (paper space carries no offset), then
                     // report it in the active UCS — the readout follows the
                     // user's coordinate system, not raw WCS (no-op without UCS).
-                    let cursor_coord = {
-                        let lc = tab.last_cursor_world;
+                    let to_readout = |p: glam::Vec3| {
                         // The readout follows the active pane's UCS — model space
                         // or inside a floating viewport (no-op without a UCS).
                         if tab.editing_model_space() {
-                            tab.ucs_xform().to_ucs(lc)
+                            tab.ucs_xform().to_ucs(p)
                         } else {
-                            lc
+                            p
                         }
                     };
+                    let cursor_coord = to_readout(tab.last_cursor_world);
+                    // The last picked point (same UCS as the cursor) drives the
+                    // static ($COORDS 0) and polar ($COORDS 2) readouts.
+                    let last_coord = self.last_point.map(to_readout);
+                    let coords_mode = tab.scene.document.header.coords_mode;
+                    let picking = tab.active_cmd.is_some();
                     self.status_bar.view(
                         &self.snapper,
                         self.snap_popup_open,
@@ -1334,6 +1339,9 @@ impl OpenCADStudio {
                         scale_pill_enabled,
                         tab.scene.document.header.lineweight_display,
                         cursor_coord,
+                        coords_mode,
+                        last_coord,
+                        picking,
                         self.clean_screen,
                         tab.scene.document.header.insertion_units,
                         self.units_popup_open,
