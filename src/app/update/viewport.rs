@@ -909,6 +909,15 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         .as_ref()
                         .map(|c| c.is_selection_gathering())
                         .unwrap_or(false);
+                    // A selection-window corner (STRETCH crossing window) is a
+                    // free point — Ortho/Polar must not pin it to an axis through
+                    // the first corner, or the rectangle collapses to a line
+                    // (#291).
+                    let is_window_corner = self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|c| c.window_corner_pick())
+                        .unwrap_or(false);
                     let needs_tan = self.tabs[i]
                         .active_cmd
                         .as_ref()
@@ -956,7 +965,10 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             Instant::now(),
                         );
                         if self.tabs[i].snap_result.is_none() {
-                            let step = if self.polar_mode {
+                            // A window corner is a free point, so neither the
+                            // Polar increment nor the Ortho lock may pull the
+                            // OTRACK alignment onto an axis (#291).
+                            let step = if self.polar_mode && !is_window_corner {
                                 Some(self.polar_increment_deg)
                             } else {
                                 None
@@ -969,7 +981,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 bounds,
                                 step,
                                 self.last_point,
-                                self.ortho_mode,
+                                self.ortho_mode && !is_window_corner,
                                 ucs,
                             )
                         } else {
@@ -1018,7 +1030,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             let osnap_locked = self.tabs[i]
                                 .snap_result
                                 .is_some_and(|s| s.snap_type != crate::snap::SnapType::Grid);
-                            if !osnap_locked {
+                            if !osnap_locked && !is_window_corner {
                                 if let Some(base) = self.last_point {
                                     let ucs_xf = self.tabs[i].ucs_xform();
                                     if self.ortho_mode {
@@ -1074,6 +1086,20 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                     let drs = dyn_ref.map(|r| proj(r));
                     self.tabs[i].last_point_screen = lps;
                     self.tabs[i].dyn_ref_screen = drs;
+
+                    // Point-picked selection window (STRETCH): draw a filled
+                    // crossing marquee from the first corner to the cursor so it
+                    // reads like a normal box selection, not a bare outline (#291).
+                    let window_first = self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .and_then(|c| c.window_first_corner());
+                    self.tabs[i].scene.selection.borrow_mut().preview_box =
+                        if is_window_corner {
+                            window_first.map(|c1| (proj(c1.as_vec3()), p_full, true))
+                        } else {
+                            None
+                        };
 
                     // Entity-pick previews (TRIM/EXTEND/FILLET…) compare the
                     // cursor against WCS document entities and return WCS wires.
@@ -1812,6 +1838,13 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                     .as_ref()
                     .map(|c| c.is_selection_gathering())
                     .unwrap_or(false);
+                // A committed window corner must stay free of the Ortho/Polar
+                // lock too, so the picked rectangle isn't flattened (#291).
+                let is_window_corner = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|c| c.window_corner_pick())
+                    .unwrap_or(false);
 
                 if is_down && is_click && self.tabs[i].active_cmd.is_some() && !is_gathering {
                     let (vw, vh) = (tile_vw, tile_vh);
@@ -1876,14 +1909,14 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         // OTRACK alignment wins over ortho/polar; otherwise apply
                         // ortho/polar relative to the last point.
                         let otrack = if snap_hit.is_none() {
-                            let step = if self.polar_mode {
+                            let step = if self.polar_mode && !is_window_corner {
                                 Some(self.polar_increment_deg)
                             } else {
                                 None
                             };
                             let ucs = self.tabs[i].scene.viewcube_ucs_mat();
                             self.snapper
-                                .otrack_snap(raw.as_vec3(), view_rot, eye, bounds, step, self.last_point, self.ortho_mode, ucs)
+                                .otrack_snap(raw.as_vec3(), view_rot, eye, bounds, step, self.last_point, self.ortho_mode && !is_window_corner, ucs)
                         } else {
                             None
                         };
@@ -1892,8 +1925,9 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             if self.tabs[i].active_ucs.is_none() {
                                 pt.z = 0.0;
                             }
-                        } else if !snap_hit
-                            .is_some_and(|s| s.snap_type != crate::snap::SnapType::Grid)
+                        } else if !is_window_corner
+                            && !snap_hit
+                                .is_some_and(|s| s.snap_type != crate::snap::SnapType::Grid)
                         {
                             // Object snap wins over ortho/polar — a snapped point
                             // commits as-is. Grid snap still combines. (#132)

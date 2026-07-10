@@ -15,6 +15,12 @@ pub struct SelectionState {
     pub box_last: Option<(Point, Point)>,
     pub box_crossing: bool,
     pub box_last_crossing: bool,
+    /// A preview-only selection marquee `(anchor, current, crossing)` in canvas
+    /// pixels, drawn identically to a real box-selection (green crossing fill /
+    /// blue window fill) but with NO hit-test behaviour. Commands that pick a
+    /// window by point (STRETCH's crossing window) set this so the region reads
+    /// like a normal selection instead of a bare outline. (#291)
+    pub preview_box: Option<(Point, Point, bool)>,
     pub poly_active: bool,
     pub poly_points: Vec<Point>,
     pub poly_crossing: bool,

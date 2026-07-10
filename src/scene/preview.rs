@@ -27,6 +27,9 @@ impl Scene {
         self.preview_wires = vec![];
         self.preview_text = vec![];
         self.interim_wire = None;
+        // Drop any point-picked window marquee (STRETCH) so it doesn't linger
+        // after the command ends before the next mouse move. (#291)
+        self.selection.borrow_mut().preview_box = None;
     }
 
     pub fn wire_models_for(&self, handles: &[acadrust::Handle]) -> Vec<WireModel> {

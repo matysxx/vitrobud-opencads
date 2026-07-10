@@ -702,6 +702,25 @@ pub trait CadCommand: Send {
         CmdResult::Cancel
     }
 
+    /// Returns `true` when the current step picks a corner of a selection
+    /// *window* by point (e.g. STRETCH's crossing window). Such a pick must be a
+    /// free point: applying the Ortho/Polar lock would pin the opposite corner to
+    /// an axis through the first corner, collapsing the rectangle to a line and
+    /// making the window unusable. The host skips the ortho/polar constraint for
+    /// these steps. Default `false`. (#291)
+    fn window_corner_pick(&self) -> bool {
+        false
+    }
+
+    /// The already-picked first corner of the selection window (world space)
+    /// while `window_corner_pick()` is true and the opposite corner is being
+    /// dragged. The host projects it and draws a filled selection marquee to the
+    /// cursor, so a point-picked window (STRETCH) reads like a normal box
+    /// selection. `None` before the first corner is set. (#291)
+    fn window_first_corner(&self) -> Option<glam::DVec3> {
+        None
+    }
+
     /// Returns `true` when the command wants object picks via Tangent snap.
     fn needs_tangent_pick(&self) -> bool {
         false

@@ -130,25 +130,27 @@ impl CadCommand for StretchCommand {
         CmdResult::Cancel
     }
 
+    fn window_corner_pick(&self) -> bool {
+        // The two crossing-window corners are free points; Ortho/Polar must not
+        // pin the opposite corner to an axis or the window becomes a line (#291).
+        matches!(self.step, Step::WindowCorner1 | Step::WindowCorner2(_))
+    }
+
+    fn window_first_corner(&self) -> Option<DVec3> {
+        // Expose the first corner so the host draws a filled crossing marquee to
+        // the cursor, matching a normal box selection instead of a bare outline.
+        match &self.step {
+            Step::WindowCorner2(c1) => Some(c1.as_dvec3()),
+            _ => None,
+        }
+    }
+
     fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> { let pt = pt.as_vec3();
         match &self.step {
-            Step::WindowCorner2(c1) => {
-                // Show crossing-window rectangle preview (dashed green)
-                let c1 = *c1;
-                let pts = vec![
-                    [c1.x, c1.y, c1.z],
-                    [pt.x, c1.y, c1.z],
-                    [pt.x, pt.y, pt.z],
-                    [c1.x, pt.y, pt.z],
-                    [c1.x, c1.y, c1.z],
-                ];
-                vec![WireModel::solid(
-                    "stretch_window".into(),
-                    pts,
-                    [0.3, 1.0, 0.3, 0.7],
-                    false,
-                )]
-            }
+            // The crossing-window rectangle is drawn as a filled selection
+            // marquee by the host (via window_first_corner) so it matches a
+            // normal box selection — nothing to draw here. (#291)
+            Step::WindowCorner2(_) => vec![],
             Step::Target {
                 win_min,
                 win_max,

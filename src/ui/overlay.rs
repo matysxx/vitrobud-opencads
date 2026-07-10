@@ -430,36 +430,19 @@ impl canvas::Program<Message> for SelectionCanvas {
         }
 
 
-        if let (Some(a), Some(b)) = (self.selection.box_anchor, self.selection.box_current) {
-            let (fill, stroke) = if self.selection.box_crossing {
+        // Draw a selection marquee (green crossing / blue window) as a filled,
+        // stroked rectangle between two canvas points. Shared by the live
+        // box-selection and the preview-only window marquee (#291).
+        fn draw_marquee(frame: &mut canvas::Frame, a: Point, b: Point, crossing: bool) {
+            let (fill, stroke) = if crossing {
                 (
-                    Color {
-                        r: 0.20,
-                        g: 0.72,
-                        b: 0.44,
-                        a: 0.12,
-                    },
-                    Color {
-                        r: 0.20,
-                        g: 0.72,
-                        b: 0.44,
-                        a: 0.9,
-                    },
+                    Color { r: 0.20, g: 0.72, b: 0.44, a: 0.12 },
+                    Color { r: 0.20, g: 0.72, b: 0.44, a: 0.9 },
                 )
             } else {
                 (
-                    Color {
-                        r: 0.20,
-                        g: 0.44,
-                        b: 0.72,
-                        a: 0.12,
-                    },
-                    Color {
-                        r: 0.20,
-                        g: 0.44,
-                        b: 0.72,
-                        a: 0.9,
-                    },
+                    Color { r: 0.20, g: 0.44, b: 0.72, a: 0.12 },
+                    Color { r: 0.20, g: 0.44, b: 0.72, a: 0.9 },
                 )
             };
             let x0 = a.x.min(b.x);
@@ -476,6 +459,14 @@ impl canvas::Program<Message> for SelectionCanvas {
                     ..Default::default()
                 },
             );
+        }
+
+        if let (Some(a), Some(b)) = (self.selection.box_anchor, self.selection.box_current) {
+            draw_marquee(&mut frame, a, b, self.selection.box_crossing);
+        }
+        // Preview marquee for point-picked windows (STRETCH) — same look, no pick.
+        if let Some((a, b, crossing)) = self.selection.preview_box {
+            draw_marquee(&mut frame, a, b, crossing);
         }
 
         if self.selection.poly_active && self.selection.poly_points.len() > 1 {
