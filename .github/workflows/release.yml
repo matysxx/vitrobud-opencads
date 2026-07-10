@@ -107,7 +107,12 @@ jobs:
       - name: Build
         env:
           OCS_PATREON_TOKEN: ${{ secrets.OCS_PATREON_TOKEN }}
-        run: cargo build --release
+        run: |
+          cargo build --release
+          # The MSI bundles the DWG thumbnail provider DLL. That cdylib is a
+          # workspace member, not an app dependency, so a plain `cargo build`
+          # never produces it — build the crate as an explicit target.
+          cargo build --release -p dwg-thumbnailer-win
 
       - name: Sign executable (Azure Trusted Signing)
         # Sign the bare .exe *before* the MSI is built so the copy packed
@@ -232,7 +237,12 @@ jobs:
       - name: Build
         env:
           OCS_PATREON_TOKEN: ${{ secrets.OCS_PATREON_TOKEN }}
-        run: cargo build --release --target aarch64-apple-darwin
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          # The QuickLook extension links libdwg_thumbnailer.a. The staticlib
+          # crate-type is only emitted when the crate is built as a target (as a
+          # plain dependency cargo produces just the rlib), so build it here.
+          cargo build --release --target aarch64-apple-darwin -p dwg-thumbnailer
 
       - name: Build .icns from SVG
         run: |
@@ -286,7 +296,8 @@ jobs:
             crates/dwg-thumbnailer/macos/ThumbnailProvider.swift \
             -L target/aarch64-apple-darwin/release -ldwg_thumbnailer \
             -framework QuickLookThumbnailing -framework CoreGraphics \
-            -framework ImageIO -framework Foundation \
+            -framework ImageIO -framework Foundation -framework Security \
+            -framework SystemConfiguration -liconv \
             -Xlinker -e -Xlinker _NSExtensionMain \
             -o "$EXT/Contents/MacOS/DWGThumbnail"
           sed "s/__VERSION__/$VERSION/g" crates/dwg-thumbnailer/macos/Info.plist > "$EXT/Contents/Info.plist"
