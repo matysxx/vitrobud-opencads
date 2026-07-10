@@ -1644,16 +1644,18 @@ fn extension_bases_screen(
         if n < 2 {
             continue;
         }
-        // A closed curve (full circle / ellipse) has no meaningful extension:
-        // its tessellation chords point every which way, so one almost always
-        // has an outward extension that grazes the snapped point, drawing a
-        // spurious dashed guide radiating from the circle when the user only
-        // caught a plain line-line intersection (#276). Skip it — same closed
-        // signal (Quadrant hints, which arcs never carry) as the Endpoint snap.
+        // A round curve (circle / arc / ellipse) has no meaningful straight
+        // extension: its tessellation chords point every which way, so one
+        // almost always has an outward chord-extension that grazes the snapped
+        // point, drawing a spurious dashed guide radiating from the curve when
+        // the user only caught a plain line-line intersection (#276). An arc is
+        // open, so it carries no Quadrant hint — key off the Center hint that
+        // every round curve carries (the same signal `nearest_segment` uses),
+        // which straight lines never have.
         if wire
             .snap_pts
             .iter()
-            .any(|(_, h)| matches!(h, SnapHint::Quadrant))
+            .any(|(_, h)| matches!(h, SnapHint::Quadrant | SnapHint::Center))
         {
             continue;
         }
