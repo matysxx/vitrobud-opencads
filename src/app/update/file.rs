@@ -116,6 +116,45 @@ impl OpenCADStudio {
         self.rebuild_ribbon_modules();
     }
 
+    /// Adopt the per-drawing sysvars stored in tab `i`'s document header —
+    /// Ortho (`$ORTHOMODE`) and the running object-snap set (`$OSMODE`) — into
+    /// the live app state, so each drawing keeps its own. Called when a drawing
+    /// becomes active (open, tab switch). The app-settings values seed the boot
+    /// default; the per-file header overrides it here.
+    pub(in crate::app) fn adopt_header_sysvars(&mut self, i: usize) {
+        if self.tabs[i].is_start {
+            return;
+        }
+        let (ortho, osmode) = {
+            let h = &self.tabs[i].scene.document.header;
+            (h.ortho_mode, h.object_snap_mode)
+        };
+        self.ortho_mode = ortho;
+        // Ortho and Polar are mutually exclusive (ToggleOrtho clears Polar).
+        if ortho {
+            self.polar_mode = false;
+        }
+        let (modes, snap_enabled) = crate::app::settings::snaps_from_osmode(osmode);
+        self.snapper.enabled = modes.into_iter().collect();
+        self.snapper.snap_enabled = snap_enabled;
+    }
+
+    /// Stamp the live per-drawing sysvars (Ortho, running OSNAP) onto tab `i`'s
+    /// document header just before it is written to disk (or before switching
+    /// away from it), so they persist with the drawing.
+    pub(in crate::app) fn stamp_header_sysvars(&mut self, i: usize) {
+        if self.tabs[i].is_start {
+            return;
+        }
+        let osmode = crate::app::settings::osmode_from_snaps(
+            self.snapper.enabled.iter(),
+            self.snapper.snap_enabled,
+        );
+        let h = &mut self.tabs[i].scene.document.header;
+        h.ortho_mode = self.ortho_mode;
+        h.object_snap_mode = osmode;
+    }
+
     /// Apply the persisted default background(s) to tab `idx`. No-op for the
     /// start tab or when no default is set. Refreshes the tab's cached wires
     /// and meshes so background-adaptive colours pick up the change.
@@ -311,6 +350,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.tabs[i].scene.document = doc;
                 // Follow the file's saved current UCS from the moment it opens.
                 self.tabs[i].adopt_active_ucs_from_header();
+                // Adopt the drawing's own Ortho ($ORTHOMODE) and running OSNAP
+                // ($OSMODE) so each file keeps its state, like AutoCAD.
+                self.adopt_header_sysvars(i);
                 // Route shared CJK ideographs to the language matching this
                 // drawing's code page (web per-language font split). Drop the
                 // glyph cache if it changed so Han re-resolves to the new
@@ -406,6 +448,10 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.tabs[i].scene.selected = rustc_hash::FxHashSet::default();
                 self.tabs[i].scene.preview_wires = vec![];
                 self.tabs[i].scene.current_layout = "Model".to_string();
+                // Rebuild the Isolate/Hide set from the entities the file itself
+                // marks invisible (DXF code 60), so hidden objects stay hidden on
+                // reopen and End Isolation can bring them back.
+                self.tabs[i].scene.sync_hidden_from_invisible();
                 crate::io::linetypes::populate_document(&mut self.tabs[i].scene.document);
                 self.tabs[i].properties = PropertiesPanel::empty();
                 // Seed the current table / multileader style from the file's
@@ -594,6 +640,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 // reflects them even if they came from settings with no
                 // in-session toggle (#121).
                 self.sync_vport_display(i);
+                // Persist Ortho ($ORTHOMODE) + running OSNAP ($OSMODE) into the
+                // drawing header so they survive save/reopen (per-drawing).
+                self.stamp_header_sysvars(i);
                 // Native: save straight to the known path. Web has no path
                 // (downloads instead), so always go through the Save dialog.
                 #[cfg(not(target_arch = "wasm32"))]
@@ -662,6 +711,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 let close = self.close_save_dialog_window();
                 let i = self.active_tab;
                 sync_annotation_scale_header(&mut self.tabs[i].scene);
+                // Persist Ortho / running OSNAP into the header (Save-As path).
+                self.stamp_header_sysvars(i);
                 self.sync_truck_solids_to_acis(i);
 
                 // Native: write to the chosen path. Web: download the bytes

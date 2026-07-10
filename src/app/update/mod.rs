@@ -664,11 +664,17 @@ impl OpenCADStudio {
 
             // ── Document tabs ─────────────────────────────────────────────
             Message::TabNew => {
+                // Preserve the outgoing drawing's Ortho / running OSNAP.
+                self.stamp_header_sysvars(self.active_tab);
                 self.tab_counter += 1;
                 let new_tab = super::document::DocumentTab::new_drawing(self.tab_counter);
                 self.tabs.push(new_tab);
                 self.active_tab = self.tabs.len() - 1;
                 let idx = self.active_tab;
+                // A fresh drawing inherits the app's current Ortho / OSNAP so
+                // creating one doesn't silently reset them (its header default is
+                // 0 = no snaps); saving then persists them into the file.
+                self.stamp_header_sysvars(idx);
                 self.apply_bg_default(idx);
                 self.sync_ribbon_layers();
                 self.sync_ribbon_styles();
@@ -687,6 +693,10 @@ impl OpenCADStudio {
                         // The attribute editor is tab-scoped; leaving its tab
                         // drops it (its handle is that document's, not this one's).
                         self.cancel_attr_editor();
+                        // Persist the outgoing drawing's Ortho / running OSNAP
+                        // before leaving it, so switching back restores them.
+                        let prev = self.active_tab;
+                        self.stamp_header_sysvars(prev);
                     }
                     self.active_tab = idx;
                     self.sync_ribbon_layers();
@@ -698,6 +708,8 @@ impl OpenCADStudio {
                     self.sync_ribbon_from_selection();
                     // Grid/snap follow the newly active drawing's viewport.
                     self.adopt_view_display(idx);
+                    // Ortho / running OSNAP follow the newly active drawing.
+                    self.adopt_header_sysvars(idx);
                     // Shared CJK ideographs follow the newly active drawing's
                     // language; re-tessellate if it differs from the last. (#141)
                     if crate::scene::text::web_font::set_cjk_lang_from_codepage(

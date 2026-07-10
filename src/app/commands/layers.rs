@@ -444,7 +444,9 @@ impl OpenCADStudio {
                         .push_error("ISOLATEOBJECTS: select the objects to isolate first.");
                 } else {
                     let n = self.tabs[i].scene.selected.len();
+                    self.push_undo_snapshot(i, "ISOLATEOBJECTS");
                     self.tabs[i].scene.isolate_selected();
+                    self.tabs[i].dirty = true;
                     self.command_line.push_info(&format!(
                         "Isolated {n} object(s). UNISOLATEOBJECTS to restore."
                     ));
@@ -458,7 +460,9 @@ impl OpenCADStudio {
                         .push_error("HIDEOBJECTS: select the objects to hide first.");
                 } else {
                     let n = self.tabs[i].scene.selected.len();
+                    self.push_undo_snapshot(i, "HIDEOBJECTS");
                     self.tabs[i].scene.hide_selected();
+                    self.tabs[i].dirty = true;
                     self.command_line
                         .push_info(&format!("Hid {n} object(s). UNISOLATEOBJECTS to restore."));
                 }
@@ -467,7 +471,9 @@ impl OpenCADStudio {
             // UNISOLATEOBJECTS — bring back everything hidden by Isolate / Hide
             "UNISOLATEOBJECTS" => {
                 if self.tabs[i].scene.is_isolation_active() {
+                    self.push_undo_snapshot(i, "UNISOLATEOBJECTS");
                     self.tabs[i].scene.end_isolation();
+                    self.tabs[i].dirty = true;
                     self.command_line
                         .push_info("Isolation ended — all objects shown.");
                 } else {

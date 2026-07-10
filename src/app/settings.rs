@@ -58,6 +58,61 @@ fn snap_from_id(s: &str) -> Option<SnapType> {
     SNAP_ORDER.iter().copied().find(|t| snap_id(*t) == s)
 }
 
+/// `$OSMODE` bit for each running object-snap mode (standard AutoCAD bitmask).
+/// `None` for OCS-only snaps (Grid, ObjectPick) that have no standard bit.
+fn snap_bit(s: SnapType) -> Option<i32> {
+    Some(match s {
+        SnapType::Endpoint => 1,
+        SnapType::Midpoint => 2,
+        SnapType::Center => 4,
+        SnapType::Node => 8,
+        SnapType::Quadrant => 16,
+        SnapType::Intersection => 32,
+        SnapType::Insertion => 64,
+        SnapType::Perpendicular => 128,
+        SnapType::Tangent => 256,
+        SnapType::Nearest => 512,
+        SnapType::ApparentIntersection => 2048,
+        SnapType::Extension => 4096,
+        SnapType::Parallel => 8192,
+        SnapType::Grid | SnapType::ObjectPick => return None,
+    })
+}
+
+/// Bit 14 of `$OSMODE` — object snap turned off (master suppress).
+const OSMODE_SUPPRESS: i32 = 16384;
+
+/// Encode the running-snap set + master toggle into an `$OSMODE` bitmask for the
+/// drawing header. OCS-only snaps (Grid, ObjectPick) have no bit and are
+/// dropped. A cleared master toggle sets the suppress bit.
+pub(crate) fn osmode_from_snaps<'a>(
+    enabled: impl IntoIterator<Item = &'a SnapType>,
+    snap_enabled: bool,
+) -> i32 {
+    let mut bits = 0;
+    for t in enabled {
+        if let Some(b) = snap_bit(*t) {
+            bits |= b;
+        }
+    }
+    if !snap_enabled {
+        bits |= OSMODE_SUPPRESS;
+    }
+    bits
+}
+
+/// Decode an `$OSMODE` bitmask into `(running-snap set, master enabled)`. Only
+/// the standard mappable modes are produced; the suppress bit maps (inverted) to
+/// the master toggle.
+pub(crate) fn snaps_from_osmode(osmode: i32) -> (Vec<SnapType>, bool) {
+    let modes = SNAP_ORDER
+        .iter()
+        .copied()
+        .filter(|t| snap_bit(*t).is_some_and(|b| osmode & b != 0))
+        .collect();
+    (modes, osmode & OSMODE_SUPPRESS == 0)
+}
+
 /// Parse a persisted `r,g,b` background triplet (each 0–255). Returns `None`
 /// for an empty or malformed value so a missing/garbage key falls back to the
 /// app default rather than a wrong colour.
@@ -285,4 +340,46 @@ fn config_path() -> Option<PathBuf> {
     let mut p = base;
     p.push("OpenCADStudio");
     Some(p.join("settings.txt"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osmode_encodes_bits_and_suppress() {
+        // Endpoint(1) + Midpoint(2) + Intersection(32) = 35, master on.
+        let on = [SnapType::Endpoint, SnapType::Midpoint, SnapType::Intersection];
+        assert_eq!(osmode_from_snaps(on.iter(), true), 35);
+        // Master off sets the suppress bit (16384).
+        assert_eq!(osmode_from_snaps(on.iter(), false), 35 | 16384);
+        // OCS-only snaps carry no bit and are dropped.
+        assert_eq!(osmode_from_snaps([SnapType::Grid, SnapType::ObjectPick].iter(), true), 0);
+    }
+
+    #[test]
+    fn osmode_decodes_bits_and_suppress() {
+        let (modes, enabled) = snaps_from_osmode(35);
+        let set: std::collections::HashSet<_> = modes.into_iter().collect();
+        assert!(enabled);
+        assert_eq!(set.len(), 3);
+        assert!(set.contains(&SnapType::Endpoint));
+        assert!(set.contains(&SnapType::Midpoint));
+        assert!(set.contains(&SnapType::Intersection));
+        // Suppress bit → master off; the mode bits still decode.
+        let (_m, en) = snaps_from_osmode(35 | 16384);
+        assert!(!en);
+    }
+
+    #[test]
+    fn osmode_round_trips_every_mappable_mode() {
+        // All 13 running snaps + master on encode and decode back to the same set.
+        let all: Vec<SnapType> = SNAP_ORDER.to_vec();
+        let bits = osmode_from_snaps(all.iter(), true);
+        let (back, enabled) = snaps_from_osmode(bits);
+        assert!(enabled);
+        let a: std::collections::HashSet<_> = all.into_iter().collect();
+        let b: std::collections::HashSet<_> = back.into_iter().collect();
+        assert_eq!(a, b);
+    }
 }

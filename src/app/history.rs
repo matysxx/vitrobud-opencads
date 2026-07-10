@@ -45,6 +45,9 @@ impl OpenCADStudio {
         self.tabs[i].scene.populate_hatches_from_document();
         self.tabs[i].scene.populate_images_from_document();
         self.tabs[i].scene.populate_meshes_from_document();
+        // Keep the Isolate/Hide set in step with the restored per-entity
+        // visibility so End Isolation stays correct after undo/redo.
+        self.tabs[i].scene.sync_hidden_from_invisible();
         self.tabs[i].scene.clear_preview_wire();
         self.tabs[i].scene.images.clear();
         self.tabs[i].active_cmd = None;

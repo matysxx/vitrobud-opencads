@@ -1250,6 +1250,22 @@ impl OpenCADStudio {
                     if name == "TEXTFILL" {
                         self.tabs[i].scene.bump_geometry();
                     }
+                    // ORTHOMODE / OSMODE set the header directly; mirror them into
+                    // the live Ortho / running OSNAP so the constraint + status
+                    // bar follow and the save-time stamp doesn't revert them.
+                    if name == "ORTHOMODE" {
+                        self.ortho_mode = self.tabs[i].scene.document.header.ortho_mode;
+                        if self.ortho_mode {
+                            self.polar_mode = false;
+                        }
+                    }
+                    if name == "OSMODE" {
+                        let (modes, en) = crate::app::settings::snaps_from_osmode(
+                            self.tabs[i].scene.document.header.object_snap_mode,
+                        );
+                        self.snapper.enabled = modes.into_iter().collect();
+                        self.snapper.snap_enabled = en;
+                    }
                 }
             }
 

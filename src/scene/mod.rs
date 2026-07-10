@@ -1951,12 +1951,16 @@ impl Scene {
             return;
         }
         let keep = self.selected.clone();
-        self.hidden = self
+        let hide: Vec<Handle> = self
             .document
             .entities()
             .map(|e| e.common().handle)
             .filter(|h| !h.is_null() && !keep.contains(h))
             .collect();
+        // Persist the hidden state on each entity (DXF code 60) so it survives
+        // save/reopen — the renderer already skips `invisible` entities.
+        self.set_invisible(&hide, true);
+        self.hidden = hide.into_iter().collect();
         self.selected.clear();
         self.bump_geometry();
     }
@@ -1966,20 +1970,48 @@ impl Scene {
         if self.selected.is_empty() {
             return;
         }
-        for h in self.selected.iter().copied() {
+        let sel: Vec<Handle> = self.selected.iter().copied().collect();
+        for h in sel.iter().copied() {
             self.hidden.insert(h);
         }
+        self.set_invisible(&sel, true);
         self.selected.clear();
         self.bump_geometry();
     }
 
-    /// Clear isolation — bring every hidden entity back (End Isolation).
+    /// Clear isolation — bring every hidden entity back (End Isolation),
+    /// clearing the persisted invisible flag too so the reveal is saved.
     pub fn end_isolation(&mut self) {
         if self.hidden.is_empty() {
             return;
         }
+        let restore: Vec<Handle> = self.hidden.iter().copied().collect();
+        self.set_invisible(&restore, false);
         self.hidden.clear();
         self.bump_geometry();
+    }
+
+    /// Set the persisted visibility flag (DXF code 60) on each handle.
+    fn set_invisible(&mut self, handles: &[Handle], invisible: bool) {
+        for &h in handles {
+            if let Some(e) = self.document.get_entity_mut(h) {
+                e.common_mut().invisible = invisible;
+            }
+        }
+    }
+
+    /// Rebuild the Isolate/Hide set (`hidden`) from the entities the document
+    /// currently marks invisible (DXF code 60). Call after loading a file or
+    /// restoring an undo/redo snapshot so the session set matches the persisted
+    /// per-entity visibility (and End Isolation stays available).
+    pub fn sync_hidden_from_invisible(&mut self) {
+        self.hidden = self
+            .document
+            .entities()
+            .filter(|e| e.common().invisible)
+            .map(|e| e.common().handle)
+            .filter(|h| !h.is_null())
+            .collect();
     }
 
     /// True if any currently selected entity is a Viewport.
