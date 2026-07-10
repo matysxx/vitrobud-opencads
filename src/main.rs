@@ -51,6 +51,19 @@ fn main() -> iced::Result {
             return Ok(());
         }
 
+        // Thumbnail mode: the OS file-manager thumbnailer invokes us as
+        // `--dwg-thumbnail <in> <out> <size>`. Extract the DWG's embedded
+        // preview to a PNG and exit — never touch the GUI.
+        if let Some(a) = &args.dwg_thumbnail {
+            let size = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(256);
+            let ok = io::thumbnail::extract_to_png(
+                std::path::Path::new(&a[0]),
+                std::path::Path::new(&a[1]),
+                size,
+            );
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+
         // Opt-in logging. `--log LEVEL` seeds RUST_LOG; the subscriber then
         // surfaces wgpu / iced / winit diagnostics that are otherwise silent.
         if let Some(level) = &args.log {
@@ -110,6 +123,13 @@ fn main() -> iced::Result {
             read_only: args.read_only,
             script_lines,
         });
+
+        // Register (or refresh) the freedesktop DWG thumbnailer so file managers
+        // show OCS-embedded previews. Idempotent, best-effort, no consent step —
+        // it only points a `.thumbnailer` at this same binary's `--dwg-thumbnail`
+        // mode. Silently ignored on failure or non-Linux.
+        io::file_association::install_thumbnailer();
+
         app::run()
     }
 }

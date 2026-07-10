@@ -1,9 +1,12 @@
-//! CPU wire-raster thumbnail for the DWG preview image.
+//! DWG preview thumbnails.
 //!
-//! Rasterizes the current layout's wire set into a small bitmap and returns it
-//! as an [`acadrust::Preview`] (a Windows DIB, universally accepted as a DWG
-//! preview across versions). Embedded on save so OCS drawings show a thumbnail
-//! in file browsers and other CAD applications.
+//! - [`from_scene`] / [`from_wires`] rasterize the current layout's wires into a
+//!   small DIB [`acadrust::Preview`], embedded on save so OCS drawings show a
+//!   thumbnail in file browsers and other CAD apps.
+//! - [`read_handle`] / [`extract_to_png`] read a DWG's *embedded* preview back
+//!   for the Start page and the OS file-manager thumbnailer. Extraction lives in
+//!   the shared [`dwg_thumbnailer`] core crate (also used by the Windows/macOS
+//!   thumbnail handlers).
 
 use acadrust::{Preview, PreviewFormat};
 use image::{ImageFormat, Rgb, RgbImage};
@@ -114,76 +117,31 @@ fn to_rgb(c: [f32; 4]) -> [u8; 3] {
     ]
 }
 
-/// Cheaply read ONLY the embedded preview from a DWG (file header + preview
-/// bytes, no full document parse) and decode it to an iced image handle.
-/// `None` for DXF/other files, a missing or empty preview, or a format the
-/// `image` crate can't decode (WMF). Used to show recent-file thumbnails.
-pub fn read_handle(path: &std::path::Path) -> Option<iced::widget::image::Handle> {
-    decode(&read_preview(path)?)
-}
-
-/// Read the preview image bytes straight from the file's raw preview offset.
-fn read_preview(path: &std::path::Path) -> Option<Preview> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
-    let mut ver = [0u8; 6];
-    f.read_exact(&mut ver).ok()?;
-    if &ver[..2] != b"AC" {
-        return None; // not a DWG (DXF has no thumbnail)
-    }
-    // Preview seeker: absolute file offset at header byte 0x0D.
-    f.seek(SeekFrom::Start(0x0D)).ok()?;
-    let mut a = [0u8; 4];
-    f.read_exact(&mut a).ok()?;
-    let base = i32::from_le_bytes(a);
-    if base <= 0 {
-        return None;
-    }
-    let base = base as u64;
-    f.seek(SeekFrom::Start(base)).ok()?;
-    let mut head = [0u8; 20];
-    f.read_exact(&mut head).ok()?;
-    let overall = acadrust::io::dwg::preview::overall_size(&head)?;
-    if overall == 0 || overall > 64 * 1024 * 1024 {
-        return None;
-    }
-    let total = acadrust::io::dwg::preview::container_len(overall);
-    f.seek(SeekFrom::Start(base)).ok()?;
-    let mut buf = vec![0u8; total];
-    f.read_exact(&mut buf).ok()?;
-    acadrust::io::dwg::preview::parse_preview(&buf, base)
-}
-
-/// Decode a stored preview to an iced RGBA handle.
-fn decode(p: &Preview) -> Option<iced::widget::image::Handle> {
-    let img = match p.format {
-        PreviewFormat::Png => image::load_from_memory_with_format(&p.data, ImageFormat::Png).ok()?,
-        PreviewFormat::Bmp => {
-            image::load_from_memory_with_format(&dib_to_bmp(&p.data), ImageFormat::Bmp).ok()?
+/// Read a DWG's embedded preview and write it as a PNG at `output`, scaled so
+/// its longest edge is at most `size`. Returns `false` on any failure (no
+/// preview, undecodable, write error) so the OS thumbnailer falls back to a
+/// generic icon. Backs the hidden `--dwg-thumbnail` mode the installed
+/// freedesktop `.thumbnailer` invokes. Extraction lives in the shared
+/// [`dwg_thumbnailer`] core (also used by the Windows/macOS handlers).
+pub fn extract_to_png(input: &std::path::Path, output: &std::path::Path, size: u32) -> bool {
+    match dwg_thumbnailer::extract(input, size) {
+        Some(mut img) => {
+            // Bottom-left "DWG" ribbon so the format reads at a glance in the
+            // file manager (the Start-page `read_handle` stays unbadged).
+            dwg_thumbnailer::badge_dwg(&mut img);
+            img.save_with_format(output, ImageFormat::Png).is_ok()
         }
-        PreviewFormat::Wmf => return None,
-    };
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    Some(iced::widget::image::Handle::from_rgba(w, h, rgba.into_raw()))
+        None => false,
+    }
 }
 
-/// Reconstruct a full in-memory BMP from a stored DIB (prepend the 14-byte
-/// `BITMAPFILEHEADER`) so a BMP decoder can read it.
-fn dib_to_bmp(dib: &[u8]) -> Vec<u8> {
-    if dib.len() < 16 {
-        return Vec::new();
-    }
-    let bi_size = u32::from_le_bytes([dib[0], dib[1], dib[2], dib[3]]) as usize;
-    let bpp = u16::from_le_bytes([dib[14], dib[15]]) as usize;
-    let palette = if (1..=8).contains(&bpp) { (1usize << bpp) * 4 } else { 0 };
-    let mut v = Vec::with_capacity(14 + dib.len());
-    v.extend_from_slice(b"BM");
-    v.extend_from_slice(&((14 + dib.len()) as u32).to_le_bytes());
-    v.extend_from_slice(&0u32.to_le_bytes());
-    v.extend_from_slice(&((14 + bi_size + palette) as u32).to_le_bytes());
-    v.extend_from_slice(dib);
-    v
+/// Read a DWG's embedded preview and decode it to an iced image handle for the
+/// Start page's recent-file thumbnails. `None` for DXF/other files, a missing
+/// preview, or an undecodable format (WMF).
+pub fn read_handle(path: &std::path::Path) -> Option<iced::widget::image::Handle> {
+    let img = dwg_thumbnailer::extract(path, MAX_DIM)?;
+    let (w, h) = (img.width(), img.height());
+    Some(iced::widget::image::Handle::from_rgba(w, h, img.into_raw()))
 }
 
 #[cfg(test)]
@@ -196,6 +154,17 @@ mod tests {
             color,
             ..Default::default()
         }
+    }
+
+    /// Prepend a `BITMAPFILEHEADER` to a 24-bit DIB so `image` can decode it.
+    fn dib_to_bmp(dib: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(14 + dib.len());
+        v.extend_from_slice(b"BM");
+        v.extend_from_slice(&((14 + dib.len()) as u32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&54u32.to_le_bytes()); // 14 + 40, no palette (24-bit)
+        v.extend_from_slice(dib);
+        v
     }
 
     #[test]

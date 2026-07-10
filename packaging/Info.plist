@@ -35,6 +35,8 @@
             <string>AutoCAD Drawing</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
+            <key>CFBundleTypeIconFile</key>
+            <string>DWG</string>
             <key>LSItemContentTypes</key>
             <array>
                 <string>com.autodesk.dwg</string>
@@ -47,6 +49,8 @@
             <string>AutoCAD DXF</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
+            <key>CFBundleTypeIconFile</key>
+            <string>DXF</string>
             <key>LSItemContentTypes</key>
             <array>
                 <string>com.autodesk.dxf</string>

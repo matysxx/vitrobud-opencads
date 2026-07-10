@@ -80,6 +80,26 @@ pub fn unregister_handler() -> Result<(), String> {
     }
 }
 
+/// Register (or refresh) the OS file-manager integration for DWG/DXF, so files
+/// show OCS thumbnails (embedded preview) or, when there is none, a distinct
+/// OCS DWG/DXF icon. Idempotent, best-effort, silent. On Linux this writes a
+/// freedesktop `.thumbnailer` (pointing at this binary's `--dwg-thumbnail` mode)
+/// plus the mimetype icons under `$XDG_DATA_HOME`; on Windows it registers the
+/// bundled thumbnail-provider DLL.
+pub fn install_thumbnailer() {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = linux_impl::install_thumbnailer();
+        let _ = linux_impl::install_mime_icons();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = windows_impl::install_thumbnailer();
+    }
+    // macOS: the QuickLook thumbnail extension is bundled inside the .app and
+    // registered by LaunchServices automatically — nothing to do at runtime.
+}
+
 /// Try to make this app the default handler for .dwg and .dxf. Returns a short
 /// human-readable status string on success, or an error message on failure.
 pub async fn set_default_app() -> Result<String, String> {
@@ -233,6 +253,16 @@ mod windows_impl {
                 RegDeleteTreeW(HKEY_CURRENT_USER, w.as_ptr());
             }
         }
+        // Also drop the DWG thumbnail-provider registration.
+        for key in [
+            format!(r"Software\Classes\CLSID\{THUMB_CLSID}"),
+            format!(r"Software\Classes\.dwg\ShellEx\{THUMB_IID}"),
+        ] {
+            let w = wide(&key);
+            unsafe {
+                RegDeleteTreeW(HKEY_CURRENT_USER, w.as_ptr());
+            }
+        }
         Ok(())
     }
 
@@ -273,6 +303,41 @@ mod windows_impl {
         if rc != 0 {
             return Err(format!("RegSetValueExW failed ({rc}) for {subkey}"));
         }
+        Ok(())
+    }
+
+    /// CLSID of the DWG thumbnail provider (must match `dwg-thumbnailer-win`).
+    const THUMB_CLSID: &str = "{8F2A9C41-3B6E-4E2D-9C7A-1E0B5D6F42AA}";
+    /// The shell interface id Explorer looks up under `.dwg\ShellEx`.
+    const THUMB_IID: &str = "{e357fccd-a995-4576-b01f-234630154e96}";
+
+    /// Register the bundled DWG thumbnail provider DLL under `HKCU` — the same
+    /// keys `regsvr32` would write, but per-user (no admin) and driven by this
+    /// app on startup. No-op if `dwg_thumbnailer_win.dll` isn't shipped next to
+    /// the exe. Idempotent (the values are stable across launches).
+    pub(super) fn install_thumbnailer() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let dll = exe
+            .parent()
+            .ok_or("no executable directory")?
+            .join("dwg_thumbnailer_win.dll");
+        if !dll.exists() {
+            return Ok(()); // provider DLL not bundled — nothing to register
+        }
+        let dll = dll.to_string_lossy();
+        let clsid_base = format!(r"Software\Classes\CLSID\{THUMB_CLSID}");
+        set_string(&clsid_base, None, "OpenCADStudio DWG Thumbnail Provider")?;
+        set_string(&format!(r"{clsid_base}\InprocServer32"), None, &dll)?;
+        set_string(
+            &format!(r"{clsid_base}\InprocServer32"),
+            Some("ThreadingModel"),
+            "Apartment",
+        )?;
+        set_string(
+            &format!(r"Software\Classes\.dwg\ShellEx\{THUMB_IID}"),
+            None,
+            THUMB_CLSID,
+        )?;
         Ok(())
     }
 
@@ -371,6 +436,33 @@ mod windows_impl {
 mod linux_impl {
     use super::APP_ID;
     use std::path::{Path, PathBuf};
+
+    /// Write (idempotently) a `.thumbnailer` that points this binary's
+    /// `--dwg-thumbnail` mode at DWG MIME types, so file managers render the
+    /// embedded preview. `~/.local/bin` need not be on PATH — the entry uses the
+    /// binary's absolute path (or `$APPIMAGE`).
+    pub(super) fn install_thumbnailer() -> Result<(), String> {
+        let exec = std::env::var_os("APPIMAGE")
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_exe().ok())
+            .ok_or("could not determine the executable path")?;
+        let exec = exec.to_string_lossy();
+        let dir = data_home()?.join("thumbnailers");
+        let path = dir.join(format!("{APP_ID}-dwg.thumbnailer"));
+        let contents = format!(
+            "[Thumbnailer Entry]\n\
+             TryExec={exec}\n\
+             Exec={exec} --dwg-thumbnail %i %o %s\n\
+             MimeType=image/vnd.dwg;image/x-dwg;application/x-dwg;application/acad;application/x-autocad;\n"
+        );
+        // Unchanged since last launch → skip the write.
+        if std::fs::read_to_string(&path).ok().as_deref() == Some(contents.as_str()) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(&path, &contents).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 
     /// Write a user-level .desktop file pointing at the running binary, then
     /// refresh the MIME cache so file managers list us under "Open with".
@@ -539,6 +631,38 @@ mod linux_impl {
         let _ = std::process::Command::new("gtk-update-icon-cache")
             .args(["--force", "--quiet", &hicolor.to_string_lossy()])
             .status();
+        Ok(())
+    }
+
+    /// Install the OCS DWG/DXF file-type icons into the user's hicolor theme
+    /// (`mimetypes/image-vnd.dwg.svg`, `...dxf.svg`), so file managers show a
+    /// distinct icon for DWG/DXF files that have no thumbnail. Idempotent.
+    pub(super) fn install_mime_icons() -> Result<(), String> {
+        static DWG_ICON: &[u8] = include_bytes!("../../assets/mimetypes/image-vnd.dwg.svg");
+        static DXF_ICON: &[u8] = include_bytes!("../../assets/mimetypes/image-vnd.dxf.svg");
+
+        let dir = data_home()?.join("icons/hicolor/scalable/mimetypes");
+        let mut changed = false;
+        for (name, bytes) in [
+            ("image-vnd.dwg.svg", DWG_ICON),
+            ("image-vnd.dxf.svg", DXF_ICON),
+        ] {
+            let path = dir.join(name);
+            if std::fs::read(&path).ok().as_deref() == Some(bytes) {
+                continue;
+            }
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+            changed = true;
+        }
+        if changed {
+            let hicolor = data_home()
+                .map(|d| d.join("icons/hicolor"))
+                .unwrap_or_default();
+            let _ = std::process::Command::new("gtk-update-icon-cache")
+                .args(["--force", "--quiet", &hicolor.to_string_lossy()])
+                .status();
+        }
         Ok(())
     }
 

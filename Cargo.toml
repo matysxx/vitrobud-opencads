@@ -5,7 +5,15 @@ edition = "2021"
 build = "build.rs"
 
 [workspace]
-members = ["crates/ocs_plugin_api"]
+# `dwg-thumbnailer-win` is a Windows-only COM DLL (`#![cfg(windows)]`): it
+# compiles to an empty cdylib on Linux/macOS and to the real handler on Windows,
+# where the `build-windows` CI job (`cargo build --release`) compiles and thus
+# verifies it.
+members = [
+    "crates/ocs_plugin_api",
+    "crates/dwg-thumbnailer",
+    "crates/dwg-thumbnailer-win",
+]
 
 # Embed the application icon into the Windows .exe so Explorer, the taskbar,
 # the Start-menu tile and file-association entries show it (issue #107).
@@ -50,6 +58,8 @@ clap = { version = "4", features = ["derive"] }
 # Opt-in logging via --log / RUST_LOG (surfaces wgpu / iced / winit diagnostics).
 env_logger = "0.11"
 acadrust = "0.4"
+# Shared DWG embedded-preview extraction (Start-page + file-manager thumbnails).
+dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
 inventory = "0.3"

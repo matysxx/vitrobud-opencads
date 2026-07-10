@@ -84,6 +84,20 @@
                 Advertise='yes' />
             </File>
 
+            <!-- DWG/DXF file-type icons, generated from the mimetype SVGs
+                 (CI: magick image-vnd.{dwg,dxf}.svg -> {dwg,dxf}.ico). -->
+            <File Id='DwgIco' Name='dwg.ico' DiskId='1' Source='packaging\windows\dwg.ico' />
+            <File Id='DxfIco' Name='dxf.ico' DiskId='1' Source='packaging\windows\dxf.ico' />
+
+            <!-- DWG thumbnail provider (IThumbnailProvider). Ships beside the
+                 exe; OpenCADStudio self-registers it under HKCU on startup
+                 (see file_association::install_thumbnailer). -->
+            <File
+              Id='DwgThumbDll'
+              Name='dwg_thumbnailer_win.dll'
+              DiskId='1'
+              Source='target\release\dwg_thumbnailer_win.dll' />
+
             <!--
               File associations. Two ProgIDs (one per extension) so the
               `<Verb Id='open'>` rows don't collide on the same registry
@@ -93,7 +107,7 @@
             <ProgId
               Id='OpenCADStudio.DWG'
               Description='DWG Drawing'
-              Icon='OpenCADStudioEXE'
+              Icon='DwgIco'
               IconIndex='0'>
               <Extension Id='dwg' ContentType='image/vnd.dwg'>
                 <Verb Id='open' Command='Open' TargetFile='OpenCADStudioEXE' Argument='"%1"' />
@@ -103,7 +117,7 @@
             <ProgId
               Id='OpenCADStudio.DXF'
               Description='DXF Drawing'
-              Icon='OpenCADStudioEXE'
+              Icon='DxfIco'
               IconIndex='0'>
               <Extension Id='dxf' ContentType='image/vnd.dxf'>
                 <Verb Id='open' Command='Open' TargetFile='OpenCADStudioEXE' Argument='"%1"' />

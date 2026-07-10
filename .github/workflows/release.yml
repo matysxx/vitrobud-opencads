@@ -93,6 +93,17 @@ jobs:
             -define icon:auto-resize=16,24,32,48,64,128,256 `
             packaging/windows/AppIcon.ico
 
+      - name: Convert DWG/DXF file icons to ICO
+        shell: pwsh
+        run: |
+          # DWG/DXF Explorer file icons, from the single-source mimetype SVGs.
+          magick assets/mimetypes/image-vnd.dwg.svg `
+            -define icon:auto-resize=16,24,32,48,64,128,256 `
+            packaging/windows/dwg.ico
+          magick assets/mimetypes/image-vnd.dxf.svg `
+            -define icon:auto-resize=16,24,32,48,64,128,256 `
+            packaging/windows/dxf.ico
+
       - name: Build
         env:
           OCS_PATREON_TOKEN: ${{ secrets.OCS_PATREON_TOKEN }}
@@ -237,14 +248,60 @@ jobs:
           done
           iconutil -c icns OpenCADStudio.iconset -o AppIcon.icns
 
+      - name: Build DWG/DXF document .icns from the same SVG sources
+        run: |
+          # Finder document icons (Info.plist CFBundleTypeIconFile = DWG/DXF),
+          # generated from the single-source mimetype SVGs — never hand-drawn.
+          for T in dwg dxf; do
+            mkdir -p "$T.iconset"
+            for SIZE in 16 32 64 128 256 512 1024; do
+              rsvg-convert -w $SIZE -h $SIZE "assets/mimetypes/image-vnd.$T.svg" \
+                -o "$T.iconset/icon_${SIZE}x${SIZE}.png"
+            done
+            for BASE in 16 32 128 256 512; do
+              cp "$T.iconset/icon_$((BASE*2))x$((BASE*2)).png" \
+                 "$T.iconset/icon_${BASE}x${BASE}@2x.png"
+            done
+            iconutil -c icns "$T.iconset" -o "$(echo "$T" | tr a-z A-Z).icns"
+          done
+
+      - name: Build DWG QuickLook thumbnail extension (.appex)
+        run: |
+          # A QuickLook thumbnail App Extension, built without an Xcode project:
+          # swiftc compiles the provider, links the Rust core static lib (its C
+          # ABI) + the system frameworks, and we hand-assemble the .appex bundle.
+          # `cargo build` already produced libdwg_thumbnailer.a (workspace member,
+          # crate-type staticlib). The whole app is ad-hoc signed below, which
+          # deep-signs the embedded extension too.
+          set -e
+          VERSION="${{ github.ref_name }}"; VERSION="${VERSION#v}"; [ -z "$VERSION" ] && VERSION="0.0.0"
+          EXT=DWGThumbnail.appex
+          rm -rf "$EXT"; mkdir -p "$EXT/Contents/MacOS"
+          swiftc \
+            -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            -target arm64-apple-macos11 \
+            -O -parse-as-library -application-extension \
+            -module-name DWGThumbnail \
+            -import-objc-header crates/dwg-thumbnailer/macos/dwg_thumbnailer.h \
+            crates/dwg-thumbnailer/macos/ThumbnailProvider.swift \
+            -L target/aarch64-apple-darwin/release -ldwg_thumbnailer \
+            -framework QuickLookThumbnailing -framework CoreGraphics \
+            -framework ImageIO -framework Foundation \
+            -Xlinker -e -Xlinker _NSExtensionMain \
+            -o "$EXT/Contents/MacOS/DWGThumbnail"
+          sed "s/__VERSION__/$VERSION/g" crates/dwg-thumbnailer/macos/Info.plist > "$EXT/Contents/Info.plist"
+
       - name: Assemble .app bundle
         run: |
           APP=OpenCADStudio.app
           rm -rf "$APP"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/PlugIns"
           cp target/aarch64-apple-darwin/release/OpenCADStudio "$APP/Contents/MacOS/OpenCADStudio"
           chmod +x "$APP/Contents/MacOS/OpenCADStudio"
           cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+          cp DWG.icns DXF.icns "$APP/Contents/Resources/"
+          # QuickLook thumbnail extension.
+          cp -R DWGThumbnail.appex "$APP/Contents/PlugIns/"
           # Substitute version into Info.plist.
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"

@@ -21,6 +21,7 @@ dependencies = [
  "clap",
  "console_error_panic_hook",
  "cosmic-text",
+ "dwg-thumbnailer",
  "env_logger",
  "flate2",
  "fontdb",
@@ -1413,6 +1414,21 @@ name = "dtor"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
+
+[[package]]
+name = "dwg-thumbnailer"
+version = "0.1.0"
+dependencies = [
+ "image",
+]
+
+[[package]]
+name = "dwg-thumbnailer-win"
+version = "0.1.0"
+dependencies = [
+ "dwg-thumbnailer",
+ "windows 0.58.0",
+]
 
 [[package]]
 name = "ecb"

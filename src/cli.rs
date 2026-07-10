@@ -67,6 +67,11 @@ pub struct Cli {
     /// Internal: run as the plugin runner child process.
     #[arg(long, value_names = ["SOCKET", "CDYLIB"], num_args = 2, hide = true)]
     pub ocs_plugin_runner: Option<Vec<String>>,
+
+    /// Internal: write a DWG's embedded preview to a PNG for the OS file-manager
+    /// thumbnailer (`<IN> <OUT> <SIZE>`). Handled before the GUI starts.
+    #[arg(long, value_names = ["IN", "OUT", "SIZE"], num_args = 3, hide = true)]
+    pub dwg_thumbnail: Option<Vec<String>>,
 }
 
 /// GUI startup configuration, handed from `main` to `app::boot` out-of-band
