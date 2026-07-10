@@ -17,7 +17,19 @@ impl OpenCADStudio {
         self.recent_files.retain(|r| r != &path);
         self.recent_files.insert(0, path);
         self.recent_files.truncate(self.recent_limit);
+        self.refresh_recent_thumbs();
         self.save_config();
+    }
+
+    /// Decode any not-yet-cached DWG preview thumbnails for the current recents
+    /// (cheap preview-only reads). Cached per path; safe to call repeatedly.
+    /// Call when the recents list changes — never from a `view`.
+    pub(super) fn refresh_recent_thumbs(&mut self) {
+        for path in self.recent_files.clone() {
+            self.recent_thumbs
+                .entry(path.clone())
+                .or_insert_with(|| crate::io::thumbnail::read_handle(&path));
+        }
     }
 
     /// Drop a path from the recents list (manual removal from the Start page).

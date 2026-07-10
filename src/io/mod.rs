@@ -15,6 +15,7 @@ pub mod linetypes;
 pub mod patterns;
 pub mod update_check;
 pub mod paper_sizes;
+pub mod thumbnail;
 
 use crate::scene::DerivedCaches;
 use acadrust::entities::EntityType;

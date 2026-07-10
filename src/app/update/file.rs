@@ -296,6 +296,7 @@ impl OpenCADStudio {
             .clamp(crate::app::recent::RECENT_MIN, crate::app::recent::RECENT_MAX);
         self.recent_files.truncate(self.recent_limit);
         self.recent_limit_input = self.recent_limit.to_string();
+        self.refresh_recent_thumbs();
         self.statusbar_config = cfg.statusbar;
         self.ribbon.set_collapse_mode(cfg.ribbon.collapse);
         self.plot_dialog = cfg.plot;
@@ -670,6 +671,19 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::none()
     }
 
+    /// Rasterize the current drawing into the document's DWG preview image, so
+    /// a saved file shows a thumbnail in file browsers and other CAD apps.
+    /// A degenerate/empty drawing clears any stale preview.
+    pub(super) fn stamp_thumbnail(&mut self, i: usize) {
+        self.tabs[i].scene.document.preview =
+            crate::io::thumbnail::from_scene(&self.tabs[i].scene);
+        // The on-disk thumbnail will change — drop the cached Start-page handle
+        // so it re-reads the updated file on the next refresh.
+        if let Some(p) = self.tabs[i].current_path.clone() {
+            self.recent_thumbs.remove(&p);
+        }
+    }
+
     pub(super) fn on_save_file(&mut self) -> Task<Message> {
                 if self.read_only {
                     self.command_line
@@ -695,6 +709,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         crate::io::write_backup(&path);
                     }
                     self.sync_truck_solids_to_acis(i);
+                    self.stamp_thumbnail(i);
                     match crate::io::save(&self.tabs[i].scene.document, &path) {
                         Ok(()) => {
                             self.command_line
@@ -755,6 +770,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 // Persist Ortho / running OSNAP into the header (Save-As path).
                 self.stamp_header_sysvars(i);
                 self.sync_truck_solids_to_acis(i);
+                self.stamp_thumbnail(i);
 
                 // Native: write to the chosen path. Web: download the bytes
                 // under the chosen name (no filesystem).

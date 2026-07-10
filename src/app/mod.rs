@@ -227,6 +227,11 @@ pub(super) struct OpenCADStudio {
     ribbon: Ribbon,
     /// Recently opened files, newest first — backs the Start page panel.
     recent_files: Vec<std::path::PathBuf>,
+    /// Decoded DWG preview thumbnails for the Start page, keyed by path.
+    /// `None` = the file has no readable preview (DXF, missing, WMF). Filled
+    /// lazily by `refresh_recent_thumbs`; never read from a `view` call.
+    recent_thumbs:
+        std::collections::HashMap<std::path::PathBuf, Option<iced::widget::image::Handle>>,
     /// How many recent files to keep (user-set on the Start page, persisted).
     recent_limit: usize,
     /// Live text of the recent-limit input box (may differ from `recent_limit`
@@ -2090,6 +2095,7 @@ impl OpenCADStudio {
             // Populated from the consolidated config after construction
             // (`apply_config`); default empty here.
             recent_files: Vec::new(),
+            recent_thumbs: std::collections::HashMap::new(),
             recent_limit: recent::RECENT_DEFAULT,
             recent_limit_input: recent::RECENT_DEFAULT.to_string(),
             command_line: CommandLine::new(),

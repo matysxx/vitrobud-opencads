@@ -118,6 +118,7 @@ impl OpenCADStudio {
             start_page_view(
                 &self.patrons,
                 &self.recent_files,
+                &self.recent_thumbs,
                 self.recent_limit,
                 &self.recent_limit_input,
                 self.win_size.0,
@@ -2187,6 +2188,10 @@ pub(super) fn collapse_bar<'a>(name: &str, on_press: Message) -> Element<'a, Mes
 pub(super) fn start_page_view<'a>(
     patrons: &'a [(String, i64)],
     recents: &'a [std::path::PathBuf],
+    thumbs: &'a std::collections::HashMap<
+        std::path::PathBuf,
+        Option<iced::widget::image::Handle>,
+    >,
     recent_limit: usize,
     recent_limit_input: &'a str,
     avail_w: f32,
@@ -2540,7 +2545,7 @@ pub(super) fn start_page_view<'a>(
     let avail = (avail_w - 16.0).max(0.0); // minus the page's l/r padding
     let fits_all = avail >= recent_w + welcome_min + sup_w;
 
-    let recent = recent_files_panel(recents, recent_limit, recent_limit_input);
+    let recent = recent_files_panel(recents, thumbs, recent_limit, recent_limit_input);
     let welcome = container(content).width(Fill).height(Fill);
 
     // Right rail: Patreon supporters, fetched at boot. When the list is empty
@@ -2719,6 +2724,10 @@ pub(super) fn start_page_view<'a>(
 // open — entries persist across sessions.
 pub(super) fn recent_files_panel<'a>(
     recents: &'a [std::path::PathBuf],
+    thumbs: &'a std::collections::HashMap<
+        std::path::PathBuf,
+        Option<iced::widget::image::Handle>,
+    >,
     limit: usize,
     limit_input: &'a str,
 ) -> Element<'a, Message> {
@@ -2779,17 +2788,37 @@ pub(super) fn recent_files_panel<'a>(
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
 
+            // Leading DWG preview thumbnail (fixed box keeps rows aligned even
+            // when a file has no readable preview).
+            let thumb: Element<'a, Message> = match thumbs.get(path).and_then(|o| o.as_ref()) {
+                Some(h) => container(
+                    iced::widget::image(h.clone())
+                        .content_fit(iced::ContentFit::Contain)
+                        .width(Fill)
+                        .height(Fill),
+                )
+                .width(46)
+                .height(34)
+                .into(),
+                None => iced::widget::Space::new().width(46).height(34).into(),
+            };
+
             let path_for_open = path.clone();
             let open_btn = button(
-                column![
-                    text(crate::ui::text_util::elide(&name, 32))
-                        .size(12)
-                        .color(TEXT),
-                    text(crate::ui::text_util::elide(&dir, 42))
-                        .size(10)
-                        .color(MUTED),
+                row![
+                    thumb,
+                    column![
+                        text(crate::ui::text_util::elide(&name, 28))
+                            .size(12)
+                            .color(TEXT),
+                        text(crate::ui::text_util::elide(&dir, 38))
+                            .size(10)
+                            .color(MUTED),
+                    ]
+                    .spacing(2),
                 ]
-                .spacing(2),
+                .spacing(8)
+                .align_y(iced::Center),
             )
             .on_press(Message::OpenRecent(path_for_open))
             .padding([6, 12])
