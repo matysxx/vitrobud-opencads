@@ -9,7 +9,7 @@
 use acadrust::entities::{Dimension, DimensionLinear};
 use acadrust::types::Vector3;
 use acadrust::{EntityType, Handle};
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -67,9 +67,11 @@ impl CadCommand for QdimCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Step::PlaceLine { handles } = &self.step {
             CmdResult::Relaunch(
+                // Keep the picked placement point in full f64 precision so the
+                // committed dimension coordinates are not quantized to f32.
                 format!("QDIM_PLACE {:.6} {:.6} {:.6}", pt.x, pt.y, pt.z),
                 handles.clone(),
             )
@@ -112,8 +114,8 @@ impl CadCommand for QdimCommand {
 
 /// Build a linear dimension between two points at the given dimension-line position.
 #[allow(dead_code)]
-pub fn make_linear_dim(p1: Vec3, p2: Vec3, dim_pt: Vec3) -> EntityType {
-    let v = |p: Vec3| Vector3::new(p.x as f64, p.y as f64, p.z as f64);
+pub fn make_linear_dim(p1: DVec3, p2: DVec3, dim_pt: DVec3) -> EntityType {
+    let v = |p: DVec3| Vector3::new(p.x, p.y, p.z);
     let mut dim = DimensionLinear::new(v(p1), v(p2));
     // Determine axis: horizontal if Δx > Δz, else vertical
     let dx = (p2.x - p1.x).abs();

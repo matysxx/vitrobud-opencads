@@ -416,7 +416,7 @@ pub(super) struct OpenCADStudio {
     /// Whether the layout/paper-space tabs are shown at the bottom (LAYOUTTAB).
     show_layout_tabs: bool,
     /// Last point committed by a drawing command — used as ortho/polar base.
-    last_point: Option<glam::Vec3>,
+    last_point: Option<glam::DVec3>,
     /// Endpoint + unit exit-tangent of the most recently drawn line/arc, so
     /// `ARC_CONT` (Arc → Continue) can start tangentially from where drawing
     /// ended. `None` once a non-line/arc entity is committed.

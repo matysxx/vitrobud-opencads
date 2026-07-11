@@ -16,7 +16,7 @@
 //     All others  : move the whole entity if any point is inside.
 
 use acadrust::Handle;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -39,14 +39,14 @@ enum Step {
     /// Waiting for the first crossing-window corner.
     WindowCorner1,
     /// Waiting for the second corner; `c1` is the first corner.
-    WindowCorner2(Vec3),
+    WindowCorner2(DVec3),
     /// Crossing window defined; waiting for base point.
-    Base { win_min: Vec3, win_max: Vec3 },
+    Base { win_min: DVec3, win_max: DVec3 },
     /// Waiting for target point.
     Target {
-        win_min: Vec3,
-        win_max: Vec3,
-        base: Vec3,
+        win_min: DVec3,
+        win_max: DVec3,
+        base: DVec3,
     },
 }
 
@@ -86,7 +86,7 @@ impl CadCommand for StretchCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match &self.step {
             Step::WindowCorner1 => {
                 self.step = Step::WindowCorner2(pt);
@@ -115,9 +115,9 @@ impl CadCommand for StretchCommand {
                 let delta = pt - *base;
                 CmdResult::StretchEntities {
                     handles: self.handles.clone(),
-                    win_min: win_min.as_dvec3(),
-                    win_max: win_max.as_dvec3(),
-                    delta: delta.as_dvec3(),
+                    win_min: *win_min,
+                    win_max: *win_max,
+                    delta,
                 }
             }
         }
@@ -140,12 +140,12 @@ impl CadCommand for StretchCommand {
         // Expose the first corner so the host draws a filled crossing marquee to
         // the cursor, matching a normal box selection instead of a bare outline.
         match &self.step {
-            Step::WindowCorner2(c1) => Some(c1.as_dvec3()),
+            Step::WindowCorner2(c1) => Some(*c1),
             _ => None,
         }
     }
 
-    fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> { let pt = pt.as_vec3();
+    fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> {
         match &self.step {
             // The crossing-window rectangle is drawn as a filled selection
             // marquee by the host (via window_first_corner) so it matches a
@@ -158,15 +158,19 @@ impl CadCommand for StretchCommand {
             } => {
                 let delta = pt - *base;
                 // Live ghost: vertices inside the crossing window follow the
-                // cursor, the rest stay anchored.
+                // cursor, the rest stay anchored. This is the preview/GPU path,
+                // so downcast to f32 only at the WireModel boundary.
                 let mut out: Vec<WireModel> = self
                     .wire_models
                     .iter()
-                    .map(|w| w.stretched(*win_min, *win_max, delta))
+                    .map(|w| w.stretched((*win_min).as_vec3(), (*win_max).as_vec3(), delta.as_vec3()))
                     .collect();
                 out.push(WireModel::solid(
                     "rubber_band".into(),
-                    vec![[base.x, base.y, base.z], [pt.x, pt.y, pt.z]],
+                    vec![
+                        [base.x as f32, base.y as f32, base.z as f32],
+                        [pt.x as f32, pt.y as f32, pt.z as f32],
+                    ],
                     WireModel::CYAN,
                     false,
                 ));

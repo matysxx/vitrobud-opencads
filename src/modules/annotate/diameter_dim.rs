@@ -22,8 +22,8 @@ pub fn tool() -> ToolDef {
 
 enum Step {
     CenterPoint,
-    ArcPoint(Vec3),
-    TextPoint { center: Vec3, arc_pt: Vec3 },
+    ArcPoint(DVec3),
+    TextPoint { center: DVec3, arc_pt: DVec3 },
 }
 
 pub struct DiameterDimensionCommand {
@@ -71,7 +71,7 @@ impl CadCommand for DiameterDimensionCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.step {
             Step::CenterPoint => {
                 self.step = Step::ArcPoint(pt);
@@ -86,7 +86,7 @@ impl CadCommand for DiameterDimensionCommand {
                 dim.base.definition_point = v3(arc_pt);
                 dim.base.text_middle_point = v3(pt);
                 dim.base.insertion_point = v3(pt);
-                dim.leader_length = arc_pt.distance(pt) as f64;
+                dim.leader_length = arc_pt.distance(pt);
                 dim.base.actual_measurement = dim.measurement();
                 dim.base.user_text = self.text_override.clone();
                 // An explicit text angle overrides the default rotation.
@@ -161,20 +161,21 @@ impl CadCommand for DiameterDimensionCommand {
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         match self.step {
             Step::CenterPoint => None,
-            Step::ArcPoint(center) => Some(preview_line(center, pt)),
+            Step::ArcPoint(center) => Some(preview_line(center.as_vec3(), pt)),
             Step::TextPoint { center, arc_pt } => {
                 let far = center + (center - arc_pt); // opposite point on circle
-                Some(preview_line(far, pt))
+                Some(preview_line(far.as_vec3(), pt))
             }
         }
     }
 }
 
-fn v3(p: Vec3) -> Vector3 {
-    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+fn v3(p: DVec3) -> Vector3 {
+    Vector3::new(p.x, p.y, p.z)
 }
 
 fn preview_line(a: Vec3, b: Vec3) -> WireModel {

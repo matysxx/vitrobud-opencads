@@ -5,10 +5,10 @@
 
 use crate::command::{CadCommand, CmdResult};
 use crate::scene::model::wire_model::WireModel;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 pub struct PlotWindowCommand {
-    p1: Option<Vec3>,
+    p1: Option<DVec3>,
 }
 
 impl PlotWindowCommand {
@@ -30,13 +30,13 @@ impl CadCommand for PlotWindowCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.p1 {
             None => {
                 self.p1 = Some(pt);
                 CmdResult::NeedPoint
             }
-            Some(p1) => CmdResult::SetPlotWindow { p1: p1.as_dvec3(), p2: pt.as_dvec3() },
+            Some(p1) => CmdResult::SetPlotWindow { p1, p2: pt },
         }
     }
 
@@ -45,7 +45,7 @@ impl CadCommand for PlotWindowCommand {
     }
 
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
-        let p1 = self.p1?;
+        let p1 = self.p1?.as_vec3();
         // Draw the selection rectangle.
         Some(WireModel {
             text_verts: Vec::new(),

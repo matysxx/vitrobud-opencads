@@ -282,13 +282,9 @@ impl OpenCADStudio {
                             let current = self.tabs[i].active_ucs.as_ref();
                             let origin = current
                                 .map(|u| {
-                                    glam::Vec3::new(
-                                        u.origin.x as f32,
-                                        u.origin.y as f32,
-                                        u.origin.z as f32,
-                                    )
+                                    glam::DVec3::new(u.origin.x, u.origin.y, u.origin.z)
                                 })
-                                .unwrap_or(glam::Vec3::ZERO);
+                                .unwrap_or(glam::DVec3::ZERO);
                             let mut new_ucs = ucs_rotated_z(origin, rad);
                             // If already had axes, compose rotation on top
                             if let Some(ref ucs) = self.tabs[i].active_ucs {
@@ -302,7 +298,7 @@ impl OpenCADStudio {
                                     ucs.y_axis.y as f32,
                                     ucs.y_axis.z as f32,
                                 );
-                                let z_ax = ucs_z_axis(ucs);
+                                let z_ax = ucs_z_axis(ucs).as_vec3();
                                 let rot = glam::Quat::from_axis_angle(z_ax, rad);
                                 let nx = rot * old_x;
                                 let ny = rot * old_y;

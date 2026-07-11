@@ -20,15 +20,15 @@ pub fn tool() -> ToolDef {
 
 enum Step {
     Vertex,
-    FirstRay(Vec3),
+    FirstRay(DVec3),
     SecondRay {
-        vertex: Vec3,
-        first: Vec3,
+        vertex: DVec3,
+        first: DVec3,
     },
     ArcPoint {
-        vertex: Vec3,
-        first: Vec3,
-        second: Vec3,
+        vertex: DVec3,
+        first: DVec3,
+        second: DVec3,
     },
 }
 
@@ -56,7 +56,7 @@ impl CadCommand for AngularDimensionCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.step {
             Step::Vertex => {
                 self.step = Step::FirstRay(pt);
@@ -98,28 +98,34 @@ impl CadCommand for AngularDimensionCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         match self.step {
             Step::Vertex => None,
-            Step::FirstRay(vertex) => Some(preview_wire(vec![vertex, pt])),
+            Step::FirstRay(vertex) => Some(preview_wire(vec![vertex.as_vec3(), pt])),
             Step::SecondRay { vertex, first } => Some(preview_wire(vec![
-                vertex,
-                first,
+                vertex.as_vec3(),
+                first.as_vec3(),
                 Vec3::new(f32::NAN, f32::NAN, f32::NAN),
-                vertex,
+                vertex.as_vec3(),
                 pt,
             ])),
             Step::ArcPoint {
                 vertex,
                 first,
                 second,
-            } => Some(preview_wire(angular_preview(vertex, first, second, pt))),
+            } => Some(preview_wire(angular_preview(
+                vertex.as_vec3(),
+                first.as_vec3(),
+                second.as_vec3(),
+                pt,
+            ))),
         }
     }
 }
 
-fn v3(pt: Vec3) -> Vector3 {
-    Vector3::new(pt.x as f64, pt.y as f64, pt.z as f64)
+fn v3(pt: DVec3) -> Vector3 {
+    Vector3::new(pt.x, pt.y, pt.z)
 }
 
 fn preview_wire(points: Vec<Vec3>) -> WireModel {

@@ -9,7 +9,7 @@
 
 use acadrust::entities::Solid3D;
 use acadrust::{primitives, EntityType};
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 use truck_modeling::Solid;
 
 use crate::command::{CadCommand, CmdResult};
@@ -63,7 +63,7 @@ impl Shape {
 pub struct PrimitiveCommand {
     shape: Shape,
     /// Footprint points collected so far (local/world XY, z = 0).
-    pts: Vec<Vec3>,
+    pts: Vec<DVec3>,
     /// True once the footprint is set and we are collecting the height.
     height_step: bool,
 }
@@ -90,9 +90,9 @@ impl PrimitiveCommand {
         match self.shape {
             Shape::Box | Shape::Wedge => {
                 let d = self.pts[1] - self.pts[0];
-                (d.x.abs().max(d.y.abs())) as f64
+                d.x.abs().max(d.y.abs())
             }
-            _ => (self.pts[1] - self.pts[0]).length() as f64,
+            _ => (self.pts[1] - self.pts[0]).length(),
         }
         .max(1.0)
     }
@@ -103,23 +103,19 @@ impl PrimitiveCommand {
         let (doc, solid) = match self.shape {
             Shape::Box | Shape::Wedge => {
                 let (a, b) = (self.pts[0], self.pts[1]);
-                let length = (b.x - a.x).abs() as f64;
-                let width = (b.y - a.y).abs() as f64;
+                let length = (b.x - a.x).abs();
+                let width = (b.y - a.y).abs();
                 if length < 1e-6 || width < 1e-6 || height < 1e-6 {
                     return None;
                 }
                 if self.shape == Shape::Box {
-                    let center = [
-                        (a.x + b.x) as f64 / 2.0,
-                        (a.y + b.y) as f64 / 2.0,
-                        height / 2.0,
-                    ];
+                    let center = [(a.x + b.x) / 2.0, (a.y + b.y) / 2.0, height / 2.0];
                     (
                         primitives::build_box(center, length, width, height),
                         solid_model::box_solid(center, length, width, height),
                     )
                 } else {
-                    let origin = [a.x.min(b.x) as f64, a.y.min(b.y) as f64, 0.0];
+                    let origin = [a.x.min(b.x), a.y.min(b.y), 0.0];
                     (
                         primitives::build_wedge(origin, length, width, height),
                         solid_model::wedge_solid(origin, length, width, height),
@@ -128,11 +124,11 @@ impl PrimitiveCommand {
             }
             Shape::Cylinder | Shape::Cone => {
                 let c = self.pts[0];
-                let r = (self.pts[1] - c).length() as f64;
+                let r = (self.pts[1] - c).length();
                 if r < 1e-6 || height < 1e-6 {
                     return None;
                 }
-                let center = [c.x as f64, c.y as f64, 0.0];
+                let center = [c.x, c.y, 0.0];
                 if self.shape == Shape::Cylinder {
                     (
                         primitives::build_cylinder(center, r, height),
@@ -147,11 +143,11 @@ impl PrimitiveCommand {
             }
             Shape::Sphere => {
                 let c = self.pts[0];
-                let r = (self.pts[1] - c).length() as f64;
+                let r = (self.pts[1] - c).length();
                 if r < 1e-6 {
                     return None;
                 }
-                let center = [c.x as f64, c.y as f64, 0.0];
+                let center = [c.x, c.y, 0.0];
                 (
                     primitives::build_sphere(center, r),
                     solid_model::sphere_solid(center, r),
@@ -159,12 +155,12 @@ impl PrimitiveCommand {
             }
             Shape::Torus => {
                 let c = self.pts[0];
-                let major = (self.pts[1] - c).length() as f64;
-                let minor = (self.pts[2] - self.pts[1]).length() as f64;
+                let major = (self.pts[1] - c).length();
+                let minor = (self.pts[2] - self.pts[1]).length();
                 if major < 1e-6 || minor < 1e-6 {
                     return None;
                 }
-                let center = [c.x as f64, c.y as f64, 0.0];
+                let center = [c.x, c.y, 0.0];
                 (
                     primitives::build_torus(center, major, minor),
                     solid_model::torus_solid(center, major, minor),
@@ -209,11 +205,11 @@ impl CadCommand for PrimitiveCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if self.height_step {
             // A click in the ground plane has no Z; use its distance from the
             // footprint centre as the height magnitude.
-            let h = (pt - self.pts[0]).length() as f64;
+            let h = (pt - self.pts[0]).length();
             return self.commit(h.max(1e-6));
         }
         self.pts.push(pt);
@@ -253,7 +249,7 @@ impl CadCommand for PrimitiveCommand {
         Some(self.commit(h))
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if self.height_step || self.pts.is_empty() {
             return None;
         }
@@ -265,7 +261,7 @@ impl CadCommand for PrimitiveCommand {
 
 // ── Footprint preview ───────────────────────────────────────────────────────
 
-fn footprint_wire(shape: Shape, pts: &[Vec3]) -> WireModel {
+fn footprint_wire(shape: Shape, pts: &[DVec3]) -> WireModel {
     let mut points: Vec<[f32; 3]> = Vec::new();
     if shape.radial() {
         let c = pts[0];
@@ -280,21 +276,25 @@ fn footprint_wire(shape: Shape, pts: &[Vec3]) -> WireModel {
     } else {
         let (a, b) = (pts[0], pts[1]);
         points.extend_from_slice(&[
-            [a.x, a.y, 0.0],
-            [b.x, a.y, 0.0],
-            [b.x, b.y, 0.0],
-            [a.x, b.y, 0.0],
-            [a.x, a.y, 0.0],
+            [a.x as f32, a.y as f32, 0.0],
+            [b.x as f32, a.y as f32, 0.0],
+            [b.x as f32, b.y as f32, 0.0],
+            [a.x as f32, b.y as f32, 0.0],
+            [a.x as f32, a.y as f32, 0.0],
         ]);
     }
     wire("primitive_preview", points)
 }
 
-fn circle_points(out: &mut Vec<[f32; 3]>, c: Vec3, r: f32) {
+fn circle_points(out: &mut Vec<[f32; 3]>, c: DVec3, r: f64) {
     const SEG: usize = 48;
     for i in 0..=SEG {
-        let t = i as f32 / SEG as f32 * std::f32::consts::TAU;
-        out.push([c.x + r * t.cos(), c.y + r * t.sin(), 0.0]);
+        let t = i as f64 / SEG as f64 * std::f64::consts::TAU;
+        out.push([
+            (c.x + r * t.cos()) as f32,
+            (c.y + r * t.sin()) as f32,
+            0.0,
+        ]);
     }
 }
 

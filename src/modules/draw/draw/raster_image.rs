@@ -9,7 +9,7 @@
 use acadrust::entities::RasterImage;
 use acadrust::types::Vector3;
 use acadrust::EntityType;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::scene::model::wire_model::WireModel;
@@ -18,7 +18,7 @@ pub struct ImageCommand {
     file_path: String,
     pixel_width: u32,
     pixel_height: u32,
-    origin: Option<Vec3>,
+    origin: Option<DVec3>,
 }
 
 impl ImageCommand {
@@ -39,11 +39,11 @@ impl ImageCommand {
         }
     }
 
-    fn make_entity(&self, origin: Vec3, width_pt: Vec3) -> EntityType {
-        let world_width = ((width_pt.x - origin.x) as f64).abs().max(0.001);
+    fn make_entity(&self, origin: DVec3, width_pt: DVec3) -> EntityType {
+        let world_width = (width_pt.x - origin.x).abs().max(0.001);
         let world_height = world_width / self.aspect();
 
-        let ins = Vector3::new(origin.x as f64, origin.y as f64, origin.z as f64);
+        let ins = Vector3::new(origin.x, origin.y, origin.z);
 
         let mut img = RasterImage::with_size(
             &self.file_path,
@@ -75,7 +75,7 @@ impl CadCommand for ImageCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Some(origin) = self.origin {
             let entity = self.make_entity(origin, pt);
             CmdResult::CommitAndExit(entity)
@@ -89,7 +89,7 @@ impl CadCommand for ImageCommand {
         // If origin is set, place with a default width of 1 unit * pixel count / 100
         if let Some(origin) = self.origin {
             let default_w = (self.pixel_width as f64 / 100.0).max(1.0);
-            let width_pt = Vec3::new(origin.x + default_w as f32, origin.y, origin.z);
+            let width_pt = DVec3::new(origin.x + default_w, origin.y, origin.z);
             let entity = self.make_entity(origin, width_pt);
             CmdResult::CommitAndExit(entity)
         } else {
@@ -98,7 +98,7 @@ impl CadCommand for ImageCommand {
     }
 
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
-        let origin = self.origin?;
+        let origin = self.origin?.as_vec3();
         let world_width = (pt.x - origin.x).abs().max(0.001);
         let world_height = world_width / self.aspect() as f32;
 

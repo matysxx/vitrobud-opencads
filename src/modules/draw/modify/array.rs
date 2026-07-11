@@ -14,7 +14,7 @@
 //   1. Center point → 2. Item count (text) → 3. Total angle in degrees (text)
 
 use acadrust::Handle;
-use glam::{DVec3, Mat4, Vec3};
+use glam::{DVec3, Mat4};
 
 use crate::command::{CadCommand, CmdResult, EntityTransform};
 use crate::modules::draw::defaults;
@@ -246,8 +246,8 @@ impl CadCommand for ArrayRectCommand {
 
 enum PolarStep {
     Center,
-    Count { center: Vec3 },
-    Angle { center: Vec3, count: u32 },
+    Count { center: DVec3 },
+    Angle { center: DVec3, count: u32 },
 }
 
 pub struct ArrayPolarCommand {
@@ -331,7 +331,6 @@ impl CadCommand for ArrayPolarCommand {
                     v
                 };
                 let step_rad = total_deg.to_radians() / count as f32;
-                let center = center.as_dvec3();
                 let transforms = (1..count)
                     .map(|n| EntityTransform::Rotate {
                         center,
@@ -348,8 +347,12 @@ impl CadCommand for ArrayPolarCommand {
         let pt = pt.as_vec3();
         let (center, count, total_deg) = match &self.step {
             PolarStep::Center => (pt, self.default_count, self.default_angle),
-            PolarStep::Count { center } => (*center, self.default_count, self.default_angle),
-            PolarStep::Angle { center, count } => (*center, *count, self.default_angle),
+            PolarStep::Count { center } => {
+                (center.as_vec3(), self.default_count, self.default_angle)
+            }
+            PolarStep::Angle { center, count } => {
+                (center.as_vec3(), *count, self.default_angle)
+            }
         };
         let step_rad = total_deg.to_radians() / count as f32;
         let mut out: Vec<WireModel> = (1..count)
@@ -373,7 +376,6 @@ impl CadCommand for ArrayPolarCommand {
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
-        let pt = pt.as_vec3();
         if let PolarStep::Center = self.step {
             self.step = PolarStep::Count { center: pt };
         }
@@ -398,8 +400,8 @@ impl CadCommand for ArrayPolarCommand {
 //   → Returns BatchCopy with Translate transforms derived from path samples.
 
 use acadrust::EntityType;
-use std::f32::consts::PI as FPI;
-use std::f32::consts::TAU as FTAU;
+use std::f64::consts::PI as FPI;
+use std::f64::consts::TAU as FTAU;
 
 // ── Path geometry helpers ──────────────────────────────────────────────────
 
@@ -408,7 +410,7 @@ use std::f32::consts::TAU as FTAU;
 /// sweep) and every point is mapped OCS→WCS via the polyline's normal. The
 /// previous ad-hoc bulge math placed the arc centre on the wrong side of the
 /// chord and ignored the extrusion, so arc-segment paths came out mirrored.
-fn lw_dense_pts(p: &acadrust::entities::LwPolyline) -> Vec<Vec3> {
+fn lw_dense_pts(p: &acadrust::entities::LwPolyline) -> Vec<DVec3> {
     use crate::entities::common::BulgeArc;
     use crate::scene::view::transform::ocs_point_to_wcs;
 
@@ -418,14 +420,14 @@ fn lw_dense_pts(p: &acadrust::entities::LwPolyline) -> Vec<Vec3> {
     }
     let normal = (p.normal.x, p.normal.y, p.normal.z);
     let elev = p.elevation;
-    let to_wcs = |x: f64, y: f64| -> Vec3 {
+    let to_wcs = |x: f64, y: f64| -> DVec3 {
         let (wx, wy, wz) = ocs_point_to_wcs((x, y, elev), normal);
-        Vec3::new(wx as f32, wy as f32, wz as f32)
+        DVec3::new(wx, wy, wz)
     };
 
     let n = verts.len();
     let segs = if p.is_closed { n } else { n.saturating_sub(1) };
-    let mut out: Vec<Vec3> = vec![];
+    let mut out: Vec<DVec3> = vec![];
 
     for i in 0..segs {
         let v0 = &verts[i];
@@ -456,15 +458,15 @@ fn lw_dense_pts(p: &acadrust::entities::LwPolyline) -> Vec<Vec3> {
 }
 
 /// Walk `pts` (ordered) and return `count` points at equal arc-length spacing.
-fn subsample_equidistant(pts: &[Vec3], count: usize) -> Vec<Vec3> {
+fn subsample_equidistant(pts: &[DVec3], count: usize) -> Vec<DVec3> {
     if count == 0 {
         return vec![];
     }
     if pts.len() < 2 {
-        return vec![pts.first().copied().unwrap_or(Vec3::ZERO); count];
+        return vec![pts.first().copied().unwrap_or(DVec3::ZERO); count];
     }
 
-    let mut cum = vec![0.0f32; pts.len()];
+    let mut cum = vec![0.0f64; pts.len()];
     for i in 1..pts.len() {
         cum[i] = cum[i - 1] + pts[i].distance(pts[i - 1]);
     }
@@ -477,7 +479,7 @@ fn subsample_equidistant(pts: &[Vec3], count: usize) -> Vec<Vec3> {
     let mut seg = 0usize;
     for i in 0..count {
         let target = if count > 1 {
-            total * i as f32 / (count - 1) as f32
+            total * i as f64 / (count - 1) as f64
         } else {
             0.0
         };
@@ -512,7 +514,7 @@ pub struct ArrayPathCommand {
     /// path end nearest this point, so clicking near either end picks the
     /// travel direction (a stored arc is always CCW regardless of how it was
     /// drawn, so without this the array could run opposite to expectation).
-    pick_pt: Vec3,
+    pick_pt: DVec3,
 }
 
 impl ArrayPathCommand {
@@ -527,13 +529,13 @@ impl ArrayPathCommand {
             all_entities,
             step: PathStep::SelectPath,
             default_count: defaults::get_array_path_count() as u32,
-            pick_pt: Vec3::ZERO,
+            pick_pt: DVec3::ZERO,
         }
     }
 
     /// Sample the path and orient the points so index 0 is the end nearest the
     /// pick point, giving the user control over the array's travel direction.
-    fn oriented_samples(&self, entity: &EntityType, count: usize) -> Vec<Vec3> {
+    fn oriented_samples(&self, entity: &EntityType, count: usize) -> Vec<DVec3> {
         let mut pts = Self::sample_path(entity, count);
         if pts.len() >= 2 {
             let d_first = self.pick_pt.distance_squared(pts[0]);
@@ -546,16 +548,16 @@ impl ArrayPathCommand {
     }
 
     /// Sample `count` evenly-spaced points along `entity`.
-    fn sample_path(entity: &EntityType, count: usize) -> Vec<Vec3> {
+    fn sample_path(entity: &EntityType, count: usize) -> Vec<DVec3> {
         if count == 0 {
             return vec![];
         }
         match entity {
             EntityType::Line(l) => {
-                let p0 = Vec3::new(l.start.x as f32, l.start.y as f32, 0.0);
-                let p1 = Vec3::new(l.end.x as f32, l.end.y as f32, 0.0);
-                let d = (count - 1).max(1) as f32;
-                (0..count).map(|i| p0.lerp(p1, i as f32 / d)).collect()
+                let p0 = DVec3::new(l.start.x, l.start.y, 0.0);
+                let p1 = DVec3::new(l.end.x, l.end.y, 0.0);
+                let d = (count - 1).max(1) as f64;
+                (0..count).map(|i| p0.lerp(p1, i as f64 / d)).collect()
             }
             EntityType::Arc(a) => {
                 // Sample in WCS via the arc's OCS basis so flipped-normal arcs
@@ -576,10 +578,10 @@ impl ArrayPathCommand {
                     .map(|i| {
                         let ang = sa + span * (i as f64 / d);
                         let (c, s) = (ang.cos(), ang.sin());
-                        Vec3::new(
-                            (cx + r * c * ax.0 + r * s * ay.0) as f32,
-                            (cy + r * c * ax.1 + r * s * ay.1) as f32,
-                            (cz + r * c * ax.2 + r * s * ay.2) as f32,
+                        DVec3::new(
+                            cx + r * c * ax.0 + r * s * ay.0,
+                            cy + r * c * ax.1 + r * s * ay.1,
+                            cz + r * c * ax.2 + r * s * ay.2,
                         )
                     })
                     .collect()
@@ -595,25 +597,25 @@ impl ArrayPathCommand {
                     .map(|i| {
                         let ang = i as f64 / count as f64 * std::f64::consts::TAU;
                         let (cs, sn) = (ang.cos(), ang.sin());
-                        Vec3::new(
-                            (cx + r * cs * ax.0 + r * sn * ay.0) as f32,
-                            (cy + r * cs * ax.1 + r * sn * ay.1) as f32,
-                            (cz + r * cs * ax.2 + r * sn * ay.2) as f32,
+                        DVec3::new(
+                            cx + r * cs * ax.0 + r * sn * ay.0,
+                            cy + r * cs * ax.1 + r * sn * ay.1,
+                            cz + r * cs * ax.2 + r * sn * ay.2,
                         )
                     })
                     .collect()
             }
             EntityType::LwPolyline(p) => subsample_equidistant(&lw_dense_pts(p), count),
-            _ => vec![Vec3::ZERO; count],
+            _ => vec![DVec3::ZERO; count],
         }
     }
 
     /// Continuous path-tangent angle (XY) at each sample, via central
     /// differences and unwrapped so the sequence stays smooth across an arc
     /// that turns more than ±π in total.
-    fn tangents(pts: &[Vec3]) -> Vec<f32> {
+    fn tangents(pts: &[DVec3]) -> Vec<f64> {
         let n = pts.len();
-        let mut a = vec![0.0f32; n];
+        let mut a = vec![0.0f64; n];
         for i in 0..n {
             let prev = if i > 0 { pts[i - 1] } else { pts[i] };
             let next = if i + 1 < n { pts[i + 1] } else { pts[i] };
@@ -645,7 +647,7 @@ impl ArrayPathCommand {
     /// orientation; each copy rotates by the tangent change at its sample).
     /// On a straight path the tangent never changes, so every copy is a pure
     /// `Translate` — identical to a non-aligned array.
-    fn build_transforms(pts: &[Vec3]) -> Vec<EntityTransform> {
+    fn build_transforms(pts: &[DVec3]) -> Vec<EntityTransform> {
         if pts.len() < 2 {
             return vec![];
         }
@@ -658,14 +660,14 @@ impl ArrayPathCommand {
             .map(|(i, &p)| {
                 let dth = tans[i] - t0;
                 if dth.abs() < 1e-5 {
-                    EntityTransform::Translate((p - p0).as_dvec3())
+                    EntityTransform::Translate(p - p0)
                 } else {
                     // The aligned copy is the rigid motion x' = p + R(x - p0),
                     // which is a pure rotation by `dth` about its fixed point.
                     let center = Self::rigid_center(p0, p, dth);
                     EntityTransform::Rotate {
-                        center: center.as_dvec3(),
-                        angle_rad: dth,
+                        center,
+                        angle_rad: dth as f32,
                     }
                 }
             })
@@ -674,7 +676,7 @@ impl ArrayPathCommand {
 
     /// Fixed point of the rigid motion `x' = pi + R(dth)·(x - p0)`; rotating an
     /// entity by `dth` about this point reproduces that motion exactly.
-    fn rigid_center(p0: Vec3, pi: Vec3, dth: f32) -> Vec3 {
+    fn rigid_center(p0: DVec3, pi: DVec3, dth: f64) -> DVec3 {
         let (s, c) = dth.sin_cos();
         // b = pi - R·p0
         let bx = pi.x - (c * p0.x - s * p0.y);
@@ -682,7 +684,7 @@ impl ArrayPathCommand {
         // c = (I - R)^{-1} · b,  with (I-R)^{-1} = 1/(2(1-c)) [[1-c, -s],[s, 1-c]]
         let one_c = 1.0 - c;
         let det = 2.0 * one_c;
-        Vec3::new(
+        DVec3::new(
             (one_c * bx - s * by) / det,
             (s * bx + one_c * by) / det,
             p0.z,
@@ -724,7 +726,6 @@ impl CadCommand for ArrayPathCommand {
     }
 
     fn on_entity_pick(&mut self, handle: Handle, pt: DVec3) -> CmdResult {
-        let pt = pt.as_vec3();
         if handle.is_null() || self.handles.contains(&handle) {
             return CmdResult::NeedPoint;
         }
@@ -758,7 +759,9 @@ impl CadCommand for ArrayPathCommand {
             if pts.len() >= 2 {
                 return vec![WireModel::solid(
                     "arraypath_hover".into(),
-                    pts.iter().map(|p| [p.x, p.y, p.z]).collect(),
+                    pts.iter()
+                        .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+                        .collect(),
                     WireModel::CYAN,
                     false,
                 )];

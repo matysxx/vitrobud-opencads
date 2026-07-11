@@ -10,17 +10,17 @@
 // With 2 pairs: translate + rotate (+ optional uniform scale to fit)
 
 use acadrust::Handle;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult, EntityTransform};
 
 pub struct AlignCommand {
     state: AlignState,
     handles: Vec<Handle>,
-    src1: Option<Vec3>,
-    dst1: Option<Vec3>,
-    src2: Option<Vec3>,
-    dst2: Option<Vec3>,
+    src1: Option<DVec3>,
+    dst1: Option<DVec3>,
+    src2: Option<DVec3>,
+    dst2: Option<DVec3>,
 }
 
 #[derive(PartialEq)]
@@ -74,7 +74,7 @@ impl CadCommand for AlignCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.state {
             AlignState::Gathering => CmdResult::NeedPoint,
             AlignState::Src1 => {
@@ -117,7 +117,7 @@ impl CadCommand for AlignCommand {
                         let delta = d - s;
                         CmdResult::TransformSelected(
                             self.handles.clone(),
-                            EntityTransform::Translate(delta.as_dvec3()),
+                            EntityTransform::Translate(delta),
                         )
                     }
                     _ => CmdResult::Cancel,
@@ -163,7 +163,7 @@ impl AlignCommand {
             let delta = d1 - s1;
             return CmdResult::TransformSelected(
                 self.handles.clone(),
-                EntityTransform::Translate(delta.as_dvec3()),
+                EntityTransform::Translate(delta),
             );
         }
 
@@ -182,10 +182,12 @@ impl AlignCommand {
         // Compose via AlignTransform CmdResult
         CmdResult::AlignSelected {
             handles: self.handles.clone(),
-            src1: s1.as_dvec3(),
-            dst1: d1.as_dvec3(),
-            angle_rad: angle,
-            scale: scale_factor,
+            src1: s1,
+            dst1: d1,
+            // Reference points (src1/dst1) stay f64 exact; the derived
+            // similarity scalars feed the f32 EntityTransform, so downcast here.
+            angle_rad: angle as f32,
+            scale: scale_factor as f32,
         }
     }
 }

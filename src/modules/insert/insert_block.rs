@@ -135,14 +135,11 @@ impl CadCommand for InsertBlockCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match &self.step {
             Step::Name => CmdResult::NeedPoint,
             Step::Point { name } => {
-                let mut ins = Insert::new(
-                    name.clone(),
-                    Vector3::new(pt.x as f64, pt.y as f64, pt.z as f64),
-                );
+                let mut ins = Insert::new(name.clone(), Vector3::new(pt.x, pt.y, pt.z));
                 ins.set_x_scale(self.x_scale);
                 ins.set_y_scale(self.y_scale);
                 ins.rotation = self.rotation_rad;

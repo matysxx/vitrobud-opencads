@@ -8,13 +8,13 @@
 use acadrust::entities::MLine;
 use acadrust::types::Vector3;
 use acadrust::EntityType;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::scene::model::wire_model::WireModel;
 
 pub struct MlineCommand {
-    points: Vec<Vec3>,
+    points: Vec<DVec3>,
     scale: f64,
     waiting_scale: bool,
     style_name: String,
@@ -111,7 +111,7 @@ impl CadCommand for MlineCommand {
         None
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         self.points.push(pt);
         CmdResult::NeedPoint
     }
@@ -124,11 +124,16 @@ impl CadCommand for MlineCommand {
         CmdResult::CommitAndExit(entity)
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         if self.points.is_empty() {
             return None;
         }
-        let mut pts: Vec<[f32; 3]> = self.points.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let mut pts: Vec<[f32; 3]> = self
+            .points
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+            .collect();
         pts.push([pt.x, pt.y, pt.z]);
         Some(WireModel {
             text_verts: Vec::new(),
@@ -153,10 +158,10 @@ impl CadCommand for MlineCommand {
     }
 }
 
-fn build_mline(pts: &[Vec3], scale: f64, closed: bool, style_name: &str) -> EntityType {
+fn build_mline(pts: &[DVec3], scale: f64, closed: bool, style_name: &str) -> EntityType {
     let verts: Vec<Vector3> = pts
         .iter()
-        .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
+        .map(|p| Vector3::new(p.x, p.y, p.z))
         .collect();
     let mut mline = if closed {
         MLine::closed_from_points(&verts)

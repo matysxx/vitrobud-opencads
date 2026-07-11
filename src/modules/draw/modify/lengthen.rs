@@ -159,11 +159,16 @@ pub fn lengthen_entity(entity: &EntityType, pick_pt: Vec3, mode: &LenMode) -> Op
 }
 
 fn lengthen_line(line: &LineEnt, pick_pt: Vec3, mode: &LenMode) -> Option<EntityType> {
-    let s = Vec3::new(line.start.x as f32, line.start.y as f32, 0.0);
-    let e = Vec3::new(line.end.x as f32, line.end.y as f32, 0.0);
-    let p = Vec3::new(pick_pt.x, pick_pt.y, 0.0);
+    // Keep the line's own coordinates on the f64 grid; only pick_pt (screen-only,
+    // nearest-end selection) widens for the distance compare.
+    let sx = line.start.x;
+    let sy = line.start.y;
+    let ex = line.end.x;
+    let ey = line.end.y;
 
-    let current_len = (e - s).length() as f64;
+    let dx = ex - sx;
+    let dy = ey - sy;
+    let current_len = (dx * dx + dy * dy).sqrt();
     if current_len < 1e-10 {
         return None;
     }
@@ -173,23 +178,28 @@ fn lengthen_line(line: &LineEnt, pick_pt: Vec3, mode: &LenMode) -> Option<Entity
         return None;
     }
 
-    let dir = (e - s) / current_len as f32;
+    let ux = dx / current_len;
+    let uy = dy / current_len;
 
     // Which end is closer to pick?
-    let dist_to_start = (p - s).length();
-    let dist_to_end = (p - e).length();
+    let px = pick_pt.x as f64;
+    let py = pick_pt.y as f64;
+    let dist_to_start = (px - sx).hypot(py - sy);
+    let dist_to_end = (px - ex).hypot(py - ey);
 
     let mut result = line.clone();
     result.common.handle = Handle::NULL;
 
     if dist_to_end <= dist_to_start {
         // Extend/trim the end
-        let new_end = s + dir * new_len as f32;
-        result.end = xz_to_v3(new_end, line.end.z);
+        let new_x = sx + ux * new_len;
+        let new_y = sy + uy * new_len;
+        result.end = Vector3::new(new_x, new_y, line.end.z);
     } else {
         // Extend/trim the start (move start backward along dir)
-        let new_start = e - dir * new_len as f32;
-        result.start = xz_to_v3(new_start, line.start.z);
+        let new_x = ex - ux * new_len;
+        let new_y = ey - uy * new_len;
+        result.start = Vector3::new(new_x, new_y, line.start.z);
     }
     Some(EntityType::Line(result))
 }
@@ -333,11 +343,6 @@ fn arc_span_rad(start: f64, end: f64) -> f64 {
     } else {
         span
     }
-}
-
-fn xz_to_v3(v: Vec3, z: f64) -> Vector3 {
-    // v is (world_x, world_z, 0) → DXF (x, world_z, z)
-    Vector3::new(v.x as f64, v.y as f64, z)
 }
 
 fn lengthen_lwpoly(poly: &LwPolyline, pick_pt: Vec3, mode: &LenMode) -> Option<EntityType> {

@@ -11,7 +11,7 @@ use acadrust::EntityType;
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 // ── Ribbon definition ─────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ pub fn tool() -> ToolDef {
 // ── Command ───────────────────────────────────────────────────────────────
 
 pub struct MviewCommand {
-    corner1: Option<Vec3>,
+    corner1: Option<DVec3>,
 }
 
 impl MviewCommand {
@@ -49,16 +49,16 @@ impl CadCommand for MviewCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Some(c1) = self.corner1 {
-            let w = (pt.x - c1.x).abs() as f64;
-            let h = (pt.y - c1.y).abs() as f64;
+            let w = (pt.x - c1.x).abs();
+            let h = (pt.y - c1.y).abs();
             if w < 1.0 || h < 1.0 {
                 return CmdResult::Cancel;
             }
-            let cx = ((c1.x + pt.x) / 2.0) as f64;
-            let cy = ((c1.y + pt.y) / 2.0) as f64;
-            let cz = c1.z as f64;
+            let cx = (c1.x + pt.x) / 2.0;
+            let cy = (c1.y + pt.y) / 2.0;
+            let cz = c1.z;
 
             let mut vp = Viewport::new();
             vp.center = Vector3::new(cx, cy, cz);
@@ -77,17 +77,18 @@ impl CadCommand for MviewCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         let c1 = self.corner1?;
         Some(WireModel {
             text_verts: Vec::new(),
             name: "mview_preview".to_string(),
             points: vec![
-                [c1.x, c1.y, c1.z],
-                [pt.x, c1.y, c1.z],
-                [pt.x, pt.y, c1.z],
-                [c1.x, pt.y, c1.z],
-                [c1.x, c1.y, c1.z],
+                [c1.x as f32, c1.y as f32, c1.z as f32],
+                [pt.x, c1.y as f32, c1.z as f32],
+                [pt.x, pt.y, c1.z as f32],
+                [c1.x as f32, pt.y, c1.z as f32],
+                [c1.x as f32, c1.y as f32, c1.z as f32],
             ],
             points_low: Vec::new(),
             color: WireModel::CYAN,

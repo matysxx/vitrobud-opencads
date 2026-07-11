@@ -27,22 +27,22 @@ pub fn tool() -> ToolDef {
 }
 
 /// Fallback stacking increment (world units) when no DimStyle is available.
-const DEFAULT_DIMDLI: f32 = 1.5;
+const DEFAULT_DIMDLI: f64 = 1.5;
 
 pub struct DimBaselineCommand {
     /// Fixed first-extension-line origin (never changes).
-    base_p1: Vec3,
+    base_p1: DVec3,
     /// Direction along the measurement direction (0.0 = horizontal, PI/2 = vertical).
     rotation: f64,
     /// Text reading rotation inherited from the base dim (keeps a UCS-aligned
     /// chain's text consistent with the originating DIMLINEAR). 0 = natural.
     text_rotation: f64,
     /// Unit vector perpendicular to the dimension axis, pointing toward the dim line side.
-    perp: Vec3,
+    perp: DVec3,
     /// Perpendicular distance of the NEXT dimension line from the extension-line axis.
-    next_offset: f32,
+    next_offset: f64,
     /// Stacking increment from the active DimStyle (DIMDLI).
-    dimdli: f32,
+    dimdli: f64,
     /// True once we have a base dimension loaded.
     ready: bool,
 }
@@ -51,10 +51,10 @@ impl DimBaselineCommand {
     /// No base dim found — cancel immediately.
     pub fn new() -> Self {
         Self {
-            base_p1: Vec3::ZERO,
+            base_p1: DVec3::ZERO,
             rotation: 0.0,
             text_rotation: 0.0,
-            perp: Vec3::Y,
+            perp: DVec3::Y,
             next_offset: DEFAULT_DIMDLI,
             dimdli: DEFAULT_DIMDLI,
             ready: false,
@@ -76,11 +76,16 @@ impl DimBaselineCommand {
         text_rotation: f64,
         dimdli: f32,
     ) -> Self {
+        // The base dim's points enter as f32 from the caller; promote to f64 so
+        // all committed-coordinate math downstream stays exact.
+        let p1 = p1.as_dvec3();
+        let definition_point = definition_point.as_dvec3();
         // Measurement axis = the base dim's rotation angle (any angle, incl. a
         // UCS-aligned one), not a world horizontal/vertical.
-        let axis = Vec3::new(rotation.cos() as f32, rotation.sin() as f32, 0.0);
-        let perp = Vec3::new(-axis.y, axis.x, 0.0);
+        let axis = DVec3::new(rotation.cos(), rotation.sin(), 0.0);
+        let perp = DVec3::new(-axis.y, axis.x, 0.0);
         let base_offset = (definition_point - p1).dot(perp);
+        let dimdli = dimdli as f64;
         let dimdli = if dimdli.abs() < 1e-6 {
             DEFAULT_DIMDLI
         } else {
@@ -110,7 +115,7 @@ impl DimBaselineCommand {
     /// base origin and `p2` each projected INDEPENDENTLY onto the dim line (at
     /// the current stacking offset). Projecting both keeps the line straight
     /// even when the two origins aren't level — a shared offset tilts it. (#181)
-    fn dim_line_pts(&self, p2: Vec3) -> (Vec3, Vec3) {
+    fn dim_line_pts(&self, p2: DVec3) -> (DVec3, DVec3) {
         let target = self.base_p1.dot(self.perp) + self.next_offset;
         let d1 = self.base_p1 + self.perp * (target - self.base_p1.dot(self.perp));
         let d2 = p2 + self.perp * (target - p2.dot(self.perp));
@@ -131,7 +136,7 @@ impl CadCommand for DimBaselineCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if !self.ready {
             return CmdResult::Cancel;
         }
@@ -162,12 +167,17 @@ impl CadCommand for DimBaselineCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if !self.ready {
             return None;
         }
-        let p1 = self.base_p1;
+        // dim_line_pts stays in f64; downcast only here, into the preview's
+        // [f32;3] GPU buffer — correct pixel-space, never touches committed geometry.
         let (dim_line_pt, dim_line_pt2) = self.dim_line_pts(pt);
+        let p1 = self.base_p1.as_vec3();
+        let dim_line_pt = dim_line_pt.as_vec3();
+        let dim_line_pt2 = dim_line_pt2.as_vec3();
+        let pt = pt.as_vec3();
         Some(WireModel {
             text_verts: Vec::new(),
             name: "dimbase_preview".into(),
@@ -200,8 +210,8 @@ impl CadCommand for DimBaselineCommand {
     }
 }
 
-fn v3(p: Vec3) -> Vector3 {
-    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+fn v3(p: DVec3) -> Vector3 {
+    Vector3::new(p.x, p.y, p.z)
 }
 
 

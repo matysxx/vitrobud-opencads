@@ -7,7 +7,7 @@
 use acadrust::entities::LwPolyline;
 use acadrust::types::Vector2;
 use acadrust::{entities::LwVertex, EntityType};
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -27,7 +27,7 @@ pub fn tool() -> ToolDef {
 const DEFAULT_ARC_LEN: f64 = 1.0; // default arc bump length
 
 pub struct RevCloudCommand {
-    points: Vec<Vec3>,
+    points: Vec<DVec3>,
     arc_length: f64,
 }
 
@@ -59,7 +59,7 @@ impl CadCommand for RevCloudCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         self.points.push(pt);
         CmdResult::NeedPoint
     }
@@ -72,13 +72,22 @@ impl CadCommand for RevCloudCommand {
         CmdResult::CommitAndExit(entity)
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         if self.points.is_empty() {
             return None;
         }
-        let mut preview_pts: Vec<[f32; 3]> = self.points.iter().map(|p| [p.x, p.y, p.z]).collect();
+        let mut preview_pts: Vec<[f32; 3]> = self
+            .points
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+            .collect();
         preview_pts.push([pt.x, pt.y, pt.z]);
-        preview_pts.push([self.points[0].x, self.points[0].y, self.points[0].z]);
+        preview_pts.push([
+            self.points[0].x as f32,
+            self.points[0].y as f32,
+            self.points[0].z as f32,
+        ]);
         Some(WireModel {
             text_verts: Vec::new(),
             name: "revcloud_preview".into(),
@@ -102,7 +111,7 @@ impl CadCommand for RevCloudCommand {
     }
 }
 
-fn make_revcloud(pts: &[Vec3], arc_len: f64) -> EntityType {
+fn make_revcloud(pts: &[DVec3], arc_len: f64) -> EntityType {
     let n = pts.len();
     let mut vertices: Vec<LwVertex> = Vec::new();
 
@@ -112,19 +121,19 @@ fn make_revcloud(pts: &[Vec3], arc_len: f64) -> EntityType {
     for i in 0..n {
         let p0 = pts[i];
         let p1 = pts[(i + 1) % n];
-        let seg_len = ((p1.x - p0.x).powi(2) + (p1.y - p0.y).powi(2)).sqrt() as f64;
+        let seg_len = ((p1.x - p0.x).powi(2) + (p1.y - p0.y).powi(2)).sqrt();
         if seg_len < 1e-6 {
             continue;
         }
 
         // How many full arcs fit?
         let num_arcs = ((seg_len / arc_len).round() as usize).max(1);
-        let step_x = (p1.x - p0.x) as f64 / num_arcs as f64;
-        let step_y = (p1.y - p0.y) as f64 / num_arcs as f64;
+        let step_x = (p1.x - p0.x) / num_arcs as f64;
+        let step_y = (p1.y - p0.y) / num_arcs as f64;
 
         for j in 0..num_arcs {
-            let x = p0.x as f64 + step_x * j as f64;
-            let y = p0.y as f64 + step_y * j as f64; // DXF Y
+            let x = p0.x + step_x * j as f64;
+            let y = p0.y + step_y * j as f64; // DXF Y
             let mut v = LwVertex::new(Vector2::new(x, y));
             v.bulge = bump_bulge;
             vertices.push(v);

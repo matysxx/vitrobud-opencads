@@ -200,7 +200,7 @@ impl OpenCADStudio {
             let (vw, vh) = tab.scene.selection.borrow().vp_size;
             let model_basis = {
                 let (o, ux, uy, uz) = tab.ucs_xform().axes();
-                (o.as_dvec3(), (ux, uy, uz))
+                (o, (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()))
             };
             let grid: Vec<crate::ui::overlay::GridParams> = tab
                 .scene
@@ -212,7 +212,7 @@ impl OpenCADStudio {
                             Some(u) => {
                                 let (o, ux, uy, uz) =
                                     super::helpers::UcsXform::from_ucs(&u).axes();
-                                (o.as_dvec3(), (ux, uy, uz))
+                                (o, (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()))
                             }
                             None => (
                                 glam::DVec3::ZERO,
@@ -345,7 +345,7 @@ impl OpenCADStudio {
                 vec![crate::ui::overlay::UcsIconParams {
                     view_proj: vp_cam.view_proj_rte(full),
                     bounds: full,
-                    axes: (ux, uy, uz),
+                    axes: (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()),
                     origin_screen,
                     hover: self.ucs_icon_hover,
                     selected: self.ucs_icon_selected,
@@ -378,7 +378,7 @@ impl OpenCADStudio {
                         crate::ui::overlay::UcsIconParams {
                             view_proj: cam.view_proj_rte(b),
                             bounds: b,
-                            axes: (ux, uy, uz),
+                            axes: (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()),
                             origin_screen,
                             hover: i == active && self.ucs_icon_hover,
                             selected: i == active && self.ucs_icon_selected,
@@ -440,7 +440,7 @@ impl OpenCADStudio {
                 match (otrack_proj, self.otrack_active) {
                     (Some((view_rot, eye, ob)), Some((base, _dir))) => {
                         let b = ost_project(base, view_rot, eye, ob);
-                        let a = ost_project(tab.last_cursor_world, view_rot, eye, ob);
+                        let a = ost_project(tab.last_cursor_world.as_vec3(), view_rot, eye, ob);
                         (b.x.is_finite() && a.x.is_finite()).then_some((b, a))
                     }
                     _ => None,
@@ -573,7 +573,7 @@ impl OpenCADStudio {
                 // A command may drive a typed scalar by mouse (e.g. a
                 // perpendicular distance to a picked object); show that live
                 // value in the box until the user types over it.
-                let live = tab.active_cmd.as_ref().and_then(|c| c.dyn_live_value(w.as_dvec3()));
+                let live = tab.active_cmd.as_ref().and_then(|c| c.dyn_live_value(w));
                 let boxes: Vec<crate::ui::overlay::DynBox> = tab
                     .dyn_fields
                     .iter()
@@ -1304,7 +1304,7 @@ impl OpenCADStudio {
                     // drawing coordinates (paper space carries no offset), then
                     // report it in the active UCS — the readout follows the
                     // user's coordinate system, not raw WCS (no-op without UCS).
-                    let to_readout = |p: glam::Vec3| {
+                    let to_readout = |p: glam::DVec3| {
                         // The readout follows the active pane's UCS — model space
                         // or inside a floating viewport (no-op without a UCS).
                         if tab.editing_model_space() {

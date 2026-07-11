@@ -63,7 +63,7 @@ impl CadCommand for DimJogLineCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Step::PickJogPos { handle } = &self.step {
             let h = *handle;
             // Emit sentinel for commands.rs to store the jog position

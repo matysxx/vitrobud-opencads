@@ -116,9 +116,9 @@ impl CadCommand for TableCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Step::Insertion { cols, rows } = self.step {
-            let ins = Vector3::new(pt.x as f64, pt.y as f64, pt.z as f64);
+            let ins = Vector3::new(pt.x, pt.y, pt.z);
             let table = TableBuilder::new(rows, cols)
                 .at(ins)
                 .row_height(ROW_HEIGHT)

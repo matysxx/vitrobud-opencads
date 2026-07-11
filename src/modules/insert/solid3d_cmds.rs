@@ -7,7 +7,7 @@
 // live in the Model tab (`modules::model::primitive_cmd`).
 
 use acadrust::{entities::Solid3D, EntityType};
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 
@@ -95,8 +95,8 @@ impl CadCommand for ExtrudeCommand {
 pub struct RevolveCommand {
     step: RevolveStep,
     target_handle: acadrust::Handle,
-    axis_start: Vec3,
-    axis_end: Vec3,
+    axis_start: DVec3,
+    axis_end: DVec3,
     color: [f32; 4],
 }
 
@@ -113,8 +113,8 @@ impl RevolveCommand {
         Self {
             step: RevolveStep::Pick,
             target_handle: acadrust::Handle::NULL,
-            axis_start: Vec3::ZERO,
-            axis_end: Vec3::new(0.0, 0.0, 1.0),
+            axis_start: DVec3::ZERO,
+            axis_end: DVec3::new(0.0, 0.0, 1.0),
             color,
         }
     }
@@ -143,7 +143,7 @@ impl CadCommand for RevolveCommand {
         self.step = RevolveStep::AxisStart;
         CmdResult::NeedPoint
     }
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.step {
             RevolveStep::AxisStart => {
                 self.axis_start = pt;
@@ -186,8 +186,8 @@ impl RevolveCommand {
     fn make_revolve(&self, angle_deg: f32) -> CmdResult {
         CmdResult::RevolveEntity {
             handle: self.target_handle,
-            axis_start: self.axis_start.as_dvec3(),
-            axis_end: self.axis_end.as_dvec3(),
+            axis_start: self.axis_start,
+            axis_end: self.axis_end,
             angle_deg,
             color: self.color,
         }

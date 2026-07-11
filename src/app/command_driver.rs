@@ -137,7 +137,7 @@ impl OpenCADStudio {
             };
             self.last_point = Some(wcs);
             self.push_ucs_to_cmd(i);
-            let _ = self.feed_command(StepInput::Point(wcs.as_dvec3()));
+            let _ = self.feed_command(StepInput::Point(wcs));
         } else {
             let _ = self.feed_command(StepInput::Text(token.to_string()));
         }
@@ -1156,7 +1156,7 @@ impl OpenCADStudio {
                     .scene
                     .document
                     .get_entity(handle)
-                    .and_then(|e| break_entity(e, p1.as_vec3(), p2.as_vec3()));
+                    .and_then(|e| break_entity(e, p1, p2));
                 match replacement {
                     Some(frags) => {
                         let label = self.history_label_from_active_cmd(i, "BREAK");

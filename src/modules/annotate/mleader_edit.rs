@@ -37,7 +37,7 @@ enum AddStep {
     CollectPoints {
         handle: Handle,
         entity: EntityType,
-        pts: Vec<Vec3>,
+        pts: Vec<DVec3>,
     },
 }
 
@@ -84,7 +84,7 @@ impl CadCommand for MLeaderAddCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match &mut self.step {
             AddStep::PickArrowhead { handle, entity } => {
                 if let Some(ent) = entity.take() {
@@ -121,7 +121,7 @@ impl CadCommand for MLeaderAddCommand {
                 // Add a new leader root with the collected points
                 let points: Vec<Vector3> = pts
                     .iter()
-                    .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
+                    .map(|p| Vector3::new(p.x, p.y, p.z))
                     .collect();
                 let root = ml.context.add_leader_root();
                 root.create_line(points);
@@ -132,14 +132,16 @@ impl CadCommand for MLeaderAddCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         let existing_pts = match &self.step {
             AddStep::CollectPoints { pts, .. } => pts.clone(),
             _ => return None,
         };
         let mut all_pts = existing_pts;
         all_pts.push(pt);
-        Some(preview_wire(&all_pts))
+        Some(preview_wire(
+            &all_pts.iter().map(|p| p.as_vec3()).collect::<Vec<_>>(),
+        ))
     }
 
     fn inject_picked_entity(&mut self, entity: EntityType) {
@@ -275,7 +277,7 @@ pub fn tool_align() -> ToolDef {
 enum AlignStep {
     Gathering,
     PickDirection { handles: Vec<Handle> },
-    PickEndDir { handles: Vec<Handle>, from: Vec3 },
+    PickEndDir { handles: Vec<Handle>, from: DVec3 },
 }
 
 pub struct MLeaderAlignCommand {
@@ -321,7 +323,7 @@ impl CadCommand for MLeaderAlignCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match &mut self.step {
             AlignStep::PickDirection { handles } => {
                 let h = handles.clone();
@@ -423,7 +425,7 @@ impl CadCommand for MLeaderCollectCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let CollectStep::PickLocation { handles } = &self.step {
             let h = handles.clone();
             // Build a new combined multileader at the collection point, delete originals.

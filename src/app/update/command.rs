@@ -283,13 +283,16 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     // (issue #69).
                     if let Some((base, dir)) = self.otrack_active {
                         if let Some(dist) = crate::app::expr_eval::eval_number(text.trim()) {
-                            let pt = base + dir * dist as f32;
+                            // Typed distance along the tracking ray: keep the
+                            // magnitude exact in f64 (ray origin/dir are the
+                            // screen-space snapper's f32).
+                            let pt = base.as_dvec3() + dir.as_dvec3() * dist;
                             self.last_point = Some(pt);
                             self.dyn_user_reshaped = false;
                             self.sync_dyn_fields();
                             self.reset_tracking_after_point();
                             self.push_ucs_to_cmd(i);
-                            let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt.as_dvec3()));
+                            let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt));
                             if let Some(r) = result {
                                 let task = self.apply_cmd_result(r);
                                 self.refresh_active_cmd_preview(i);
@@ -331,7 +334,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         self.sync_dyn_fields();
                         self.reset_tracking_after_point();
                         self.push_ucs_to_cmd(i);
-                        let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(wcs_pt.as_dvec3()));
+                        let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(wcs_pt));
                         if let Some(r) = result {
                             let task = self.apply_cmd_result(r);
                             // The rubber-band preview that the command

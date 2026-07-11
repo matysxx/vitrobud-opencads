@@ -190,7 +190,7 @@ impl OpenCADStudio {
                 )
             });
         let pick = |cam: &crate::scene::view::camera::Camera| match plane {
-            Some((normal, origin)) => cam.pick_on_plane(p, bounds, normal, origin),
+            Some((normal, origin)) => cam.pick_on_plane(p, bounds, normal.as_vec3(), origin),
             None => cam.pick_on_target_plane(p, bounds),
         };
         match edit_cam {
@@ -592,7 +592,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                     sel.orbit_pivot = self.tabs[i]
                                         .scene
                                         .orbit_pivot()
-                                        .or(Some(self.tabs[i].last_cursor_world.as_dvec3()));
+                                        .or(Some(self.tabs[i].last_cursor_world));
                                 }
                                 let pivot = sel.orbit_pivot;
                                 drop(sel);
@@ -768,13 +768,13 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                     }
 
                     if snap_hit.is_none() {
-                        let base = grip.origin_world.as_vec3();
+                        let base = grip.origin_world;
                         let ucs_xf = self.tabs[i].ucs_xform();
                         if self.ortho_mode {
-                            snapped = ortho_constrain(snapped.as_vec3(), base, &ucs_xf).as_dvec3();
+                            snapped = ortho_constrain(snapped, base, &ucs_xf);
                         } else if self.polar_mode {
                             snapped = polar_constrain_near(
-                                snapped.as_vec3(),
+                                snapped,
                                 base,
                                 self.polar_increment_deg,
                                 view_rot,
@@ -782,8 +782,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 bounds,
                                 self.snapper.osnap_radius_px,
                                 &ucs_xf,
-                            )
-                            .as_dvec3();
+                            );
                         }
                     }
 
@@ -835,7 +834,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         height: vp_size.1,
                     };
                     let world = self.cursor_model_point(i, &edit_cam, p, bounds);
-                    self.tabs[i].last_cursor_world = world.as_vec3();
+                    self.tabs[i].last_cursor_world = world;
                 }
 
                 // Rollover highlight: when idle (no active command, no
@@ -936,7 +935,10 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         )
                     } else {
                         let (go, gr) = self.tabs[i].ucs_grid_basis();
-                        self.snapper.from_point = self.last_point;
+                        // The snapper is a screen-space (f32) engine; the f64
+                        // base only matters for typed-input precision, so hand it
+                        // the downcast point here.
+                        self.snapper.from_point = self.last_point.map(|p| p.as_vec3());
                         self.snapper
                             .snap(snap_cursor, p, &all_wires[..], view_rot, eye, bounds, go, gr)
                     };
@@ -980,7 +982,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 eye,
                                 bounds,
                                 step,
-                                self.last_point,
+                                self.last_point.map(|p| p.as_vec3()),
                                 self.ortho_mode && !is_window_corner,
                                 ucs,
                             )
@@ -997,7 +999,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                     if self.tabs[i].snap_result.is_none() && otrack_hit.is_none() {
                         if let Some(par) = self.snapper.parallel_snap(
                             cursor_world.as_vec3(),
-                            self.last_point,
+                            self.last_point.map(|p| p.as_vec3()),
                             view_rot,
                             eye,
                             bounds,
@@ -1005,7 +1007,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             if let (Some(base), Some((dir, _))) =
                                 (self.last_point, self.snapper.parallel_ref)
                             {
-                                self.otrack_active = Some((base, dir));
+                                self.otrack_active = Some((base.as_vec3(), dir));
                             }
                             self.tabs[i].snap_result = Some(par);
                         }
@@ -1034,11 +1036,10 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 if let Some(base) = self.last_point {
                                     let ucs_xf = self.tabs[i].ucs_xform();
                                     if self.ortho_mode {
-                                        pt = ortho_constrain(pt.as_vec3(), base, &ucs_xf)
-                                            .as_dvec3();
+                                        pt = ortho_constrain(pt, base, &ucs_xf);
                                     } else if self.polar_mode {
                                         pt = polar_constrain_near(
-                                            pt.as_vec3(),
+                                            pt,
                                             base,
                                             self.polar_increment_deg,
                                             view_rot,
@@ -1046,8 +1047,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                             bounds,
                                             self.snapper.osnap_radius_px,
                                             &ucs_xf,
-                                        )
-                                        .as_dvec3();
+                                        );
                                     }
                                 }
                             }
@@ -1060,7 +1060,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         }
                         pt
                     };
-                    self.tabs[i].last_cursor_world = effective.as_vec3();
+                    self.tabs[i].last_cursor_world = effective;
                     self.tabs[i].last_cursor_screen = p_full;
                     // Project the step anchor (an explicit `dyn_anchor` or the
                     // last point) so the dynamic-input overlay can place its
@@ -1069,8 +1069,8 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                     // origin (`tile_b`, the viewport rect inside a viewport) so
                     // the DYN guide/labels share the canvas frame with
                     // `last_cursor_screen` (= p_full, canvas space).
-                    let proj = |bp: glam::Vec3| {
-                        let ndc = view_rot.project_point3((bp.as_dvec3() - eye).as_vec3());
+                    let proj = |bp: glam::DVec3| {
+                        let ndc = view_rot.project_point3((bp - eye).as_vec3());
                         iced::Point::new(
                             (ndc.x + 1.0) * 0.5 * bounds.width + tile_b.x,
                             (1.0 - ndc.y) * 0.5 * bounds.height + tile_b.y,
@@ -1096,7 +1096,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         .and_then(|c| c.window_first_corner());
                     self.tabs[i].scene.selection.borrow_mut().preview_box =
                         if is_window_corner {
-                            window_first.map(|c1| (proj(c1.as_vec3()), p_full, true))
+                            window_first.map(|c1| (proj(c1), p_full, true))
                         } else {
                             None
                         };
@@ -1217,6 +1217,8 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                     // the snapped angle direction, extending across the drawing.
                     if self.polar_mode && !needs_entity {
                         if let Some(base) = self.last_point {
+                            // Screen-space dotted guide (render geometry is f32).
+                            let base = base.as_vec3();
                             let effective = effective.as_vec3();
                             let dx = effective.x - base.x;
                             let dy = effective.y - base.y;
@@ -1367,7 +1369,12 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
         } else {
             None
         };
-        crate::ui::overlay::ucs_icon_hit(cam.view_proj_rte(bounds), bounds, (ux, uy, uz), os)
+        crate::ui::overlay::ucs_icon_hit(
+            cam.view_proj_rte(bounds),
+            bounds,
+            (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()),
+            os,
+        )
     }
 
     /// Apply one frame of a UCS-icon grip drag: map the cursor onto the active
@@ -1896,7 +1903,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 .snap_tangent_only(snap_cursor.as_vec3(), p, &all_wires[..], view_rot, eye, bounds)
                         } else {
                             let (go, gr) = self.tabs[i].ucs_grid_basis();
-                            self.snapper.from_point = self.last_point;
+                            self.snapper.from_point = self.last_point.map(|p| p.as_vec3());
                             self.snapper.snap(snap_cursor, p, &all_wires[..], view_rot, eye, bounds, go, gr)
                         };
                         // Snap runs in model space; the result is already model.
@@ -1916,7 +1923,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             };
                             let ucs = self.tabs[i].scene.viewcube_ucs_mat();
                             self.snapper
-                                .otrack_snap(raw.as_vec3(), view_rot, eye, bounds, step, self.last_point, self.ortho_mode && !is_window_corner, ucs)
+                                .otrack_snap(raw.as_vec3(), view_rot, eye, bounds, step, self.last_point.map(|p| p.as_vec3()), self.ortho_mode && !is_window_corner, ucs)
                         } else {
                             None
                         };
@@ -1934,10 +1941,10 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             if let Some(base) = self.last_point {
                                 let ucs_xf = self.tabs[i].ucs_xform();
                                 if self.ortho_mode {
-                                    pt = ortho_constrain(pt.as_vec3(), base, &ucs_xf).as_dvec3();
+                                    pt = ortho_constrain(pt, base, &ucs_xf);
                                 } else if self.polar_mode {
                                     pt = polar_constrain_near(
-                                        pt.as_vec3(),
+                                        pt,
                                         base,
                                         self.polar_increment_deg,
                                         view_rot,
@@ -1945,8 +1952,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                         bounds,
                                         self.snapper.osnap_radius_px,
                                         &ucs_xf,
-                                    )
-                                    .as_dvec3();
+                                    );
                                 }
                             }
                         }
@@ -2128,7 +2134,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 self.tabs[i].dyn_active = 0;
                             }
                         }
-                        self.last_point = Some(world_pt.as_vec3());
+                        self.last_point = Some(world_pt);
                         self.dyn_user_reshaped = false;
                         self.sync_dyn_fields();
                         self.reset_tracking_after_point();
@@ -2147,7 +2153,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 .as_ref()
                                 .and_then(|c| c.resolved_anchor())
                             {
-                                self.last_point = Some(a.as_vec3());
+                                self.last_point = Some(a);
                             }
                             handled
                         } else {

@@ -10,14 +10,14 @@ use acadrust::EntityType;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::scene::model::wire_model::WireModel;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 const DISPLAY_EXTENT: f32 = 1_000_000.0;
 
 // ── RAY ───────────────────────────────────────────────────────────────────
 
 pub struct RayCommand {
-    base: Option<Vec3>,
+    base: Option<DVec3>,
 }
 
 impl RayCommand {
@@ -48,7 +48,7 @@ impl CadCommand for RayCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Some(base) = self.base {
             let dir = pt - base;
             let len = dir.length();
@@ -57,8 +57,8 @@ impl CadCommand for RayCommand {
             }
             let dir_n = dir / len;
             let ray = RayEnt::new(
-                Vector3::new(base.x as f64, base.y as f64, base.z as f64),
-                Vector3::new(dir_n.x as f64, dir_n.y as f64, dir_n.z as f64),
+                Vector3::new(base.x, base.y, base.z),
+                Vector3::new(dir_n.x, dir_n.y, dir_n.z),
             );
             // Stay active: new base = same base (can keep clicking through points)
             // Actually AutoCAD prompts for new start after each ray — reset base.
@@ -78,8 +78,9 @@ impl CadCommand for RayCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
-        let base = self.base?;
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
+        let base = self.base?.as_vec3();
         let dir = (pt - base).normalize_or_zero();
         let far = base + dir * DISPLAY_EXTENT;
         Some(WireModel {
@@ -108,7 +109,7 @@ impl CadCommand for RayCommand {
 // ── XLINE ─────────────────────────────────────────────────────────────────
 
 pub struct XLineCommand {
-    base: Option<Vec3>,
+    base: Option<DVec3>,
 }
 
 impl XLineCommand {
@@ -139,7 +140,7 @@ impl CadCommand for XLineCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Some(base) = self.base {
             let dir = pt - base;
             let len = dir.length();
@@ -148,8 +149,8 @@ impl CadCommand for XLineCommand {
             }
             let dir_n = dir / len;
             let xline = XLineEnt::new(
-                Vector3::new(base.x as f64, base.y as f64, base.z as f64),
-                Vector3::new(dir_n.x as f64, dir_n.y as f64, dir_n.z as f64),
+                Vector3::new(base.x, base.y, base.z),
+                Vector3::new(dir_n.x, dir_n.y, dir_n.z),
             );
             self.base = None;
             CmdResult::CommitEntity(EntityType::XLine(xline))
@@ -167,8 +168,9 @@ impl CadCommand for XLineCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
-        let base = self.base?;
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
+        let base = self.base?.as_vec3();
         let dir = (pt - base).normalize_or_zero();
         let far_pos = base + dir * DISPLAY_EXTENT;
         let far_neg = base - dir * DISPLAY_EXTENT;

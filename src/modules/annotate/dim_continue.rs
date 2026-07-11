@@ -28,7 +28,7 @@ pub fn tool() -> ToolDef {
 
 pub struct DimContinueCommand {
     /// Fixed first-extension-line origin for the current step (moves each iteration).
-    chain_p1: Vec3,
+    chain_p1: DVec3,
     /// Direction along the dimension axis (0.0 = horizontal, PI/2 = vertical).
     rotation: f64,
     /// Text reading rotation inherited from the base dim so a UCS-aligned chain
@@ -39,9 +39,9 @@ pub struct DimContinueCommand {
     /// coordinate so the whole chain stays collinear — even when the extension
     /// origins sit at different perpendicular positions (extension lines of
     /// different lengths). (#151)
-    dim_line_perp: f32,
+    dim_line_perp: f64,
     /// Direction of "up" perpendicular to the dim axis (points toward the dim line).
-    perp: Vec3,
+    perp: DVec3,
     /// True once we have a base dimension loaded.
     ready: bool,
 }
@@ -50,11 +50,11 @@ impl DimContinueCommand {
     /// No base dim found — will show an error prompt and cancel immediately.
     pub fn new() -> Self {
         Self {
-            chain_p1: Vec3::ZERO,
+            chain_p1: DVec3::ZERO,
             rotation: 0.0,
             text_rotation: 0.0,
             dim_line_perp: 0.0,
-            perp: Vec3::Y,
+            perp: DVec3::Y,
             ready: false,
         }
     }
@@ -75,11 +75,16 @@ impl DimContinueCommand {
         rotation: f64,
         text_rotation: f64,
     ) -> Self {
+        // Widen the base-dim points to f64 so the committed chain math runs in
+        // full precision. (The base points arrive as f32 from the entity, but
+        // every derived committed coordinate must stay f64 from here on.)
+        let p2 = p2.as_dvec3();
+        let definition_point = definition_point.as_dvec3();
         // Axis unit vector along the measurement direction — the base dim's
         // rotation angle (any angle, incl. a UCS-aligned one), not a world H/V.
-        let axis = Vec3::new(rotation.cos() as f32, rotation.sin() as f32, 0.0);
+        let axis = DVec3::new(rotation.cos(), rotation.sin(), 0.0);
         // Perpendicular unit vector toward the dim line.
-        let perp = Vec3::new(-axis.y, axis.x, 0.0);
+        let perp = DVec3::new(-axis.y, axis.x, 0.0);
         let dim_line_perp = definition_point.dot(perp);
         Self {
             chain_p1: p2,
@@ -105,7 +110,7 @@ impl CadCommand for DimContinueCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if !self.ready {
             return CmdResult::Cancel;
         }
@@ -141,13 +146,18 @@ impl CadCommand for DimContinueCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if !self.ready {
             return None;
         }
-        let p1 = self.chain_p1;
-        let dim_line_pt = p1 + self.perp * (self.dim_line_perp - p1.dot(self.perp));
-        let dim_line_pt2 = pt + self.perp * (self.dim_line_perp - pt.dot(self.perp));
+        // Preview / rubber-band geometry feeds an f32 GPU buffer, so drop to f32
+        // at this screen-only boundary.
+        let pt = pt.as_vec3();
+        let p1 = self.chain_p1.as_vec3();
+        let perp = self.perp.as_vec3();
+        let dim_line_perp = self.dim_line_perp as f32;
+        let dim_line_pt = p1 + perp * (dim_line_perp - p1.dot(perp));
+        let dim_line_pt2 = pt + perp * (dim_line_perp - pt.dot(perp));
         Some(WireModel {
             text_verts: Vec::new(),
             name: "dimcont_preview".into(),
@@ -180,8 +190,8 @@ impl CadCommand for DimContinueCommand {
     }
 }
 
-fn v3(p: Vec3) -> Vector3 {
-    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+fn v3(p: DVec3) -> Vector3 {
+    Vector3::new(p.x, p.y, p.z)
 }
 
 

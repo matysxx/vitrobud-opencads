@@ -26,7 +26,7 @@ pub fn tool() -> ToolDef {
 }
 
 pub struct MLeaderCommand {
-    verts: Vec<Vec3>,
+    verts: Vec<DVec3>,
     ucs: Mat4,
 }
 
@@ -56,7 +56,7 @@ impl CadCommand for MLeaderCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         self.verts.push(pt);
         CmdResult::NeedPoint
     }
@@ -75,23 +75,24 @@ impl CadCommand for MLeaderCommand {
         CmdResult::Cancel
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if self.verts.is_empty() {
             return None;
         }
-        let mut pts = self.verts.clone();
-        pts.push(pt);
+        // Preview / rubber-band is GPU screen-space: downcast to f32 here.
+        let mut pts: Vec<Vec3> = self.verts.iter().map(|p| p.as_vec3()).collect();
+        pts.push(pt.as_vec3());
         Some(preview_wire(&pts))
     }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn v3(p: Vec3) -> Vector3 {
-    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+fn v3(p: DVec3) -> Vector3 {
+    Vector3::new(p.x, p.y, p.z)
 }
 
-fn build_mleader(text: &str, verts: &[Vec3], ucs: Mat4) -> MultiLeader {
+fn build_mleader(text: &str, verts: &[DVec3], ucs: Mat4) -> MultiLeader {
     // Last vertex = content/text location; remaining = leader line points
     let (leader_pts, content_pt) = verts.split_at(verts.len() - 1);
     let content_pt = content_pt[0];
@@ -113,7 +114,7 @@ fn build_mleader(text: &str, verts: &[Vec3], ucs: Mat4) -> MultiLeader {
     let ux = ucs.transform_vector3(Vec3::X).normalize_or(Vec3::X);
     // Which side of the leader the text sits on, measured along the UCS X axis.
     let last_leader = leader_pts.last().copied().unwrap_or(content_pt);
-    let to_right = (content_pt - last_leader).dot(ux) >= 0.0;
+    let to_right = (content_pt - last_leader).dot(ux.as_dvec3()) >= 0.0;
     let sign = if to_right { 1.0 } else { -1.0 };
     let landing = ux * (sign as f32);
 

@@ -191,15 +191,15 @@ pub(super) fn viewport_controls<'a>(
 /// world position (and the base point for polar quantities).
 pub(super) fn dyn_component_value(
     f: &DynFieldEntry,
-    w: glam::Vec3,
-    base: Option<glam::Vec3>,
+    w: glam::DVec3,
+    base: Option<glam::DVec3>,
     xf: &super::super::helpers::UcsXform,
     comma_cartesian: bool,
 ) -> String {
     if let Some(b) = &f.buffer {
         return b.clone();
     }
-    let b = base.unwrap_or(glam::Vec3::ZERO);
+    let b = base.unwrap_or(glam::DVec3::ZERO);
     // Relative deltas and the polar angle read in the active UCS plane. The
     // delta is offset-invariant, so only the axis rotation matters (identity
     // xf reproduces the world-frame deltas).

@@ -78,12 +78,12 @@ impl StatusBar {
         // LWDISPLAY header flag — controls lineweight visibility in the viewport.
         lineweight_display: bool,
         // Live cursor position in model coordinates, for the coordinate readout.
-        cursor_world: glam::Vec3,
+        cursor_world: glam::DVec3,
         // $COORDS readout mode: 0 = static (updates only on a pick), 1 = live
         // absolute, 2 = polar (distance<angle from the last point while picking).
         coords_mode: i16,
         // The last committed point, for the static (0) and polar (2) readouts.
-        last_point: Option<glam::Vec3>,
+        last_point: Option<glam::DVec3>,
         // True while a command is prompting for a point (enables the polar readout).
         picking: bool,
         // True while clean-screen mode hides the ribbon and side panels.
@@ -385,8 +385,8 @@ impl StatusBar {
 
 // ── Coordinate readout ────────────────────────────────────────────────────
 
-fn format_coords(cursor: glam::Vec3, last: Option<glam::Vec3>, mode: i16, picking: bool) -> String {
-    let abs = |p: glam::Vec3| format!("{:.4}, {:.4}, {:.4}", p.x, p.y, p.z);
+fn format_coords(cursor: glam::DVec3, last: Option<glam::DVec3>, mode: i16, picking: bool) -> String {
+    let abs = |p: glam::DVec3| format!("{:.4}, {:.4}, {:.4}", p.x, p.y, p.z);
     match mode {
         // Static: show the last picked point; the readout freezes between picks.
         0 => abs(last.unwrap_or(cursor)),

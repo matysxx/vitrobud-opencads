@@ -20,8 +20,8 @@ pub fn tool() -> ToolDef {
 
 enum Step {
     CenterPoint,
-    RadiusPoint(Vec3),
-    TextPoint { center: Vec3, point: Vec3 },
+    RadiusPoint(DVec3),
+    TextPoint { center: DVec3, point: DVec3 },
 }
 
 pub struct RadiusDimensionCommand {
@@ -69,7 +69,7 @@ impl CadCommand for RadiusDimensionCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.step {
             Step::CenterPoint => {
                 self.step = Step::RadiusPoint(pt);
@@ -84,7 +84,7 @@ impl CadCommand for RadiusDimensionCommand {
                 dim.base.definition_point = v3(point);
                 dim.base.text_middle_point = v3(pt);
                 dim.base.insertion_point = v3(pt);
-                dim.leader_length = point.distance(pt) as f64;
+                dim.leader_length = point.distance(pt);
                 dim.base.actual_measurement = dim.measurement();
                 dim.base.user_text = self.text_override.clone();
                 // An explicit text angle overrides the default rotation.
@@ -163,23 +163,24 @@ impl CadCommand for RadiusDimensionCommand {
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         match self.step {
             Step::CenterPoint => None,
-            Step::RadiusPoint(center) => Some(preview_wire(vec![center, pt])),
+            Step::RadiusPoint(center) => Some(preview_wire(vec![center.as_vec3(), pt])),
             Step::TextPoint { center, point } => Some(preview_wire(vec![
-                center,
-                point,
+                center.as_vec3(),
+                point.as_vec3(),
                 Vec3::new(f32::NAN, f32::NAN, f32::NAN),
-                point,
+                point.as_vec3(),
                 pt,
             ])),
         }
     }
 }
 
-fn v3(pt: Vec3) -> Vector3 {
-    Vector3::new(pt.x as f64, pt.y as f64, pt.z as f64)
+fn v3(pt: DVec3) -> Vector3 {
+    Vector3::new(pt.x, pt.y, pt.z)
 }
 
 fn preview_wire(points: Vec<Vec3>) -> WireModel {

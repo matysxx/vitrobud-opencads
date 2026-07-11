@@ -64,9 +64,9 @@ impl CadCommand for ToleranceCommand {
         Some(CmdResult::NeedPoint)
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Step::Insertion { text } = &self.step {
-            let ins = Vector3::new(pt.x as f64, pt.y as f64, pt.z as f64);
+            let ins = Vector3::new(pt.x, pt.y, pt.z);
             let tol = Tolerance::with_text(ins, text.clone());
             CmdResult::CommitAndExit(EntityType::Tolerance(tol))
         } else {

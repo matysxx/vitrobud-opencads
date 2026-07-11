@@ -9,7 +9,7 @@ use acadrust::{EntityType, Spline};
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 use truck_modeling::base::{BoundedCurve, ParametricCurve};
 use truck_modeling::{BSplineCurve, KnotVec, Point3};
 
@@ -24,7 +24,7 @@ pub fn tool() -> ToolDef {
 }
 
 pub struct SplineCommand {
-    pts: Vec<Vec3>,
+    pts: Vec<DVec3>,
 }
 
 impl SplineCommand {
@@ -39,7 +39,7 @@ impl SplineCommand {
         let control_points = self
             .pts
             .iter()
-            .map(|p| Vector3::new(p.x as f64, p.y as f64, p.z as f64))
+            .map(|p| Vector3::new(p.x, p.y, p.z))
             .collect();
         let n = self.pts.len();
         // Uniform open knot vector for degree-3 clamped B-spline
@@ -77,15 +77,18 @@ fn uniform_knots(n: usize, d: usize) -> Vec<f64> {
 /// built with the same control points + knot vector `build()` commits so the
 /// preview traces the exact final curve — not the straight control polygon.
 /// Fewer than 2 points has no curve; the points are returned as-is.
-fn sample_curve(pts: &[Vec3]) -> Vec<[f32; 3]> {
+fn sample_curve(pts: &[DVec3]) -> Vec<[f32; 3]> {
     let n = pts.len();
     if n < 2 {
-        return pts.iter().map(|p| [p.x, p.y, p.z]).collect();
+        return pts
+            .iter()
+            .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+            .collect();
     }
     let degree = 3_usize.min(n - 1);
     let ctrl: Vec<Point3> = pts
         .iter()
-        .map(|p| Point3::new(p.x as f64, p.y as f64, p.z as f64))
+        .map(|p| Point3::new(p.x, p.y, p.z))
         .collect();
     let curve = BSplineCurve::new(KnotVec::from(uniform_knots(n, degree)), ctrl);
     let (t0, t1) = curve.range_tuple();
@@ -125,7 +128,7 @@ impl CadCommand for SplineCommand {
         opts
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         self.pts.push(pt);
         CmdResult::NeedPoint
     }
@@ -170,7 +173,7 @@ impl CadCommand for SplineCommand {
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if self.pts.is_empty() {
             return None;
         }

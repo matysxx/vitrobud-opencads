@@ -171,9 +171,9 @@ impl OpenCADStudio {
         self.tabs[i].dyn_guide = spec.guide;
         self.tabs[i].dyn_anchor = match spec.anchor {
             crate::command::DynAnchor::LastPoint => self.last_point,
-            crate::command::DynAnchor::Point(p) => Some(p.as_vec3()),
+            crate::command::DynAnchor::Point(p) => Some(p),
         };
-        self.tabs[i].dyn_ref = spec.ref_point.map(|v| v.as_vec3());
+        self.tabs[i].dyn_ref = spec.ref_point;
     }
 
     /// Track cursor dwell over a selected entity's grip. Sets
@@ -212,13 +212,11 @@ impl OpenCADStudio {
     /// `None` for any other entity kind. Uses `last_point` (the final pick) to
     /// pick the endpoint the pen actually finished on.
     pub(in crate::app) fn update_cont_anchor(&mut self, entity: &acadrust::EntityType) {
-        let last = self
-            .last_point
-            .map(|v| glam::DVec3::new(v.x as f64, v.y as f64, v.z as f64));
+        let last = self.last_point;
         self.cont_anchor = crate::modules::draw::draw::arc::continue_anchor(entity, last);
     }
 
-    pub(in crate::app) fn dyn_resolve_point(&self) -> Option<glam::Vec3> {
+    pub(in crate::app) fn dyn_resolve_point(&self) -> Option<glam::DVec3> {
         use crate::app::document::DynComponent;
         let i = self.active_tab;
         let fields = &self.tabs[i].dyn_fields;
@@ -229,7 +227,7 @@ impl OpenCADStudio {
         let base = self.tabs[i]
             .dyn_anchor
             .or(self.last_point)
-            .unwrap_or(glam::Vec3::ZERO);
+            .unwrap_or(glam::DVec3::ZERO);
         // Buffer value parsed as f32 (de-scaled by the role so a typed diameter
         // becomes a radius), or the supplied geometric live value. Width/Height
         // are shown unsigned, so a typed value normally takes the sign of the
@@ -241,13 +239,13 @@ impl OpenCADStudio {
         // `dyn_user_reshaped`, so it cleanly distinguishes comma-cartesian entry
         // from Tab-separated dimension entry (#269).
         let comma_cartesian = self.dyn_user_reshaped;
-        let val = |idx: usize, live: f32| -> f32 {
+        let val = |idx: usize, live: f64| -> f64 {
             match fields[idx]
                 .buffer
                 .as_ref()
                 .map(|s| s.trim().replace(',', "."))
-                .and_then(|s| crate::app::expr_eval::eval_number(&s).map(|v| v as f32))
-                .map(|v| v / fields[idx].role.value_scale())
+                .and_then(|s| crate::app::expr_eval::eval_number(&s))
+                .map(|v| v / fields[idx].role.value_scale() as f64)
             {
                 Some(v) => {
                     if matches!(
@@ -277,12 +275,12 @@ impl OpenCADStudio {
         // A typed angle is shown unsigned (0..180); give it the sign of the
         // cursor's current side so an entry made below the X axis sweeps
         // downward to match the arc instead of mirroring up. Untyped → live.
-        let angle_rad = |idx: usize| -> f32 {
+        let angle_rad = |idx: usize| -> f64 {
             match fields[idx]
                 .buffer
                 .as_ref()
                 .map(|s| s.trim().replace(',', "."))
-                .and_then(|s| crate::app::expr_eval::eval_number(&s).map(|v| v as f32))
+                .and_then(|s| crate::app::expr_eval::eval_number(&s))
             {
                 Some(mag) => mag.abs().to_radians().copysign(dy),
                 None => live_a,
@@ -298,13 +296,13 @@ impl OpenCADStudio {
             (self.tabs[i].dyn_ref, comps.as_slice())
         {
             let axis = (ref_pt - base).normalize_or_zero();
-            let perp = glam::Vec3::new(-axis.y, axis.x, 0.0);
+            let perp = glam::DVec3::new(-axis.y, axis.x, 0.0);
             let signed = (w - base).dot(perp);
             let typed = fields[0]
                 .buffer
                 .as_ref()
                 .map(|s| s.trim().replace(',', "."))
-                .and_then(|s| crate::app::expr_eval::eval_number(&s).map(|v| v as f32));
+                .and_then(|s| crate::app::expr_eval::eval_number(&s));
             let h = match typed {
                 Some(v) => v.abs().copysign(signed),
                 None => signed,
@@ -316,28 +314,28 @@ impl OpenCADStudio {
         // position relative to base; typed values are relative deltas.
         let has_base = self.last_point.is_some();
         // Relative result: base + the typed UCS-frame offset mapped to world.
-        let rel = |off_ucs: glam::Vec3| base + xf.vec_to_wcs(off_ucs);
+        let rel = |off_ucs: glam::DVec3| base + xf.vec_to_wcs(off_ucs);
         match comps.as_slice() {
             [DynComponent::X, DynComponent::Y] if has_base => {
-                Some(rel(glam::Vec3::new(val(0, dx), val(1, dy), 0.0)))
+                Some(rel(glam::DVec3::new(val(0, dx), val(1, dy), 0.0)))
             }
             [DynComponent::X, DynComponent::Y] => {
-                Some(glam::Vec3::new(val(0, w.x), val(1, w.y), base.z))
+                Some(glam::DVec3::new(val(0, w.x), val(1, w.y), base.z))
             }
             [DynComponent::X, DynComponent::Y, DynComponent::Z] if has_base => {
-                Some(rel(glam::Vec3::new(val(0, dx), val(1, dy), val(2, dz))))
+                Some(rel(glam::DVec3::new(val(0, dx), val(1, dy), val(2, dz))))
             }
             [DynComponent::X, DynComponent::Y, DynComponent::Z] => {
-                Some(glam::Vec3::new(val(0, w.x), val(1, w.y), val(2, base.z)))
+                Some(glam::DVec3::new(val(0, w.x), val(1, w.y), val(2, base.z)))
             }
             [DynComponent::Distance, DynComponent::Angle] => {
                 let d = val(0, live_d);
                 let a = angle_rad(1);
-                Some(rel(glam::Vec3::new(d * a.cos(), d * a.sin(), 0.0)))
+                Some(rel(glam::DVec3::new(d * a.cos(), d * a.sin(), 0.0)))
             }
             [DynComponent::Distance] => {
                 // Keep the cursor's direction (in UCS), override the magnitude.
-                let dir = glam::Vec3::new(dx, dy, 0.0).normalize_or(glam::Vec3::X);
+                let dir = glam::DVec3::new(dx, dy, 0.0).normalize_or(glam::DVec3::X);
                 Some(rel(dir * val(0, live_d)))
             }
             [DynComponent::Angle] => {
@@ -346,7 +344,7 @@ impl OpenCADStudio {
                 // magnitude — keep it literal. Only the polar Distance+Angle
                 // pair uses the cursor-signed `angle_rad`.
                 let a = val(0, live_a.to_degrees()).to_radians();
-                Some(rel(glam::Vec3::new(live_d * a.cos(), live_d * a.sin(), 0.0)))
+                Some(rel(glam::DVec3::new(live_d * a.cos(), live_d * a.sin(), 0.0)))
             }
             _ => None,
         }
@@ -433,7 +431,7 @@ impl OpenCADStudio {
         let anchor = self.tabs[i]
             .dyn_anchor
             .or(self.last_point)
-            .unwrap_or(glam::Vec3::ZERO);
+            .unwrap_or(glam::DVec3::ZERO);
         let cur = self.tabs[i].last_cursor_world;
         let a_cur = (cur.y - anchor.y).atan2(cur.x - anchor.x);
         let a_ref = self.tabs[i]
@@ -441,11 +439,11 @@ impl OpenCADStudio {
             .map(|r| (r.y - anchor.y).atan2(r.x - anchor.x))
             .unwrap_or(0.0);
         let mut d = a_cur - a_ref;
-        while d > std::f32::consts::PI {
-            d -= std::f32::consts::TAU;
+        while d > std::f64::consts::PI {
+            d -= std::f64::consts::TAU;
         }
-        while d <= -std::f32::consts::PI {
-            d += std::f32::consts::TAU;
+        while d <= -std::f64::consts::PI {
+            d += std::f64::consts::TAU;
         }
         if d < 0.0 {
             format!("-{t}")
@@ -479,7 +477,10 @@ impl OpenCADStudio {
                     .find_map(|f| f.buffer.clone())
                 {
                     if let Some(dist) = crate::app::expr_eval::eval_number(text.trim()) {
-                        let pt = base + dir * dist as f32;
+                        // Distance is typed, so resolve in f64: the tracking ray
+                        // origin/dir come from the screen-space snapper (f32) but
+                        // the magnitude the user entered stays exact.
+                        let pt = base.as_dvec3() + dir.as_dvec3() * dist;
                         self.last_point = Some(pt);
                         for f in self.tabs[i].dyn_fields.iter_mut() {
                             f.buffer = None;
@@ -489,7 +490,7 @@ impl OpenCADStudio {
                         self.sync_dyn_fields();
                         self.reset_tracking_after_point();
                         self.push_ucs_to_cmd(i);
-                        let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt.as_dvec3()));
+                        let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt));
                         let task = result.map(|r| self.apply_cmd_result(r))?;
                         self.refresh_active_cmd_preview(i);
                         return Some(task);
@@ -548,7 +549,7 @@ impl OpenCADStudio {
         self.sync_dyn_fields();
         self.reset_tracking_after_point();
         self.push_ucs_to_cmd(i);
-        let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt.as_dvec3()));
+        let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_point(pt));
         for f in self.tabs[i].dyn_fields.iter_mut() {
             f.buffer = None;
         }
@@ -578,7 +579,7 @@ impl OpenCADStudio {
         let previews = self.tabs[i]
             .active_cmd
             .as_mut()
-            .map(|c| c.on_preview_wires(cur.as_dvec3()))
+            .map(|c| c.on_preview_wires(cur))
             .unwrap_or_default();
         self.tabs[i].scene.set_preview_wires(previews);
     }

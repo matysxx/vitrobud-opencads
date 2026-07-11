@@ -28,7 +28,7 @@ pub fn tool() -> ToolDef {
 
 enum Step {
     FeaturePoint,
-    LeaderEndpoint { feature: Vec3 },
+    LeaderEndpoint { feature: DVec3 },
 }
 
 pub struct OrdinateDimCommand {
@@ -55,7 +55,7 @@ impl CadCommand for OrdinateDimCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.step {
             Step::FeaturePoint => {
                 self.step = Step::LeaderEndpoint { feature: pt };
@@ -80,25 +80,30 @@ impl CadCommand for OrdinateDimCommand {
     fn on_enter(&mut self) -> CmdResult {
         CmdResult::Cancel
     }
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         let feature = match self.step {
             Step::LeaderEndpoint { feature } => feature,
             _ => return None,
         };
         let is_x = is_x_type(feature, pt);
         let elbow = ordinate_elbow(feature, pt, is_x);
-        Some(preview_wire(vec![feature, elbow, pt]))
+        // Screen-only rubber band: downcast to f32 at the preview boundary.
+        Some(preview_wire(vec![
+            feature.as_vec3(),
+            elbow.as_vec3(),
+            pt.as_vec3(),
+        ]))
     }
 }
 
-fn v3(p: Vec3) -> Vector3 {
-    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+fn v3(p: DVec3) -> Vector3 {
+    Vector3::new(p.x, p.y, p.z)
 }
 
 /// X-datum (labels the feature's X coordinate) when the leader runs more
 /// vertically than horizontally; Y-datum otherwise. Mirrors the placement
 /// decision so the preview and the committed entity agree.
-fn is_x_type(feature: Vec3, leader: Vec3) -> bool {
+fn is_x_type(feature: DVec3, leader: DVec3) -> bool {
     let dx = (leader.x - feature.x).abs();
     let dy = (leader.y - feature.y).abs();
     dy >= dx
@@ -106,11 +111,11 @@ fn is_x_type(feature: Vec3, leader: Vec3) -> bool {
 
 /// Orthogonal elbow of the ordinate leader: an X-datum runs along Y from the
 /// feature then jogs across in X; a Y-datum runs along X then jogs in Y.
-fn ordinate_elbow(feature: Vec3, leader: Vec3, is_x: bool) -> Vec3 {
+fn ordinate_elbow(feature: DVec3, leader: DVec3, is_x: bool) -> DVec3 {
     if is_x {
-        Vec3::new(feature.x, leader.y, feature.z)
+        DVec3::new(feature.x, leader.y, feature.z)
     } else {
-        Vec3::new(leader.x, feature.y, feature.z)
+        DVec3::new(leader.x, feature.y, feature.z)
     }
 }
 

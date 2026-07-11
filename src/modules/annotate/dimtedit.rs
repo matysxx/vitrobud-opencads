@@ -69,13 +69,12 @@ impl CadCommand for DimTeditCommand {
         CmdResult::NeedPoint
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Step::PickTextPos { handle, entity } = &mut self.step {
             let h = *handle;
             if let Some(mut ent) = entity.take() {
                 if let EntityType::Dimension(ref mut d) = ent {
-                    let new_pt =
-                        acadrust::types::Vector3::new(pt.x as f64, pt.y as f64, pt.z as f64);
+                    let new_pt = acadrust::types::Vector3::new(pt.x, pt.y, pt.z);
                     d.base_mut().text_middle_point = new_pt;
                     d.base_mut().insertion_point = new_pt;
                     // Pin the text to this location, else the renderer recomputes

@@ -3,7 +3,7 @@
 use acadrust::entities::{Dimension, DimensionAligned};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -22,8 +22,8 @@ pub fn tool() -> ToolDef {
 
 enum Step {
     First,
-    Second(Vec3),
-    DimLine { p1: Vec3, p2: Vec3 },
+    Second(DVec3),
+    DimLine { p1: DVec3, p2: DVec3 },
 }
 
 pub struct AlignedDimensionCommand {
@@ -73,7 +73,7 @@ impl CadCommand for AlignedDimensionCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match self.step {
             Step::First => {
                 self.step = Step::Second(pt);
@@ -174,7 +174,7 @@ impl CadCommand for AlignedDimensionCommand {
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         let (p1, p2) = match self.step {
             Step::First => return None,
             Step::Second(p1) => (p1, pt),
@@ -182,6 +182,9 @@ impl CadCommand for AlignedDimensionCommand {
                 return Some(preview_aligned(p1, p2, pt));
             }
         };
+        // Preview WireModel points are screen/GPU-side: downcast to f32.
+        let p1 = p1.as_vec3();
+        let p2 = p2.as_vec3();
         Some(WireModel {
             text_verts: Vec::new(),
             name: "dimaligned_preview".into(),
@@ -205,8 +208,8 @@ impl CadCommand for AlignedDimensionCommand {
     }
 }
 
-fn v3(p: Vec3) -> Vector3 {
-    Vector3::new(p.x as f64, p.y as f64, p.z as f64)
+fn v3(p: DVec3) -> Vector3 {
+    Vector3::new(p.x, p.y, p.z)
 }
 
 /// Dimension-line endpoints: the baseline `p1`–`p2` shifted to pass through
@@ -214,16 +217,21 @@ fn v3(p: Vec3) -> Vector3 {
 /// it matches the committed entity's renderer (and DIMLINEAR). The old
 /// preview used an XZ-plane perpendicular, drawing the offset in the wrong
 /// spatial direction. (#150)
-fn dim_line_endpoints(p1: Vec3, p2: Vec3, dim_pt: Vec3) -> (Vec3, Vec3) {
+fn dim_line_endpoints(p1: DVec3, p2: DVec3, dim_pt: DVec3) -> (DVec3, DVec3) {
     let axis = (p2 - p1).normalize_or_zero();
-    let perp = Vec3::new(-axis.y, axis.x, 0.0);
+    let perp = DVec3::new(-axis.y, axis.x, 0.0);
     let offset = (dim_pt - p1).dot(perp);
     (p1 + perp * offset, p2 + perp * offset)
 }
 
-fn preview_aligned(p1: Vec3, p2: Vec3, dim_pt: Vec3) -> WireModel {
+fn preview_aligned(p1: DVec3, p2: DVec3, dim_pt: DVec3) -> WireModel {
     // Show ext lines + dim line.
     let (d1, d2) = dim_line_endpoints(p1, p2, dim_pt);
+    // Preview WireModel points are screen/GPU-side: downcast to f32.
+    let p1 = p1.as_vec3();
+    let p2 = p2.as_vec3();
+    let d1 = d1.as_vec3();
+    let d2 = d2.as_vec3();
     WireModel {
             text_verts: Vec::new(),
         name: "dimaligned_preview".into(),

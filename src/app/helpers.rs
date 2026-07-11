@@ -20,7 +20,7 @@ pub(super) enum CoordKind {
 ///         "x,y,z" → Vec3(x, y, z)
 /// A leading `@` marks the value relative to the last point; a leading
 /// `#` forces absolute. Separators: comma or semicolon.
-pub(super) fn parse_coord(text: &str) -> Option<(glam::Vec3, CoordKind)> {
+pub(super) fn parse_coord(text: &str) -> Option<(glam::DVec3, CoordKind)> {
     let trimmed = text.trim();
     let (kind, rest) = if let Some(r) = trimmed.strip_prefix('@') {
         (CoordKind::Relative, r)
@@ -29,14 +29,14 @@ pub(super) fn parse_coord(text: &str) -> Option<(glam::Vec3, CoordKind)> {
     } else {
         (CoordKind::Default, trimmed)
     };
-    let parts: Vec<f32> = rest
+    let parts: Vec<f64> = rest
         .split(|c| c == ',' || c == ';')
         .map(|s| s.trim())
         .filter_map(|s| s.parse().ok())
         .collect();
     match parts.as_slice() {
-        [x, y] => Some((glam::Vec3::new(*x, *y, 0.0), kind)),
-        [x, y, z] => Some((glam::Vec3::new(*x, *y, *z), kind)),
+        [x, y] => Some((glam::DVec3::new(*x, *y, 0.0), kind)),
+        [x, y, z] => Some((glam::DVec3::new(*x, *y, *z), kind)),
         _ => None,
     }
 }
@@ -54,29 +54,28 @@ pub(super) fn parse_coord(text: &str) -> Option<(glam::Vec3, CoordKind)> {
 /// is just the transpose (the dot products in `to_ucs`); no matrix inversion.
 #[derive(Clone, Copy)]
 pub(super) struct UcsXform {
-    origin: glam::Vec3,
-    x: glam::Vec3,
-    y: glam::Vec3,
-    z: glam::Vec3,
+    origin: glam::DVec3,
+    x: glam::DVec3,
+    y: glam::DVec3,
+    z: glam::DVec3,
 }
 
 impl UcsXform {
     /// Plain WCS — no active UCS.
     pub(super) fn identity() -> Self {
         Self {
-            origin: glam::Vec3::ZERO,
-            x: glam::Vec3::X,
-            y: glam::Vec3::Y,
-            z: glam::Vec3::Z,
+            origin: glam::DVec3::ZERO,
+            x: glam::DVec3::X,
+            y: glam::DVec3::Y,
+            z: glam::DVec3::Z,
         }
     }
 
     pub(super) fn from_ucs(ucs: &Ucs) -> Self {
-        let v =
-            |a: acadrust::types::Vector3| glam::Vec3::new(a.x as f32, a.y as f32, a.z as f32);
-        let x = v(ucs.x_axis).normalize_or(glam::Vec3::X);
-        let y = v(ucs.y_axis).normalize_or(glam::Vec3::Y);
-        let z = x.cross(y).normalize_or(glam::Vec3::Z);
+        let v = |a: acadrust::types::Vector3| glam::DVec3::new(a.x, a.y, a.z);
+        let x = v(ucs.x_axis).normalize_or(glam::DVec3::X);
+        let y = v(ucs.y_axis).normalize_or(glam::DVec3::Y);
+        let z = x.cross(y).normalize_or(glam::DVec3::Z);
         Self { origin: v(ucs.origin), x, y, z }
     }
 
@@ -86,45 +85,46 @@ impl UcsXform {
 
     /// True when this is plain WCS — lets callers skip the conversion.
     pub(super) fn is_identity(&self) -> bool {
-        self.origin == glam::Vec3::ZERO
-            && self.x == glam::Vec3::X
-            && self.y == glam::Vec3::Y
-            && self.z == glam::Vec3::Z
+        self.origin == glam::DVec3::ZERO
+            && self.x == glam::DVec3::X
+            && self.y == glam::DVec3::Y
+            && self.z == glam::DVec3::Z
     }
 
     /// UCS point → WCS.
-    pub(super) fn to_wcs(&self, p: glam::Vec3) -> glam::Vec3 {
+    pub(super) fn to_wcs(&self, p: glam::DVec3) -> glam::DVec3 {
         self.origin + self.x * p.x + self.y * p.y + self.z * p.z
     }
 
     /// WCS point → UCS.
-    pub(super) fn to_ucs(&self, p: glam::Vec3) -> glam::Vec3 {
+    pub(super) fn to_ucs(&self, p: glam::DVec3) -> glam::DVec3 {
         let d = p - self.origin;
-        glam::Vec3::new(d.dot(self.x), d.dot(self.y), d.dot(self.z))
+        glam::DVec3::new(d.dot(self.x), d.dot(self.y), d.dot(self.z))
     }
 
     /// UCS direction → WCS (rotation only, no origin shift).
-    pub(super) fn vec_to_wcs(&self, v: glam::Vec3) -> glam::Vec3 {
+    pub(super) fn vec_to_wcs(&self, v: glam::DVec3) -> glam::DVec3 {
         self.x * v.x + self.y * v.y + self.z * v.z
     }
 
     /// WCS direction → UCS (rotation only, no origin shift).
-    pub(super) fn vec_to_ucs(&self, v: glam::Vec3) -> glam::Vec3 {
-        glam::Vec3::new(v.dot(self.x), v.dot(self.y), v.dot(self.z))
+    pub(super) fn vec_to_ucs(&self, v: glam::DVec3) -> glam::DVec3 {
+        glam::DVec3::new(v.dot(self.x), v.dot(self.y), v.dot(self.z))
     }
 
     /// `(origin, x, y, z)` axes in WCS — for drawing the UCS icon.
-    pub(super) fn axes(&self) -> (glam::Vec3, glam::Vec3, glam::Vec3, glam::Vec3) {
+    pub(super) fn axes(&self) -> (glam::DVec3, glam::DVec3, glam::DVec3, glam::DVec3) {
         (self.origin, self.x, self.y, self.z)
     }
 
     /// UCS→world rotation matrix (columns = UCS axes). For consumers that take
-    /// a `Mat4` rotation directly (ViewCube, OTRACK ray directions).
+    /// a `Mat4` rotation directly (ViewCube, OTRACK ray directions). The GPU /
+    /// screen layer is f32, so the axes downcast here at the boundary.
     pub(super) fn rotation_mat(&self) -> glam::Mat4 {
         glam::Mat4::from_cols(
-            self.x.extend(0.0),
-            self.y.extend(0.0),
-            self.z.extend(0.0),
+            self.x.as_vec3().extend(0.0),
+            self.y.as_vec3().extend(0.0),
+            self.z.as_vec3().extend(0.0),
             glam::Vec4::W,
         )
     }
@@ -135,26 +135,26 @@ impl UcsXform {
 /// Rotate a UCS-local offset into WCS without applying the origin
 /// translation — used for relative coordinate entry, where only the
 /// axis orientation matters, not the UCS origin.
-pub(super) fn ucs_rotate_vec(offset: glam::Vec3, ucs: &Ucs) -> glam::Vec3 {
+pub(super) fn ucs_rotate_vec(offset: glam::DVec3, ucs: &Ucs) -> glam::DVec3 {
     UcsXform::from_ucs(ucs).vec_to_wcs(offset)
 }
 
 /// Convert a point from UCS local coordinates to WCS.
-pub(super) fn ucs_to_wcs(pt: glam::Vec3, ucs: &Ucs) -> glam::Vec3 {
+pub(super) fn ucs_to_wcs(pt: glam::DVec3, ucs: &Ucs) -> glam::DVec3 {
     UcsXform::from_ucs(ucs).to_wcs(pt)
 }
 
 /// Return the normalised Z axis of a UCS (cross product of X and Y axes).
-pub(super) fn ucs_z_axis(ucs: &Ucs) -> glam::Vec3 {
+pub(super) fn ucs_z_axis(ucs: &Ucs) -> glam::DVec3 {
     UcsXform::from_ucs(ucs).axes().3
 }
 
 /// Build a UCS with `origin` and axes rotated by `angle_z_rad` around the Z axis.
-pub(super) fn ucs_rotated_z(origin: glam::Vec3, angle_z: f32) -> Ucs {
+pub(super) fn ucs_rotated_z(origin: glam::DVec3, angle_z: f32) -> Ucs {
     let cos = angle_z.cos() as f64;
     let sin = angle_z.sin() as f64;
     let mut ucs = Ucs::new("*ACTIVE*");
-    ucs.origin = acadrust::types::Vector3::new(origin.x as f64, origin.y as f64, origin.z as f64);
+    ucs.origin = acadrust::types::Vector3::new(origin.x, origin.y, origin.z);
     ucs.x_axis = acadrust::types::Vector3::new(cos, sin, 0.0);
     ucs.y_axis = acadrust::types::Vector3::new(-sin, cos, 0.0);
     ucs
@@ -181,15 +181,15 @@ pub(super) fn grid_plane_from_camera(pitch: f32, yaw: f32) -> GridPlane {
 /// Constrain `pt` to the nearest 90° direction from `base`, in the active UCS
 /// plane — ortho follows the user's coordinate system, not world axes. `xf` is
 /// identity for plain WCS, so the world-XY behaviour is unchanged there.
-pub(super) fn ortho_constrain(pt: glam::Vec3, base: glam::Vec3, xf: &UcsXform) -> glam::Vec3 {
+pub(super) fn ortho_constrain(pt: glam::DVec3, base: glam::DVec3, xf: &UcsXform) -> glam::DVec3 {
     let p = xf.to_ucs(pt);
     let b = xf.to_ucs(base);
     let dx = (p.x - b.x).abs();
     let dy = (p.y - b.y).abs();
     let c = if dx >= dy {
-        glam::Vec3::new(p.x, b.y, p.z)
+        glam::DVec3::new(p.x, b.y, p.z)
     } else {
-        glam::Vec3::new(b.x, p.y, p.z)
+        glam::DVec3::new(b.x, p.y, p.z)
     };
     xf.to_wcs(c)
 }
@@ -197,11 +197,11 @@ pub(super) fn ortho_constrain(pt: glam::Vec3, base: glam::Vec3, xf: &UcsXform) -
 /// Constrain `pt` to the nearest polar angle multiple from `base`, measured in
 /// the active UCS plane (identity `xf` = world XY, Z-up).
 pub(super) fn polar_constrain(
-    pt: glam::Vec3,
-    base: glam::Vec3,
+    pt: glam::DVec3,
+    base: glam::DVec3,
     step_deg: f32,
     xf: &UcsXform,
-) -> glam::Vec3 {
+) -> glam::DVec3 {
     let p = xf.to_ucs(pt);
     let b = xf.to_ucs(base);
     let dx = p.x - b.x;
@@ -210,10 +210,10 @@ pub(super) fn polar_constrain(
     if dist < 1e-6 {
         return pt;
     }
-    let step = step_deg.to_radians();
+    let step = (step_deg as f64).to_radians();
     let angle = dy.atan2(dx);
     let snapped = (angle / step).round() * step;
-    xf.to_wcs(glam::Vec3::new(
+    xf.to_wcs(glam::DVec3::new(
         b.x + dist * snapped.cos(),
         b.y + dist * snapped.sin(),
         p.z,
@@ -224,18 +224,18 @@ pub(super) fn polar_constrain(
 /// screen pixels of the nearest polar ray; otherwise the cursor is left free
 /// so POLAR behaves as if off when pointing away from every angle (issue #70).
 pub(super) fn polar_constrain_near(
-    pt: glam::Vec3,
-    base: glam::Vec3,
+    pt: glam::DVec3,
+    base: glam::DVec3,
     step_deg: f32,
     view_rot: glam::Mat4,
     eye: glam::DVec3,
     bounds: iced::Rectangle,
     tol_px: f32,
     xf: &UcsXform,
-) -> glam::Vec3 {
+) -> glam::DVec3 {
     let snapped = polar_constrain(pt, base, step_deg, xf);
-    let to_screen = |w: glam::Vec3| {
-        let ndc = view_rot.project_point3((w.as_dvec3() - eye).as_vec3());
+    let to_screen = |w: glam::DVec3| {
+        let ndc = view_rot.project_point3((w - eye).as_vec3());
         (
             (ndc.x + 1.0) * 0.5 * bounds.width,
             (1.0 - ndc.y) * 0.5 * bounds.height,

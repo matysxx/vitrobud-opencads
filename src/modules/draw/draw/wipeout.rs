@@ -7,7 +7,7 @@
 use acadrust::entities::Wipeout;
 use acadrust::types::Vector3;
 use acadrust::EntityType;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -26,8 +26,8 @@ pub fn tool() -> ToolDef {
 
 pub struct WipeoutCommand {
     mode: WipeoutMode,
-    first: Option<Vec3>,
-    poly_pts: Vec<Vec3>,
+    first: Option<DVec3>,
+    poly_pts: Vec<DVec3>,
 }
 
 enum WipeoutMode {
@@ -79,7 +79,7 @@ impl CadCommand for WipeoutCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         match &self.mode {
             WipeoutMode::Rectangular => {
                 if let Some(p1) = self.first {
@@ -110,7 +110,7 @@ impl CadCommand for WipeoutCommand {
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
         match &self.mode {
             WipeoutMode::Rectangular => {
-                let p1 = self.first?;
+                let p1 = self.first?.as_vec3();
                 let min = p1.min(pt);
                 let max = p1.max(pt);
                 Some(WireModel {
@@ -144,10 +144,17 @@ impl CadCommand for WipeoutCommand {
                 if self.poly_pts.is_empty() {
                     return None;
                 }
-                let mut pts: Vec<[f32; 3]> =
-                    self.poly_pts.iter().map(|p| [p.x, p.y, p.z]).collect();
+                let mut pts: Vec<[f32; 3]> = self
+                    .poly_pts
+                    .iter()
+                    .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+                    .collect();
                 pts.push([pt.x, pt.y, pt.z]);
-                pts.push([self.poly_pts[0].x, self.poly_pts[0].y, self.poly_pts[0].z]);
+                pts.push([
+                    self.poly_pts[0].x as f32,
+                    self.poly_pts[0].y as f32,
+                    self.poly_pts[0].z as f32,
+                ]);
                 Some(WireModel {
             text_verts: Vec::new(),
                     name: "wipeout_poly_preview".into(),
@@ -173,20 +180,17 @@ impl CadCommand for WipeoutCommand {
     }
 }
 
-fn make_rect_wipeout(p1: Vec3, p2: Vec3) -> EntityType {
+fn make_rect_wipeout(p1: DVec3, p2: DVec3) -> EntityType {
     // Drawing plane is world XY (z = elevation).
-    let c1 = Vector3::new(p1.x.min(p2.x) as f64, p1.y.min(p2.y) as f64, p1.z as f64);
-    let c2 = Vector3::new(p1.x.max(p2.x) as f64, p1.y.max(p2.y) as f64, p1.z as f64);
+    let c1 = Vector3::new(p1.x.min(p2.x), p1.y.min(p2.y), p1.z);
+    let c2 = Vector3::new(p1.x.max(p2.x), p1.y.max(p2.y), p1.z);
     EntityType::Wipeout(Wipeout::from_corners(c1, c2))
 }
 
-fn make_poly_wipeout(pts: &[Vec3]) -> EntityType {
+fn make_poly_wipeout(pts: &[DVec3]) -> EntityType {
     use acadrust::types::Vector2;
-    let z = pts[0].z as f64;
-    let verts: Vec<Vector2> = pts
-        .iter()
-        .map(|p| Vector2::new(p.x as f64, p.y as f64))
-        .collect();
+    let z = pts[0].z;
+    let verts: Vec<Vector2> = pts.iter().map(|p| Vector2::new(p.x, p.y)).collect();
     EntityType::Wipeout(Wipeout::polygonal(&verts, z))
 }
 

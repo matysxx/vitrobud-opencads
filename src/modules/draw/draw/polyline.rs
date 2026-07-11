@@ -12,7 +12,7 @@
 use acadrust::entities::LwVertex;
 use acadrust::types::Vector2;
 use acadrust::{EntityType, Handle, LwPolyline};
-use glam::{DVec3, Vec2, Vec3};
+use glam::{DVec2, DVec3, Vec2, Vec3};
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -40,7 +40,7 @@ enum SegMode {
 // ── Command implementation ─────────────────────────────────────────────────
 
 pub struct PlineCommand {
-    vertices: Vec<Vec3>,
+    vertices: Vec<DVec3>,
     /// Bulge for segment i → i+1 (one entry per vertex; last entry unused on commit).
     bulges: Vec<f64>,
     mode: SegMode,
@@ -90,7 +90,7 @@ impl PlineCommand {
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let mut lv = LwVertex::new(Vector2::new(v.x as f64, v.y as f64));
+                let mut lv = LwVertex::new(Vector2::new(v.x, v.y));
                 lv.bulge = self.bulges.get(i).copied().unwrap_or(0.0);
                 lv
             })
@@ -108,14 +108,14 @@ impl PlineCommand {
 
 /// Compute the bulge for the arc from `a` to `b` that is tangent to `tangent` at `a`.
 /// Returns 0.0 if the points are coincident or the tangent is parallel to the chord.
-fn compute_bulge(a: Vec2, tangent: Vec2, b: Vec2) -> f64 {
+fn compute_bulge(a: DVec2, tangent: DVec2, b: DVec2) -> f64 {
     let d = b - a;
     let len_sq = d.length_squared();
     if len_sq < 1e-10 {
         return 0.0;
     }
     // Perpendicular to tangent (CCW) — this is the direction to the arc center.
-    let perp = Vec2::new(-tangent.y, tangent.x);
+    let perp = DVec2::new(-tangent.y, tangent.x);
     let dot = d.dot(perp);
     if dot.abs() < 1e-10 {
         // Tangent is perpendicular to chord → straight line (bulge = 0).
@@ -133,15 +133,15 @@ fn compute_bulge(a: Vec2, tangent: Vec2, b: Vec2) -> f64 {
     if t > 0.0 {
         // CCW arc: ensure arc_angle is in (0, 2π].
         if arc_angle <= 0.0 {
-            arc_angle += std::f32::consts::TAU;
+            arc_angle += std::f64::consts::TAU;
         }
     } else {
         // CW arc: ensure arc_angle is in [-2π, 0).
         if arc_angle >= 0.0 {
-            arc_angle -= std::f32::consts::TAU;
+            arc_angle -= std::f64::consts::TAU;
         }
     }
-    (arc_angle as f64 / 4.0).tan()
+    (arc_angle / 4.0).tan()
 }
 
 /// Update `tangent` after an arc segment described by `bulge` from `a` to `b`.
@@ -240,26 +240,28 @@ impl CadCommand for PlineCommand {
         }
     }
 
-    fn on_point(&mut self, pt: DVec3) -> CmdResult { let pt = pt.as_vec3();
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if !self.vertices.is_empty() {
             let last = *self.vertices.last().unwrap();
             let last_idx = self.vertices.len() - 1;
 
             let bulge = match self.mode {
                 SegMode::Line => {
-                    let d = Vec2::new(pt.x - last.x, pt.y - last.y);
+                    let d = DVec2::new(pt.x - last.x, pt.y - last.y);
                     if d.length_squared() > 1e-10 {
-                        self.last_tangent = Some(d.normalize());
+                        // Direction only — f32 is sufficient for tangent continuity.
+                        self.last_tangent = Some(d.normalize().as_vec2());
                     }
                     0.0
                 }
                 SegMode::Arc => {
-                    let a = Vec2::new(last.x, last.y);
-                    let b = Vec2::new(pt.x, pt.y);
-                    let tangent = self.last_tangent.unwrap_or_else(|| {
+                    let a = DVec2::new(last.x, last.y);
+                    let b = DVec2::new(pt.x, pt.y);
+                    let tangent = self
+                        .last_tangent
+                        .map(|t| t.as_dvec2())
                         // No previous tangent: default to pointing right (arbitrary).
-                        Vec2::new(1.0, 0.0)
-                    });
+                        .unwrap_or(DVec2::new(1.0, 0.0));
                     let bulge = compute_bulge(a, tangent, b);
                     update_tangent_after_arc(&mut self.last_tangent, bulge);
                     bulge
@@ -318,11 +320,12 @@ impl CadCommand for PlineCommand {
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
+        let pt = pt.as_vec3();
         // The committed vertices already render as a real document entity, so
         // the preview is just the pending segment from the last vertex to the
-        // cursor. (#119)
-        let last = *self.vertices.last()?;
+        // cursor. (#119)  Downcast to f32 for the pixel-space rubber band.
+        let last = self.vertices.last()?.as_vec3();
 
         let mut pts: Vec<[f32; 3]> = Vec::new();
         match self.mode {
@@ -331,9 +334,12 @@ impl CadCommand for PlineCommand {
                 pts.push([pt.x, pt.y, pt.z]);
             }
             SegMode::Arc => {
-                let a = Vec2::new(last.x, last.y);
-                let b = Vec2::new(pt.x, pt.y);
-                let tangent = self.last_tangent.unwrap_or(Vec2::new(1.0, 0.0));
+                let a = DVec2::new(last.x as f64, last.y as f64);
+                let b = DVec2::new(pt.x as f64, pt.y as f64);
+                let tangent = self
+                    .last_tangent
+                    .map(|t| t.as_dvec2())
+                    .unwrap_or(DVec2::new(1.0, 0.0));
                 let bulge = compute_bulge(a, tangent, b);
                 let arc_pts = arc_sample_points(last, bulge, pt, 16);
                 pts.extend_from_slice(&arc_pts);

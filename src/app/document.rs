@@ -169,7 +169,7 @@ pub(super) struct DocumentTab {
     pub(super) wireframe: bool,
     pub(super) render_mode: acadrust::entities::ViewportRenderMode,
     pub(super) visual_style: String,
-    pub(super) last_cursor_world: glam::Vec3,
+    pub(super) last_cursor_world: glam::DVec3,
     pub(super) last_cursor_screen: iced::Point,
     /// Base point (`App::last_point`) projected to viewport pixels, refreshed
     /// on cursor move. Lets the dynamic-input overlay place the distance label
@@ -185,10 +185,10 @@ pub(super) struct DocumentTab {
     pub(super) dyn_guide: crate::command::DynGuide,
     /// World-space anchor the current step's values are measured from. `None`
     /// falls back to `App::last_point`.
-    pub(super) dyn_anchor: Option<glam::Vec3>,
+    pub(super) dyn_anchor: Option<glam::DVec3>,
     /// Far end of a reference line through `dyn_anchor` (for the `Perp` guide:
     /// the base edge / major axis the offset is measured square to).
-    pub(super) dyn_ref: Option<glam::Vec3>,
+    pub(super) dyn_ref: Option<glam::DVec3>,
     /// `dyn_ref` projected to viewport pixels.
     pub(super) dyn_ref_screen: Option<iced::Point>,
     /// Index of the field that TAB has focused (the one keystrokes edit).
@@ -360,9 +360,9 @@ impl DocumentTab {
         let (o, x, y, z) = self.ucs_xform().axes();
         let origin = glam::Vec3::new(o.x as f32, o.y as f32, o.z as f32);
         glam::Mat4::from_cols(
-            x.extend(0.0),
-            y.extend(0.0),
-            z.extend(0.0),
+            x.as_vec3().extend(0.0),
+            y.as_vec3().extend(0.0),
+            z.as_vec3().extend(0.0),
             origin.extend(1.0),
         )
     }
@@ -421,7 +421,7 @@ impl DocumentTab {
             wireframe: false,
             render_mode: acadrust::entities::ViewportRenderMode::Wireframe2D,
             visual_style: "Wireframe 2D".into(),
-            last_cursor_world: glam::Vec3::ZERO,
+            last_cursor_world: glam::DVec3::ZERO,
             last_cursor_screen: iced::Point::ORIGIN,
             last_point_screen: None,
             dyn_fields: Vec::new(),
