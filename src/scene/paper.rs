@@ -283,6 +283,7 @@ impl Scene {
             }
             models.push(HatchModel {
                 boundary: Arc::new(boundary),
+                boundary_wcs: None,
                 pattern: model::hatch_model::HatchPattern::Solid,
                 name: "WIPEOUT_FILL".into(),
                 color: fill_color,

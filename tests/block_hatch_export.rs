@@ -241,6 +241,7 @@ fn app_created_hatch_roundtrips_catalog_spacing() {
     let model = HatchModel {
         world_origin: [0.0, 0.0],
         boundary: Arc::new(boundary),
+        boundary_wcs: None,
         pattern: entry.gpu.clone(),
         name: "ANSI31".into(),
         color: [0.75, 0.75, 0.75, 0.85],

@@ -580,6 +580,7 @@ impl Scene {
             for boundary in fills {
                 models.push(HatchModel {
                     boundary: Arc::new(boundary),
+                    boundary_wcs: None,
                     pattern: model::hatch_model::HatchPattern::Solid,
                     name: "SOLID".into(),
                     color,
@@ -854,6 +855,7 @@ impl Scene {
             };
             models.push(HatchModel {
                 boundary: Arc::new(ring),
+                boundary_wcs: None,
                 pattern: model::hatch_model::HatchPattern::Solid,
                 name: "SOLID".into(),
                 color,
@@ -909,6 +911,7 @@ impl Scene {
                 }
                 models.push(HatchModel {
                     boundary: Arc::new(boundary),
+                    boundary_wcs: None,
                     pattern: model::hatch_model::HatchPattern::Solid,
                     name: "WIPEOUT_FILL".into(),
                     color: fill_color,
@@ -1430,6 +1433,7 @@ impl Scene {
 
         Some(HatchModel {
             boundary: std::sync::Arc::new(boundary_f32),
+            boundary_wcs: None,
             pattern,
             name,
             color,
@@ -1624,6 +1628,7 @@ impl Scene {
         ];
         HatchModel {
             boundary: std::sync::Arc::new(boundary),
+            boundary_wcs: None,
             pattern: model::hatch_model::HatchPattern::Solid,
             name: "SOLID".into(),
             color,
@@ -1641,18 +1646,26 @@ impl Scene {
             model.pattern,
             crate::scene::model::hatch_model::HatchPattern::Solid
         );
-        // The boundary points arrive in local render space (world_offset
-        // already subtracted). The stored DXF entity must hold WCS, so add the
-        // offset back — otherwise the boundary wire, re-projected through the
-        // normal entity path, lands `world_offset` away from the fill.
-        let wx = model.world_origin[0];
-        let wy = model.world_origin[1];
-        let verts: Vec<Vector2> = model
-            .boundary
-            .iter()
-            .filter(|v| v[0].is_finite() && v[1].is_finite())
-            .map(|&[x, y]| Vector2::new(x as f64 + wx, y as f64 + wy))
-            .collect();
+        // Prefer the command-supplied exact f64 boundary so a typed vertex is
+        // persisted without f32 quantization (issue #311). Falling back to the
+        // render-side `boundary`, the points arrive in local render space
+        // (world_offset already subtracted), so add `world_origin` back —
+        // otherwise the boundary wire lands `world_offset` away from the fill.
+        let verts: Vec<Vector2> = if let Some(wcs) = &model.boundary_wcs {
+            wcs.iter()
+                .filter(|v| v[0].is_finite() && v[1].is_finite())
+                .map(|&[x, y]| Vector2::new(x, y))
+                .collect()
+        } else {
+            let wx = model.world_origin[0];
+            let wy = model.world_origin[1];
+            model
+                .boundary
+                .iter()
+                .filter(|v| v[0].is_finite() && v[1].is_finite())
+                .map(|&[x, y]| Vector2::new(x as f64 + wx, y as f64 + wy))
+                .collect()
+        };
         let edge = PolylineEdge::new(verts, true);
         let mut path = BoundaryPath::external();
         path.add_edge(BoundaryEdge::Polyline(edge));

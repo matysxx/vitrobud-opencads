@@ -60,6 +60,12 @@ pub struct HatchModel {
     /// f32 offsets from `world_origin`. NaN-NaN sentinels separate
     /// disconnected paths and must be preserved un-shifted by consumers.
     pub boundary: Arc<Vec<[f32; 2]>>,
+    /// Exact absolute-WCS boundary in f64, set only by the draw commands so a
+    /// typed boundary vertex is persisted without the f32 quantization the
+    /// render-side `boundary` would incur (issue #311). `None` for hatches
+    /// rebuilt from a DXF entity — `add_hatch` then reconstructs the persisted
+    /// vertices from `boundary` + `world_origin` instead.
+    pub boundary_wcs: Option<Arc<Vec<[f64; 2]>>>,
     /// Fill pattern.
     pub pattern: HatchPattern,
     /// Catalog name for this pattern (e.g. "ANSI31", "SOLID", "LINEAR").
