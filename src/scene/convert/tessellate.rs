@@ -103,26 +103,17 @@ pub fn tessellate(
     };
     let name = handle.value().to_string();
 
-    // Determine effective annotation scale for this entity.
+    // Determine the effective annotation scale for this entity.
     //
-    // AutoCAD's R2007+ "annotative" system marks objects via extension-
-    // dictionary records or "AcAnnoPO" / "AcAnnotativeData" xdata. Only
-    // entities so marked should be auto-scaled by the viewport's
-    // paper-scale; everything else is treated as manually pre-scaled
-    // (old DXF/DWG convention with $DIMSCALE and oversized text).
-    //
-    // Default: NOT annotative (anno_scale = 1.0). Opt-in via explicit
-    // xdata marker. Files that mark every entity annotative are rare; the
-    // pre-R2007 manual-scale convention is far more common in field data.
-    let anno_scale = {
-        let xdata = &entity.common().extended_data;
-        let is_annotative = xdata.get_record("AcAnnoPO").is_some()
-            || xdata.get_record("AcAnnotativeData").is_some();
-        if is_annotative {
-            anno_scale
-        } else {
-            1.0
-        }
+    // Only annotative entities are auto-scaled by the current annotation scale;
+    // everything else is manually pre-scaled (old convention with $DIMSCALE and
+    // oversized text). Annotative-ness is resolved centrally from the entity's
+    // per-object context, legacy XDATA, or annotative style (see
+    // `scene::annotative::is_annotative`) so the bake and the panel agree.
+    let anno_scale = if crate::scene::annotative::is_annotative(document, entity) {
+        anno_scale
+    } else {
+        1.0
     };
 
     // A HATCH is drawn as a fill by the hatch pipeline and highlighted via a

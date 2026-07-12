@@ -95,95 +95,177 @@ impl OpenCADStudio {
                     let mut sections =
                         dispatch::properties_sectioned(handle, entity, &text_style_names);
 
-                    // Resolve a custom material handle (material_flags == 3) to
-                    // its name in the 3D Visualization group.
+                    // Turn the Material row into an editable picker: the source
+                    // options (ByLayer / ByBlock) plus every named material the
+                    // drawing defines. A custom flag (3) shows the stored handle's
+                    // material name as the selection.
                     {
+                        let doc = &self.tabs[i].scene.document;
                         let common = entity.common();
-                        if common.material_flags == 3 {
-                            if let Some(mh) = common.material_handle {
-                                if let Some(name) = self.tabs[i]
-                                    .scene
-                                    .document
-                                    .objects
-                                    .iter()
-                                    .find_map(|(h, o)| match o {
+                        let mat_names: Vec<String> = doc
+                            .objects
+                            .iter()
+                            .filter_map(|(_, o)| match o {
+                                acadrust::objects::ObjectType::Material(m) => Some(m.name.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        let selected = match common.material_flags {
+                            0 => "ByLayer".to_string(),
+                            1 => "ByBlock".to_string(),
+                            _ => common
+                                .material_handle
+                                .and_then(|mh| {
+                                    doc.objects.iter().find_map(|(h, o)| match o {
                                         acadrust::objects::ObjectType::Material(m) if *h == mh => {
                                             Some(m.name.clone())
                                         }
                                         _ => None,
                                     })
+                                })
+                                .unwrap_or_else(|| "ByLayer".to_string()),
+                        };
+                        let mut options = vec!["ByLayer".to_string(), "ByBlock".to_string()];
+                        options.extend(mat_names);
+                        for section in sections.iter_mut() {
+                            if let Some(row) =
+                                section.props.iter_mut().find(|p| p.field == "material")
+                            {
+                                row.value = crate::scene::model::object::PropValue::Choice {
+                                    selected: selected.clone(),
+                                    options: options.clone(),
+                                };
+                            }
+                        }
+                    }
+
+                    // In named plot-style mode (PSTYLEMODE=1) the Plot style row
+                    // picks a named style from the drawing's plot style table. In
+                    // the color-dependent mode it stays read-only (the object's
+                    // color drives the plot style), so it is left untouched.
+                    if self.tabs[i].scene.document.header.plotstyle_mode {
+                        let doc = &self.tabs[i].scene.document;
+                        let dict_h = doc.header.acad_plotstylename_dict_handle;
+                        if let Some(dict) = crate::scene::annotative::as_dict(doc, dict_h) {
+                            let common = entity.common();
+                            let mut options = vec!["ByLayer".to_string(), "ByBlock".to_string()];
+                            options.extend(dict.entries.iter().map(|(n, _)| n.clone()));
+                            let selected = match common.plotstyle_flags {
+                                0 => "ByLayer".to_string(),
+                                1 => "ByBlock".to_string(),
+                                _ => common
+                                    .plotstyle_handle
+                                    .and_then(|ph| {
+                                        dict.entries
+                                            .iter()
+                                            .find(|(_, h)| *h == ph)
+                                            .map(|(n, _)| n.clone())
+                                    })
+                                    .unwrap_or_else(|| "ByLayer".to_string()),
+                            };
+                            for section in sections.iter_mut() {
+                                if let Some(row) =
+                                    section.props.iter_mut().find(|p| p.field == "plot_style")
                                 {
-                                    for section in sections.iter_mut() {
-                                        if let Some(row) =
-                                            section.props.iter_mut().find(|p| p.field == "material")
-                                        {
-                                            row.value =
-                                                crate::scene::model::object::PropValue::ReadOnly(
-                                                    name.clone(),
-                                                );
-                                        }
-                                    }
+                                    row.value = crate::scene::model::object::PropValue::Choice {
+                                        selected: selected.clone(),
+                                        options: options.clone(),
+                                    };
                                 }
                             }
                         }
                     }
 
-                    // Resolve MLEADER handle-backed rows (multileader style, text
-                    // style, arrowhead block, leader linetype) to display names.
+                    // Turn the MLEADER handle-backed rows (multileader style, text
+                    // style, arrowhead block, leader linetype) into editable name
+                    // pickers. The current handle resolves to a display name; the
+                    // options list every candidate the drawing offers. Applying a
+                    // pick resolves the name back to a handle in the update loop.
                     if let acadrust::EntityType::MultiLeader(ml) = entity {
                         let doc = &self.tabs[i].scene.document;
-                        let mut set_named = |field: &str, name: String| {
-                            for section in sections.iter_mut() {
-                                if let Some(row) =
-                                    section.props.iter_mut().find(|p| p.field == field)
-                                {
-                                    row.value =
-                                        crate::scene::model::object::PropValue::ReadOnly(
-                                            name.clone(),
-                                        );
-                                }
-                            }
-                        };
-                        if let Some(h) = ml.style_handle {
-                            if let Some(name) = doc.objects.iter().find_map(|(oh, o)| match o {
-                                acadrust::objects::ObjectType::MultiLeaderStyle(s) if *oh == h => {
+                        // Option lists.
+                        let mleader_styles: Vec<String> = doc
+                            .objects
+                            .iter()
+                            .filter_map(|(_, o)| match o {
+                                acadrust::objects::ObjectType::MultiLeaderStyle(s) => {
                                     Some(s.name.clone())
                                 }
                                 _ => None,
-                            }) {
-                                set_named("mleader_style", name);
-                            }
-                        }
-                        if let Some(h) = ml.text_style_handle {
-                            if let Some(name) = doc
-                                .text_styles
-                                .iter()
-                                .find(|s| s.handle == h)
-                                .map(|s| s.name.clone())
-                            {
-                                set_named("text_style_handle", name);
-                            }
-                        }
-                        if let Some(h) = ml.arrowhead_handle {
-                            if let Some(name) = doc
-                                .block_records
-                                .iter()
-                                .find(|b| b.handle == h)
-                                .map(|b| b.name.clone())
-                            {
-                                set_named("arrowhead_handle", name);
-                            }
-                        }
-                        if let Some(h) = ml.line_type_handle {
-                            if let Some(name) = doc
-                                .line_types
-                                .iter()
-                                .find(|l| l.handle == h)
-                                .map(|l| l.name.clone())
-                            {
-                                set_named("line_type_handle", name);
-                            }
-                        }
+                            })
+                            .collect();
+                        // A leader with no linetype handle draws ByBlock; expose that
+                        // as the first option so the default is selectable.
+                        let ltype_names: Vec<String> = std::iter::once("ByBlock".to_string())
+                            .chain(
+                                doc.line_types
+                                    .iter()
+                                    .map(|l| l.name.clone())
+                                    .filter(|n| !n.is_empty()),
+                            )
+                            .collect();
+                        // Arrowheads are blocks; the closed-filled default has no
+                        // block, so seed the list with it and add the arrowhead
+                        // blocks (leading underscore) present in the drawing.
+                        let arrow_names: Vec<String> = std::iter::once("Closed filled".to_string())
+                            .chain(
+                                doc.block_records
+                                    .iter()
+                                    .filter(|b| b.name.starts_with('_'))
+                                    .map(|b| b.name.clone()),
+                            )
+                            .collect();
+                        let tstyle_names = text_style_names.clone();
+                        // Currently selected names.
+                        let cur_style = ml
+                            .style_handle
+                            .and_then(|h| {
+                                doc.objects.iter().find_map(|(oh, o)| match o {
+                                    acadrust::objects::ObjectType::MultiLeaderStyle(s)
+                                        if *oh == h =>
+                                    {
+                                        Some(s.name.clone())
+                                    }
+                                    _ => None,
+                                })
+                            })
+                            .unwrap_or_else(|| "Standard".to_string());
+                        let cur_tstyle = ml
+                            .text_style_handle
+                            .and_then(|h| {
+                                doc.text_styles.iter().find(|s| s.handle == h).map(|s| s.name.clone())
+                            })
+                            .unwrap_or_else(|| "Standard".to_string());
+                        let cur_arrow = ml
+                            .arrowhead_handle
+                            .and_then(|h| {
+                                doc.block_records.iter().find(|b| b.handle == h).map(|b| b.name.clone())
+                            })
+                            .unwrap_or_else(|| "Closed filled".to_string());
+                        let cur_ltype = ml
+                            .line_type_handle
+                            .and_then(|h| {
+                                doc.line_types.iter().find(|l| l.handle == h).map(|l| l.name.clone())
+                            })
+                            .unwrap_or_else(|| "ByBlock".to_string());
+                        let mut set_choice =
+                            |field: &str, selected: String, options: Vec<String>| {
+                                for section in sections.iter_mut() {
+                                    if let Some(row) =
+                                        section.props.iter_mut().find(|p| p.field == field)
+                                    {
+                                        row.value =
+                                            crate::scene::model::object::PropValue::Choice {
+                                                selected: selected.clone(),
+                                                options: options.clone(),
+                                            };
+                                    }
+                                }
+                            };
+                        set_choice("mleader_style", cur_style, mleader_styles);
+                        set_choice("text_style_handle", cur_tstyle, tstyle_names);
+                        set_choice("arrowhead_handle", cur_arrow, arrow_names);
+                        set_choice("line_type_handle", cur_ltype, ltype_names);
                     }
 
                     // Inject viewport-only properties that require doc access.
@@ -487,27 +569,42 @@ impl OpenCADStudio {
                     // are walked from the entity's extension dictionary — both
                     // need the document, so they are resolved here.
                     {
-                        let anno = match entity {
-                            acadrust::EntityType::Text(t) => {
-                                Some((text_style_annotative(doc, &t.style), "annotative"))
+                        // Which entities show an Annotative row, the field it uses,
+                        // and — for those that don't already carry the row
+                        // (dimension / table) — the existing field to insert it
+                        // after. MLeader uses its editable toggle field.
+                        let anno: Option<(&str, Option<&str>)> = match entity {
+                            acadrust::EntityType::Text(_)
+                            | acadrust::EntityType::MText(_)
+                            | acadrust::EntityType::Leader(_) => Some(("annotative", None)),
+                            acadrust::EntityType::MultiLeader(_) => {
+                                Some(("enable_annotation_scale", None))
                             }
-                            acadrust::EntityType::MText(t) => Some((
-                                t.is_annotative || text_style_annotative(doc, &t.style),
-                                "annotative",
-                            )),
-                            acadrust::EntityType::Leader(l) => {
-                                Some((dim_style_annotative(doc, &l.dimension_style), "annotative"))
+                            acadrust::EntityType::Dimension(_) => {
+                                Some(("annotative", Some("style_name")))
                             }
-                            acadrust::EntityType::MultiLeader(ml) => Some((
-                                ml.enable_annotation_scale
-                                    || mleader_style_annotative(doc, ml.style_handle),
-                                "enable_annotation_scale",
-                            )),
+                            acadrust::EntityType::Table(_) => {
+                                Some(("annotative", Some("tbl_style_handle")))
+                            }
                             _ => None,
                         };
-                        if let Some((is_anno, anno_field)) = anno {
-                            // MLeader keeps its editable toggle; the read-only
-                            // text rows get an explicit Yes/No.
+                        if let Some((anno_field, insert_after)) = anno {
+                            let is_anno = crate::scene::annotative::is_annotative(doc, entity);
+                            // Dimensions/tables carry no Annotative row yet — add one
+                            // right after their style row.
+                            if let Some(anchor) = insert_after {
+                                insert_row_after(
+                                    &mut sections,
+                                    anchor,
+                                    crate::entities::common::ro_prop(
+                                        "Annotative",
+                                        "annotative",
+                                        "No",
+                                    ),
+                                );
+                            }
+                            // The read-only text rows get an explicit Yes/No; MLeader
+                            // keeps its editable toggle.
                             if anno_field == "annotative" {
                                 set_row(
                                     &mut sections,
@@ -516,19 +613,16 @@ impl OpenCADStudio {
                                 );
                             }
                             if is_anno {
-                                let names = entity_scale_names(doc, entity.common());
-                                let display = if names.is_empty() {
-                                    doc.header.current_annotation_scale.clone()
-                                } else {
-                                    names.join(", ")
-                                };
+                                // The applied annotation scale follows the current
+                                // annotation scale (CANNOSCALE / the status-bar
+                                // scale pill), not a per-object stored value.
                                 insert_row_after(
                                     &mut sections,
                                     anno_field,
                                     crate::entities::common::ro_prop(
                                         "Annotative scale",
                                         "annotative_scale",
-                                        display,
+                                        doc.header.current_annotation_scale.clone(),
                                     ),
                                 );
                             }
@@ -1241,93 +1335,6 @@ fn find_dim_style<'a>(
         s.name.eq_ignore_ascii_case(name)
             || (name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
     })
-}
-
-/// Is the named text style annotative?
-fn text_style_annotative(doc: &acadrust::CadDocument, name: &str) -> bool {
-    doc.text_styles
-        .iter()
-        .find(|s| {
-            s.name.eq_ignore_ascii_case(name)
-                || (name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
-        })
-        .map_or(false, |s| s.annotative)
-}
-
-/// Is the named dimension style annotative?
-fn dim_style_annotative(doc: &acadrust::CadDocument, name: &str) -> bool {
-    find_dim_style(doc, name).map_or(false, |s| s.annotative)
-}
-
-/// Is the multileader style (by handle) annotative?
-fn mleader_style_annotative(doc: &acadrust::CadDocument, handle: Option<acadrust::Handle>) -> bool {
-    let Some(h) = handle else {
-        return false;
-    };
-    doc.objects.iter().any(|(oh, o)| {
-        matches!(o, acadrust::objects::ObjectType::MultiLeaderStyle(s) if *oh == h && s.is_annotative)
-    })
-}
-
-/// Resolve a handle to a `Dictionary` object, if it is one.
-fn as_dict(
-    doc: &acadrust::CadDocument,
-    handle: acadrust::Handle,
-) -> Option<&acadrust::objects::Dictionary> {
-    match doc.objects.get(&handle) {
-        Some(acadrust::objects::ObjectType::Dictionary(d)) => Some(d),
-        _ => None,
-    }
-}
-
-/// Case-insensitive dictionary entry lookup by key.
-fn dict_get(dict: &acadrust::objects::Dictionary, key: &str) -> Option<acadrust::Handle> {
-    dict.entries
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(key))
-        .map(|(_, h)| *h)
-}
-
-/// The AcDbScale object's ratio name (e.g. "1:50"), by handle.
-fn scale_name(doc: &acadrust::CadDocument, handle: acadrust::Handle) -> Option<String> {
-    match doc.objects.get(&handle) {
-        Some(acadrust::objects::ObjectType::Scale(s)) => Some(s.name.clone()),
-        _ => None,
-    }
-}
-
-/// The annotation-scale name(s) assigned to an entity, walked from its extension
-/// dictionary → AcDbContextDataManager → ACDB_ANNOTATIONSCALES.
-///
-/// The collection's entry keys are internal anonymous names (e.g. "*A1"); the
-/// real scale is each leaf's group-340 SCALE handle, which acadrust surfaces via
-/// `doc.context_scales` (context-leaf handle → AcDbScale handle). We resolve each
-/// leaf handle to its scale, then the scale to its ratio name. Empty when the
-/// entity has no per-scale context (it then uses the drawing's current scale).
-fn entity_scale_names(
-    doc: &acadrust::CadDocument,
-    common: &acadrust::entities::EntityCommon,
-) -> Vec<String> {
-    let Some(xd) = common.xdictionary_handle else {
-        return Vec::new();
-    };
-    let Some(coll) = as_dict(doc, xd)
-        .and_then(|d| dict_get(d, "AcDbContextDataManager"))
-        .and_then(|h| as_dict(doc, h))
-        .and_then(|m| dict_get(m, "ACDB_ANNOTATIONSCALES"))
-        .and_then(|h| as_dict(doc, h))
-    else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = Vec::new();
-    for (_, leaf) in &coll.entries {
-        if let Some(name) = doc.context_scales.get(leaf).and_then(|sh| scale_name(doc, *sh)) {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
-    names
 }
 
 /// Insert `row` immediately after the first property whose field matches.

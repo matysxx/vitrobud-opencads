@@ -591,9 +591,29 @@ pub fn expand_insert(
     // from native content.
     is_xref: bool,
     bg_color: [f32; 4],
+    // Current annotation scale. An annotative block scales as one uniform unit
+    // about its insertion point; a non-annotative block is unaffected.
+    anno_scale: f32,
 ) -> Option<Vec<WireModel>> {
     let defn = cache.defn(&ins.block_name)?;
-    let xform = ins.get_transform();
+    let mut xform = ins.get_transform();
+    // Annotative blocks (the flag lives on the block definition; the instance is
+    // marked with the AcAnnotativeData XDATA) scale as ONE uniform unit about
+    // their insertion point — internal geometry/text/attributes are carried by
+    // this transform, never scaled individually (which would double-scale).
+    if (anno_scale - 1.0).abs() > 1e-6
+        && ins
+            .common
+            .extended_data
+            .get_record("AcAnnotativeData")
+            .is_some()
+    {
+        let p = ins.insert_point;
+        let scale_about_p = Transform::from_translation(Vector3::new(-p.x, -p.y, -p.z))
+            .then(&Transform::from_scale(anno_scale as f64))
+            .then(&Transform::from_translation(Vector3::new(p.x, p.y, p.z)));
+        xform = xform.then(&scale_about_p);
+    }
     let name = ins_handle.value().to_string();
     let mut batches = Batches::default();
     let mut visited: Vec<String> = Vec::with_capacity(8);

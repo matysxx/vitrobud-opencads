@@ -1243,6 +1243,158 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             }
                             self.tabs[i].scene.camera_generation += 1;
                         }
+                    } else if matches!(
+                        field,
+                        "mleader_style"
+                            | "text_style_handle"
+                            | "arrowhead_handle"
+                            | "line_type_handle"
+                    ) {
+                        // Resolve a picked name back to the handle the MLEADER
+                        // stores. The style/text-style rows keep their existing
+                        // handle on a failed lookup; the arrowhead/linetype rows
+                        // take the resolved value directly (None = the default
+                        // "Closed filled" / "ByBlock" option).
+                        let doc = &self.tabs[i].scene.document;
+                        let resolved: Option<acadrust::Handle> = match field {
+                            "mleader_style" => doc.objects.iter().find_map(|(h, o)| match o {
+                                acadrust::objects::ObjectType::MultiLeaderStyle(s)
+                                    if s.name == value =>
+                                {
+                                    Some(*h)
+                                }
+                                _ => None,
+                            }),
+                            "text_style_handle" => doc
+                                .text_styles
+                                .iter()
+                                .find(|s| s.name == value)
+                                .map(|s| s.handle),
+                            "arrowhead_handle" => {
+                                if value == "Closed filled" {
+                                    None
+                                } else {
+                                    doc.block_records
+                                        .iter()
+                                        .find(|b| b.name == value)
+                                        .map(|b| b.handle)
+                                }
+                            }
+                            "line_type_handle" => {
+                                if value == "ByBlock" {
+                                    None
+                                } else {
+                                    doc.line_types
+                                        .iter()
+                                        .find(|l| l.name == value)
+                                        .map(|l| l.handle)
+                                }
+                            }
+                            _ => None,
+                        };
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            if let Some(acadrust::EntityType::MultiLeader(ml)) =
+                                self.tabs[i].scene.document.get_entity_mut(handle)
+                            {
+                                match field {
+                                    "mleader_style" => {
+                                        if let Some(h) = resolved {
+                                            ml.style_handle = Some(h);
+                                        }
+                                    }
+                                    "text_style_handle" => {
+                                        if let Some(h) = resolved {
+                                            ml.text_style_handle = Some(h);
+                                        }
+                                    }
+                                    "arrowhead_handle" => ml.arrowhead_handle = resolved,
+                                    "line_type_handle" => ml.line_type_handle = resolved,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    } else if field == "plot_style" {
+                        // Named plot-style pick: ByLayer / ByBlock clear the
+                        // handle; a named style resolves through the drawing's
+                        // ACAD_PLOTSTYLENAME dictionary to its placeholder handle.
+                        let dict_h =
+                            self.tabs[i].scene.document.header.acad_plotstylename_dict_handle;
+                        let ph: Option<acadrust::Handle> =
+                            crate::scene::annotative::as_dict(&self.tabs[i].scene.document, dict_h)
+                                .and_then(|d| {
+                                    d.entries
+                                        .iter()
+                                        .find(|(n, _)| *n == value)
+                                        .map(|(_, h)| *h)
+                                });
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle)
+                            {
+                                let common = entity.common_mut();
+                                match value.as_str() {
+                                    "ByLayer" => {
+                                        common.plotstyle_flags = 0;
+                                        common.plotstyle_handle = None;
+                                    }
+                                    "ByBlock" => {
+                                        common.plotstyle_flags = 1;
+                                        common.plotstyle_handle = None;
+                                    }
+                                    _ => {
+                                        if let Some(h) = ph {
+                                            common.plotstyle_flags = 3;
+                                            common.plotstyle_handle = Some(h);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if field == "material" {
+                        // Material source: ByLayer / ByBlock clear the handle; a
+                        // named material sets flag 3 + its handle (resolved here
+                        // because the update loop holds the document).
+                        let mat_handle: Option<acadrust::Handle> = self.tabs[i]
+                            .scene
+                            .document
+                            .objects
+                            .iter()
+                            .find_map(|(h, o)| match o {
+                                acadrust::objects::ObjectType::Material(m) if m.name == value => {
+                                    Some(*h)
+                                }
+                                _ => None,
+                            });
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle)
+                            {
+                                let common = entity.common_mut();
+                                match value.as_str() {
+                                    "ByLayer" => {
+                                        common.material_flags = 0;
+                                        common.material_handle = None;
+                                    }
+                                    "ByBlock" => {
+                                        common.material_flags = 1;
+                                        common.material_handle = None;
+                                    }
+                                    _ => {
+                                        if let Some(h) = mat_handle {
+                                            common.material_flags = 3;
+                                            common.material_handle = Some(h);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         for &handle in &handles {
                             if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle)

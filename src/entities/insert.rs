@@ -37,7 +37,7 @@ fn properties(ins: &Insert) -> Vec<PropSection> {
             },
         })
         .collect();
-    vec![
+    let mut sections = vec![
         PropSection {
             title: "Geometry".into(),
             props: vec![
@@ -54,24 +54,24 @@ fn properties(ins: &Insert) -> Vec<PropSection> {
             props: vec![
                 ro("Name", "block", ins.block_name.clone()),
                 edit("Rotation", "rotation", ins.rotation.to_degrees()),
-                ro("Block Unit", "block_unit", String::new()),
-                ro("Unit factor", "unit_factor", String::new()),
                 ro(
                     "Annotative",
                     "annotative",
                     if annotative { "Yes" } else { "No" },
                 ),
+                ro("Block Unit", "block_unit", String::new()),
+                ro("Unit factor", "unit_factor", String::new()),
             ],
         },
-        PropSection {
+    ];
+    // The Attributes group appears only when the block actually has attributes.
+    if !attrs.is_empty() {
+        sections.push(PropSection {
             title: "Attributes".into(),
             props: attrs,
-        },
-        PropSection {
-            title: "Custom".into(),
-            props: Vec::new(),
-        },
-    ]
+        });
+    }
+    sections
 }
 
 fn apply_geom_prop(ins: &mut Insert, field: &str, value: &str) {
@@ -206,12 +206,39 @@ pub(crate) fn append_insert_attribute_wires(
     if attmode == 0 {
         return;
     }
+    // An annotative block scales as ONE uniform unit about its insertion point;
+    // its attributes are carried by that scale (AutoCAD even forbids annotative
+    // attributes inside annotative blocks, to avoid double-scaling). So pre-scale
+    // the annotative attribute about the insertion point and tessellate it at a
+    // neutral 1.0 — the text path must never scale it a second time.
+    let annotative = ins
+        .common
+        .extended_data
+        .get_record("AcAnnotativeData")
+        .is_some();
+    let block_scale = if annotative { anno_scale as f64 } else { 1.0 };
+    let ip = ins.insert_point;
+    let scale_about = |q: acadrust::types::Vector3| {
+        acadrust::types::Vector3::new(
+            ip.x + (q.x - ip.x) * block_scale,
+            ip.y + (q.y - ip.y) * block_scale,
+            ip.z + (q.z - ip.z) * block_scale,
+        )
+    };
     for attr in &ins.attributes {
         let per_attr_hidden = attr.common.invisible || attr.flags.invisible;
         if attmode == 1 && per_attr_hidden {
             continue;
         }
-        let attr_entity = EntityType::AttributeEntity(attr.clone());
+        let attr_entity = EntityType::AttributeEntity({
+            let mut a = attr.clone();
+            if (block_scale - 1.0).abs() > 1e-6 {
+                a.height *= block_scale;
+                a.insertion_point = scale_about(a.insertion_point);
+                a.alignment_point = scale_about(a.alignment_point);
+            }
+            a
+        });
         let (sub_color, sub_plen, sub_pat, sub_lw_px, sub_aci) = render::render_style_for_block_sub(
             document,
             &attr_entity,
@@ -237,7 +264,9 @@ pub(crate) fn append_insert_attribute_wires(
             sub_plen * pslt_factor,
             sub_pat.map(|v| v * pslt_factor),
             sub_lw_px,
-            anno_scale,
+            // Neutral: the attribute is already scaled as part of the block unit
+            // above, so the text path must not scale it a second time.
+            1.0,
             None,
             bg_color,
             false,

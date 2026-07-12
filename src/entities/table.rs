@@ -367,6 +367,10 @@ pub fn tessellate_table(
     selected: bool,
     entity_color: [f32; 4],
     line_weight_px: f32,
+    // Annotation scale: multiplies the table's paper-size geometry so an
+    // annotative table renders at the current annotation scale. 1.0 for a
+    // non-annotative table (its geometry is already at model size).
+    anno_scale: f32,
 ) -> Vec<crate::scene::model::wire_model::WireModel> {
     use crate::scene::convert::tess_util::aci_to_rgba;
     use crate::scene::model::wire_model::WireModel;
@@ -431,7 +435,7 @@ pub fn tessellate_table(
         let mut off = 0.0f32;
         let mut v = vec![0.0f32];
         for col in &tab.columns {
-            off += col.width as f32;
+            off += col.width as f32 * anno_scale;
             v.push(off);
         }
         v
@@ -440,7 +444,7 @@ pub fn tessellate_table(
         let mut off = 0.0f32;
         let mut v = vec![0.0f32];
         for row in &tab.rows {
-            off += row.height as f32;
+            off += row.height as f32 * anno_scale;
             v.push(off);
         }
         v
@@ -450,8 +454,8 @@ pub fn tessellate_table(
     let header_suppressed = table_style.map(|t| t.header_suppressed).unwrap_or(false);
     let h_margin = table_style
         .map(|t| t.horizontal_margin as f32)
-        .unwrap_or(0.0);
-    let v_margin = table_style.map(|t| t.vertical_margin as f32).unwrap_or(0.0);
+        .unwrap_or(0.0) * anno_scale;
+    let v_margin = table_style.map(|t| t.vertical_margin as f32).unwrap_or(0.0) * anno_scale;
 
     let lookup_style = |hh: acadrust::Handle| -> Option<&acadrust::tables::TextStyle> {
         document.text_styles.iter().find(|s| s.handle == hh)
@@ -526,7 +530,7 @@ pub fn tessellate_table(
         let row_bot = row_offsets
             .get(ri + 1)
             .copied()
-            .unwrap_or(row_top + row.height as f32);
+            .unwrap_or(row_top + row.height as f32 * anno_scale);
         let row_mid = (row_top + row_bot) * 0.5;
         let row_style: Option<&acadrust::objects::RowCellStyle> = table_style.map(|ts| {
             let kind = match (title_suppressed, header_suppressed, ri) {
@@ -544,7 +548,7 @@ pub fn tessellate_table(
 
         for (ci, cell) in row.cells.iter().enumerate() {
             let col_left = col_offsets[ci];
-            let col_width = tab.columns.get(ci).map(|c| c.width as f32).unwrap_or(1.0);
+            let col_width = tab.columns.get(ci).map(|c| c.width as f32).unwrap_or(1.0) * anno_scale;
             let col_right = col_left + col_width;
             let tl = origin + h * col_left + v_flow * row_top;
             let tr = origin + h * col_right + v_flow * row_top;
@@ -648,7 +652,7 @@ pub fn tessellate_table(
                 })
                 .or_else(|| row_style.map(|s| s.text_height).filter(|h| *h > 1e-6))
                 .map(|h| h as f32)
-                .unwrap_or(0.18);
+                .unwrap_or(0.18) * anno_scale;
             let m_h = if h_margin > 1e-6 {
                 h_margin
             } else {

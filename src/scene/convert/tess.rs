@@ -438,8 +438,16 @@ pub(crate) fn tessellate_entity(
         // No baked block (e.g. a table created in-app) — synthesise coloured
         // geometry from the rows + TableStyle so fills/colours/borders/margins
         // are honoured instead of the monochrome fallback.
+        // Annotative tables scale with the current annotation scale (their
+        // stored geometry is at paper size); non-annotative tables are already
+        // model-size, so pass 1.0.
+        let table_anno = if crate::scene::annotative::is_annotative(document, e) {
+            anno_scale
+        } else {
+            1.0
+        };
         let mut wires = crate::entities::table::tessellate_table(
-            tab, document, sel, entity_color, line_weight_px,
+            tab, document, sel, entity_color, line_weight_px, table_anno,
         );
         if !wires.is_empty() {
             let aabb = entity_aabb(e);
@@ -516,6 +524,7 @@ pub(crate) fn tessellate_entity(
                 world_per_pixel,
                 is_xref,
                 bg_color,
+                anno_scale,
             ) {
                 // XCLIP: if this INSERT carries an enabled spatial filter,
                 // clip the expanded block geometry to the boundary polygon so

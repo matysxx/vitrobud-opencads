@@ -5,6 +5,7 @@
 //   pick    — hit-testing, selection, grips, spatial index, xclip
 //   view    — camera, transforms, viewport, render pipeline driver
 //   cache   — block-definition and property caches
+pub mod annotative;
 pub mod cache;
 pub mod convert;
 pub mod model;
@@ -1158,12 +1159,12 @@ impl Scene {
         } else {
             self.paper_bg_color
         };
-        let anno = if self.current_layout == "Model" {
-            self.annotation_scale
-        } else {
-            1.0
-        };
-        let built = cache::block_cache::BlockCache::build(&self.document, anno, bg);
+        // Block definitions are cached at block-local size (annotation scale
+        // 1.0). An annotative block scales as ONE unit at the INSERT level, so
+        // its internal geometry / text / attributes must NOT be scaled
+        // individually (that would double-scale — AutoCAD even forbids
+        // annotative attributes inside annotative blocks for this reason).
+        let built = cache::block_cache::BlockCache::build(&self.document, 1.0, bg);
         let arc = Arc::new(built);
         *self.block_defn_cache.borrow_mut() = Some((self.block_epoch, Arc::clone(&arc)));
         arc
