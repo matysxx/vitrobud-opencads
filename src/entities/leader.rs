@@ -3,7 +3,9 @@ use acadrust::Entity;
 use glam::Vec3;
 
 use crate::command::EntityTransform;
-use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::common::{
+    center_grip, edit_prop as edit, ro_prop as ro, square_grip, stepper_prop as stepper,
+};
 use crate::entities::traits::TruckConvertible;
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
@@ -149,14 +151,6 @@ fn apply_grip(leader: &mut Leader, grip_id: usize, apply: GripApply) {
 
 // ── Properties ─────────────────────────────────────────────────────────────
 
-fn bool_toggle(label: &str, field: &'static str, value: bool) -> Property {
-    Property {
-        label: label.into(),
-        field,
-        value: PropValue::BoolToggle { field, value },
-    }
-}
-
 fn choice_prop(label: &str, field: &'static str, selected: &str, options: &[&str]) -> Property {
     Property {
         label: label.into(),
@@ -168,92 +162,84 @@ fn choice_prop(label: &str, field: &'static str, selected: &str, options: &[&str
     }
 }
 
-fn path_type_str(pt: &LeaderPathType) -> &'static str {
-    match pt {
-        LeaderPathType::StraightLine => "Straight",
-        LeaderPathType::Spline => "Spline",
-    }
-}
-
-fn creation_type_str(ct: &LeaderCreationType) -> &'static str {
-    match ct {
-        LeaderCreationType::WithText => "With Text",
-        LeaderCreationType::WithTolerance => "With Tolerance",
-        LeaderCreationType::WithBlock => "With Block",
-        LeaderCreationType::NoAnnotation => "No Annotation",
-    }
-}
-
-fn color_str(c: &acadrust::types::Color) -> String {
-    match c.rgb() {
-        Some((r, g, b)) => format!("RGB({},{},{})", r, g, b),
-        None => format!("{:?}", c),
+/// Combined path/arrow "Type" value (path shape × arrowhead flag).
+fn leader_type_str(path: &LeaderPathType, arrow: bool) -> &'static str {
+    match (path, arrow) {
+        (LeaderPathType::StraightLine, true) => "Line with arrow",
+        (LeaderPathType::StraightLine, false) => "Line without arrow",
+        (LeaderPathType::Spline, true) => "Spline with arrow",
+        (LeaderPathType::Spline, false) => "Spline without arrow",
     }
 }
 
 fn properties(leader: &Leader) -> Vec<PropSection> {
     let n = leader.vertices.len();
+    // The panel's Current Vertex focus, clamped to this leader's range.
+    let vi = if n == 0 {
+        0
+    } else {
+        crate::scene::view::dispatch::prop_current_vertex().min(n - 1)
+    };
+    let vertex_label = if n == 0 {
+        "—".to_string()
+    } else {
+        format!("{} / {}", vi + 1, n)
+    };
 
-    let arrow_size = leader.text_height.max(1.0);
-
-    let misc = vec![
-        choice_prop(
-            "Type",
-            "path_type",
-            path_type_str(&leader.path_type),
-            &["Straight", "Spline"],
-        ),
-        choice_prop(
-            "Annotation type",
-            "creation_type",
-            creation_type_str(&leader.creation_type),
-            &["With Text", "With Tolerance", "With Block", "No Annotation"],
-        ),
-        Property {
-            label: "Dim style".into(),
-            field: "dimension_style",
-            value: PropValue::EditText(leader.dimension_style.clone()),
-        },
-    ];
-
-    let lines_arrows = vec![
-        ro("Dim line color", "override_color", color_str(&leader.override_color)),
-        ro(
-            "Dim line lineweight",
-            "line_weight",
-            format!("{:?}", leader.common.line_weight),
-        ),
-        ro("Dim line linetype", "linetype", leader.common.linetype.clone()),
-        bool_toggle("Arrowhead", "arrow_enabled", leader.arrow_enabled),
-        ro("Arrow size", "arrow_size", format!("{:.4}", arrow_size)),
-    ];
-
-    let text = vec![
-        edit("Text height", "text_height", leader.text_height),
-        ro(
-            "Text offset",
-            "text_offset",
-            format!("{:.4}", leader.annotation_offset.length()),
-        ),
-        ro("Text style", "text_style", String::new()),
-        ro("Text color", "text_color", color_str(&leader.override_color)),
-        ro("Text position vert", "text_pos_vert", String::new()),
-    ];
-
-    let fit = vec![ro("Dim scale overall", "dim_scale_overall", String::new())];
-
-    let mut geometry = vec![ro("Vertex", "vertex_count", n.to_string())];
-    if let Some(a) = leader.arrow_point() {
-        geometry.push(edit("Vertex X", "vertex_x", a.x));
-        geometry.push(edit("Vertex Y", "vertex_y", a.y));
-        geometry.push(edit("Vertex Z", "vertex_z", a.z));
+    // Geometry sits right after General — a leader owns editable path vertices,
+    // navigated one at a time by the Current Vertex spinner.
+    let mut geometry = vec![stepper("Current Vertex", "current_vertex", vertex_label)];
+    if let Some(v) = leader.vertices.get(vi) {
+        geometry.push(edit("Vertex X", "vertex_x", v.x));
+        geometry.push(edit("Vertex Y", "vertex_y", v.y));
+        geometry.push(edit("Vertex Z", "vertex_z", v.z));
     } else {
         geometry.push(ro("Vertex X", "vertex_x", String::new()));
         geometry.push(ro("Vertex Y", "vertex_y", String::new()));
         geometry.push(ro("Vertex Z", "vertex_z", String::new()));
     }
 
+    // Misc: Dim style (upgraded to a dropdown by the panel builder), the
+    // combined path/arrow Type, and annotative state (from the dim style).
+    let misc = vec![
+        Property {
+            label: "Dim style".into(),
+            field: "dimension_style",
+            value: PropValue::EditText(leader.dimension_style.clone()),
+        },
+        choice_prop(
+            "Type",
+            "leader_type",
+            leader_type_str(&leader.path_type, leader.arrow_enabled),
+            &[
+                "Line with arrow",
+                "Line without arrow",
+                "Spline with arrow",
+                "Spline without arrow",
+            ],
+        ),
+        ro("Annotative", "annotative", "No"),
+    ];
+
+    // Lines & Arrows / Text / Fit are dimension-style-derived; the panel builder
+    // resolves leader.dimension_style and fills these values from the DimStyle.
+    let lines_arrows = vec![
+        ro("Arrow", "arrow_block", "Closed filled"),
+        ro("Arrow size", "arrow_size", String::new()),
+        ro("Dim line lineweight", "dim_line_lw", "ByLayer"),
+        ro("Dim line color", "dim_line_color", "ByLayer"),
+    ];
+    let text = vec![
+        ro("Text offset", "text_offset", String::new()),
+        ro("Text pos vert", "text_pos_vert", String::new()),
+    ];
+    let fit = vec![ro("Dim scale overall", "dim_scale_overall", String::new())];
+
     vec![
+        PropSection {
+            title: "Geometry".into(),
+            props: geometry,
+        },
         PropSection {
             title: "Misc".into(),
             props: misc,
@@ -270,18 +256,30 @@ fn properties(leader: &Leader) -> Vec<PropSection> {
             title: "Fit".into(),
             props: fit,
         },
-        PropSection {
-            title: "Geometry".into(),
-            props: geometry,
-        },
     ]
 }
 
 fn apply_geom_prop(leader: &mut Leader, field: &str, value: &str) {
     let f64 = |s: &str| -> Option<f64> { s.trim().parse().ok() };
+    // Vertex X/Y/Z edit whichever vertex the Current Vertex navigator focuses.
+    let vi = if leader.vertices.is_empty() {
+        0
+    } else {
+        crate::scene::view::dispatch::prop_current_vertex().min(leader.vertices.len() - 1)
+    };
 
     match field {
         "dimension_style" => leader.dimension_style = value.to_string(),
+        "leader_type" => {
+            let (p, a) = match value {
+                "Line without arrow" => (LeaderPathType::StraightLine, false),
+                "Spline with arrow" => (LeaderPathType::Spline, true),
+                "Spline without arrow" => (LeaderPathType::Spline, false),
+                _ => (LeaderPathType::StraightLine, true),
+            };
+            leader.path_type = p;
+            leader.arrow_enabled = a;
+        }
         "path_type" => {
             leader.path_type = match value {
                 "Spline" => LeaderPathType::Spline,
@@ -387,17 +385,17 @@ fn apply_geom_prop(leader: &mut Leader, field: &str, value: &str) {
             }
         }
         "vertex_x" => {
-            if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(0)) {
+            if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(vi)) {
                 vert.x = v;
             }
         }
         "vertex_y" => {
-            if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(0)) {
+            if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(vi)) {
                 vert.y = v;
             }
         }
         "vertex_z" => {
-            if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(0)) {
+            if let (Some(v), Some(vert)) = (f64(value), leader.vertices.get_mut(vi)) {
                 vert.z = v;
             }
         }

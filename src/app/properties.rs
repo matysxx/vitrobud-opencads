@@ -128,6 +128,64 @@ impl OpenCADStudio {
                         }
                     }
 
+                    // Resolve MLEADER handle-backed rows (multileader style, text
+                    // style, arrowhead block, leader linetype) to display names.
+                    if let acadrust::EntityType::MultiLeader(ml) = entity {
+                        let doc = &self.tabs[i].scene.document;
+                        let mut set_named = |field: &str, name: String| {
+                            for section in sections.iter_mut() {
+                                if let Some(row) =
+                                    section.props.iter_mut().find(|p| p.field == field)
+                                {
+                                    row.value =
+                                        crate::scene::model::object::PropValue::ReadOnly(
+                                            name.clone(),
+                                        );
+                                }
+                            }
+                        };
+                        if let Some(h) = ml.style_handle {
+                            if let Some(name) = doc.objects.iter().find_map(|(oh, o)| match o {
+                                acadrust::objects::ObjectType::MultiLeaderStyle(s) if *oh == h => {
+                                    Some(s.name.clone())
+                                }
+                                _ => None,
+                            }) {
+                                set_named("mleader_style", name);
+                            }
+                        }
+                        if let Some(h) = ml.text_style_handle {
+                            if let Some(name) = doc
+                                .text_styles
+                                .iter()
+                                .find(|s| s.handle == h)
+                                .map(|s| s.name.clone())
+                            {
+                                set_named("text_style_handle", name);
+                            }
+                        }
+                        if let Some(h) = ml.arrowhead_handle {
+                            if let Some(name) = doc
+                                .block_records
+                                .iter()
+                                .find(|b| b.handle == h)
+                                .map(|b| b.name.clone())
+                            {
+                                set_named("arrowhead_handle", name);
+                            }
+                        }
+                        if let Some(h) = ml.line_type_handle {
+                            if let Some(name) = doc
+                                .line_types
+                                .iter()
+                                .find(|l| l.handle == h)
+                                .map(|l| l.name.clone())
+                            {
+                                set_named("line_type_handle", name);
+                            }
+                        }
+                    }
+
                     // Inject viewport-only properties that require doc access.
                     if let acadrust::EntityType::Viewport(vp) = entity {
                         let frozen_names: Vec<String> = vp
@@ -323,10 +381,50 @@ impl OpenCADStudio {
                         // Leader: text style / vertical text placement / overall
                         // scale come from its dimension style.
                         acadrust::EntityType::Leader(ld) => {
-                            if let Some(ds) = find_dim_style(doc, &ld.dimension_style) {
-                                if !ds.dimtxsty.is_empty() {
-                                    set_row(&mut sections, "text_style", ds.dimtxsty.clone());
+                            // Dim style row → dropdown of the drawing's dim styles.
+                            let names: Vec<String> = doc
+                                .dim_styles
+                                .iter()
+                                .map(|s| s.name.clone())
+                                .filter(|n| !n.is_empty())
+                                .collect();
+                            if !names.is_empty() {
+                                for section in sections.iter_mut() {
+                                    if let Some(p) = section
+                                        .props
+                                        .iter_mut()
+                                        .find(|p| p.field == "dimension_style")
+                                    {
+                                        let cur = match &p.value {
+                                            crate::scene::model::object::PropValue::EditText(s) => {
+                                                s.clone()
+                                            }
+                                            _ => ld.dimension_style.clone(),
+                                        };
+                                        p.value = crate::scene::model::object::PropValue::Choice {
+                                            selected: cur,
+                                            options: names.clone(),
+                                        };
+                                    }
                                 }
+                            }
+                            // Lines & Arrows / Text / Fit are derived from the
+                            // assigned dimension style (same source the leader
+                            // tessellator uses), not stored on the entity.
+                            if let Some(ds) = find_dim_style(doc, &ld.dimension_style) {
+                                set_row(
+                                    &mut sections,
+                                    "arrow_block",
+                                    leader_arrow_label(doc, ds, ld.arrow_enabled),
+                                );
+                                set_row(&mut sections, "arrow_size", format!("{:.4}", ds.dimasz));
+                                set_row(&mut sections, "dim_line_lw", dim_lineweight_label(ds.dimlwd));
+                                set_row(
+                                    &mut sections,
+                                    "dim_line_color",
+                                    dim_color_label(ds.dimclrd, &ld.override_color),
+                                );
+                                set_row(&mut sections, "text_offset", format!("{:.4}", ds.dimgap));
                                 set_row(
                                     &mut sections,
                                     "text_pos_vert",
@@ -1099,6 +1197,79 @@ fn dimtad_label(dimtad: i16) -> &'static str {
         3 => "JIS",
         4 => "Below",
         _ => "Centered",
+    }
+}
+
+/// Friendly arrowhead name from an arrowhead block-record name (the `_CLOSED…`
+/// style internal names map to their palette labels; a null/empty name is the
+/// closed-filled default).
+fn arrowhead_label(name: &str) -> String {
+    let key = name.trim().trim_start_matches('_').to_ascii_uppercase();
+    let label = match key.as_str() {
+        "" | "CLOSEDFILLED" => "Closed filled",
+        "CLOSED" => "Closed",
+        "CLOSEDBLANK" => "Closed blank",
+        "DOT" => "Dot",
+        "DOTSMALL" => "Dot small",
+        "DOTBLANK" => "Dot blank",
+        "SMALLDOTBLANK" => "Dot small blank",
+        "ORIGIN" => "Origin indicator",
+        "ORIGIN2" => "Origin indicator 2",
+        "OPEN" => "Open",
+        "OPEN90" => "Right angle",
+        "OPEN30" => "Open 30",
+        "NONE" => "None",
+        "OBLIQUE" => "Oblique",
+        "ARCHTICK" => "Architectural tick",
+        "BOXBLANK" => "Box",
+        "BOXFILLED" => "Box filled",
+        "DATUMBLANK" => "Datum triangle",
+        "DATUMFILLED" => "Datum triangle filled",
+        "INTEGRAL" => "Integral",
+        _ => return name.to_string(),
+    };
+    label.to_string()
+}
+
+/// The leader's arrowhead label, resolved from the dim style's DIMLDRBLK block.
+fn leader_arrow_label(
+    doc: &acadrust::CadDocument,
+    ds: &acadrust::tables::DimStyle,
+    arrow_enabled: bool,
+) -> String {
+    if !arrow_enabled {
+        return "None".to_string();
+    }
+    if ds.dimldrblk.is_null() {
+        return "Closed filled".to_string();
+    }
+    doc.block_records
+        .iter()
+        .find(|b| b.handle == ds.dimldrblk)
+        .map(|b| arrowhead_label(&b.name))
+        .unwrap_or_else(|| "Closed filled".to_string())
+}
+
+/// DIMLWD lineweight enum → label.
+fn dim_lineweight_label(dimlwd: i16) -> String {
+    match dimlwd {
+        -1 => "ByLayer".to_string(),
+        -2 => "ByBlock".to_string(),
+        -3 => "Default".to_string(),
+        v if v >= 0 => format!("{:.2} mm", v as f64 / 100.0),
+        _ => "Default".to_string(),
+    }
+}
+
+/// DIMCLRD color (ACI) → label; ByBlock falls back to the leader's override.
+fn dim_color_label(dimclrd: i16, override_color: &acadrust::types::Color) -> String {
+    match dimclrd {
+        0 => match override_color.rgb() {
+            Some((r, g, b)) => format!("RGB({r},{g},{b})"),
+            None => "ByBlock".to_string(),
+        },
+        256 => "ByLayer".to_string(),
+        n => format!("Color {n}"),
     }
 }
 

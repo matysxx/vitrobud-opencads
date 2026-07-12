@@ -1,7 +1,9 @@
 use acadrust::entities::{Text, TextHorizontalAlignment as HA, TextVerticalAlignment as VA};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
+use crate::entities::common::{
+    edit_prop as edit, num_prop as num_row, parse_f64, ro_prop as ro, square_grip,
+};
 use crate::entities::text_support::{
     resolve_dxf_special_chars, resolve_text_style, text_local_bounds,
 };
@@ -11,25 +13,26 @@ use crate::scene::text::lff;
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::SnapHint;
 
-fn text_halign_str(a: &acadrust::entities::TextHorizontalAlignment) -> &'static str {
-    use acadrust::entities::TextHorizontalAlignment::*;
-    match a {
-        Left => "Left",
-        Center => "Center",
-        Right => "Right",
-        Aligned => "Aligned",
-        Middle => "Middle",
-        Fit => "Fit",
-    }
-}
-
-fn text_valign_str(a: &acadrust::entities::TextVerticalAlignment) -> &'static str {
-    use acadrust::entities::TextVerticalAlignment::*;
-    match a {
-        Baseline => "Baseline",
-        Bottom => "Bottom",
-        Middle => "Middle",
-        Top => "Top",
+/// Combined single-line-text justification (horizontal × vertical) shown as one
+/// dropdown value. Horizontal-only modes (Aligned/Middle/Fit) ignore the
+/// vertical component the way the underlying alignment does.
+fn text_justify_str(h: &HA, v: &VA) -> &'static str {
+    match (h, v) {
+        (HA::Aligned, _) => "Aligned",
+        (HA::Fit, _) => "Fit",
+        (HA::Middle, _) => "Middle",
+        (HA::Left, VA::Baseline) => "Left",
+        (HA::Center, VA::Baseline) => "Center",
+        (HA::Right, VA::Baseline) => "Right",
+        (HA::Left, VA::Top) => "Top left",
+        (HA::Center, VA::Top) => "Top center",
+        (HA::Right, VA::Top) => "Top right",
+        (HA::Left, VA::Middle) => "Middle left",
+        (HA::Center, VA::Middle) => "Middle center",
+        (HA::Right, VA::Middle) => "Middle right",
+        (HA::Left, VA::Bottom) => "Bottom left",
+        (HA::Center, VA::Bottom) => "Bottom center",
+        (HA::Right, VA::Bottom) => "Bottom right",
     }
 }
 
@@ -251,9 +254,22 @@ fn grips(t: &Text) -> Vec<GripDef> {
 }
 
 fn properties(t: &Text, text_style_names: &[String]) -> Vec<PropSection> {
-    // Text alignment point (second alignment / justify point). Falls back to
-    // the insertion point for Left/Baseline text where no second point exists.
+    // Which geometry rows are live depends on justification. Plain Left text is
+    // anchored by the insertion point and has no second alignment point; every
+    // other justification anchors on the alignment point (and recomputes the
+    // insertion point), except Aligned/Fit which are true two-point spans where
+    // both points are live.
+    let is_plain_left = matches!(t.horizontal_alignment, HA::Left)
+        && matches!(t.vertical_alignment, VA::Baseline);
+    let pos_editable = is_plain_left || matches!(t.horizontal_alignment, HA::Aligned | HA::Fit);
+    let align_editable = !is_plain_left;
+    // The alignment point is meaningless (reset to the origin) for plain-Left text.
     let ap = t.alignment_point.unwrap_or(t.insertion_point);
+    let (ax, ay, az) = if align_editable {
+        (ap.x, ap.y, ap.z)
+    } else {
+        (0.0, 0.0, 0.0)
+    };
     vec![
         PropSection {
             title: "Text".into(),
@@ -275,45 +291,53 @@ fn properties(t: &Text, text_style_names: &[String]) -> Vec<PropSection> {
                         options: text_style_names.to_vec(),
                     },
                 },
-                ro("Annotative", "annotative", String::new()),
-                ro("Annotative scale", "annotative_scale", String::new()),
+                ro("Annotative", "annotative", "No"),
                 Property {
                     label: "Justify".into(),
-                    field: "h_align",
+                    field: "justify",
                     value: PropValue::Choice {
-                        selected: text_halign_str(&t.horizontal_alignment).to_string(),
-                        options: ["Left", "Center", "Right", "Aligned", "Middle", "Fit"]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
-                    },
-                },
-                Property {
-                    label: "V-Align".into(),
-                    field: "v_align",
-                    value: PropValue::Choice {
-                        selected: text_valign_str(&t.vertical_alignment).to_string(),
-                        options: ["Baseline", "Bottom", "Middle", "Top"]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
+                        selected: text_justify_str(
+                            &t.horizontal_alignment,
+                            &t.vertical_alignment,
+                        )
+                        .to_string(),
+                        options: [
+                            "Left",
+                            "Center",
+                            "Right",
+                            "Aligned",
+                            "Middle",
+                            "Fit",
+                            "Top left",
+                            "Top center",
+                            "Top right",
+                            "Middle left",
+                            "Middle center",
+                            "Middle right",
+                            "Bottom left",
+                            "Bottom center",
+                            "Bottom right",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
                     },
                 },
                 edit("Height", "height", t.height),
                 edit("Rotation", "rotation", t.rotation.to_degrees()),
                 edit("Width factor", "width_factor", t.width_factor),
                 edit("Obliquing", "oblique_angle", t.oblique_angle.to_degrees()),
-                edit("Text alignment X", "align_x", ap.x),
-                edit("Text alignment Y", "align_y", ap.y),
-                edit("Text alignment Z", "align_z", ap.z),
+                num_row("Text alignment X", "align_x", ax, align_editable),
+                num_row("Text alignment Y", "align_y", ay, align_editable),
+                num_row("Text alignment Z", "align_z", az, align_editable),
             ],
         },
         PropSection {
             title: "Geometry".into(),
             props: vec![
-                edit("Position X", "ins_x", t.insertion_point.x),
-                edit("Position Y", "ins_y", t.insertion_point.y),
-                edit("Position Z", "ins_z", t.insertion_point.z),
+                num_row("Position X", "ins_x", t.insertion_point.x, pos_editable),
+                num_row("Position Y", "ins_y", t.insertion_point.y, pos_editable),
+                num_row("Position Z", "ins_z", t.insertion_point.z, pos_editable),
             ],
         },
         PropSection {
@@ -350,27 +374,27 @@ fn apply_geom_prop(t: &mut Text, field: &str, value: &str) {
             t.style = value.to_string();
             return;
         }
-        "h_align" => {
-            t.horizontal_alignment = match value {
-                "Left" => HA::Left,
-                "Center" => HA::Center,
-                "Right" => HA::Right,
-                "Aligned" => HA::Aligned,
-                "Middle" => HA::Middle,
-                "Fit" => HA::Fit,
+        "justify" => {
+            let (h, v) = match value {
+                "Left" => (HA::Left, VA::Baseline),
+                "Center" => (HA::Center, VA::Baseline),
+                "Right" => (HA::Right, VA::Baseline),
+                "Aligned" => (HA::Aligned, VA::Baseline),
+                "Middle" => (HA::Middle, VA::Baseline),
+                "Fit" => (HA::Fit, VA::Baseline),
+                "Top left" => (HA::Left, VA::Top),
+                "Top center" => (HA::Center, VA::Top),
+                "Top right" => (HA::Right, VA::Top),
+                "Middle left" => (HA::Left, VA::Middle),
+                "Middle center" => (HA::Center, VA::Middle),
+                "Middle right" => (HA::Right, VA::Middle),
+                "Bottom left" => (HA::Left, VA::Bottom),
+                "Bottom center" => (HA::Center, VA::Bottom),
+                "Bottom right" => (HA::Right, VA::Bottom),
                 _ => return,
             };
-            sync_text_alignment_point(t);
-            return;
-        }
-        "v_align" => {
-            t.vertical_alignment = match value {
-                "Baseline" => VA::Baseline,
-                "Bottom" => VA::Bottom,
-                "Middle" => VA::Middle,
-                "Top" => VA::Top,
-                _ => return,
-            };
+            t.horizontal_alignment = h;
+            t.vertical_alignment = v;
             sync_text_alignment_point(t);
             return;
         }

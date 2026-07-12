@@ -193,6 +193,18 @@ pub fn ro_prop(label: &'static str, field: &'static str, value: impl Into<String
     }
 }
 
+/// A numeric row that is an editable box when `editable`, otherwise a grayed
+/// read-only value using the same length formatting. Used where a field's
+/// editability depends on entity state (e.g. a text point that is only live for
+/// certain justifications, or an MText column dimension).
+pub fn num_prop(label: &'static str, field: &'static str, value: f64, editable: bool) -> Property {
+    if editable {
+        edit_prop(label, field, value)
+    } else {
+        ro_prop(label, field, format_length(value))
+    }
+}
+
 /// A ◀ / ▶ index navigator row (e.g. a polyline's Current Vertex). `display` is
 /// the label shown between the arrows (e.g. "2 / 7").
 pub fn stepper_prop(

@@ -1,4 +1,7 @@
-use acadrust::entities::{LeaderContentType, MultiLeader, MultiLeaderPathType, TextAttachmentType};
+use acadrust::entities::{
+    FlowDirectionType, LeaderContentType, LineSpacingStyle, MultiLeader, MultiLeaderPathType,
+    TextAlignmentType, TextAttachmentDirectionType, TextAttachmentType,
+};
 
 use crate::entities::text_support::{
     layout_mtext, resolve_text_style, MTextRenderOpts, MTextVAnchor, ResolvedTextStyle,
@@ -28,7 +31,7 @@ use glam::DVec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    center_grip, edit_prop as edit, ro_prop as ro, square_grip, triangle_grip,
+    center_grip, edit_prop as edit, num_prop as num_row, ro_prop as ro, square_grip, triangle_grip,
 };
 use crate::entities::traits::TruckConvertible;
 use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
@@ -474,32 +477,71 @@ fn apply_grip(ml: &mut MultiLeader, grip_id: usize, apply: GripApply) {
 
 // ── Properties ─────────────────────────────────────────────────────────────
 
-fn content_type_str(ct: &LeaderContentType) -> &'static str {
-    match ct {
-        LeaderContentType::None => "None",
-        LeaderContentType::Block => "Block",
-        LeaderContentType::MText => "MText",
-        LeaderContentType::Tolerance => "Tolerance",
-    }
-}
-
-fn path_type_str(pt: &MultiLeaderPathType) -> &'static str {
-    match pt {
-        MultiLeaderPathType::Invisible => "Invisible",
-        MultiLeaderPathType::StraightLineSegments => "Straight",
-        MultiLeaderPathType::Spline => "Spline",
-    }
-}
+/// The nine horizontal text-attachment options, indexed 1:1 to
+/// `TextAttachmentType` values 0–8 (values 9/10 are the vertical set).
+const ATTACH_LABELS: [&str; 9] = [
+    "Top of top line",
+    "Middle of top line",
+    "Middle of text",
+    "Middle of bottom line",
+    "Bottom of bottom line",
+    "Bottom of top line",
+    "Underline bottom line",
+    "Underline top line",
+    "Underline all",
+];
 
 fn attachment_str(a: &TextAttachmentType) -> &'static str {
     match a {
-        TextAttachmentType::TopOfTopLine => "Top of Top",
-        TextAttachmentType::MiddleOfTopLine => "Mid of Top",
-        TextAttachmentType::MiddleOfText => "Mid of Text",
-        TextAttachmentType::MiddleOfBottomLine => "Mid of Bot",
-        TextAttachmentType::BottomOfBottomLine => "Bot of Bot",
-        TextAttachmentType::BottomLine => "Bottom Line",
-        _ => "Other",
+        TextAttachmentType::TopOfTopLine => ATTACH_LABELS[0],
+        TextAttachmentType::MiddleOfTopLine => ATTACH_LABELS[1],
+        TextAttachmentType::MiddleOfText => ATTACH_LABELS[2],
+        TextAttachmentType::MiddleOfBottomLine => ATTACH_LABELS[3],
+        TextAttachmentType::BottomOfBottomLine => ATTACH_LABELS[4],
+        TextAttachmentType::BottomLine => ATTACH_LABELS[5],
+        TextAttachmentType::BottomOfTopLineUnderlineBottomLine => ATTACH_LABELS[6],
+        TextAttachmentType::BottomOfTopLineUnderlineTopLine => ATTACH_LABELS[7],
+        TextAttachmentType::BottomOfTopLineUnderlineAll => ATTACH_LABELS[8],
+        TextAttachmentType::CenterOfText => "Center of text",
+        TextAttachmentType::CenterOfTextOverline => "Center of text (overline)",
+    }
+}
+
+fn leader_type_str(pt: &MultiLeaderPathType) -> &'static str {
+    match pt {
+        MultiLeaderPathType::Spline => "Spline",
+        MultiLeaderPathType::Invisible => "None",
+        MultiLeaderPathType::StraightLineSegments => "Straight",
+    }
+}
+
+fn text_align_str(a: &TextAlignmentType) -> &'static str {
+    match a {
+        TextAlignmentType::Left => "Left",
+        TextAlignmentType::Center => "Center",
+        TextAlignmentType::Right => "Right",
+    }
+}
+
+fn flow_dir_str(d: &FlowDirectionType) -> &'static str {
+    match d {
+        FlowDirectionType::Horizontal => "Left to right",
+        FlowDirectionType::Vertical => "Top to bottom",
+        FlowDirectionType::ByStyle => "By style",
+    }
+}
+
+fn attach_dir_str(d: &TextAttachmentDirectionType) -> &'static str {
+    match d {
+        TextAttachmentDirectionType::Horizontal => "Horizontal",
+        TextAttachmentDirectionType::Vertical => "Vertical",
+    }
+}
+
+fn line_style_str(s: &LineSpacingStyle) -> &'static str {
+    match s {
+        LineSpacingStyle::Exactly => "Exactly",
+        _ => "At least",
     }
 }
 
@@ -531,130 +573,129 @@ fn hexh(h: Option<acadrust::Handle>) -> String {
 
 fn properties(ml: &MultiLeader) -> Vec<PropSection> {
     let ctx = &ml.context;
-    let first_root = ctx.leader_roots.first();
 
     // ── Misc ─────────────────────────────────────────────────────────────
     let misc = PropSection {
         title: "Misc".into(),
         props: vec![
-            ro("Leader type", "path_type", path_type_str(&ml.path_type)),
-            choice(
-                "Content type",
-                "content_type",
-                content_type_str(&ml.content_type),
-                &["None", "MText", "Block", "Tolerance"],
+            // Overall scale is grayed when annotative (annotation scale drives sizing).
+            num_row(
+                "Overall scale",
+                "scale_factor",
+                ml.scale_factor,
+                !ml.enable_annotation_scale,
             ),
-            edit("Overall scale", "scale_factor", ml.scale_factor),
+            // Style name is resolved from style_handle by the panel builder (needs doc).
+            ro("Multileader style", "mleader_style", "Standard"),
             bool_toggle(
                 "Annotative",
                 "enable_annotation_scale",
                 ml.enable_annotation_scale,
             ),
-            // No stored annotative-scale name on the entity.
-            ro("Annotative scale", "annotative_scale", String::new()),
         ],
     };
 
     // ── Leaders ──────────────────────────────────────────────────────────
+    // Landing rows are folded in here: the standalone "Leader Structure" group
+    // is a style-dialog tab, not a palette group.
     let leaders = PropSection {
         title: "Leaders".into(),
         props: vec![
-            ro("Leader type", "path_type", path_type_str(&ml.path_type)),
-            ro("Leader color", "line_color", format!("{:?}", ml.line_color)),
-            ro(
-                "Leader linetype",
-                "line_type_handle",
-                hexh(ml.line_type_handle),
+            choice(
+                "Leader type",
+                "path_type",
+                leader_type_str(&ml.path_type),
+                &["Straight", "Spline", "None"],
             ),
-            ro(
-                "Leader linetype scale",
-                "leader_linetype_scale",
-                format!("{:.4}", ml.common.linetype_scale),
-            ),
-            ro(
-                "Leader lineweight",
-                "line_weight",
-                format!("{:?}", ml.line_weight),
-            ),
-            ro("Arrowhead", "arrowhead_handle", hexh(ml.arrowhead_handle)),
+            Property {
+                label: "Leader color".into(),
+                field: "line_color",
+                value: PropValue::ColorChoice(ml.line_color),
+            },
+            // Linetype name resolved from line_type_handle by the panel builder.
+            ro("Leader linetype", "line_type_handle", "ByBlock"),
+            Property {
+                label: "Leader lineweight".into(),
+                field: "line_weight",
+                value: PropValue::LwChoice(ml.line_weight),
+            },
+            // Arrowhead block name resolved by the panel builder (default "Closed filled").
+            ro("Arrowhead", "arrowhead_handle", "Closed filled"),
             edit("Arrowhead size", "arrowhead_size", ml.arrowhead_size),
-        ],
-    };
-
-    // ── Leader Structure ─────────────────────────────────────────────────
-    let structure = PropSection {
-        title: "Leader Structure".into(),
-        props: vec![
-            // Maximum leader points / segment-angle constraints are leader-style
-            // settings not stored on the entity instance.
-            ro("Maximum leader points", "max_leader_points", String::new()),
-            ro("First segment angle", "first_segment_angle", String::new()),
-            ro("Second segment angle", "second_segment_angle", String::new()),
-            bool_toggle("Landing", "enable_landing", ml.enable_landing),
-            edit(
+            bool_toggle("Horizontal Landing", "enable_dogleg", ml.enable_dogleg),
+            num_row(
                 "Landing distance",
                 "landing_distance",
-                first_root.map(|r| r.landing_distance).unwrap_or(0.0),
+                ml.dogleg_length,
+                ml.enable_dogleg,
             ),
-            edit("Dogleg length", "dogleg_length", ml.dogleg_length),
+            bool_toggle("Leader extension", "enable_landing", ml.enable_landing),
         ],
     };
 
-    // ── Text ─────────────────────────────────────────────────────────────
+    // ── Text (shown only for MText content) ──────────────────────────────
     let text = PropSection {
         title: "Text".into(),
         props: vec![
-            ro("Text style", "text_style_handle", hexh(ml.text_style_handle)),
-            ro(
-                "Text angle",
-                "text_angle_type",
-                format!("{:?}", ml.text_angle_type),
-            ),
-            ro("Text color", "text_color", format!("{:?}", ml.text_color)),
-            edit("Text height", "text_height", ml.text_height),
-            ro(
-                "Justification",
+            Property {
+                label: "Contents".into(),
+                field: "text_string",
+                value: PropValue::EditText(ctx.text_string.clone()),
+            },
+            // Text-style name resolved from text_style_handle by the panel builder.
+            ro("Text style", "text_style_handle", "Standard"),
+            choice(
+                "Justify",
                 "text_alignment",
-                format!("{:?}", ml.text_alignment),
-            ),
-            bool_toggle("Frame text", "text_frame", ml.text_frame),
-            choice(
-                "Left attachment type",
-                "text_left_attachment",
-                attachment_str(&ml.text_left_attachment),
-                &[
-                    "Top of Top",
-                    "Mid of Top",
-                    "Mid of Text",
-                    "Mid of Bot",
-                    "Bot of Bot",
-                    "Bottom Line",
-                ],
+                text_align_str(&ml.text_alignment),
+                &["Left", "Center", "Right"],
             ),
             choice(
-                "Right attachment type",
-                "text_right_attachment",
-                attachment_str(&ml.text_right_attachment),
-                &[
-                    "Top of Top",
-                    "Mid of Top",
-                    "Mid of Text",
-                    "Mid of Bot",
-                    "Bot of Bot",
-                    "Bottom Line",
-                ],
+                "Direction",
+                "text_flow_direction",
+                flow_dir_str(&ctx.text_flow_direction),
+                &["By style", "Left to right", "Top to bottom"],
             ),
-            ro(
-                "Text align type",
-                "text_attachment_direction",
-                format!("{:?}", ml.text_attachment_direction),
+            edit("Width", "text_width", ctx.text_width),
+            edit("Height", "text_height", ml.text_height),
+            edit("Rotation", "text_rotation", ctx.text_rotation.to_degrees()),
+            edit("Line space factor", "line_spacing", ctx.line_spacing_factor),
+            edit(
+                "Line space distance",
+                "line_space_distance",
+                ml.text_height * 1.666_666_666_666_667 * ctx.line_spacing_factor,
             ),
-            edit("Landing gap", "landing_gap", ctx.landing_gap),
+            choice(
+                "Line space style",
+                "line_space_style",
+                line_style_str(&ctx.line_spacing_style),
+                &["At least", "Exactly"],
+            ),
             bool_toggle(
                 "Background mask",
                 "background_fill_enabled",
                 ctx.background_fill_enabled,
             ),
+            choice(
+                "Attachment type",
+                "text_attachment_direction",
+                attach_dir_str(&ml.text_attachment_direction),
+                &["Horizontal", "Vertical"],
+            ),
+            choice(
+                "Left Attachment",
+                "text_left_attachment",
+                attachment_str(&ml.text_left_attachment),
+                &ATTACH_LABELS,
+            ),
+            choice(
+                "Right Attachment",
+                "text_right_attachment",
+                attachment_str(&ml.text_right_attachment),
+                &ATTACH_LABELS,
+            ),
+            edit("Landing gap", "landing_gap", ctx.landing_gap),
+            bool_toggle("Text frame", "text_frame", ml.text_frame),
         ],
     };
 
@@ -668,7 +709,7 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
                 hexh(ml.block_content_handle),
             ),
             ro(
-                "Block attachment",
+                "Block connection",
                 "block_connection_type",
                 format!("{:?}", ml.block_connection_type),
             ),
@@ -693,7 +734,15 @@ fn properties(ml: &MultiLeader) -> Vec<PropSection> {
         ],
     };
 
-    vec![misc, leaders, structure, text, block]
+    // Text and Block groups are mutually exclusive, keyed on the content type;
+    // only one is ever shown (neither for None/Tolerance).
+    let mut sections = vec![misc, leaders];
+    match ml.content_type {
+        LeaderContentType::MText => sections.push(text),
+        LeaderContentType::Block => sections.push(block),
+        _ => {}
+    }
+    sections
 }
 
 fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
@@ -740,7 +789,7 @@ fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
         "path_type" => {
             ml.path_type = match value {
                 "Spline" => MultiLeaderPathType::Spline,
-                "Invisible" => MultiLeaderPathType::Invisible,
+                "None" => MultiLeaderPathType::Invisible,
                 _ => MultiLeaderPathType::StraightLineSegments,
             };
         }
@@ -788,8 +837,11 @@ fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
             }
         }
         "landing_distance" => {
-            if let (Some(v), Some(root)) = (f64(value), ml.context.leader_roots.first_mut()) {
-                root.landing_distance = v;
+            if let Some(v) = f64(value) {
+                ml.dogleg_length = v;
+                if let Some(root) = ml.context.leader_roots.first_mut() {
+                    root.landing_distance = v;
+                }
             }
         }
         "landing_gap" => {
@@ -833,17 +885,76 @@ fn apply_geom_prop(ml: &mut MultiLeader, field: &str, value: &str) {
             ml.text_bottom_attachment = parse_attachment(value);
             ml.context.text_bottom_attachment = parse_attachment(value);
         }
+        "text_alignment" => {
+            ml.text_alignment = match value {
+                "Center" => TextAlignmentType::Center,
+                "Right" => TextAlignmentType::Right,
+                _ => TextAlignmentType::Left,
+            };
+            ml.context.text_alignment = match value {
+                "Center" => TextAlignmentType::Center,
+                "Right" => TextAlignmentType::Right,
+                _ => TextAlignmentType::Left,
+            };
+        }
+        "text_flow_direction" => {
+            ml.context.text_flow_direction = match value {
+                "Left to right" => FlowDirectionType::Horizontal,
+                "Top to bottom" => FlowDirectionType::Vertical,
+                _ => FlowDirectionType::ByStyle,
+            };
+        }
+        "text_attachment_direction" => {
+            ml.text_attachment_direction = match value {
+                "Vertical" => TextAttachmentDirectionType::Vertical,
+                _ => TextAttachmentDirectionType::Horizontal,
+            };
+        }
+        "line_space_style" => {
+            ml.context.line_spacing_style = match value {
+                "Exactly" => LineSpacingStyle::Exactly,
+                _ => LineSpacingStyle::AtLeast,
+            };
+        }
+        "text_width" => {
+            if let Some(v) = f64(value) {
+                ml.context.text_width = v;
+            }
+        }
+        "text_rotation" => {
+            if let Some(v) = f64(value) {
+                ml.context.text_rotation = v.to_radians();
+            }
+        }
+        "line_spacing" => {
+            if let Some(v) = f64(value) {
+                if v > 0.0 {
+                    ml.context.line_spacing_factor = v;
+                }
+            }
+        }
+        "line_space_distance" => {
+            if let Some(v) = f64(value) {
+                let denom = ml.text_height * 1.666_666_666_666_667;
+                if v > 0.0 && denom > 0.0 {
+                    ml.context.line_spacing_factor = v / denom;
+                }
+            }
+        }
         _ => {}
     }
 }
 
 fn parse_attachment(s: &str) -> TextAttachmentType {
     match s {
-        "Top of Top" => TextAttachmentType::TopOfTopLine,
-        "Mid of Top" => TextAttachmentType::MiddleOfTopLine,
-        "Mid of Bot" => TextAttachmentType::MiddleOfBottomLine,
-        "Bot of Bot" => TextAttachmentType::BottomOfBottomLine,
-        "Bottom Line" => TextAttachmentType::BottomLine,
+        "Top of top line" => TextAttachmentType::TopOfTopLine,
+        "Middle of top line" => TextAttachmentType::MiddleOfTopLine,
+        "Middle of bottom line" => TextAttachmentType::MiddleOfBottomLine,
+        "Bottom of bottom line" => TextAttachmentType::BottomOfBottomLine,
+        "Bottom of top line" => TextAttachmentType::BottomLine,
+        "Underline bottom line" => TextAttachmentType::BottomOfTopLineUnderlineBottomLine,
+        "Underline top line" => TextAttachmentType::BottomOfTopLineUnderlineTopLine,
+        "Underline all" => TextAttachmentType::BottomOfTopLineUnderlineAll,
         _ => TextAttachmentType::MiddleOfText,
     }
 }

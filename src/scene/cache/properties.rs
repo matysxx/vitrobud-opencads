@@ -9,7 +9,16 @@ pub fn general_section(entity: &EntityType) -> PropSection {
     } else {
         common.linetype.clone()
     };
-    let transp_pct = (common.transparency.alpha() as f64 / 255.0 * 100.0).round() as u32;
+    // Alpha 0 is the ByLayer default (Transparency::BY_LAYER); show it by name
+    // and fall back to a rounded percentage only for an explicit value.
+    let transp_display = if common.transparency.alpha() == 0 {
+        "ByLayer".to_string()
+    } else {
+        format!(
+            "{}",
+            (common.transparency.alpha() as f64 / 255.0 * 100.0).round() as u32
+        )
+    };
 
     // Hyperlink is stored in XDATA under the "PE_URL" application.
     let hyperlink = common
@@ -47,7 +56,7 @@ pub fn general_section(entity: &EntityType) -> PropSection {
                 value: PropValue::LinetypeChoice(linetype_display),
             },
             Property {
-                label: "LT Scale".into(),
+                label: "Linetype scale".into(),
                 field: "linetype_scale",
                 value: PropValue::EditText(format!("{:.4}", common.linetype_scale)),
             },
@@ -71,7 +80,7 @@ pub fn general_section(entity: &EntityType) -> PropSection {
             Property {
                 label: "Transparency".into(),
                 field: "transparency",
-                value: PropValue::EditText(format!("{transp_pct}")),
+                value: PropValue::EditText(transp_display),
             },
             Property {
                 label: "Hyperlink".into(),
@@ -102,6 +111,7 @@ pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
         EntityType::Block(_)
             | EntityType::BlockEnd(_)
             | EntityType::Seqend(_)
+            | EntityType::Leader(_)
             | EntityType::Unknown(_)
     ) {
         return None;

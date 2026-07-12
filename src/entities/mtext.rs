@@ -1,7 +1,9 @@
 use acadrust::entities::{AttachmentPoint, DrawingDirection, MText};
 
 use crate::command::EntityTransform;
-use crate::entities::common::{edit_prop as edit, ro_prop as ro, square_grip, triangle_grip};
+use crate::entities::common::{
+    edit_prop as edit, num_prop as num_row, ro_prop as ro, square_grip, triangle_grip,
+};
 use crate::entities::text_support::{
     layout_mtext, resolve_text_style, GlyphBox, MTextRenderOpts, MTextVAnchor,
 };
@@ -10,66 +12,41 @@ use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::SnapHint;
 
+/// Combined attachment point shown as a single justify dropdown value.
 fn attachment_str(a: &AttachmentPoint) -> &'static str {
     match a {
-        AttachmentPoint::TopLeft => "Top Left",
-        AttachmentPoint::TopCenter => "Top Center",
-        AttachmentPoint::TopRight => "Top Right",
-        AttachmentPoint::MiddleLeft => "Middle Left",
-        AttachmentPoint::MiddleCenter => "Middle Center",
-        AttachmentPoint::MiddleRight => "Middle Right",
-        AttachmentPoint::BottomLeft => "Bottom Left",
-        AttachmentPoint::BottomCenter => "Bottom Center",
-        AttachmentPoint::BottomRight => "Bottom Right",
+        AttachmentPoint::TopLeft => "Top left",
+        AttachmentPoint::TopCenter => "Top center",
+        AttachmentPoint::TopRight => "Top right",
+        AttachmentPoint::MiddleLeft => "Middle left",
+        AttachmentPoint::MiddleCenter => "Middle center",
+        AttachmentPoint::MiddleRight => "Middle right",
+        AttachmentPoint::BottomLeft => "Bottom left",
+        AttachmentPoint::BottomCenter => "Bottom center",
+        AttachmentPoint::BottomRight => "Bottom right",
     }
 }
 
-fn mtext_halign_str(a: &AttachmentPoint) -> &'static str {
-    match a {
-        AttachmentPoint::TopLeft | AttachmentPoint::MiddleLeft | AttachmentPoint::BottomLeft => {
-            "Left"
-        }
-        AttachmentPoint::TopCenter
-        | AttachmentPoint::MiddleCenter
-        | AttachmentPoint::BottomCenter => "Center",
-        AttachmentPoint::TopRight | AttachmentPoint::MiddleRight | AttachmentPoint::BottomRight => {
-            "Right"
-        }
-    }
-}
-
-fn mtext_valign_str(a: &AttachmentPoint) -> &'static str {
-    match a {
-        AttachmentPoint::TopLeft | AttachmentPoint::TopCenter | AttachmentPoint::TopRight => "Top",
-        AttachmentPoint::MiddleLeft
-        | AttachmentPoint::MiddleCenter
-        | AttachmentPoint::MiddleRight => "Middle",
-        AttachmentPoint::BottomLeft
-        | AttachmentPoint::BottomCenter
-        | AttachmentPoint::BottomRight => "Bottom",
-    }
-}
-
-fn mtext_attachment_from_align(h: &str, v: &str) -> Option<AttachmentPoint> {
-    Some(match (h, v) {
-        ("Left", "Top") => AttachmentPoint::TopLeft,
-        ("Center", "Top") => AttachmentPoint::TopCenter,
-        ("Right", "Top") => AttachmentPoint::TopRight,
-        ("Left", "Middle") => AttachmentPoint::MiddleLeft,
-        ("Center", "Middle") => AttachmentPoint::MiddleCenter,
-        ("Right", "Middle") => AttachmentPoint::MiddleRight,
-        ("Left", "Bottom") => AttachmentPoint::BottomLeft,
-        ("Center", "Bottom") => AttachmentPoint::BottomCenter,
-        ("Right", "Bottom") => AttachmentPoint::BottomRight,
+fn attachment_from_justify(value: &str) -> Option<AttachmentPoint> {
+    Some(match value {
+        "Top left" => AttachmentPoint::TopLeft,
+        "Top center" => AttachmentPoint::TopCenter,
+        "Top right" => AttachmentPoint::TopRight,
+        "Middle left" => AttachmentPoint::MiddleLeft,
+        "Middle center" => AttachmentPoint::MiddleCenter,
+        "Middle right" => AttachmentPoint::MiddleRight,
+        "Bottom left" => AttachmentPoint::BottomLeft,
+        "Bottom center" => AttachmentPoint::BottomCenter,
+        "Bottom right" => AttachmentPoint::BottomRight,
         _ => return None,
     })
 }
 
 fn drawing_dir_str(d: &DrawingDirection) -> &'static str {
     match d {
-        DrawingDirection::LeftToRight => "Left to Right",
-        DrawingDirection::TopToBottom => "Top to Bottom",
-        DrawingDirection::ByStyle => "By Style",
+        DrawingDirection::LeftToRight => "Left to right",
+        DrawingDirection::TopToBottom => "Top to bottom",
+        DrawingDirection::ByStyle => "By style",
     }
 }
 
@@ -196,7 +173,7 @@ fn columns_str(c: &acadrust::entities::MTextColumnData) -> &'static str {
     match c.column_type {
         1 => "Static",
         2 => "Dynamic",
-        _ => "None",
+        _ => "No columns",
     }
 }
 
@@ -205,6 +182,11 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
     // by the line-spacing factor.
     let line_space_distance = t.height * 1.666_666_666_666_667 * t.line_spacing_factor;
     let text_frame_on = (t.background_fill_flags & 0x10) != 0;
+    // Defined width is only live without columns; defined height is live for
+    // static columns or manual-height dynamic columns, grayed otherwise.
+    let col_type = t.column_data.column_type;
+    let width_editable = col_type == 0;
+    let height_editable = col_type == 1 || (col_type == 2 && !t.column_data.auto_height);
     vec![
         PropSection {
             title: "Text".into(),
@@ -233,52 +215,55 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
                 ),
                 Property {
                     label: "Justify".into(),
-                    field: "h_align",
+                    field: "justify",
                     value: PropValue::Choice {
-                        selected: mtext_halign_str(&t.attachment_point).to_string(),
-                        options: ["Left", "Center", "Right"]
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
+                        selected: attachment_str(&t.attachment_point).to_string(),
+                        options: [
+                            "Top left",
+                            "Top center",
+                            "Top right",
+                            "Middle left",
+                            "Middle center",
+                            "Middle right",
+                            "Bottom left",
+                            "Bottom center",
+                            "Bottom right",
+                        ]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
                     },
                 },
                 Property {
-                    label: "V-Align".into(),
-                    field: "v_align",
+                    label: "Direction".into(),
+                    field: "direction",
                     value: PropValue::Choice {
-                        selected: mtext_valign_str(&t.attachment_point).to_string(),
-                        options: ["Top", "Middle", "Bottom"]
+                        selected: drawing_dir_str(&t.drawing_direction).to_string(),
+                        options: ["By style", "Left to right", "Top to bottom"]
                             .into_iter()
                             .map(str::to_string)
                             .collect(),
                     },
                 },
-                ro(
-                    "Attachment",
-                    "attachment",
-                    attachment_str(&t.attachment_point).to_string(),
-                ),
-                ro(
-                    "Direction",
-                    "direction",
-                    drawing_dir_str(&t.drawing_direction).to_string(),
-                ),
                 edit("Text height", "height", t.height),
                 edit("Rotation", "rotation", t.rotation.to_degrees()),
                 edit("Line space factor", "line_spacing", t.line_spacing_factor),
-                ro(
-                    "Line space distance",
-                    "line_space_distance",
-                    format!("{line_space_distance:.4}"),
-                ),
-                ro(
-                    "Line space style",
-                    "line_space_style",
-                    match t.line_spacing_style {
-                        acadrust::entities::LineSpacingStyle::Exactly => "Exactly",
-                        _ => "At least",
+                edit("Line space distance", "line_space_distance", line_space_distance),
+                Property {
+                    label: "Line space style".into(),
+                    field: "line_space_style",
+                    value: PropValue::Choice {
+                        selected: match t.line_spacing_style {
+                            acadrust::entities::LineSpacingStyle::Exactly => "Exactly",
+                            _ => "At least",
+                        }
+                        .to_string(),
+                        options: ["At least", "Exactly"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
                     },
-                ),
+                },
                 Property {
                     label: "Background mask".into(),
                     field: "background_mask",
@@ -296,13 +281,18 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
                             .collect(),
                     },
                 },
-                Property {
-                    label: "Background color".into(),
-                    field: "background_color",
-                    value: PropValue::ColorChoice(t.background_color.clone()),
-                },
-                edit("Defined width", "rect_w", t.rectangle_width),
-                edit("Defined height", "rect_h", t.rectangle_height.unwrap_or(0.0)),
+                num_row("Defined width", "rect_w", t.rectangle_width, width_editable),
+                num_row(
+                    "Defined height",
+                    "rect_h",
+                    t.rectangle_height.unwrap_or(0.0),
+                    height_editable,
+                ),
+                ro(
+                    "Columns",
+                    "columns",
+                    columns_str(&t.column_data).to_string(),
+                ),
                 Property {
                     label: "Text frame".into(),
                     field: "text_frame",
@@ -311,11 +301,6 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
                         value: text_frame_on,
                     },
                 },
-                ro(
-                    "Columns",
-                    "columns",
-                    columns_str(&t.column_data).to_string(),
-                ),
             ],
         },
         PropSection {
@@ -339,18 +324,8 @@ fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {
             t.style = value.to_string();
             return;
         }
-        "h_align" => {
-            if let Some(next) =
-                mtext_attachment_from_align(value, mtext_valign_str(&t.attachment_point))
-            {
-                t.attachment_point = next;
-            }
-            return;
-        }
-        "v_align" => {
-            if let Some(next) =
-                mtext_attachment_from_align(mtext_halign_str(&t.attachment_point), value)
-            {
+        "justify" => {
+            if let Some(next) = attachment_from_justify(value) {
                 t.attachment_point = next;
             }
             return;
@@ -376,6 +351,23 @@ fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {
             }
             return;
         }
+        "direction" => {
+            t.drawing_direction = match value {
+                "Left to right" => DrawingDirection::LeftToRight,
+                "Top to bottom" => DrawingDirection::TopToBottom,
+                "By style" => DrawingDirection::ByStyle,
+                _ => return,
+            };
+            return;
+        }
+        "line_space_style" => {
+            t.line_spacing_style = match value {
+                "Exactly" => acadrust::entities::LineSpacingStyle::Exactly,
+                "At least" => acadrust::entities::LineSpacingStyle::AtLeast,
+                _ => return,
+            };
+            return;
+        }
         _ => {}
     }
     let Some(v) = crate::entities::common::parse_f64(value) else {
@@ -390,6 +382,14 @@ fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {
         "rect_h" if v > 0.0 => t.rectangle_height = Some(v),
         "rotation" => t.rotation = v.to_radians(),
         "line_spacing" if v > 0.0 => t.line_spacing_factor = v,
+        // Editing the absolute distance back-solves the line-spacing factor so
+        // the two stay consistent (distance = height × 5/3 × factor).
+        "line_space_distance" if v > 0.0 => {
+            let denom = t.height * 1.666_666_666_666_667;
+            if denom > 0.0 {
+                t.line_spacing_factor = v / denom;
+            }
+        }
         _ => {}
     }
 }
