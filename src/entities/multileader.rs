@@ -205,8 +205,10 @@ fn to_truck(ml: &MultiLeader, document: &acadrust::CadDocument) -> Option<TruckE
                     snap_pts.push(node(c));
                 }
 
-                if ml.path_type == MultiLeaderPathType::Spline && ctrl.len() >= 2 {
-                    // Catmull-Rom spline through the bend points.
+                if line.path_type == MultiLeaderPathType::Spline && ctrl.len() >= 2 {
+                    // Catmull-Rom spline through the bend points. Use the leader
+                    // line's own path type — a spline-style MultiLeader can carry
+                    // straight lines, and splining a straight run bows it.
                     let pts = catmull_rom_pts(&ctrl, 8);
                     for &pt in &pts {
                         points.push(pt);
@@ -1212,7 +1214,11 @@ impl MultiLeaderTess for MultiLeader {
                         snap_pts.push((Vec3::from(c).as_dvec3(), SnapHint::Node));
                     }
 
-                    if ml.path_type == MultiLeaderPathType::Spline && ctrl.len() >= 2 {
+                    // Use the leader LINE's own path type (its stored 170 code),
+                    // not the MultiLeader's overall/style default: a spline-style
+                    // leader can carry straight lines, and drawing those through a
+                    // Catmull-Rom bows an otherwise-straight two-point segment.
+                    if line.path_type == MultiLeaderPathType::Spline && ctrl.len() >= 2 {
                         let ctrl_f64: Vec<[f64; 3]> = ctrl
                             .iter()
                             .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])
@@ -1259,7 +1265,12 @@ impl MultiLeaderTess for MultiLeader {
             }
 
             if ml.enable_landing && ml.enable_dogleg && ml.dogleg_length > 0.0 {
-                // Horizontal landing toward the text's side (mirrors live).
+                // Horizontal landing (dogleg) from the leader elbow (connection
+                // point) toward the text side. The stored geometry places the
+                // text so its near-bottom edge sits one landing_gap past this
+                // dogleg end, so the dogleg stops here — drawing on to
+                // text_location (the block's top-left insertion) would streak a
+                // stray line up the side of the text.
                 let d = ml.dogleg_length * effective_scale as f64;
                 let landing_end = [
                     (cp.x + text_sign_w * d) as f32,
@@ -1269,15 +1280,6 @@ impl MultiLeaderTess for MultiLeader {
                 points.push(nan);
                 points.push(cp_f);
                 points.push(landing_end);
-                // Continue the landing to the text's near edge so it stays
-                // attached as the text moves.
-                if ml.content_type == LeaderContentType::MText && !ml.context.text_string.is_empty()
-                {
-                    let tx = (ml.context.text_location.x) as f32;
-                    let ty = (ml.context.text_location.y) as f32;
-                    points.push(landing_end);
-                    points.push([tx, ty, cp_f[2]]);
-                }
             }
         }
 
@@ -1399,7 +1401,21 @@ impl MultiLeaderTess for MultiLeader {
             // sit at large absolute coordinates and casting first then subtracting
             // throws away the precision needed for the rotated sub-glyph offsets.
             let local_ins_x = (ins.x) as f32;
-            let local_ins_y = (ins.y) as f32;
+            // Horizontal leaders attach at the connection point: the dogleg runs
+            // horizontally at connection_point.y, and the text's attachment line
+            // (bottom/middle/top per text_left_attachment) sits there. Anchor the
+            // insertion Y to that connection instead of the stored text_location.y
+            // so the text meets the landing exactly — the two can disagree by a
+            // few percent because our MText line height need not match the writer's.
+            let local_ins_y = match ml.text_attachment_direction {
+                TextAttachmentDirectionType::Horizontal => ml
+                    .context
+                    .leader_roots
+                    .first()
+                    .map(|r| r.connection_point.y as f32)
+                    .unwrap_or(ins.y as f32),
+                TextAttachmentDirectionType::Vertical => ins.y as f32,
+            };
             let z = (ins.z) as f32;
 
             // Rotation: prefer text_direction (transforms survive rotations /
