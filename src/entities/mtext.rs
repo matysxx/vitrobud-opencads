@@ -288,10 +288,30 @@ fn properties(t: &MText, text_style_names: &[String]) -> Vec<PropSection> {
                     t.rectangle_height.unwrap_or(0.0),
                     height_editable,
                 ),
-                ro(
-                    "Columns",
-                    "columns",
-                    columns_str(&t.column_data).to_string(),
+                Property {
+                    label: "Columns".into(),
+                    field: "columns",
+                    value: PropValue::Choice {
+                        selected: columns_str(&t.column_data).to_string(),
+                        options: ["No columns", "Static", "Dynamic"]
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                },
+                // Count / width / gutter are live only when columns are on.
+                num_row(
+                    "Column count",
+                    "col_count",
+                    t.column_data.column_count as f64,
+                    col_type != 0,
+                ),
+                num_row("Column width", "col_width", t.column_data.width, col_type != 0),
+                num_row(
+                    "Column gutter",
+                    "col_gutter",
+                    t.column_data.gutter,
+                    col_type != 0,
                 ),
                 Property {
                     label: "Text frame".into(),
@@ -368,6 +388,38 @@ fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {
             };
             return;
         }
+        "columns" => {
+            let new_type = match value {
+                "Static" => 1,
+                "Dynamic" => 2,
+                _ => 0,
+            };
+            // Compute defaults before borrowing column_data mutably.
+            let default_w = if t.rectangle_width > 0.0 {
+                t.rectangle_width
+            } else {
+                t.height * 10.0
+            };
+            let default_gut = t.height.max(1.0);
+            let cd = &mut t.column_data;
+            // Turning columns on from none seeds a consistent layout so the
+            // stored data isn't a half-set column definition; the count / width
+            // / gutter rows refine it. Dynamic columns default to auto-height.
+            if new_type != 0 && cd.column_type == 0 {
+                if cd.column_count < 2 {
+                    cd.column_count = 2;
+                }
+                if cd.width <= 0.0 {
+                    cd.width = default_w;
+                }
+                if cd.gutter <= 0.0 {
+                    cd.gutter = default_gut;
+                }
+                cd.auto_height = new_type == 2;
+            }
+            cd.column_type = new_type;
+            return;
+        }
         _ => {}
     }
     let Some(v) = crate::entities::common::parse_f64(value) else {
@@ -390,6 +442,9 @@ fn apply_geom_prop(t: &mut MText, field: &str, value: &str) {
                 t.line_spacing_factor = v / denom;
             }
         }
+        "col_count" if v >= 1.0 => t.column_data.column_count = v.round() as i32,
+        "col_width" if v > 0.0 => t.column_data.width = v,
+        "col_gutter" if v >= 0.0 => t.column_data.gutter = v,
         _ => {}
     }
 }
