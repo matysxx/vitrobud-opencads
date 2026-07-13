@@ -659,6 +659,12 @@ pub(super) struct OpenCADStudio {
     layout_manager_selected: String,
     layout_manager_rename_buf: String,
 
+    // ── Annotation-scale Manager ──────────────────────────────────────────
+    scale_manager_selected: String,
+    scale_manager_name_buf: String,
+    scale_manager_paper_buf: String,
+    scale_manager_drawing_buf: String,
+
     // ── Plot Style Panel ──────────────────────────────────────────────────
     /// Selected ACI index in the panel (1-255).
     plotstyle_panel_aci: u8,
@@ -1106,6 +1112,7 @@ pub enum ModalKind {
     AttributeEditor,
     LayerDeleteWarning,
     Aliases,
+    ScaleManager,
 }
 
 /// Identifies a DimStyle field that can be edited in the dialog.
@@ -1455,10 +1462,22 @@ pub enum Message {
     ToggleScalePopup,
     /// Close the scale picker popup.
     CloseScalePopup,
-    /// Delete a named annotation scale from the drawing's ACAD_SCALELIST.
-    ScaleListDelete(String),
-    /// Prime the command line to add a new annotation scale.
-    ScaleListAddPrompt,
+    /// Open the annotation-scale manager (from the scale popup's Manage row).
+    ScaleManagerOpen,
+    /// Select a scale row in the manager (loads it into the editor).
+    ScaleManagerSelect(String),
+    /// Add a new scale from the editor fields.
+    ScaleManagerNew,
+    /// Delete the selected scale.
+    ScaleManagerDelete,
+    /// Set the selected scale as the current annotation scale.
+    ScaleManagerSetCurrent,
+    /// Apply the editor fields to the selected scale (rename / re-ratio).
+    ScaleManagerApply,
+    /// Annotation-scale manager editor field edits.
+    ScaleManagerNameBuf(String),
+    ScaleManagerPaperBuf(String),
+    ScaleManagerDrawingBuf(String),
     /// Toggle the leftmost hamburger's Model/layout list dropdown.
     ToggleLayoutList,
     /// Close the Model/layout list dropdown.
@@ -2234,6 +2253,10 @@ impl OpenCADStudio {
             alias_editor_rows: Vec::new(),
             // Layout Manager
             layout_manager_selected: "Model".to_string(),
+            scale_manager_selected: String::new(),
+            scale_manager_name_buf: String::new(),
+            scale_manager_paper_buf: String::new(),
+            scale_manager_drawing_buf: String::new(),
             layout_manager_rename_buf: String::new(),
             plotstyle_panel_aci: 1,
             ps_color_buf: String::new(),

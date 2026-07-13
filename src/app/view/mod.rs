@@ -1573,6 +1573,7 @@ impl OpenCADStudio {
             AttributeEditor => (640, 500),
             LayerDeleteWarning => (440, 200),
             Aliases => (480, 520),
+            ScaleManager => (520, 360),
         };
         Some((w as f32 + EXTRA_W, h as f32 + EXTRA_H))
     }

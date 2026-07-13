@@ -1647,29 +1647,97 @@ impl OpenCADStudio {
                 self.scale_popup_open = false;
                 Task::none()
             }
-            Message::ScaleListDelete(name) => {
+            Message::ScaleManagerOpen => {
                 let i = self.active_tab;
-                let current = self.tabs[i]
+                self.scale_popup_open = false;
+                let cur = self.tabs[i]
                     .scene
                     .document
                     .header
                     .current_annotation_scale
                     .clone();
-                // Keep the popup open so several can be removed in a row; never
-                // remove the current annotation scale out from under the drawing.
-                if !name.eq_ignore_ascii_case(&current) {
+                self.load_scale_editor(&cur);
+                self.active_modal = Some(crate::app::ModalKind::ScaleManager);
+                Task::none()
+            }
+            Message::ScaleManagerSelect(name) => {
+                self.load_scale_editor(&name);
+                Task::none()
+            }
+            Message::ScaleManagerNameBuf(s) => {
+                self.scale_manager_name_buf = s;
+                Task::none()
+            }
+            Message::ScaleManagerPaperBuf(s) => {
+                self.scale_manager_paper_buf = s;
+                Task::none()
+            }
+            Message::ScaleManagerDrawingBuf(s) => {
+                self.scale_manager_drawing_buf = s;
+                Task::none()
+            }
+            Message::ScaleManagerNew => {
+                let i = self.active_tab;
+                if let (name, Some(paper), Some(drawing)) = self.scale_editor_values() {
+                    if !name.is_empty() && paper > 0.0 && drawing > 0.0 {
+                        self.push_undo_snapshot(i, "SCALELISTEDIT");
+                        if self.tabs[i].scene.add_scale(&name, paper, drawing) {
+                            self.scale_manager_selected = name;
+                            self.tabs[i].dirty = true;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ScaleManagerApply => {
+                let i = self.active_tab;
+                let old = self.scale_manager_selected.clone();
+                if !old.is_empty() {
+                    if let (name, Some(paper), Some(drawing)) = self.scale_editor_values() {
+                        if !name.is_empty() && paper > 0.0 && drawing > 0.0 {
+                            self.push_undo_snapshot(i, "SCALELISTEDIT");
+                            if self.tabs[i].scene.edit_scale(&old, &name, paper, drawing) {
+                                self.scale_manager_selected = name;
+                                self.tabs[i].dirty = true;
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ScaleManagerDelete => {
+                let i = self.active_tab;
+                let sel = self.scale_manager_selected.clone();
+                let cur = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .current_annotation_scale
+                    .clone();
+                if !sel.is_empty() && !sel.eq_ignore_ascii_case(&cur) {
                     self.push_undo_snapshot(i, "SCALELISTEDIT");
-                    if self.tabs[i].scene.remove_scale(&name) {
+                    if self.tabs[i].scene.remove_scale(&sel) {
+                        self.scale_manager_selected.clear();
                         self.tabs[i].dirty = true;
                     }
                 }
                 Task::none()
             }
-            Message::ScaleListAddPrompt => {
-                // Close the popup and prime the command line; the user types the
-                // ratio (e.g. 1:50) and commits it via SCALELISTEDIT ADD.
-                self.scale_popup_open = false;
-                self.command_line.input = "SCALELISTEDIT ADD ".to_string();
+            Message::ScaleManagerSetCurrent => {
+                let i = self.active_tab;
+                let sel = self.scale_manager_selected.clone();
+                if let Some((_, anno, _)) = self
+                    .tabs[i]
+                    .scene
+                    .scale_list()
+                    .into_iter()
+                    .find(|(n, _, _)| n.eq_ignore_ascii_case(&sel))
+                {
+                    self.tabs[i].scene.annotation_scale = anno;
+                    self.tabs[i].scene.document.header.current_annotation_scale = sel;
+                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].dirty = true;
+                }
                 Task::none()
             }
             Message::ToggleLayoutList => {
@@ -3952,5 +4020,32 @@ impl OpenCADStudio {
             Message::ColorWindowPick(color) => self.on_color_window_pick(color),
             Message::DsSetHandle { field, value } => self.on_ds_set_handle(field, value),
         }
+    }
+
+    /// Load a named scale into the scale-manager editor buffers (name + the
+    /// paper / drawing units); blank ratios when the scale isn't found.
+    fn load_scale_editor(&mut self, name: &str) {
+        let i = self.active_tab;
+        self.scale_manager_selected = name.to_string();
+        self.scale_manager_name_buf = name.to_string();
+        match self.tabs[i].scene.scale_paper_drawing(name) {
+            Some((p, d)) => {
+                self.scale_manager_paper_buf = format!("{p}");
+                self.scale_manager_drawing_buf = format!("{d}");
+            }
+            None => {
+                self.scale_manager_paper_buf.clear();
+                self.scale_manager_drawing_buf.clear();
+            }
+        }
+    }
+
+    /// The scale-manager editor's (name, paper?, drawing?) parsed from buffers.
+    fn scale_editor_values(&self) -> (String, Option<f64>, Option<f64>) {
+        (
+            self.scale_manager_name_buf.trim().to_string(),
+            self.scale_manager_paper_buf.trim().parse::<f64>().ok(),
+            self.scale_manager_drawing_buf.trim().parse::<f64>().ok(),
+        )
     }
 }

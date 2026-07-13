@@ -12,31 +12,33 @@ use iced::widget::button::{Status, Style};
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Theme};
 
-const TB: Color = Color {
+// Shared palette — also reused by the scale manager so it matches the style
+// managers exactly ([[feedback_shared_infra]]).
+pub(crate) const TB: Color = Color {
     r: 0.13,
     g: 0.13,
     b: 0.13,
     a: 1.0,
 };
-const BG: Color = Color {
+pub(crate) const BG: Color = Color {
     r: 0.15,
     g: 0.15,
     b: 0.15,
     a: 1.0,
 };
-const BORDER: Color = Color {
+pub(crate) const BORDER: Color = Color {
     r: 0.35,
     g: 0.35,
     b: 0.35,
     a: 1.0,
 };
-const TEXT: Color = Color {
+pub(crate) const TEXT: Color = Color {
     r: 0.88,
     g: 0.88,
     b: 0.88,
     a: 1.0,
 };
-const DIM: Color = Color {
+pub(crate) const DIM: Color = Color {
     r: 0.55,
     g: 0.55,
     b: 0.55,
@@ -48,7 +50,7 @@ const ACCENT: Color = Color {
     b: 0.85,
     a: 1.0,
 };
-const LIST: Color = Color {
+pub(crate) const LIST: Color = Color {
     r: 0.12,
     g: 0.12,
     b: 0.12,
@@ -170,7 +172,7 @@ pub fn view<'a, 'b>(s: Scaffold<'a, 'b>) -> Element<'a, Message> {
 
 // ── Shared chrome ──────────────────────────────────────────────────────────
 
-fn tb_button<'a>(label: &'a str, msg: Message, accent: bool) -> Element<'a, Message> {
+pub(crate) fn tb_button<'a>(label: &'a str, msg: Message, accent: bool) -> Element<'a, Message> {
     let pad = if accent { [4, 14] } else { [4, 10] };
     button(text(label).size(11))
         .on_press(msg)
@@ -212,7 +214,7 @@ fn btn_s(accent: bool) -> impl Fn(&Theme, Status) -> Style {
     }
 }
 
-fn hdivider<'a>() -> Element<'a, Message> {
+pub(crate) fn hdivider<'a>() -> Element<'a, Message> {
     container(Space::new().width(Fill).height(1))
         .width(Fill)
         .height(1)
@@ -223,7 +225,7 @@ fn hdivider<'a>() -> Element<'a, Message> {
         .into()
 }
 
-fn vsep<'a>() -> Element<'a, Message> {
+pub(crate) fn vsep<'a>() -> Element<'a, Message> {
     container(Space::new().width(1).height(Fill))
         .width(1)
         .height(Fill)

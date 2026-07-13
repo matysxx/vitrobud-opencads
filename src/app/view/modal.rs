@@ -65,6 +65,35 @@ impl OpenCADStudio {
                     320,
                 )
             }
+            super::super::ModalKind::ScaleManager => {
+                let tab = &self.tabs[self.active_tab];
+                let scales: Vec<(String, String)> = tab
+                    .scene
+                    .scale_list()
+                    .into_iter()
+                    .map(|(name, _, _)| {
+                        let ratio = tab
+                            .scene
+                            .scale_paper_drawing(&name)
+                            .map(|(p, d)| format!("{p}:{d}"))
+                            .unwrap_or_default();
+                        (name, ratio)
+                    })
+                    .collect();
+                let current = tab.scene.document.header.current_annotation_scale.clone();
+                sized(
+                    crate::ui::style::scale_manager::view_window(
+                        &scales,
+                        &self.scale_manager_selected,
+                        &current,
+                        &self.scale_manager_name_buf,
+                        &self.scale_manager_paper_buf,
+                        &self.scale_manager_drawing_buf,
+                    ),
+                    520,
+                    360,
+                )
+            }
             super::super::ModalKind::Plotstyle => sized(
                 crate::ui::style::plotstyle::view_window(
                     self.active_plot_style.as_ref(),

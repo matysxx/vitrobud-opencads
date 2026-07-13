@@ -1945,6 +1945,57 @@ impl Scene {
         true
     }
 
+    /// Rename `old_name` and/or change its paper:drawing ratio. Returns `false`
+    /// if the scale is missing or the new name collides with another scale.
+    pub fn edit_scale(&mut self, old_name: &str, new_name: &str, paper: f64, drawing: f64) -> bool {
+        use acadrust::objects::ObjectType;
+        let root_h = self.document.header.named_objects_dict_handle;
+        let Some(scalelist_h) = crate::scene::annotative::as_dict(&self.document, root_h)
+            .and_then(|d| d.get("ACAD_SCALELIST"))
+        else {
+            return false;
+        };
+        let Some(sh) = crate::scene::annotative::as_dict(&self.document, scalelist_h).and_then(
+            |d| {
+                d.entries
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(old_name))
+                    .map(|(_, h)| *h)
+            },
+        ) else {
+            return false;
+        };
+        // A new name that collides with a *different* scale is rejected.
+        if !new_name.eq_ignore_ascii_case(old_name)
+            && crate::scene::annotative::as_dict(&self.document, scalelist_h)
+                .is_some_and(|d| d.entries.iter().any(|(n, _)| n.eq_ignore_ascii_case(new_name)))
+        {
+            return false;
+        }
+        if let Some(ObjectType::Scale(s)) = self.document.objects.get_mut(&sh) {
+            s.name = new_name.to_string();
+            s.paper_units = paper;
+            s.drawing_units = drawing;
+            s.is_unit_scale = (paper - drawing).abs() < 1e-10;
+        }
+        if let Some(ObjectType::Dictionary(sl)) = self.document.objects.get_mut(&scalelist_h) {
+            if let Some(e) = sl.entries.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(old_name)) {
+                e.0 = new_name.to_string();
+            }
+        }
+        true
+    }
+
+    /// The (paper_units, drawing_units) of a named scale, for the editor.
+    pub fn scale_paper_drawing(&self, name: &str) -> Option<(f64, f64)> {
+        self.document.objects.values().find_map(|o| match o {
+            ObjectType::Scale(s) if !s.is_temporary && s.name.eq_ignore_ascii_case(name) => {
+                Some((s.paper_units, s.drawing_units))
+            }
+            _ => None,
+        })
+    }
+
     /// List of user viewports in the current layout: (handle, label, frozen_layer_handles).
     pub fn viewport_list(&self) -> Vec<(acadrust::Handle, String, Vec<acadrust::Handle>)> {
         if self.current_layout == "Model" {
