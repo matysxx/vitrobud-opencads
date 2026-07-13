@@ -104,8 +104,9 @@ impl WireInstance {
 }
 
 /// Per-wire constants shared by every segment of a wire (native only). std430
-/// layout: three vec4 then four scalars = 64 B, matching `WireConst` in
-/// wire_indexed.wgsl.
+/// layout: three vec4 then eight scalars = 80 B, matching `WireConst` in
+/// wire_indexed.wgsl. `align_end` / `align_total` carry the "A"-type endpoint
+/// alignment (see `wire_distances`); 0.0 total = no alignment.
 #[cfg(not(target_arch = "wasm32"))]
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -116,7 +117,11 @@ pub struct WireConst {
     pub half_width: f32,
     pub pattern_length: f32,
     pub draw_depth: f32,
-    pub _pad: f32,
+    pub align_end: f32,
+    pub align_total: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -162,6 +167,10 @@ pub struct WireInstance {
     /// Normalized draw-order depth in (0,1); applied as a small clip-z bias
     /// in the shader so this wire orders against other entity types.
     pub draw_depth: f32,
+    /// "A"-type endpoint alignment (see `wire_distances`): the end-dash length
+    /// and the total wire length. `align_total == 0.0` = not aligned.
+    pub align_end: f32,
+    pub align_total: f32,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -183,6 +192,8 @@ impl WireInstance {
             wgpu::VertexAttribute { offset: std::mem::offset_of!(WireInstance, draw_depth) as u64,     shader_location: 9,  format: wgpu::VertexFormat::Float32   },
             wgpu::VertexAttribute { offset: std::mem::offset_of!(WireInstance, pos_a_low) as u64,      shader_location: 10, format: wgpu::VertexFormat::Float32x3 },
             wgpu::VertexAttribute { offset: std::mem::offset_of!(WireInstance, pos_b_low) as u64,      shader_location: 11, format: wgpu::VertexFormat::Float32x3 },
+            wgpu::VertexAttribute { offset: std::mem::offset_of!(WireInstance, align_end) as u64,      shader_location: 12, format: wgpu::VertexFormat::Float32   },
+            wgpu::VertexAttribute { offset: std::mem::offset_of!(WireInstance, align_total) as u64,    shader_location: 13, format: wgpu::VertexFormat::Float32   },
         ];
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<WireInstance>() as u64,
@@ -226,9 +237,24 @@ fn pack_color(color: [f32; 4]) -> [u8; 4] {
     ]
 }
 
-/// Cumulative arc-length per point (NaN-break aware), with the dash pattern
-/// centred on the wire. Shared by the wasm and native emission paths.
-fn wire_distances(wire: &WireModel) -> Vec<f32> {
+/// Cumulative arc-length per point (NaN-break aware) plus the `"A"`-type
+/// alignment pair `(align_end, align_total)`. Shared by the wasm and native
+/// emission paths.
+///
+/// AutoCAD-style linetypes are implicitly `A` (aligned): a dashed line must
+/// begin AND end on a solid dash, keeping the interior dashes at their nominal
+/// length and stretching/shrinking only the two end dashes symmetrically to
+/// absorb the leftover (so parallel lines share an identical interior). We
+/// express that on the GPU by handing the shader the total wire length
+/// (`align_total`) and the end-dash length (`align_end`); the pattern walk then
+/// forces the two end regions lit and phases the interior to resume right after
+/// the first dash. `align_total == 0.0` disables it and the shader falls back to
+/// the legacy centred repeating pattern.
+///
+/// Alignment applies only to a single continuous run (`!has_break`) whose
+/// pattern begins with a dash. NaN-separated (plinegen=false) polylines and
+/// non-dash-first patterns keep the legacy centred phase.
+fn wire_distances(wire: &WireModel) -> (Vec<f32>, f32, f32) {
     let n = wire.points.len();
     let mut dists = vec![0.0_f32; n];
     let mut has_break = false;
@@ -251,32 +277,61 @@ fn wire_distances(wire: &WireModel) -> Vec<f32> {
         }
     }
 
-    // Center the dash pattern on the wire instead of starting it at the first
-    // vertex. The shader reads the pattern phase as `dist % pattern_length`, so
-    // adding a constant offset to every arc-length shifts that phase. We place
-    // the wire midpoint at the center of the first dash element, which makes the
-    // line begin and end with matching partial dashes. Skipped for wires with
-    // NaN breaks (per-segment dash restarts), where a single offset can't center
-    // every segment.
     let pat_len = wire.pattern_length;
-    if pat_len > 1e-6 && !has_break && n >= 2 {
-        let total = dists[n - 1];
-        if total > 1e-6 {
-            // First dash element (positive), else fall back to the first element.
-            let first_dash = wire
-                .pattern
-                .iter()
-                .copied()
-                .find(|&v| v > 0.0)
-                .unwrap_or_else(|| wire.pattern[0].abs());
-            // Phase that puts the wire midpoint at the dash center.
-            let offset = first_dash * 0.5 + total * 0.5;
-            for d in dists.iter_mut() {
-                *d += offset;
-            }
-        }
+    if pat_len <= 1e-6 || has_break || n < 2 {
+        return (dists, 0.0, 0.0);
     }
-    dists
+    let total = dists[n - 1];
+    if total <= 1e-6 {
+        return (dists, 0.0, 0.0);
+    }
+
+    // Align only a proper alternating pattern that BEGINS with a dash followed
+    // by a gap — every standard linetype does (DASHED/DASHDOT/CENTER/HIDDEN/…).
+    // Gap-first, dot-first, single-element, or consecutive-dash patterns keep
+    // the legacy centred phase: the A-type interior-resume assumes the element
+    // after the leading dash is a gap, and force-lighting an end dash on a
+    // non-dash-start would paint over a leading blank.
+    if wire.pattern[0] > 0.0 && wire.pattern[1] < 0.0 {
+        let a = wire.pattern[0];
+        let p = pat_len;
+        if total <= p {
+            // Shorter than one full pattern period → drawn as a single solid
+            // dash spanning the whole line (aligned linetypes can't fit a
+            // dash-gap-dash in less than one period).
+            return (dists, total, total);
+        }
+        // "A" alignment for a dash-first pattern of period P laid out as
+        //   [D] [gap] ([dash] [gap])*(k-1) [D]
+        // gives  L = 2D + (k-1)a + k(P-a)  =>  D = (L - k*P + a) / 2.
+        // Pick the interior period count k so the end dash D stays near nominal a.
+        let mut k = ((total - a) / p).round().max(1.0);
+        let mut d_end = (total - k * p + a) * 0.5;
+        if d_end <= 1e-4 {
+            // End dash underflowed (period ≫ first dash); drop one period so the
+            // ends stay visible.
+            k = (k - 1.0).max(0.0);
+            d_end = (total - k * p + a) * 0.5;
+        }
+        let d_end = d_end.clamp(1e-4, total * 0.5);
+        return (dists, d_end, total);
+    }
+
+    // Legacy centred phase for non-aligned patterns (behaviour unchanged from
+    // before A-type). The shader reads phase as `dist % pattern_length`, so a
+    // constant offset shifts it; place the wire midpoint at the first dash's
+    // centre so the two ends stay symmetric.
+    let first_dash = wire
+        .pattern
+        .iter()
+        .copied()
+        .find(|&v| v > 0.0)
+        .unwrap_or_else(|| wire.pattern[0].abs());
+    let offset = first_dash * 0.5 + total * 0.5;
+    for d in dists.iter_mut() {
+        *d += offset;
+    }
+    (dists, 0.0, 0.0)
 }
 
 #[inline]
@@ -296,7 +351,7 @@ fn emit_wire_instances(wire: &WireModel, color: [f32; 4], draw_depth: f32) -> Ve
     if seg_count == 0 {
         return Vec::new();
     }
-    let dists = wire_distances(wire);
+    let (dists, align_end, align_total) = wire_distances(wire);
     let low = |i: usize| -> [f32; 3] { wire.points_low.get(i).copied().unwrap_or([0.0; 3]) };
     let mut instances: Vec<WireInstance> = Vec::with_capacity(seg_count);
     for i in 0..seg_count {
@@ -318,6 +373,8 @@ fn emit_wire_instances(wire: &WireModel, color: [f32; 4], draw_depth: f32) -> Ve
             pat0,
             pat1,
             draw_depth,
+            align_end,
+            align_total,
         });
     }
     instances
@@ -332,6 +389,7 @@ fn emit_wire_native(
     color: [f32; 4],
     draw_depth: f32,
 ) -> (Vec<WireInstance>, WireConst) {
+    let (dists, align_end, align_total) = wire_distances(wire);
     let cst = WireConst {
         color,
         pat0: [wire.pattern[0], wire.pattern[1], wire.pattern[2], wire.pattern[3]],
@@ -339,14 +397,17 @@ fn emit_wire_native(
         half_width: wire.line_weight_px * 0.5,
         pattern_length: wire.pattern_length,
         draw_depth,
-        _pad: 0.0,
+        align_end,
+        align_total,
+        _pad0: 0.0,
+        _pad1: 0.0,
+        _pad2: 0.0,
     };
     let n = wire.points.len();
     let seg_count = n.saturating_sub(1);
     if seg_count == 0 {
         return (Vec::new(), cst);
     }
-    let dists = wire_distances(wire);
     let low = |i: usize| -> [f32; 3] { wire.points_low.get(i).copied().unwrap_or([0.0; 3]) };
     let mut instances: Vec<WireInstance> = Vec::with_capacity(seg_count);
     for i in 0..seg_count {

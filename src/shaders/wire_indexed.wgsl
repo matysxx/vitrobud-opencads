@@ -28,7 +28,11 @@ struct WireConst {
     half_width:     f32,
     pattern_length: f32,
     draw_depth:     f32,
-    _pad:           f32,
+    align_end:      f32,
+    align_total:    f32,
+    _pad0:          f32,
+    _pad1:          f32,
+    _pad2:          f32,
 }
 @group(1) @binding(0) var<storage, read> wire_consts: array<WireConst>;
 
@@ -52,6 +56,8 @@ struct VertexOut {
     @location(3)                    pat0:           vec4<f32>,
     @location(4)                    pat1:           vec4<f32>,
     @location(5) @interpolate(flat) min_elem:       f32,
+    @location(6) @interpolate(flat) align_end:      f32,
+    @location(7) @interpolate(flat) align_total:    f32,
 }
 
 @vertex fn vs_main(@builtin(vertex_index) vid: u32, in: InstanceIn) -> VertexOut {
@@ -111,18 +117,38 @@ struct VertexOut {
     out.pat0           = c.pat0;
     out.pat1           = c.pat1;
     out.min_elem       = min_elem;
+    out.align_end      = c.align_end;
+    out.align_total    = c.align_total;
     return out;
 }
 
-fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>) -> bool {
-    let d   = ((dist % pat_len) + pat_len) % pat_len;
-    var pos = 0.0f;
-    let dot_half = u.world_per_pixel * 0.75;
+fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>, align_end: f32, align_total: f32) -> bool {
     let elems = array<f32, 8>(p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w);
     var count = 0u;
     for (var i = 0u; i < 8u; i++) {
         if elems[i] != 0.0 { count = i + 1u; }
     }
+
+    var d: f32;
+    if align_total > 0.0 {
+        // "A"-type alignment: the line begins and ends with a solid dash of
+        // length `align_end`. Force the two end regions lit, then phase the
+        // interior so the element AFTER the first dash resumes exactly at
+        // `align_end` (the interior meets each end dash on a gap boundary).
+        if dist <= align_end || dist >= align_total - align_end {
+            return true;
+        }
+        var first_dash = 0.0;
+        for (var i = 0u; i < count; i++) {
+            if elems[i] > 0.0 { first_dash = elems[i]; break; }
+        }
+        d = ((dist - align_end + first_dash) % pat_len + pat_len) % pat_len;
+    } else {
+        d = ((dist % pat_len) + pat_len) % pat_len;
+    }
+
+    var pos = 0.0f;
+    let dot_half = u.world_per_pixel * 0.75;
     for (var i = 0u; i < count; i++) {
         let elem = elems[i];
         if elem == 0.0 {
@@ -141,7 +167,7 @@ fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>) -> bool {
 @fragment fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if in.pattern_length > 0.0 {
         if in.min_elem >= u.world_per_pixel {
-            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1) {
+            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1, in.align_end, in.align_total) {
                 discard;
             }
         }
@@ -156,7 +182,7 @@ fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>) -> bool {
 @fragment fn fs_black(in: VertexOut) -> @location(0) vec4<f32> {
     if in.pattern_length > 0.0 {
         if in.min_elem >= u.world_per_pixel {
-            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1) {
+            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1, in.align_end, in.align_total) {
                 discard;
             }
         }

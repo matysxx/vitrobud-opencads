@@ -56,6 +56,9 @@ struct InstanceIn {
     // Double-single low residuals of the endpoints.
     @location(10) pos_a_low:     vec3<f32>,
     @location(11) pos_b_low:     vec3<f32>,
+    // "A"-type endpoint alignment: end-dash length + total wire length.
+    @location(12) align_end:     f32,
+    @location(13) align_total:   f32,
 }
 
 // Draw-order depth bias: shifts clip-space z so 2D entities of different
@@ -77,6 +80,8 @@ struct VertexOut {
     // projects below one pixel on screen. See the LOD branch in
     // `fs_main`.
     @location(5) @interpolate(flat) min_elem:       f32,
+    @location(6) @interpolate(flat) align_end:      f32,
+    @location(7) @interpolate(flat) align_total:    f32,
 }
 
 @vertex fn vs_main(@builtin(vertex_index) vid: u32, in: InstanceIn) -> VertexOut {
@@ -153,18 +158,13 @@ struct VertexOut {
     out.pat0           = in.pat0;
     out.pat1           = in.pat1;
     out.min_elem       = min_elem;
+    out.align_end      = in.align_end;
+    out.align_total    = in.align_total;
     return out;
 }
 
 // Returns true if arc-length `dist` falls inside a dash or on a dot.
-fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>) -> bool {
-    let d   = ((dist % pat_len) + pat_len) % pat_len;
-    var pos = 0.0f;
-    // A dot is a zero-length element: render it as a fixed ~1.5 px mark
-    // (half-width ~0.75 px in world units) so it stays visible at any zoom
-    // instead of vanishing with its zero world-length. Mirrors the hatch
-    // shader's pixel-snapped dot. (#149)
-    let dot_half = u.world_per_pixel * 0.75;
+fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>, align_end: f32, align_total: f32) -> bool {
     let elems = array<f32, 8>(p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w);
     // Real element count = (index of last non-zero) + 1. Trailing 0.0 slots
     // are padding; a 0.0 within this range is a real dot.
@@ -172,6 +172,31 @@ fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>) -> bool {
     for (var i = 0u; i < 8u; i++) {
         if elems[i] != 0.0 { count = i + 1u; }
     }
+
+    var d: f32;
+    if align_total > 0.0 {
+        // "A"-type alignment: the line begins and ends with a solid dash of
+        // length `align_end`. Force the two end regions lit, then phase the
+        // interior so the element AFTER the first dash resumes exactly at
+        // `align_end` (the interior meets each end dash on a gap boundary).
+        if dist <= align_end || dist >= align_total - align_end {
+            return true;
+        }
+        var first_dash = 0.0;
+        for (var i = 0u; i < count; i++) {
+            if elems[i] > 0.0 { first_dash = elems[i]; break; }
+        }
+        d = ((dist - align_end + first_dash) % pat_len + pat_len) % pat_len;
+    } else {
+        d = ((dist % pat_len) + pat_len) % pat_len;
+    }
+
+    var pos = 0.0f;
+    // A dot is a zero-length element: render it as a fixed ~1.5 px mark
+    // (half-width ~0.75 px in world units) so it stays visible at any zoom
+    // instead of vanishing with its zero world-length. Mirrors the hatch
+    // shader's pixel-snapped dot. (#149)
+    let dot_half = u.world_per_pixel * 0.75;
     for (var i = 0u; i < count; i++) {
         let elem = elems[i];
         if elem == 0.0 {
@@ -197,7 +222,7 @@ fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>) -> bool {
         // test and return solid colour — also saves the per-fragment
         // arc-length math + `discard`.
         if in.min_elem >= u.world_per_pixel {
-            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1) {
+            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1, in.align_end, in.align_total) {
                 discard;
             }
         }
@@ -213,7 +238,7 @@ fn in_dash(dist: f32, pat_len: f32, p0: vec4<f32>, p1: vec4<f32>) -> bool {
 @fragment fn fs_black(in: VertexOut) -> @location(0) vec4<f32> {
     if in.pattern_length > 0.0 {
         if in.min_elem >= u.world_per_pixel {
-            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1) {
+            if !in_dash(in.distance, in.pattern_length, in.pat0, in.pat1, in.align_end, in.align_total) {
                 discard;
             }
         }
