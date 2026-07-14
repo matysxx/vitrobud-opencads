@@ -1,0 +1,48 @@
+name: Windows test build (tokio executor)
+
+# Experiment for issue #120 (native freeze): builds ONLY the Windows portable
+# .exe with the tokio async executor and uploads it as a downloadable artifact
+# for the reporter to test. NOT a release — no signing, no MSI, no release
+# upload. Lives only on the `exp/tokio-executor` branch and runs on push to it,
+# so `main` is never touched.
+on:
+  push:
+    branches: [exp/tokio-executor]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Convert SVG icons to ICO
+        shell: pwsh
+        run: |
+          # build.rs embeds AppIcon.ico into the .exe (issue #107), so the icons
+          # must exist before the build. ImageMagick ships on windows-latest.
+          magick assets/logo.svg `
+            -define icon:auto-resize=16,24,32,48,64,128,256 `
+            packaging/windows/AppIcon.ico
+          magick assets/mimetypes/image-vnd.dwg.svg `
+            -define icon:auto-resize=16,24,32,48,64,128,256 `
+            packaging/windows/dwg.ico
+          magick assets/mimetypes/image-vnd.dxf.svg `
+            -define icon:auto-resize=16,24,32,48,64,128,256 `
+            packaging/windows/dxf.ico
+
+      - name: Build
+        env:
+          OCS_PATREON_TOKEN: ${{ secrets.OCS_PATREON_TOKEN }}
+        run: cargo build --release
+
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCADStudio-windows-tokio
+          path: target/release/OpenCADStudio.exe
+          if-no-files-found: error
