@@ -665,46 +665,6 @@ fn transform_block_mesh_lod_set(
     out
 }
 
-/// World-XY rectangle the model camera currently sees, expanded by `margin`
-/// (1.0 = tight), as `[min_x, min_y, max_x, max_y]` for the entity R-tree cull.
-///
-/// The screen is a rectangle in the camera's right/up basis, not the world
-/// axes — under a view twist or yaw that rectangle is rotated in world XY, so
-/// projecting its four corners and taking their bounds gives the correct
-/// enclosing box. A naive `target ± (w, h)` box (world-axis aligned) under-
-/// covers a rotated view and culls the geometry that lands in the rotated
-/// corners.
-///
-/// Returns `None` for a tilted (non-plan) view, where the view direction is
-/// not vertical and a flat XY box cannot bound the visible region (depth
-/// collapses onto the plane); callers then skip the frustum cull rather than
-/// wrongly hide geometry.
-fn view_cull_aabb(cam: &Camera, aspect: f32, margin: f32) -> Option<[f32; 4]> {
-    // Plan view ⇔ line of sight is (near) vertical. Anything else can't be
-    // bounded by a single world-XY rectangle.
-    let fwd = cam.rotation * glam::Vec3::Z;
-    if fwd.z.abs() < 0.999 {
-        return None;
-    }
-    let h = cam.ortho_size();
-    let w = h * aspect.max(0.01);
-    let right = cam.rotation * glam::Vec3::X;
-    let up = cam.rotation * glam::Vec3::Y;
-    let c = cam.target.as_vec3();
-    let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
-    let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
-    for (sw, sh) in [(-w, -h), (w, -h), (-w, h), (w, h)] {
-        let p = c + right * sw + up * sh;
-        min_x = min_x.min(p.x);
-        max_x = max_x.max(p.x);
-        min_y = min_y.min(p.y);
-        max_y = max_y.max(p.y);
-    }
-    let (cx, cy) = ((min_x + max_x) * 0.5, (min_y + max_y) * 0.5);
-    let (hw, hh) = ((max_x - min_x) * 0.5 * margin, (max_y - min_y) * 0.5 * margin);
-    Some([cx - hw, cy - hh, cx + hw, cy + hh])
-}
-
 pub struct Scene {
     pub camera: Rc<RefCell<Camera>>,
     /// Model-space tiled viewport layout. One full-window tile by default;
@@ -718,8 +678,12 @@ pub struct Scene {
     /// not re-walked every frame while the wire set is unchanged. Keyed on the
     /// wire content id so it re-gathers exactly when the wires (geometry or
     /// selection) change. See [`Scene::gather_text_verts`].
-    sdf_text_cache:
-        RefCell<Option<(u64, std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>)>>,
+    /// Small map (not a single slot): a paper frame renders several wire
+    /// sources (sheet + content viewports), each with its own stable content
+    /// id — one slot would thrash between them every frame.
+    sdf_text_cache: RefCell<
+        HashMap<u64, std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>>,
+    >,
     /// pane_grid layout tree for the Model tab — the source of truth for the
     /// tile split layout, resize and focus. `model_tiles` (the renderer's
     /// per-pane data: camera / render-mode / grid) is kept in lock-step with
@@ -780,7 +744,8 @@ pub struct Scene {
     /// Keyed by `(geometry_epoch, camera_generation)` so a camera change
     /// invalidates the cull-dependent wire list as well as a geometry change.
     /// Uses `Arc` so `build_primitive()` avoids a full Vec clone during navigation.
-    wire_cache: RefCell<Option<((u64, u64), Arc<Vec<WireModel>>)>>,
+    /// The middle `u64` is the set's [`WIRE_CONTENT_GEN`] content id.
+    wire_cache: RefCell<Option<((u64, u64), u64, Arc<Vec<WireModel>>)>>,
     /// Spatial grid over the model hit-test wire set, keyed on `geometry_epoch`
     /// so it is rebuilt only when geometry changes (not per cursor move). Lets
     /// snap / hover query a cursor-local wire subset instead of scanning the
@@ -821,14 +786,11 @@ pub struct Scene {
     /// hover. The set is geometry-derived, so a camera move / hover never
     /// invalidates it.
     insert_hatch_cache: RefCell<Option<(u64, Arc<Vec<(Handle, HatchModel)>>)>>,
-    /// Per-viewport wire cache for paper-space rendering.
-    /// Maps vp_handle → (geometry_epoch, Arc<Vec<WireModel>>).
-    viewport_wire_cache: RefCell<HashMap<Handle, ((u64, u32, u64), Arc<Vec<WireModel>>)>>,
-    /// Cached tessellation of paper-space layout block entities (title block, annotations, etc.).
-    /// Separate from `wire_cache` so the GPU sheet viewport doesn't re-tessellate every frame.
-    /// Keyed by `(geometry_epoch, camera_generation)` — paper view changes
-    /// on zoom too, so culled wire output depends on camera.
-    paper_sheet_cache: RefCell<Option<((u64, u64), Arc<Vec<WireModel>>)>>,
+    /// Sheet "dressing" cache over the unified resident set: the paper sheet
+    /// drops its own border wire and appends the printable-area guide.
+    /// `(geometry_epoch, content gen, wires)` — the base is camera-independent
+    /// (no cull / LOD anywhere), so paper pan/zoom never re-tessellates it.
+    paper_sheet_cache: RefCell<Option<(u64, u64, Arc<Vec<WireModel>>)>>,
     /// Per-viewport projected wire cache for paper-space content viewports.
     /// Stores projected + clipped wires in paper-space coordinates.
     /// Maps vp_handle → (geometry_epoch, Vec<WireModel>).
@@ -885,6 +847,13 @@ pub struct Scene {
     /// Multiplier applied to Text/MText/Dimension sizes during tessellation.
     /// 1.0 = no scaling. 50.0 = "1:50" drawing scale.
     pub annotation_scale: f32,
+    /// Cached per-epoch: does annotation/viewport scale actually change wire
+    /// output? True iff PSLTSCALE is on (linetype dashes scale with the
+    /// viewport) or the drawing has an annotative entity (text/dim/mleader
+    /// sizing). When false the per-viewport anno scale is inert, so every
+    /// content viewport collapses onto ONE shared resident set instead of a
+    /// full re-tessellation per distinct viewport scale. `(epoch, flag)`.
+    annotation_affects_wires: std::cell::Cell<Option<(u64, bool)>>,
     /// Cached model-space bounding box, keyed by geometry_epoch.
     /// Avoids re-tessellating all entities on every ZOOM E / auto-fit call.
     model_extents_cache: RefCell<Option<(u64, Option<(glam::Vec3, glam::Vec3)>)>>,
@@ -933,24 +902,24 @@ pub struct Scene {
     /// scene-render cache). See [`Scene::navigating_lod`].
     nav_last_gen: std::cell::Cell<u64>,
     nav_changed_at: std::cell::Cell<Option<iced::time::Instant>>,
-    /// Static-hold cache for the Model layout: the FULL, un-culled tessellation
-    /// held resident and reused for every camera (the geometry is
-    /// camera-independent — see `model_tile_wires_arc`). `(epoch, gen, wires)`;
-    /// rebuilt when `geometry_epoch` changes.
-    model_static_wires: RefCell<Option<(u64, u64, Arc<Vec<WireModel>>)>>,
-    /// Monotonic per-build nonce for wire sources that must NOT be skipped by
-    /// the upload gate — the paper / per-viewport wire paths and any
-    /// frame carrying live preview / interim wires. High bit set so it can
-    /// never collide with a real [`WIRE_CONTENT_GEN`] id; incremented every
-    /// use so the GPU always sees a fresh id and re-uploads.
-    pub(crate) wire_force_nonce: std::cell::Cell<u64>,
-    /// Memoized `(face3d, other)` split of the Model-tile wire set, keyed by
-    /// its [`WIRE_CONTENT_GEN`] id. `split_face3d_wires` is an O(N) per-wire
-    /// handle lookup + clone that otherwise re-runs every frame; a pan that
-    /// reuses the tessellation (same id) reuses this split too.
+    /// Unified static-hold wire cache — ONE infrastructure for EVERY space
+    /// (Model tiles, BEDIT block editor, the paper sheet block, and paper
+    /// content viewports): the FULL, un-culled, LOD-free tessellation per
+    /// `(block, ambient bg, anno scale, vp-frozen set)` key, held resident and
+    /// reused for every camera. Each entry carries a stable
+    /// [`WIRE_CONTENT_GEN`] id so the GPU upload gate and `render_signature`
+    /// can tell "same content" from "changed" — no per-frame re-upload and no
+    /// camera-keyed re-tessellation anywhere. Rebuilt per key when
+    /// `geometry_epoch` changes; stale entries evicted on insert.
+    #[allow(clippy::type_complexity)]
+    resident_wire_sets: RefCell<HashMap<u64, (u64, u64, Arc<Vec<WireModel>>)>>,
+    /// Memoized `(face3d, other)` split of a resident wire set, keyed by its
+    /// [`WIRE_CONTENT_GEN`] id. `split_face3d_wires` is an O(N) per-wire
+    /// handle lookup + clone that otherwise re-runs every frame. A map, not a
+    /// slot: a paper frame walks several sources (sheet + viewports).
     #[allow(clippy::type_complexity)]
     split_cache:
-        RefCell<Option<(u64, Arc<Vec<WireModel>>, Arc<Vec<WireModel>>)>>,
+        RefCell<HashMap<u64, (Arc<Vec<WireModel>>, Arc<Vec<WireModel>>)>>,
     /// Cached `selected ∪ hover` handle set for the GPU xray overlay, keyed by
     /// `selection_generation`. Rebuilt only when the selection changes so
     /// `build_primitive` doesn't clone the set every frame.
@@ -994,7 +963,7 @@ impl Scene {
                 snap_on: false,
             }]),
             active_model_tile: std::cell::Cell::new(0),
-            sdf_text_cache: RefCell::new(None),
+            sdf_text_cache: RefCell::new(HashMap::default()),
             // One pane mapped to tile 0 — matches the single default tile above.
             model_panes: iced::widget::pane_grid::State::new(0).0,
             selection: Rc::new(RefCell::new(SelectionState::default())),
@@ -1021,7 +990,6 @@ impl Scene {
             image_cache: RefCell::new(None),
             mesh_cache: RefCell::new(None),
             insert_hatch_cache: RefCell::new(None),
-            viewport_wire_cache: RefCell::new(HashMap::default()),
             paper_sheet_cache: RefCell::new(None),
             paper_projected_cache: RefCell::new(HashMap::default()),
             current_layout: "Model".to_string(),
@@ -1038,6 +1006,7 @@ impl Scene {
             local_extent_max: 1e9,
             local_center: [0.0, 0.0],
             annotation_scale: 1.0,
+            annotation_affects_wires: std::cell::Cell::new(None),
             model_extents_cache: RefCell::new(None),
             entity_block_map_cache: RefCell::new(None),
             block_defn_cache: RefCell::new(None),
@@ -1050,9 +1019,8 @@ impl Scene {
             last_model_wire_gen: std::cell::Cell::new(0),
             nav_last_gen: std::cell::Cell::new(0),
             nav_changed_at: std::cell::Cell::new(None),
-            model_static_wires: RefCell::new(None),
-            wire_force_nonce: std::cell::Cell::new(0),
-            split_cache: RefCell::new(None),
+            resident_wire_sets: RefCell::new(HashMap::default()),
+            split_cache: RefCell::new(HashMap::default()),
             tess_memo: RefCell::new(HashMap::default()),
             tess_memo_guard: std::cell::Cell::new(0),
             resident_tess_memo: RefCell::new(HashMap::default()),
@@ -2300,7 +2268,10 @@ impl Scene {
                     vp.view_height = vp.height / scale;
                 }
             }
-            self.viewport_wire_cache.borrow_mut().remove(&handle);
+            // A viewport scale change alters its anno key in the unified
+            // resident map; drop everything so the abandoned entry can't
+            // linger for the rest of the epoch.
+            self.resident_wire_sets.borrow_mut().clear();
             self.bump_geometry();
         }
     }
@@ -2403,10 +2374,87 @@ impl Scene {
         _cam_aspect: f32,
         _tile_pixel_height: f32,
     ) -> Arc<Vec<WireModel>> {
-        // Reuse the resident full set if it's already built for this epoch.
+        // In a BEDIT block editor the resident set is the edited block's own
+        // (block-local) entities; otherwise model space. (#261)
+        let block = self
+            .block_edit_block
+            .unwrap_or_else(|| self.model_space_block_handle());
+        self.resident_wires_for(block, None, None)
+    }
+
+    /// Unified static-hold wire builder — the ONE tessellation path every
+    /// space renders through (Model tiles, BEDIT, the paper sheet block, and
+    /// paper content viewports): the FULL, un-culled, LOD-free set of `block`,
+    /// held resident per `(block, ambient bg, anno, frozen)` key and rebuilt
+    /// only when `geometry_epoch` changes. Mints a stable
+    /// [`WIRE_CONTENT_GEN`] id per build (relayed via `last_model_wire_gen`)
+    /// so the GPU upload gate and `render_signature` skip unchanged content.
+    /// Whether the per-viewport annotation scale changes wire output at all
+    /// (PSLTSCALE on, or any annotative entity). Cached per geometry epoch —
+    /// the scan short-circuits on the first annotative entity. When false, a
+    /// viewport's `1/vp_scale` anno override is inert and normalized away so
+    /// all viewports reuse ONE resident tessellation.
+    fn annotation_affects_wires(&self) -> bool {
+        if let Some((epoch, v)) = self.annotation_affects_wires.get() {
+            if epoch == self.geometry_epoch {
+                return v;
+            }
+        }
+        let v = self.document.header.paper_space_linetype_scaling
+            || self
+                .document
+                .entities()
+                .any(|e| crate::scene::annotative::is_annotative(&self.document, e));
+        self.annotation_affects_wires
+            .set(Some((self.geometry_epoch, v)));
+        v
+    }
+
+    fn resident_wires_for(
+        &self,
+        block: Handle,
+        anno_scale_override: Option<f32>,
+        frozen_layers: Option<&HashSet<Handle>>,
+    ) -> Arc<Vec<WireModel>> {
+        // Normalize an inert anno override away so distinct viewport scales
+        // share one resident set when annotation can't change the wires.
+        let anno_scale_override = if self.annotation_affects_wires() {
+            anno_scale_override
+        } else {
+            None
+        };
+        // Ambient bg is part of the key: the same block tessellated against
+        // the model vs paper background adapts wire colors differently.
+        let bg = if self.current_layout == "Model" {
+            self.bg_color
+        } else {
+            self.paper_bg_color
+        };
+        let key = {
+            let mut k: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut mix = |x: u64| k = k.rotate_left(17) ^ x.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            mix(block.value());
+            for c in bg {
+                mix(c.to_bits() as u64);
+            }
+            mix(anno_scale_override.map(|a| a.to_bits() as u64).unwrap_or(u64::MAX));
+            match frozen_layers {
+                Some(f) => {
+                    // Order-independent fold of the frozen-layer set.
+                    let mut acc: u64 = 0;
+                    for h in f {
+                        acc ^= h.value().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                    }
+                    mix(acc);
+                    mix(f.len() as u64);
+                }
+                None => mix(u64::MAX - 1),
+            }
+            k
+        };
         {
-            let held = self.model_static_wires.borrow();
-            if let Some((epoch, gen, arc)) = held.as_ref() {
+            let sets = self.resident_wire_sets.borrow();
+            if let Some((epoch, gen, arc)) = sets.get(&key) {
                 if *epoch == self.geometry_epoch {
                     self.last_model_wire_gen.set(*gen);
                     return Arc::clone(arc);
@@ -2414,41 +2462,46 @@ impl Scene {
             }
         }
         // Build once: full tessellation, no cull (region = None), no zoom LOD
-        // (wpp = None). Held for the life of this geometry epoch.
-        // In a BEDIT block editor the resident set is the edited block's own
-        // (block-local) entities; otherwise model space. (#261)
-        let block = self
-            .block_edit_block
-            .unwrap_or_else(|| self.model_space_block_handle());
+        // (wpp = None) — for every space, exactly like the Model static-hold.
         let t_tess = iced::time::Instant::now();
-        let mut wires = self.wires_for_block_culled(block, None, None, None, None);
-        self.apply_refedit_fade(&mut wires, self.bg_color);
+        let mut wires =
+            self.wires_for_block_culled(block, None, None, frozen_layers, anno_scale_override);
+        self.apply_refedit_fade(&mut wires, bg);
         self.last_tess_ms.set(t_tess.elapsed().as_secs_f32() * 1000.0);
         self.last_tess_wires.set(wires.len());
         let arc = Arc::new(wires);
         let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
         self.last_model_wire_gen.set(gen);
-        *self.model_static_wires.borrow_mut() = Some((self.geometry_epoch, gen, Arc::clone(&arc)));
+        let mut sets = self.resident_wire_sets.borrow_mut();
+        // Evict stale entries (older epochs / abandoned keys) so switching
+        // spaces or re-scaling a viewport can't accumulate dead full sets.
+        let cur_epoch = self.geometry_epoch;
+        sets.retain(|_, (e, ..)| *e == cur_epoch);
+        if sets.len() > 8 {
+            sets.clear();
+        }
+        sets.insert(key, (cur_epoch, gen, Arc::clone(&arc)));
         arc
     }
 
     /// Cached tessellation of the current layout block's paper-space entities,
-    /// shared by `entity_wires_arc()` and the GPU sheet viewport.
+    /// shared by `entity_wires_arc()` and the GPU sheet viewport. A thin
+    /// "dressing" layer over the unified resident set (border drop +
+    /// printable-area guide) — camera-independent, epoch-keyed, so paper
+    /// pan/zoom never re-tessellates the sheet.
     fn paper_sheet_wires_arc(&self) -> Arc<Vec<WireModel>> {
-        let key = (self.geometry_epoch, self.camera_generation);
         {
             let cache = self.paper_sheet_cache.borrow();
-            if let Some((cached_key, ref arc)) = *cache {
-                if cached_key == key {
+            if let Some((epoch, gen, ref arc)) = *cache {
+                if epoch == self.geometry_epoch {
+                    self.last_model_wire_gen.set(gen);
                     return Arc::clone(arc);
                 }
             }
         }
         let layout_block = self.current_layout_block_handle();
-        let t_tess = iced::time::Instant::now();
-        let mut wires = self.wires_for_block(layout_block);
-        self.last_tess_ms.set(t_tess.elapsed().as_secs_f32() * 1000.0);
-        self.last_tess_wires.set(wires.len());
+        let base = self.resident_wires_for(layout_block, None, None);
+        let mut wires = (*base).clone();
         // The overall "sheet" viewport now IS the paper view itself, so its own
         // border rectangle must not be drawn as an entity on the sheet.
         let sheet = self.current_layout_sheet_viewport_handle();
@@ -2456,18 +2509,15 @@ impl Scene {
             let sheet_name = sheet.value().to_string();
             wires.retain(|w| w.name != sheet_name);
         }
-        let bg = if self.current_layout == "Model" {
-            self.bg_color
-        } else {
-            self.paper_bg_color
-        };
-        self.apply_refedit_fade(&mut wires, bg);
         // Printable-area guide (paper inset by plot margins), paper space only.
         if let Some(pa) = self.printable_area_wire() {
             wires.push(pa);
         }
         let arc = Arc::new(wires);
-        *self.paper_sheet_cache.borrow_mut() = Some((key, Arc::clone(&arc)));
+        let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
+        self.last_model_wire_gen.set(gen);
+        *self.paper_sheet_cache.borrow_mut() =
+            Some((self.geometry_epoch, gen, Arc::clone(&arc)));
         arc
     }
 
@@ -2478,8 +2528,9 @@ impl Scene {
         let key = (self.geometry_epoch, self.camera_generation);
         {
             let cache = self.wire_cache.borrow();
-            if let Some((cached_key, ref arc)) = *cache {
+            if let Some((cached_key, gen, ref arc)) = *cache {
                 if cached_key == key {
+                    self.last_model_wire_gen.set(gen);
                     return Arc::clone(arc);
                 }
             }
@@ -2499,10 +2550,14 @@ impl Scene {
             return self.model_tile_wires_arc(0, &cam, 1.0, 1.0);
         }
         // Paper space: extend sheet wires with projected viewport content.
+        // This composite is the CPU pick/snap set; the projection follows the
+        // paper camera, so the key keeps `camera_generation`.
         let mut wires = (*self.paper_sheet_wires_arc()).clone();
         wires.extend(self.viewport_content_wires(layout_block, None, None));
         let arc = Arc::new(wires);
-        *self.wire_cache.borrow_mut() = Some((key, Arc::clone(&arc)));
+        let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
+        self.last_model_wire_gen.set(gen);
+        *self.wire_cache.borrow_mut() = Some((key, gen, Arc::clone(&arc)));
         arc
     }
 
@@ -3589,8 +3644,12 @@ impl Scene {
         // Frozen-layer / anno-override viewport paths bypass (their params would
         // thrash a shared memo). Hit-test also passes `view_aabb == None` but is
         // not the Model block, so it never lands on the resident branch.
-        let base_ok =
-            is_model_block && frozen_layers.is_none() && anno_scale_override.is_none();
+        // An empty vp-frozen set and an anno override are memo-compatible: the
+        // guard hash below mixes anno/bg, so a param change invalidates rather
+        // than corrupts. Only a NON-empty frozen set (entity subset changes)
+        // bypasses the memo.
+        let frozen_empty = frozen_layers.map(|f| f.is_empty()).unwrap_or(true);
+        let base_ok = is_model_block && frozen_empty;
         // Kill-switch: `OCS_NO_RESIDENT_MEMO` reverts the resident set to the old
         // full re-tessellation on every edit, in case a mutation site is ever
         // found that edits geometry without dropping its handle from the memo.
@@ -3963,7 +4022,7 @@ impl Scene {
         // Prefer the already-computed wire AABB cache when available — avoids re-tessellating.
         if self.current_layout == "Model" {
             let cache = self.wire_cache.borrow();
-            if let Some(((epoch, _cam_gen), ref arc)) = *cache {
+            if let Some(((epoch, _cam_gen), _gen, ref arc)) = *cache {
                 if epoch == self.geometry_epoch {
                     for wire in arc.iter() {
                         let [ax, ay, bx, by] = wire.aabb;

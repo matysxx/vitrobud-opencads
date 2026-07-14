@@ -848,10 +848,8 @@ impl Scene {
         use std::sync::Arc;
         {
             let cache = self.sdf_text_cache.borrow();
-            if let Some((id, verts)) = cache.as_ref() {
-                if *id == wire_content_id {
-                    return verts.clone();
-                }
+            if let Some(verts) = cache.get(&wire_content_id) {
+                return verts.clone();
             }
         }
         let mut out: Vec<crate::scene::pipeline::text_gpu::TextVertex> = Vec::new();
@@ -861,7 +859,12 @@ impl Scene {
             }
         }
         let verts = Arc::new(out);
-        *self.sdf_text_cache.borrow_mut() = Some((wire_content_id, verts.clone()));
+        let mut cache = self.sdf_text_cache.borrow_mut();
+        // Ids change on rebuild, so old keys die naturally; cap bounds churn.
+        if cache.len() > 8 {
+            cache.clear();
+        }
+        cache.insert(wire_content_id, verts.clone());
         verts
     }
 
@@ -1003,64 +1006,54 @@ impl Scene {
         let us = (visible_w / full.width).clamp(0.0, 1.0);
         let vs = (visible_h / full.height).clamp(0.0, 1.0);
 
-        // Model tiles all share one resident, camera-independent wire set
-        // (`model_tile_wires_arc` holds it static). `tile_wire_gen` is that
-        // set's content id: stable across camera moves, so the GPU wire upload
-        // and the Face3D split below are skipped every frame the geometry is
-        // unchanged. The paper-space sources have no stable id and force a
-        // re-upload.
-        let (base_arc, tile_wire_gen) = if let Some(tile_idx) = inst.tile_idx {
+        // EVERY wire source is resident + camera-independent now (unified
+        // static-hold, `resident_wires_for`) and stamps its stable
+        // [`WIRE_CONTENT_GEN`] id into `last_model_wire_gen` — Model tiles,
+        // the paper sheet, content viewports and the pick composite alike. So
+        // the GPU wire upload, the Face3D split and the SDF text gather below
+        // are all skipped while the content is unchanged, and
+        // `render_signature` stays stable so paper hits the single-blit scene
+        // cache exactly like Model.
+        let base_arc = if let Some(tile_idx) = inst.tile_idx {
             let aspect = if full.height > 0.0 {
                 full.width / full.height
             } else {
                 1.0
             };
-            let arc = self.model_tile_wires_arc(tile_idx, &inst.camera, aspect, full.height);
-            (arc, Some(self.last_model_wire_gen.get()))
+            self.model_tile_wires_arc(tile_idx, &inst.camera, aspect, full.height)
         } else if inst.paper_sheet {
             // The sheet renders the paper block's own entities + viewport
             // borders — NOT the projected viewport content (the GPU content
             // viewports draw that themselves).
-            (self.paper_sheet_wires_arc(), None)
+            self.paper_sheet_wires_arc()
         } else if inst.handle == acadrust::Handle::NULL {
-            (self.entity_wires_arc(), None)
+            self.entity_wires_arc()
         } else {
-            (self.model_wires_for_viewport_arc(inst.handle, full.height), None)
+            self.model_wires_for_viewport_arc(inst.handle, full.height)
         };
         // Wire-buffer content id for the upload gate. Preview / interim wires
         // are NOT part of this buffer anymore (they go in a separate per-frame
-        // overlay buffer below), so the base id is the stable tile content gen
-        // — a drag no longer re-uploads the whole base wire set every move.
-        // Non-tile paths have no stable id and force a re-upload.
-        let wire_content_id = match tile_wire_gen {
-            Some(g) => g,
-            None => {
-                let n = self.wire_force_nonce.get().wrapping_add(1);
-                self.wire_force_nonce.set(n);
-                n | (1u64 << 63)
-            }
-        };
+        // overlay buffer below), so the base id is the source's stable content
+        // gen — a drag or camera move never re-uploads the base wire set.
+        let wire_content_id = self.last_model_wire_gen.get();
         // Split Face3D wires from the rest. The split is content-only (keyed
         // by the wire-set content id), so while the geometry is unchanged it's
         // memoized rather than re-walking every wire (handle lookup + clone)
-        // each frame. Non-tile paths have no stable id and split inline.
-        let (face3d_wires, other_arc) = match tile_wire_gen {
-            Some(gen) => {
-                let cached = {
-                    let c = self.split_cache.borrow();
-                    c.as_ref().filter(|(g, ..)| *g == gen).map(|(_, f, o)| (f.clone(), o.clone()))
-                };
-                cached.unwrap_or_else(|| {
-                    let (f, o) = split_face3d_wires(&base_arc, &self.document);
-                    let (fa, oa) = (Arc::new(f), Arc::new(o));
-                    *self.split_cache.borrow_mut() = Some((gen, fa.clone(), oa.clone()));
-                    (fa, oa)
-                })
-            }
-            None => {
+        // each frame — for every source, since all ids are stable now.
+        let (face3d_wires, other_arc) = {
+            let cached = { self.split_cache.borrow().get(&wire_content_id).cloned() };
+            cached.unwrap_or_else(|| {
                 let (f, o) = split_face3d_wires(&base_arc, &self.document);
-                (Arc::new(f), Arc::new(o))
-            }
+                let (fa, oa) = (Arc::new(f), Arc::new(o));
+                let mut c = self.split_cache.borrow_mut();
+                // Ids change on rebuild, so old keys die naturally; the cap
+                // just bounds pathological churn.
+                if c.len() > 8 {
+                    c.clear();
+                }
+                c.insert(wire_content_id, (fa.clone(), oa.clone()));
+                (fa, oa)
+            })
         };
         // Base wire set — the cached `other` Arc directly, never cloned to
         // append overlays. Preview / interim wires ride in their own small

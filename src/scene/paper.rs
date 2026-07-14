@@ -392,11 +392,18 @@ impl Scene {
     fn model_wires_for_viewport(
         &self,
         vp_handle: Handle,
-        screen_height_px: f32,
-    ) -> Vec<WireModel> {
+        _screen_height_px: f32,
+    ) -> Arc<Vec<WireModel>> {
         use rustc_hash::FxHashSet as HSet;
 
-        let (frozen, vp_anno_scale, vp_aspect) = match self.document.get_entity(vp_handle) {
+        // Only content-REAL per-viewport parameters remain: the viewport's own
+        // frozen-layer set and its annotation/PSLTSCALE scale. Frustum cull and
+        // zoom LOD are gone — every space (Model tiles, BEDIT, the sheet, and
+        // content viewports) shares the same un-culled, LOD-free resident
+        // infrastructure, so viewports with default parameters all reuse ONE
+        // static-hold entry (and its stable content id) instead of re-baking
+        // per viewport per zoom step.
+        let (frozen, vp_anno_scale) = match self.document.get_entity(vp_handle) {
             Some(EntityType::Viewport(vp)) => {
                 let f: HSet<Handle> = vp.frozen_layers.iter().cloned().collect();
                 let vp_scale =
@@ -406,95 +413,29 @@ impl Scene {
                 } else {
                     1.0_f32
                 };
-                let aspect = if vp.height > 1e-9 {
-                    (vp.width / vp.height) as f32
-                } else {
-                    1.0_f32
-                };
-                (f, anno, aspect)
+                (f, anno)
             }
-            _ => (HSet::default(), 1.0_f32, 1.0_f32),
+            _ => (HSet::default(), 1.0_f32),
         };
 
-        // Drive the per-viewport view_aabb / wpp from the *effective* camera
-        // `camera_for_viewport` produces — it folds in the auto-fit
-        // fallback for UTM-style files whose saved `view_target` sits at
-        // empty WCS. Without that, the GPU pass would frustum-cull every
-        // entity (saved-view rect doesn't overlap the offset-subtracted
-        // model cluster) and the viewport would render blank.
-        let Some(cam) = self.camera_for_viewport(vp_handle) else {
-            return Vec::new();
-        };
-        let vp_ortho_h = cam.ortho_size();
-        // Rotation-aware cull box: a twisted/rotated viewport sees a rotated
-        // rectangle in world XY, so derive the box from the camera basis.
-        // `None` (tilted view) disables the cull — render everything.
-        let view_aabb = view_cull_aabb(&cam, vp_aspect, 1.25);
-        // World units per on-screen pixel for LOD substitution + curve
-        // tolerance. Tracks the paper-zoom-driven pixel height the
-        // viewport currently occupies.
-        let wpp = if screen_height_px > 1.0 {
-            Some((2.0 * vp_ortho_h) / screen_height_px)
-        } else {
-            None
-        };
-
-        self.wires_for_block_culled(
+        self.resident_wires_for(
             self.model_space_block_handle(),
-            view_aabb,
-            wpp,
-            Some(&frozen),
             Some(vp_anno_scale),
+            Some(&frozen),
         )
     }
 
-    /// Cached per-paper-viewport tessellation. Each viewport's wpp tracks
-    /// the on-paper pixel height (paper-zoom dependent), so the cache key
-    /// includes a quantized form of that height in addition to the
-    /// geometry epoch — every paper zoom step that actually changes the
-    /// LOD bucket invalidates this viewport's entry.
+    /// Resident model wires for a paper content viewport. Just the unified
+    /// static-hold (`resident_wires_for`) keyed on the viewport's frozen set +
+    /// annotation scale — no per-viewport height/view cache anymore: the set is
+    /// camera-independent (no cull, no LOD), so paper zoom and MSPACE frustum
+    /// changes reuse it as-is, and viewports with default parameters all share
+    /// one entry (and one stable content id).
     pub(crate) fn model_wires_for_viewport_arc(
         &self,
         vp_handle: Handle,
         screen_height_px: f32,
     ) -> Arc<Vec<WireModel>> {
-        // Drop sub-pixel noise so trivial paper-zoom jitter does not
-        // re-tessellate a 100k-entity drawing every frame; round to an
-        // integer pixel.
-        let height_key = screen_height_px.max(1.0).round() as u32;
-        // Hash the viewport's own view (pan + zoom + orbit) into the key.
-        // Editing inside the viewport (MSPACE) changes its frustum but does NOT
-        // bump geometry_epoch, so without this the stale frustum-culled subset
-        // is returned and newly-revealed lines stay invisible until the layout
-        // re-tessellates. Quantize to ~1 px / fine steps to ignore jitter.
-        let view_key = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            if let Some(EntityType::Viewport(vp)) = self.document.get_entity(vp_handle) {
-                let vh = vp.view_height.abs().max(1e-6);
-                let q = vh / (screen_height_px.max(1.0) as f64); // model units / px
-                (((vp.view_target.x + vp.view_center.x) / q).round() as i64).hash(&mut h);
-                (((vp.view_target.y + vp.view_center.y) / q).round() as i64).hash(&mut h);
-                ((vh * 1000.0).round() as i64).hash(&mut h);
-                ((vp.view_direction.x * 1000.0).round() as i64).hash(&mut h);
-                ((vp.view_direction.y * 1000.0).round() as i64).hash(&mut h);
-                ((vp.view_direction.z * 1000.0).round() as i64).hash(&mut h);
-            }
-            h.finish()
-        };
-        let key = (self.geometry_epoch, height_key, view_key);
-        {
-            let cache = self.viewport_wire_cache.borrow();
-            if let Some((cached_key, ref arc)) = cache.get(&vp_handle) {
-                if *cached_key == key {
-                    return Arc::clone(arc);
-                }
-            }
-        }
-        let arc = Arc::new(self.model_wires_for_viewport(vp_handle, screen_height_px));
-        self.viewport_wire_cache
-            .borrow_mut()
-            .insert(vp_handle, (key, Arc::clone(&arc)));
-        arc
+        self.model_wires_for_viewport(vp_handle, screen_height_px)
     }
 }
