@@ -979,6 +979,10 @@ pub struct Scene {
     /// Highest epoch whose delta has been evicted from the ring. A consumer
     /// synced older than this can't be caught up incrementally → full rebuild.
     geometry_journal_floor: std::cell::Cell<u64>,
+    /// Count of resident-set rebuilds served by the incremental patch rather than
+    /// a full re-tessellation. Diagnostics + a hook for the oracle test to prove
+    /// the fast path is actually exercised (not silently always falling back).
+    resident_patch_hits: std::cell::Cell<u64>,
 }
 
 impl Scene {
@@ -1062,6 +1066,7 @@ impl Scene {
             resident_tess_guard: std::cell::Cell::new(0),
             geometry_deltas: RefCell::new(std::collections::VecDeque::new()),
             geometry_journal_floor: std::cell::Cell::new(0),
+            resident_patch_hits: std::cell::Cell::new(0),
         }
     }
 
@@ -2629,6 +2634,15 @@ impl Scene {
                 }
             }
         }
+        // Incremental: bring the cached set up to date by replaying just the
+        // changed entities into it, instead of re-cloning + re-sorting the whole
+        // set. Falls back to the full build below when it can't (no cache entry,
+        // journal un-replayable, or a structural assumption violated).
+        if let Some(arc) =
+            self.try_resident_patch(key, block, bg, anno_scale_override, frozen_layers)
+        {
+            return arc;
+        }
         // Build once: full tessellation, no cull (region = None), no zoom LOD
         // (wpp = None) — for every space, exactly like the Model static-hold.
         let t_tess = iced::time::Instant::now();
@@ -2650,6 +2664,165 @@ impl Scene {
         }
         sets.insert(key, (cur_epoch, gen, Arc::clone(&arc)));
         arc
+    }
+
+    /// Bring the resident set for `key` up to the current epoch by replaying only
+    /// the changed entities into the cached assembly. Returns the patched `Arc`,
+    /// or `None` to fall back to a full rebuild — the safe default whenever the
+    /// fast path can't apply: no cache entry, the journal can't be replayed
+    /// (a `full` delta or ring overflow), the cached `Arc` is still shared (so
+    /// its wires can't be moved out), or a structural assumption is violated
+    /// (a wire not named with its entity handle, or an entity's wires not
+    /// contiguous). Because every failure falls back to the identical full
+    /// build, correctness never depends on the fast path being taken.
+    fn try_resident_patch(
+        &self,
+        key: u64,
+        block: Handle,
+        bg: [f32; 4],
+        anno_scale_override: Option<f32>,
+        frozen_layers: Option<&HashSet<Handle>>,
+    ) -> Option<Arc<Vec<WireModel>>> {
+        // The entry must exist, be stale, and be uniquely held so we can move
+        // its wires out rather than deep-clone them.
+        let cached_epoch = {
+            let sets = self.resident_wire_sets.borrow();
+            let entry = sets.get(&key)?;
+            if entry.0 == self.geometry_epoch || Arc::strong_count(&entry.2) != 1 {
+                return None;
+            }
+            entry.0
+        };
+        let deltas = self.replay_since(cached_epoch)?;
+
+        // Take ownership of the cached assembly (guaranteed unique above).
+        let owned: Vec<WireModel> = {
+            let arc = self.resident_wire_sets.borrow_mut().remove(&key)?.2;
+            Arc::try_unwrap(arc).ok()?
+        };
+
+        // Group into per-entity runs. Bail if any wire isn't named with a handle
+        // or an entity's wires aren't contiguous — the from-scratch sort puts
+        // each entity's wires in one contiguous run, so a violation means our
+        // move-and-reassemble model doesn't hold and we must full-rebuild.
+        let mut old_runs: HashMap<Handle, Vec<WireModel>> = HashMap::default();
+        {
+            let mut cur: Option<Handle> = None;
+            let mut run: Vec<WireModel> = Vec::new();
+            for w in owned {
+                let h = Self::handle_from_wire_name(&w.name)?;
+                if Some(h) != cur {
+                    if let Some(ph) = cur.take() {
+                        if old_runs.insert(ph, std::mem::take(&mut run)).is_some() {
+                            return None;
+                        }
+                    }
+                    cur = Some(h);
+                }
+                run.push(w);
+            }
+            if let Some(ph) = cur {
+                if old_runs.insert(ph, run).is_some() {
+                    return None;
+                }
+            }
+        }
+
+        // Re-tessellate the changed entities, replicating the full build's exact
+        // context (anno derivation, empty selection, no cull / no LOD). Faded
+        // copy goes into the assembly; the raw copy refreshes the memo, matching
+        // wires_for_block_culled (memo stores pre-fade wires).
+        let anno = if let Some(a) = anno_scale_override {
+            a
+        } else if self.current_layout == "Model" {
+            self.annotation_scale
+        } else {
+            1.0
+        };
+        let blk = self.block_cache_arc();
+        let empty_sel: HashSet<Handle> = HashSet::default();
+        let mut new_runs: HashMap<Handle, Vec<WireModel>> = HashMap::default();
+        let mut memo_updates: Vec<(Handle, Arc<Vec<WireModel>>)> = Vec::new();
+        for (h, kind) in &deltas {
+            // A changed entity's old run never carries over; unchanged entities
+            // are the only ones left in old_runs after this.
+            old_runs.remove(h);
+            if matches!(kind, ChangeKind::Removed) {
+                continue;
+            }
+            let Some(e) = self.document.get_entity(*h) else {
+                continue;
+            };
+            if !self.resident_entity_visible(e, block, frozen_layers) {
+                continue;
+            }
+            let raw = tessellate_entity(
+                &self.document,
+                &empty_sel,
+                self.active_viewport,
+                bg,
+                anno,
+                e,
+                Some(&blk),
+                None,
+                None,
+            );
+            memo_updates.push((*h, Arc::new(raw.clone())));
+            let mut faded = raw;
+            self.apply_refedit_fade(&mut faded, bg);
+            new_runs.insert(*h, faded);
+        }
+        {
+            let mut memo = self.resident_tess_memo.borrow_mut();
+            for (h, a) in memo_updates {
+                memo.insert(h, a);
+            }
+        }
+
+        // Reassemble in document order, then apply the identical draw-order sort
+        // wires_for_block_culled uses. With a fully-populated memo the full build
+        // also emits in document order (every entity is a hit), so a stable sort
+        // by rank yields byte-identical output — this is what the oracle test
+        // pins.
+        let mut new_vec: Vec<WireModel> = Vec::new();
+        for e in self.document.entities() {
+            let h = e.common().handle;
+            if let Some(run) = new_runs.remove(&h) {
+                new_vec.extend(run);
+            } else if let Some(run) = old_runs.remove(&h) {
+                new_vec.extend(run);
+            }
+        }
+        // A leftover run means its entity vanished from the document without a
+        // Removed delta — an inconsistency we don't try to patch.
+        if !new_runs.is_empty() || !old_runs.is_empty() {
+            return None;
+        }
+        {
+            let cache = self.sort_cache.borrow();
+            if let Some((_, ref idx)) = *cache {
+                if let Some(sort_map) = idx.get(&block) {
+                    new_vec.sort_by_key(|w| {
+                        let key = Self::handle_from_wire_name(&w.name)
+                            .map(|h| h.value())
+                            .unwrap_or(u64::MAX);
+                        sort_map.get(&key).copied().unwrap_or(key)
+                    });
+                }
+            }
+        }
+
+        let arc = Arc::new(new_vec);
+        self.last_tess_wires.set(arc.len());
+        self.resident_patch_hits
+            .set(self.resident_patch_hits.get() + 1);
+        let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
+        self.last_model_wire_gen.set(gen);
+        let cur_epoch = self.geometry_epoch;
+        let mut sets = self.resident_wire_sets.borrow_mut();
+        sets.retain(|_, (e, ..)| *e == cur_epoch);
+        sets.insert(key, (cur_epoch, gen, Arc::clone(&arc)));
+        Some(arc)
     }
 
     /// Cached tessellation of the current layout block's paper-space entities,
@@ -3696,6 +3869,45 @@ impl Scene {
         )
     }
 
+    /// Whether entity `e` renders as direct content of `block_handle` right now:
+    /// visible (not invisible / hidden / on an off-or-frozen layer / frozen
+    /// through the viewport) and owned by the block. Shared by the full resident
+    /// build and the incremental patch so a changed entity is classified
+    /// identically either way.
+    fn resident_entity_visible(
+        &self,
+        e: &EntityType,
+        block_handle: Handle,
+        frozen_layers: Option<&HashSet<Handle>>,
+    ) -> bool {
+        let c = e.common();
+        if c.invisible {
+            return false;
+        }
+        // Isolate / Hide: skip entities the user has hidden.
+        if !self.hidden.is_empty() && self.hidden.contains(&c.handle) {
+            return false;
+        }
+        // Block/BlockEnd are block-defn sentinels, not drawable geometry.
+        if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
+            return false;
+        }
+        let layer = self.document.layers.get(&c.layer);
+        if layer.map(|l| l.flags.off || l.flags.frozen).unwrap_or(false) {
+            return false;
+        }
+        if let Some(frozen) = frozen_layers {
+            if !frozen.is_empty() {
+                if let Some(lh) = layer.map(|l| l.handle) {
+                    if frozen.contains(&lh) {
+                        return false;
+                    }
+                }
+            }
+        }
+        self.belongs_to_visible_block(c.handle, c.owner_handle, block_handle)
+    }
+
     fn wires_for_block_culled(
         &self,
         block_handle: Handle,
@@ -3741,38 +3953,11 @@ impl Scene {
             }
         }
 
-        // Visibility test reused by both paths below.
-        let visibility_ok = |e: &EntityType| -> bool {
-            let c = e.common();
-            if c.invisible {
-                return false;
-            }
-            // Isolate / Hide: skip entities the user has hidden.
-            if !self.hidden.is_empty() && self.hidden.contains(&c.handle) {
-                return false;
-            }
-            // Block/BlockEnd are block-defn sentinels, not drawable geometry.
-            // Without this skip they fall through to fallback_geometry's `_`
-            // arm and emit a 1-unit phantom segment at world_offset that
-            // poisons fit_all and shows up in selection.
-            if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) {
-                return false;
-            }
-            let layer = self.document.layers.get(&c.layer);
-            if layer.map(|l| l.flags.off || l.flags.frozen).unwrap_or(false) {
-                return false;
-            }
-            if let Some(frozen) = frozen_layers {
-                if !frozen.is_empty() {
-                    if let Some(lh) = layer.map(|l| l.handle) {
-                        if frozen.contains(&lh) {
-                            return false;
-                        }
-                    }
-                }
-            }
-            self.belongs_to_visible_block(e.common().handle, c.owner_handle, block_handle)
-        };
+        // Visibility test reused by both paths below — and by the resident
+        // incremental patch, so a changed entity is included/excluded exactly as
+        // a from-scratch build would (no divergence).
+        let visibility_ok =
+            |e: &EntityType| self.resident_entity_visible(e, block_handle, frozen_layers);
 
         // Phase 2.1 — quadtree-driven candidate selection. When a view
         // AABB exists (Model layout with a settled camera), only iterate
@@ -4582,6 +4767,61 @@ mod journal_tests {
         assert_eq!(indexed(&s), full_rebuild(&s), "after erase");
         assert!(indexed(&s).contains(&h3) && indexed(&s).contains(&h1));
         assert!(!indexed(&s).contains(&h2));
+    }
+
+    // Differential oracle for the resident-wire splice: the incrementally
+    // patched resident set must equal a from-scratch rebuild (same wires in the
+    // same draw order) after add / move / erase — and the patch path must run.
+    #[test]
+    fn resident_set_incremental_matches_full_rebuild() {
+        use acadrust::entities::Line;
+        use acadrust::types::Vector3;
+
+        fn line(a: (f64, f64), b: (f64, f64)) -> EntityType {
+            EntityType::Line(Line::from_points(
+                Vector3::new(a.0, a.1, 0.0),
+                Vector3::new(b.0, b.1, 0.0),
+            ))
+        }
+        // Wire names, in order — captures entity attribution + draw order + count.
+        fn resident_names(s: &Scene) -> Vec<String> {
+            let cam = Camera::default();
+            let arc = s.model_tile_wires_arc(0, &cam, 1.0, 1.0);
+            let names: Vec<String> = arc.iter().map(|w| w.name.clone()).collect();
+            drop(arc); // release so the next patch can move the wires out
+            names
+        }
+        fn from_scratch(s: &Scene) -> Vec<String> {
+            s.resident_wire_sets.borrow_mut().clear();
+            resident_names(s)
+        }
+
+        let mut s = Scene::new();
+        let _h1 = s.add_entity(line((0.0, 0.0), (10.0, 10.0)));
+        let h2 = s.add_entity(line((5.0, 5.0), (20.0, 3.0)));
+        let _ = resident_names(&s); // prime the resident cache
+
+        let hits0 = s.resident_patch_hits.get();
+
+        let h3 = s.add_entity(line((1.0, 1.0), (2.0, 2.0)));
+        assert_eq!(resident_names(&s), from_scratch(&s), "resident after add");
+
+        {
+            let mut e = line((100.0, 100.0), (140.0, 90.0));
+            e.common_mut().handle = h3;
+            s.update_entity(e);
+        }
+        assert_eq!(resident_names(&s), from_scratch(&s), "resident after modify");
+
+        s.erase_entities(&[h2]);
+        assert_eq!(resident_names(&s), from_scratch(&s), "resident after erase");
+
+        assert_eq!(
+            s.resident_patch_hits.get(),
+            hits0 + 3,
+            "every one of the add / modify / erase edits must use the incremental \
+             patch, not silently fall back to a full rebuild"
+        );
     }
 
     #[test]
