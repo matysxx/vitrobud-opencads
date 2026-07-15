@@ -1740,24 +1740,43 @@ impl Scene {
     /// DXF SOLID corners are in "Z-order": p0-p1 top, p2-p3 bottom.
     /// Visual quad is p0→p1→p3→p2 (closed).
     pub(super) fn solid_hatch_model(solid: &DxfSolid, color: [f32; 4]) -> HatchModel {
-        let boundary = vec![
-            [
-                (solid.first_corner.x) as f32,
-                (solid.first_corner.y) as f32,
-            ],
-            [
-                (solid.second_corner.x) as f32,
-                (solid.second_corner.y) as f32,
-            ],
-            [
-                (solid.fourth_corner.x) as f32,
-                (solid.fourth_corner.y) as f32,
-            ],
-            [
-                (solid.third_corner.x) as f32,
-                (solid.third_corner.y) as f32,
-            ],
+        // Keep the corners in f64 until the AABB centre is known, then store
+        // each as a small f32 offset from it — same precision-preserving anchor
+        // `hatch_model_from_dxf` uses. Casting the absolute WCS corner straight
+        // to f32 costs ~0.06 units of resolution at UTM magnitudes (~1e6), so
+        // the quad snapped to a grid and the fill drifted off its outline.
+        let corners: [[f64; 2]; 4] = [
+            [solid.first_corner.x, solid.first_corner.y],
+            [solid.second_corner.x, solid.second_corner.y],
+            [solid.fourth_corner.x, solid.fourth_corner.y],
+            [solid.third_corner.x, solid.third_corner.y],
         ];
+        let mut min = [f64::INFINITY; 2];
+        let mut max = [f64::NEG_INFINITY; 2];
+        for c in &corners {
+            for i in 0..2 {
+                if c[i] < min[i] {
+                    min[i] = c[i];
+                }
+                if c[i] > max[i] {
+                    max[i] = c[i];
+                }
+            }
+        }
+        let world_origin = if min[0].is_finite() && min[1].is_finite() {
+            [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5]
+        } else {
+            [0.0, 0.0]
+        };
+        let boundary = corners
+            .iter()
+            .map(|c| {
+                [
+                    (c[0] - world_origin[0]) as f32,
+                    (c[1] - world_origin[1]) as f32,
+                ]
+            })
+            .collect();
         HatchModel {
             boundary: std::sync::Arc::new(boundary),
             boundary_wcs: None,
@@ -1766,7 +1785,7 @@ impl Scene {
             color,
             angle_offset: 0.0,
             scale: 1.0,
-            world_origin: [0.0; 2],
+            world_origin,
             vp_scissor: None,
             draw_depth: 0.0,
         }
