@@ -72,7 +72,22 @@ impl OpenCADStudio {
             // UCSICON OFF      — hide UCS icon in all viewports
             // UCSICON NOORIGIN — show icon but not at origin (show at corner)
             // UCSICON ORIGIN   — show icon at UCS origin
-            cmd if cmd == "UCSICON" || cmd.starts_with("UCSICON ") => {
+            "UCSICON" => {
+                use crate::command::KeywordCommand;
+                let c = KeywordCommand::new(
+                    "UCSICON",
+                    "UCSICON  [On / Off / NoOrigin / Origin]:",
+                    vec![
+                        ("On", "ON", None),
+                        ("Off", "OFF", None),
+                        ("NoOrigin", "NOORIGIN", None),
+                        ("Origin", "ORIGIN", None),
+                    ],
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("UCSICON ") => {
                 let sub = cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase();
                 match sub.as_str() {
                     "ON" | "OFF" | "NOORIGIN" | "ORIGIN" => {
@@ -746,7 +761,20 @@ impl OpenCADStudio {
             //   SCALELISTEDIT              list
             //   SCALELISTEDIT ADD 1:50     add (name is a paper:drawing ratio)
             //   SCALELISTEDIT DELETE 1:50  remove (not the current scale)
-            cmd if cmd == "SCALELISTEDIT" || cmd.starts_with("SCALELISTEDIT ") => {
+            "SCALELISTEDIT" => {
+                use crate::command::KeywordCommand;
+                let c = KeywordCommand::new(
+                    "SCALELISTEDIT",
+                    "SCALELISTEDIT  [Add / Delete]:",
+                    vec![
+                        ("Add", "ADD", Some("SCALELISTEDIT ADD  new scale ratio (e.g. 1:50):")),
+                        ("Delete", "DELETE", Some("SCALELISTEDIT DELETE  scale ratio to remove:")),
+                    ],
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("SCALELISTEDIT ") => {
                 let rest = cmd.trim_start_matches("SCALELISTEDIT").trim();
                 let mut parts = rest.splitn(2, char::is_whitespace);
                 let sub = parts.next().unwrap_or("").to_uppercase();

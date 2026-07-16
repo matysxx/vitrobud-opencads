@@ -409,6 +409,76 @@ impl CadCommand for KeywordCommand {
     }
 }
 
+/// Generic interactive front-end for a two-argument command (LAYMRG source +
+/// target, SETVAR variable + value…). Prompts for the two values in turn and
+/// dispatches `<name> <first> <second>` to the existing inline handler. A bare
+/// Enter on the second value dispatches `<name> <first>` (no second token) so a
+/// getter-style command (SETVAR reading a variable) still works.
+pub struct TwoValuePromptCommand {
+    name: &'static str,
+    prompt1: &'static str,
+    prompt2: &'static str,
+    first: Option<String>,
+}
+
+impl TwoValuePromptCommand {
+    pub fn new(name: &'static str, prompt1: &'static str, prompt2: &'static str) -> Self {
+        Self {
+            name,
+            prompt1,
+            prompt2,
+            first: None,
+        }
+    }
+}
+
+impl CadCommand for TwoValuePromptCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn prompt(&self) -> String {
+        match &self.first {
+            None => self.prompt1.to_string(),
+            Some(_) => self.prompt2.to_string(),
+        }
+    }
+
+    fn wants_text_input(&self) -> bool {
+        true
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        let t = text.trim();
+        match &self.first {
+            None => {
+                if t.is_empty() {
+                    return None;
+                }
+                self.first = Some(t.to_string());
+                None
+            }
+            Some(first) => Some(CmdResult::Dispatch(if t.is_empty() {
+                format!("{} {first}", self.name)
+            } else {
+                format!("{} {first} {t}", self.name)
+            })),
+        }
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        match &self.first {
+            // Enter on the second step with nothing typed = report / no-op form.
+            Some(first) => CmdResult::Dispatch(format!("{} {first}", self.name)),
+            None => CmdResult::Cancel,
+        }
+    }
+}
+
 // ── Result token ──────────────────────────────────────────────────────────
 
 /// Returned by every `CadCommand` method to tell main.rs what to do.

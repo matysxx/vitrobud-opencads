@@ -69,11 +69,20 @@ impl OpenCADStudio {
             }
 
             // ── LINETYPE management ───────────────────────────────────────
-            cmd if cmd == "LINETYPE"
-                || cmd == "LT"
-                || cmd.starts_with("LINETYPE ")
-                || cmd.starts_with("LT ") =>
-            {
+            "LINETYPE" | "LT" => {
+                use crate::command::KeywordCommand;
+                let c = KeywordCommand::new(
+                    "LINETYPE",
+                    "LINETYPE  [List / Set]:",
+                    vec![
+                        ("List", "LIST", None),
+                        ("Set", "SET", Some("LINETYPE SET  linetype name (ByLayer / ByBlock / …):")),
+                    ],
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("LINETYPE ") || cmd.starts_with("LT ") => {
                 let raw_rest = cmd.split_once(' ').map(|(_, r)| r.trim()).unwrap_or("");
                 let parts: Vec<&str> = raw_rest.split_whitespace().collect();
                 let sub = parts.get(0).map(|s| s.to_uppercase()).unwrap_or_default();
@@ -587,7 +596,17 @@ impl OpenCADStudio {
                 return self.dispatch_styleprops(&format!("SETVAR {cmd}"), i);
             }
 
-            cmd if cmd == "SETVAR" || cmd.starts_with("SETVAR ") => {
+            "SETVAR" => {
+                use crate::command::TwoValuePromptCommand;
+                let c = TwoValuePromptCommand::new(
+                    "SETVAR",
+                    "SETVAR  variable name:",
+                    "SETVAR  new value (blank to read):",
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("SETVAR ") => {
                 let rest = cmd.strip_prefix("SETVAR").unwrap_or("").trim();
                 let mut it = rest.splitn(2, char::is_whitespace);
                 let name = it.next().unwrap_or("").to_uppercase();

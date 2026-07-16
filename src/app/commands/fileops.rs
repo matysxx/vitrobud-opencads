@@ -98,10 +98,26 @@ impl OpenCADStudio {
             // chosen style is reported so the mapping is explicit. (`SOLID` is
             // intentionally NOT a visual-style verb — it is the 2D filled-polygon
             // draw command; the shaded ribbon button drives `SetWireframe`.)
-            cmd if cmd == "VS"
-                || cmd == "VSCURRENT"
-                || cmd == "SHADEMODE"
-                || cmd == "HIDDENLINE"
+            "VS" | "VSCURRENT" | "SHADEMODE" => {
+                use crate::command::KeywordCommand;
+                let c = KeywordCommand::new(
+                    "VSCURRENT",
+                    "VSCURRENT  visual style  [Shaded / Wireframe / Hidden / Realistic / Conceptual / X-ray]:",
+                    vec![
+                        ("Shaded", "SHADED", None),
+                        ("Wireframe", "WIREFRAME", None),
+                        ("Hidden", "HIDDEN", None),
+                        ("Realistic", "REALISTIC", None),
+                        ("Conceptual", "CONCEPTUAL", None),
+                        ("X-Ray", "XRAY", None),
+                    ],
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            // The named visual-style shortcuts still switch directly, and the
+            // `<name> <style>` argument form (also what the picker dispatches).
+            cmd if cmd == "HIDDENLINE"
                 || cmd == "XRAY"
                 || cmd == "REALISTIC"
                 || cmd == "CONCEPTUAL"
