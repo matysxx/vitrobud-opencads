@@ -235,7 +235,13 @@ impl OpenCADStudio {
 
             // CUIEXPORT <path> — write the keyboard-shortcut customizations
             // (the drawing-independent CUI data) to a plain "KEY COMMAND" file.
-            cmd if cmd == "CUIEXPORT" || cmd.starts_with("CUIEXPORT ") => {
+            "CUIEXPORT" => {
+                use crate::command::ValuePromptCommand;
+                let c = ValuePromptCommand::new("CUIEXPORT", "CUIEXPORT  file to save shortcuts to:");
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("CUIEXPORT ") => {
                 let path = cmd.trim_start_matches("CUIEXPORT").trim();
                 if path.is_empty() {
                     self.command_line.push_info(
@@ -259,11 +265,13 @@ impl OpenCADStudio {
 
             // CUIIMPORT / CUILOAD <path> — load shortcut customizations from a
             // "KEY COMMAND" file (lines starting with # are ignored).
-            cmd if cmd == "CUIIMPORT"
-                || cmd == "CUILOAD"
-                || cmd.starts_with("CUIIMPORT ")
-                || cmd.starts_with("CUILOAD ") =>
-            {
+            "CUIIMPORT" | "CUILOAD" => {
+                use crate::command::ValuePromptCommand;
+                let c = ValuePromptCommand::new("CUIIMPORT", "CUIIMPORT  shortcuts file to load:");
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("CUIIMPORT ") || cmd.starts_with("CUILOAD ") => {
                 let path = cmd
                     .trim_start_matches("CUIIMPORT")
                     .trim_start_matches("CUILOAD")

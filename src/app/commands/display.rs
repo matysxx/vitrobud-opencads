@@ -914,7 +914,13 @@ impl OpenCADStudio {
 
             // DATALINK <path.csv> — import a CSV file into a table placed at the
             // origin (one-time import; a live re-reading link is future work).
-            cmd if cmd == "DATALINK" || cmd.starts_with("DATALINK ") => {
+            "DATALINK" => {
+                use crate::command::ValuePromptCommand;
+                let c = ValuePromptCommand::new("DATALINK", "DATALINK  path to the .csv file:");
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("DATALINK ") => {
                 let path = cmd.trim_start_matches("DATALINK").trim();
                 if path.is_empty() {
                     self.command_line.push_info(
@@ -968,7 +974,14 @@ impl OpenCADStudio {
             // LANDXMLIMPORT <path> — import survey points (LandXML <CgPoint>
             // elements) as Point objects. Reads the coordinate text content
             // (northing easting elevation) → Point at (easting, northing, elev).
-            cmd if cmd == "LANDXMLIMPORT" || cmd.starts_with("LANDXMLIMPORT ") => {
+            "LANDXMLIMPORT" => {
+                use crate::command::ValuePromptCommand;
+                let c =
+                    ValuePromptCommand::new("LANDXMLIMPORT", "LANDXMLIMPORT  path to the .xml file:");
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("LANDXMLIMPORT ") => {
                 let path = cmd.trim_start_matches("LANDXMLIMPORT").trim();
                 if path.is_empty() {
                     self.command_line.push_info(
