@@ -640,7 +640,18 @@ impl OpenCADStudio {
 
             // HYPERLINK <url> — attach a hyperlink to the selected objects, stored
             // in the standard PE_URL XData record so it round-trips in the file.
-            cmd if cmd == "HYPERLINK" || cmd.starts_with("HYPERLINK ") => {
+            "HYPERLINK" => {
+                use crate::command::SelectThenValueCommand;
+                let has_sel = !self.tabs[i].scene.selected_entities().is_empty();
+                let c = SelectThenValueCommand::new(
+                    "HYPERLINK",
+                    "HYPERLINK  URL to attach:",
+                    has_sel,
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("HYPERLINK ") => {
                 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
                 let url = cmd.strip_prefix("HYPERLINK").unwrap_or("").trim().to_string();
                 if url.is_empty() {

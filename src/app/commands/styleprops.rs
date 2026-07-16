@@ -1848,7 +1848,18 @@ impl OpenCADStudio {
             // ── SCALETEXT — rescale selected Text/MText entities ─────────────────
             // Usage: SCALETEXT <factor>   e.g. SCALETEXT 2
             //        SCALETEXT H <height>  set absolute height
-            cmd if cmd == "SCALETEXT" || cmd.starts_with("SCALETEXT ") => {
+            "SCALETEXT" => {
+                use crate::command::SelectThenValueCommand;
+                let has_sel = !self.tabs[i].scene.selected_entities().is_empty();
+                let c = SelectThenValueCommand::new(
+                    "SCALETEXT",
+                    "SCALETEXT  scale factor (or 'H <height>' for an absolute height):",
+                    has_sel,
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("SCALETEXT ") => {
                 let rest = cmd.trim_start_matches("SCALETEXT").trim();
                 let parts: Vec<&str> = rest.split_whitespace().collect();
                 let selected_handles: Vec<acadrust::Handle> = self.tabs[i]

@@ -595,6 +595,84 @@ impl CadCommand for SelectThenKeywordCommand {
     }
 }
 
+/// Generic interactive front-end for a single-value command that operates on
+/// the current selection (HYPERLINK url, ARCTEXT text, TEXTFIT width, TCASE
+/// aside…). Gathers a selection first when none is set (Enter confirms), then
+/// prompts for one value and dispatches `<name> <value>` to the inline handler,
+/// which reads the still-selected set. A bare Enter on the value step dispatches
+/// `<name>` alone — for commands whose value is optional (TCOUNT, TEXTMASK).
+pub struct SelectThenValueCommand {
+    name: &'static str,
+    value_prompt: &'static str,
+    gathering: bool,
+    selected: Vec<Handle>,
+}
+
+impl SelectThenValueCommand {
+    pub fn new(name: &'static str, value_prompt: &'static str, has_selection: bool) -> Self {
+        Self {
+            name,
+            value_prompt,
+            gathering: !has_selection,
+            selected: Vec::new(),
+        }
+    }
+}
+
+impl CadCommand for SelectThenValueCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn prompt(&self) -> String {
+        if self.gathering {
+            format!("{}  select objects, then press Enter:", self.name)
+        } else {
+            self.value_prompt.to_string()
+        }
+    }
+
+    fn wants_text_input(&self) -> bool {
+        !self.gathering
+    }
+
+    fn is_selection_gathering(&self) -> bool {
+        self.gathering
+    }
+
+    fn on_selection_complete(&mut self, handles: Vec<Handle>) -> CmdResult {
+        self.selected = handles;
+        CmdResult::NeedPoint
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        if self.gathering {
+            return None;
+        }
+        let t = text.trim();
+        if t.is_empty() {
+            return None;
+        }
+        Some(CmdResult::Dispatch(format!("{} {t}", self.name)))
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        if self.gathering {
+            if self.selected.is_empty() {
+                return CmdResult::Cancel;
+            }
+            self.gathering = false;
+            return CmdResult::NeedPoint;
+        }
+        // Value step, nothing typed: the no-argument form (optional value).
+        CmdResult::Dispatch(format!("{} ", self.name))
+    }
+}
+
 // ── Result token ──────────────────────────────────────────────────────────
 
 /// Returned by every `CadCommand` method to tell main.rs what to do.
