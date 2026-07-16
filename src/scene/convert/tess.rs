@@ -702,6 +702,36 @@ pub(crate) fn tessellate_entity(
         }
     }
 
+    // DGN line-style: the linetype's real pattern lives in DGN line-style objects
+    // (empty standard LTYPE), so `resolve_complex_lt` sees nothing. Render its
+    // symbol blocks (e.g. a pipe's end circles) at the polyline endpoints. First
+    // pass — exact dash pattern / placement need the undecoded leaf data.
+    let dgn_syms = convert::dgn_linestyle::symbol_blocks(document, lt_name);
+    if !dgn_syms.is_empty() {
+        let verts = convert::dgn_linestyle::polyline_points(e);
+        if verts.len() >= 2 {
+            let last = *verts.last().unwrap();
+            for (i, sym) in dgn_syms.iter().enumerate() {
+                let at = if i == 0 { verts[0] } else { last };
+                let mut wires = convert::dgn_linestyle::place_block_wires(
+                    document,
+                    sym.block,
+                    sym.scale,
+                    at,
+                    entity_color,
+                    line_weight_px,
+                    anno_scale,
+                    world_per_pixel,
+                    bg_color,
+                );
+                for w in &mut wires {
+                    w.aabb = aabb;
+                }
+                bases.extend(wires);
+            }
+        }
+    }
+
     bases
 }
 

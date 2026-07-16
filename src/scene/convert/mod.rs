@@ -18,6 +18,7 @@ pub mod acis_to_truck {
         None
     }
 }
+pub mod dgn_linestyle;
 pub mod truck_tess;
 pub mod tessellate;
 pub(crate) mod tess;
