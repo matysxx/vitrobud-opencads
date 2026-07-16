@@ -2,9 +2,12 @@
 // export. From v0.8.2 text renders on-screen only as GPU SDF glyph quads
 // (`WireModel::text_verts`); the CPU PDF exporter used to draw only wire
 // stroke `points`, so all text — standalone TEXT/MTEXT and dimension text —
-// vanished from exported PDFs (present in v0.7.6). This drives the real
-// entity -> scene.entity_wires() -> export_pdf path and asserts text is
-// carried to the exporter and lands in the file.
+// vanished from exported PDFs (present in v0.7.6).
+//
+// The op-level placement checks live in `pdf_export`'s own unit tests, which can
+// see `emit_text`'s ops. What only an integration test can cover is that the
+// real entity -> scene.entity_wires() -> export_pdf path carries text at all,
+// per entity kind — so that is what this asserts.
 use acadrust::entities::{Dimension, DimensionLinear, Text};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
@@ -15,35 +18,59 @@ use OpenCADStudio::scene::Scene;
 fn text_and_dim_reach_pdf_export() {
     let mut scene = Scene::new();
 
-    // A standalone TEXT entity.
     let t = Text::with_value("HELLO", Vector3::new(10.0, 10.0, 0.0)).with_height(5.0);
-    scene.add_entity(EntityType::Text(t));
+    let text_h = scene.add_entity(EntityType::Text(t));
 
-    // A linear dimension — its measurement value is synthesized as SDF text
-    // too, so it exercises the dimension-text path the reporters called out.
-    let dim = DimensionLinear::new(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(40.0, 0.0, 0.0),
-    );
-    scene.add_entity(EntityType::Dimension(Dimension::Linear(dim)));
+    // A linear dimension — its measurement value is synthesized as SDF text too,
+    // and dimension text is what #385 was actually filed about.
+    let dim = DimensionLinear::new(Vector3::new(0.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0));
+    let dim_h = scene.add_entity(EntityType::Dimension(Dimension::Linear(dim)));
 
     let wires = scene.entity_wires();
 
-    // The regression symptom was that text produced no exportable geometry.
-    // It must now ride the export wire set as SDF glyph quads.
-    let text_wires = wires.iter().filter(|w| !w.text_verts.is_empty()).count();
+    // Assert per entity, not "some wire somewhere has text": both asserts below
+    // would otherwise be satisfied by the TEXT alone, leaving a dimension-text
+    // regression — the actual reported bug — green.
+    // Tessellation names each wire after its entity handle (see the
+    // `w.name.parse::<u64>()` lookup in the render pipeline).
+    let has_text = |h: acadrust::types::Handle| {
+        let want = h.value().to_string();
+        wires
+            .iter()
+            .any(|w| w.name == want && !w.text_verts.is_empty())
+    };
     assert!(
-        text_wires > 0,
-        "no text_verts on the export wire set — text/dim text would be missing from the PDF"
+        has_text(text_h),
+        "TEXT carries no glyph quads to the exporter"
+    );
+    assert!(
+        has_text(dim_h),
+        "DIMENSION carries no glyph quads to the exporter — dim text would be \
+         missing from the PDF (#385)"
     );
 
-    // End-to-end: exporting with the text present must produce a valid PDF that
-    // is larger than the same wire set with the text stripped — i.e. the glyph
-    // geometry actually reaches the file.
-    let dir = std::env::temp_dir();
-    let p_text = dir.join("ocs_385_with_text.pdf");
-    export_pdf(&wires, &[], &[], 210.0, 297.0, 0.0, 0.0, 0, 1.0, None, &p_text, None)
-        .expect("export with text");
+    // End-to-end: the same wire set with and without text. A private temp dir
+    // keeps concurrent runs (and other users on a shared build host) from
+    // colliding on a fixed name in the shared temp root.
+    let dir = std::env::temp_dir().join(format!("ocs385-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let p_text = dir.join("with_text.pdf");
+    export_pdf(
+        &wires,
+        &[],
+        &[],
+        210.0,
+        297.0,
+        0.0,
+        0.0,
+        0,
+        1.0,
+        None,
+        &p_text,
+        None,
+    )
+    .expect("export with text");
     let with_text = std::fs::read(&p_text).expect("read pdf");
     assert!(with_text.starts_with(b"%PDF"), "not a PDF");
 
@@ -55,9 +82,22 @@ fn text_and_dim_reach_pdf_export() {
             w
         })
         .collect();
-    let p_bare = dir.join("ocs_385_no_text.pdf");
-    export_pdf(&stripped, &[], &[], 210.0, 297.0, 0.0, 0.0, 0, 1.0, None, &p_bare, None)
-        .expect("export without text");
+    let p_bare = dir.join("no_text.pdf");
+    export_pdf(
+        &stripped,
+        &[],
+        &[],
+        210.0,
+        297.0,
+        0.0,
+        0.0,
+        0,
+        1.0,
+        None,
+        &p_bare,
+        None,
+    )
+    .expect("export without text");
     let no_text = std::fs::read(&p_bare).expect("read pdf");
 
     assert!(
@@ -66,4 +106,6 @@ fn text_and_dim_reach_pdf_export() {
         with_text.len(),
         no_text.len()
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

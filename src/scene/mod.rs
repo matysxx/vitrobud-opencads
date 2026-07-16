@@ -4426,6 +4426,11 @@ impl Scene {
                     mix(c.to_bits() as u64);
                 }
                 mix(avp.map(|h| h.value()).unwrap_or(0));
+                // SDF glyph quads bake the atlas UV of each tile, so a growth or
+                // a re-bake (which rescale / rewind every UV) makes memoized text
+                // address the wrong tile — garbage on screen, and a silent miss in
+                // the PDF export's glyph lookup (#385 under #347's conditions).
+                mix(crate::scene::text::sdf_atlas::generation());
                 g
             };
             let (memo_cell, guard_cell) = if resident {

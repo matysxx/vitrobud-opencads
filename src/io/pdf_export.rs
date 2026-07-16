@@ -48,6 +48,15 @@ pub async fn pick_pdf_path_owned(_stem: String) -> Option<std::path::PathBuf> {
     None
 }
 
+/// mm to PDF points (1 mm = 2.834645 pt).
+const MM_TO_PT: f32 = 2.834645;
+/// `wire.line_weight_px` is the on-screen pixel weight: mm × (96/25.4) × 2.0,
+/// where the ×2 is a screen-legibility boost (see render.rs). Print wants the
+/// true physical weight, so undo both the 96-dpi scaling and the boost before
+/// converting to points — otherwise weights export ~2× too heavy in pixels
+/// (and the old `× 0.35278` left them inconsistent with the physical mm).
+const LW_PX_TO_PT: f32 = MM_TO_PT / ((96.0 / 25.4) * 2.0);
+
 // ── Public entry point ────────────────────────────────────────────────────
 
 /// Export `wires` to a PDF file.
@@ -171,7 +180,6 @@ fn build_pdf(
         // Clip rectangle (mm), applied in the pre-scale coordinate space so it
         // matches the wires drawn under the same CTM.
         if let Some((cx, cy, cw, ch)) = clip {
-            const MM_TO_PT: f32 = 2.834645;
             ops.push(Op::DrawPolygon {
                 polygon: Polygon {
                     rings: vec![PolygonRing {
@@ -204,14 +212,6 @@ fn build_pdf(
         }
     }
 
-    // mm to PDF points (1 mm = 2.834645 pt).
-    const MM_TO_PT: f32 = 2.834645;
-    // `wire.line_weight_px` is the on-screen pixel weight: mm × (96/25.4) × 2.0,
-    // where the ×2 is a screen-legibility boost (see render.rs). Print wants the
-    // true physical weight, so undo both the 96-dpi scaling and the boost before
-    // converting to points — otherwise weights export ~2× too heavy in pixels
-    // (and the old `× 0.35278` left them inconsistent with the physical mm).
-    const LW_PX_TO_PT: f32 = MM_TO_PT / ((96.0 / 25.4) * 2.0);
 
     // ── Hatch / wipeout fills (rendered before wires so wires draw on top,
     //    matching paper_canvas ordering). Each `emit_hatch` sets its own
@@ -327,7 +327,7 @@ fn build_pdf(
     // this CPU exporter can't sample, so without this pass all text — including
     // dimension text — is missing from the PDF (issue #385). Drawn after the
     // wires (on top) and under the same rotation/scale/clip CTM.
-    emit_text(&mut ops, wires, ox, oy);
+    emit_text(&mut ops, wires, ox, oy, scale, plot_style);
 
     if needs_state {
         ops.push(Op::RestoreGraphicsState);
@@ -547,7 +547,14 @@ fn adapt_text_color([r, g, b]: [f32; 3]) -> [f32; 3] {
 /// plane rect — so a stroke (LFF) font emits polylines and a filled TrueType
 /// glyph emits filled triangles, exactly where the SDF quad sits.
 #[cfg(not(target_arch = "wasm32"))]
-fn emit_text(ops: &mut Vec<Op>, wires: &[WireModel], ox: f32, oy: f32) {
+fn emit_text(
+    ops: &mut Vec<Op>,
+    wires: &[WireModel],
+    ox: f32,
+    oy: f32,
+    scale: f32,
+    plot_style: Option<&PlotStyleTable>,
+) {
     use crate::scene::text::sdf_atlas;
 
     if wires.iter().all(|w| w.text_verts.is_empty()) {
@@ -561,16 +568,34 @@ fn emit_text(ops: &mut Vec<Op>, wires: &[WireModel], ox: f32, oy: f32) {
         (atlas.export_table(), sdf_atlas::uv_key(atlas.solid_uv()))
     };
 
-    const MM_TO_PT: f32 = 2.834645;
-    // Match the wire pass: screen-px weight → true physical points.
-    const LW_PX_TO_PT: f32 = MM_TO_PT / ((96.0 / 25.4) * 2.0);
+    // `Op::SetLineDashPattern` is persistent graphics state and the wire pass
+    // above only re-emits it on change, so whatever the last wire needed is
+    // still active here — without this reset a drawing whose last wire carries a
+    // HIDDEN/CENTER linetype prints its glyph outlines dashed.
+    ops.push(Op::SetLineDashPattern {
+        dash: LineDashPattern::default(),
+    });
 
     for wire in wires {
         let verts = &wire.text_verts;
         if verts.is_empty() {
             continue;
         }
-        let lw_pt = (wire.line_weight_px * LW_PX_TO_PT).max(0.1);
+        // Mirror the wire pass: CTB colour/lineweight override by ACI, and the
+        // `/ scale` that keeps pen widths absolute under the scaled CTM (a Fit
+        // plot would otherwise render text as near-invisible hairlines).
+        let mut ctb_color: Option<[f32; 3]> = None;
+        let mut lw_override: Option<f32> = None;
+        if let Some(ctb) = plot_style {
+            if wire.aci > 0 {
+                ctb_color = ctb.resolve_color(wire.aci);
+                lw_override = ctb
+                    .resolve_lineweight(wire.aci)
+                    .map(|mm| (mm * MM_TO_PT).max(0.1) / scale.max(1e-6));
+            }
+        }
+        let lw_pt = lw_override
+            .unwrap_or_else(|| (wire.line_weight_px * LW_PX_TO_PT).max(0.1) / scale.max(1e-6));
 
         let mut gi = 0;
         while gi + 6 <= verts.len() {
@@ -581,8 +606,12 @@ fn emit_text(ops: &mut Vec<Op>, wires: &[WireModel], ox: f32, oy: f32) {
             if a < 0.01 {
                 continue;
             }
-            let [r, g, b] =
-                adapt_text_color([quad[0].color[0], quad[0].color[1], quad[0].color[2]]);
+            // A CTB colour override wins over the white-sheet adaptation, exactly
+            // as in the wire pass — else a monochrome.ctb plot plots the lines
+            // black and leaves the text on its screen colour.
+            let [r, g, b] = ctb_color.unwrap_or_else(|| {
+                adapt_text_color([quad[0].color[0], quad[0].color[1], quad[0].color[2]])
+            });
 
             // Quad corners in world XY: verts run [bl, br, tr, bl, tr, tl].
             let bl = glyph_world_xy(&quad[0]);
@@ -629,11 +658,14 @@ fn emit_text(ops: &mut Vec<Op>, wires: &[WireModel], ox: f32, oy: f32) {
                         });
                     }
                 } else {
-                    // Stroke (LFF pen) font or hollow glyph: polylines.
+                    // Stroke (LFF pen) font or hollow glyph: polylines. Bold bakes
+                    // at a 1.7× pen over the same centrelines, so widen to match or
+                    // a bold run prints at regular weight.
                     ops.push(Op::SetOutlineColor {
                         col: Color::Rgb(Rgb { r, g, b, icc_profile: None }),
                     });
-                    ops.push(Op::SetOutlineThickness { pt: Pt(lw_pt) });
+                    let pen = if ge.bold { lw_pt * 1.7 } else { lw_pt };
+                    ops.push(Op::SetOutlineThickness { pt: Pt(pen) });
                     for stroke in &ge.strokes {
                         if stroke.len() < 2 {
                             continue;
@@ -723,23 +755,23 @@ mod tests {
     // Regression for #385: SDF text (`text_verts`) must be re-emitted as vector
     // draw ops. Before the fix the exporter ignored `text_verts` entirely, so a
     // text-only wire produced no glyph geometry — dimensions/text vanished.
+    //
+    // The box is derived from the run's own parameters (origin + the 10.0 height
+    // `text_wire` lays out at) rather than from the quads the mapping reads, so
+    // it pins placement/scale independently: a wrong origin, a dropped `anno`, a
+    // px-vs-mm mixup or an ox/oy misuse all move the ink out of it.
+    //
+    // It does NOT catch a mirrored corner assignment (bl <-> tl): the atlas plane
+    // rect is the ink bbox plus a symmetric SDF spread, so a mirror maps the ink
+    // box onto itself and no box-based assert can see it. The vertex order that
+    // relies on is pinned by `text_gpu`'s own tests instead.
     #[test]
-    fn sdf_text_emits_vector_ops_within_glyph_bounds() {
+    fn sdf_text_emits_vector_ops_at_the_run_position() {
         let origin = [100.0, 50.0, 0.0];
         let wire = text_wire("AB", origin);
 
-        // World bbox of the glyph quads — every emitted point must land inside.
-        let (mut nx, mut ny, mut xx, mut xy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for v in &wire.text_verts {
-            let (x, y) = (v.pos[0] + v.pos_low[0], v.pos[1] + v.pos_low[1]);
-            nx = nx.min(x);
-            xx = xx.max(x);
-            ny = ny.min(y);
-            xy = xy.max(y);
-        }
-
         let mut ops: Vec<Op> = Vec::new();
-        emit_text(&mut ops, std::slice::from_ref(&wire), 0.0, 0.0);
+        emit_text(&mut ops, std::slice::from_ref(&wire), 0.0, 0.0, 1.0, None);
 
         let lines = ops
             .iter()
@@ -747,20 +779,35 @@ mod tests {
             .count();
         assert!(lines > 0, "stroke text emitted no polylines (ops: {})", ops.len());
 
-        // Mapped points (Pt = mm × 2.834645, ox/oy = 0) sit within the bbox.
-        const MM_TO_PT: f32 = 2.834645;
-        let eps = 1.0; // mm slack for the SDF plane spread past the ink.
+        // "AB" at height 10 from (100, 50) inks a box starting at the origin, at
+        // most 2 glyphs wide and one cap-height tall. `eps` covers the SDF plane
+        // spread past the ink.
+        let eps = 1.0_f32;
+        let (x0, y0) = (origin[0] as f32, origin[1] as f32);
+        let (x1, y1) = (x0 + 2.0 * 10.0 + eps, y0 + 10.0 + eps);
+        let (mut gx0, mut gy0, mut gx1, mut gy1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for o in &ops {
             if let Op::DrawLine { line } = o {
                 for lp in &line.points {
+                    // Pt = mm × MM_TO_PT, and ox/oy are 0 here.
                     let (x, y) = (lp.p.x.0 / MM_TO_PT, lp.p.y.0 / MM_TO_PT);
                     assert!(
-                        x >= nx - eps && x <= xx + eps && y >= ny - eps && y <= xy + eps,
-                        "glyph point ({x},{y}) outside bbox [{nx},{ny},{xx},{xy}]"
+                        x >= x0 - eps && x <= x1 && y >= y0 - eps && y <= y1,
+                        "glyph point ({x},{y}) outside the run's world box \
+                         [{x0},{y0}]..[{x1},{y1}] — mis-placed or mis-scaled mapping?"
                     );
+                    gx0 = gx0.min(x);
+                    gy0 = gy0.min(y);
+                    gx1 = gx1.max(x);
+                    gy1 = gy1.max(y);
                 }
             }
         }
+        // …and it must actually span the run, not collapse into a corner.
+        assert!(
+            gx1 - gx0 > 2.0 && gy1 - gy0 > 2.0,
+            "glyph ink collapsed: [{gx0},{gy0}]..[{gx1},{gy1}]"
+        );
     }
 
     // End-to-end: a page whose only content is SDF text produces a larger PDF
