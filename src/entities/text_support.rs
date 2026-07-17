@@ -381,7 +381,7 @@ pub fn adapt_mtext_paragraphs(
 ) -> Vec<MTextLine> {
     use acadrust::entities::mtext_format::{
         parse_mtext, MTextColor, MTextLineAlignment, MTextParagraphAlignment, MTextScalar,
-        SpanProperties, StackingType,
+        ParagraphProperties, SpanProperties, StackingType,
     };
 
     let entity_height = entity_height.max(1e-6);
@@ -411,23 +411,54 @@ pub fn adapt_mtext_paragraphs(
         }
     }
 
+    // A `\p...;` block sets the paragraph's alignment/indents/tabs and stays in
+    // force until the next `\p` — a paragraph opened by a bare `\P` / `\N`
+    // inherits it. The parser records only the literal codes (a paragraph with
+    // no `\p` carries none), so persistence is applied here: without it, the
+    // second line of a centred or right column (`\pxqc;col2\P≡`) would fall back
+    // to the left edge while its heading stayed aligned.
+    let has_own_props = |p: &ParagraphProperties| {
+        p.alignment
+            .as_ref()
+            .is_some_and(|a| !matches!(a, MTextParagraphAlignment::Default))
+            || p.first_line_indent.is_some()
+            || p.left_margin.is_some()
+            || p.right_margin.is_some()
+            || !p.tab_stops.is_empty()
+    };
+
     let mut lines: Vec<MTextLine> = Vec::new();
+    let mut carried: Option<(Option<ParagraphAlign>, f32, f32, f32, Vec<TabStop>)> = None;
     for para in &doc.paragraphs {
         let props = &para.properties;
+        let (align, indent_first, indent_left, indent_right, tab_stops) =
+            if has_own_props(props) || carried.is_none() {
+                let v = (
+                    props.alignment.and_then(map_align),
+                    props.first_line_indent.unwrap_or(0.0) as f32,
+                    props.left_margin.unwrap_or(0.0) as f32,
+                    props.right_margin.unwrap_or(0.0) as f32,
+                    props
+                        .tab_stops
+                        .iter()
+                        .map(|&p| TabStop {
+                            position: p as f32,
+                            kind: TabKind::Left,
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                carried = Some(v.clone());
+                v
+            } else {
+                carried.clone().unwrap()
+            };
         let mut line = MTextLine {
-            align: props.alignment.and_then(map_align),
+            align,
             starts_column: para.starts_column,
-            indent_first: props.first_line_indent.unwrap_or(0.0) as f32,
-            indent_left: props.left_margin.unwrap_or(0.0) as f32,
-            indent_right: props.right_margin.unwrap_or(0.0) as f32,
-            tab_stops: props
-                .tab_stops
-                .iter()
-                .map(|&p| TabStop {
-                    position: p as f32,
-                    kind: TabKind::Left,
-                })
-                .collect(),
+            indent_first,
+            indent_left,
+            indent_right,
+            tab_stops,
             runs: Vec::new(),
         };
         for span in &para.spans {
@@ -558,13 +589,25 @@ pub enum AtomKind {
     },
 }
 
+// A `\S` stack is measured against the height of the run it sits in, and that
+// run has usually already been dropped for the purpose — `\H0.7x;\S1/2;\H1.429x;`
+// is how a 70 %-scaled fraction is spelled, so the 0.7 *is* the fraction's size.
+// Shrinking again on top of it is what buries the halves.
+//
+// So a half is near the full run height and the stack ends up about twice that:
+// it is meant to grow past the line, numerator above the cap and denominator on
+// the baseline — not to be squeezed into one line's worth of height.
+//
+// The three must stay ordered — denominator cap, then rule, then numerator
+// baseline — or the rule cuts through a half.
 /// Each half of a `\S` stack, as a fraction of the run's own height.
-pub const STACK_HALF_SCALE: f32 = 0.55;
-/// Baseline of the numerator, as a fraction of the run's height above the
-/// denominator's. Leaves a gap the fraction rule sits in.
-pub const STACK_RAISE: f32 = 0.68;
-/// Height of the fraction rule above the denominator's baseline.
-pub const STACK_BAR_Y: f32 = 0.60;
+pub const STACK_HALF_SCALE: f32 = 0.85;
+/// Height of the fraction rule above the denominator's baseline, as a fraction
+/// of the run's height. Sits just clear of the denominator's cap.
+pub const STACK_BAR_Y: f32 = 0.95;
+/// Baseline of the numerator above the denominator's, as a fraction of the run's
+/// height. Clears the rule.
+pub const STACK_RAISE: f32 = 1.05;
 
 #[derive(Clone)]
 pub struct LayoutAtom {
@@ -1692,5 +1735,3 @@ mod v_anchor_tests {
         }
     }
 }
-
-
