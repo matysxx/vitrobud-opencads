@@ -1044,9 +1044,11 @@ pub fn tessellate(
                         .into_iter()
                         .map(|[x, y, z]| [x, y, z])
                         .collect();
+                    // A wide polyline arrives here: its band is pick geometry.
+                    let (pick_tris, pick_tris_low) = points_to_ds(te.pick_tris);
                     return vec![WireModel {
-                        pick_tris: Vec::new(),
-                        pick_tris_low: Vec::new(),
+                        pick_tris,
+                        pick_tris_low,
             dash_from_start: false,
             dash_align_end: None,
             text_verts: Vec::new(),
@@ -1205,9 +1207,11 @@ pub fn tessellate(
                     .into_iter()
                     .map(|[x, y, z]| [x, y, z])
                     .collect();
+                // A wide polyline with PLINEGEN=0 arrives here.
+                let (pick_tris, pick_tris_low) = points_to_ds(te.pick_tris);
                 return vec![WireModel {
-                    pick_tris: Vec::new(),
-                    pick_tris_low: Vec::new(),
+                    pick_tris,
+                    pick_tris_low,
             dash_from_start: false,
             dash_align_end: None,
             text_verts: Vec::new(),

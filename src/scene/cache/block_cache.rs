@@ -444,11 +444,16 @@ fn tessellate_sub_local(
         // SDF text wires have no points/fills — fold in the glyph-quad positions
         // so the view-frustum cull uses the text's real box, not a degenerate
         // point at the block origin (which would drop the text entirely).
+        // `pick_tris` is in here for the same reason `fill_tris` is: hit-testing
+        // rejects on this box before it looks at the triangles, so a box drawn
+        // only around `points` would make a block child's thickness wall or wide
+        // polyline band unpickable — `points` merely bounds those.
         let aabb_local = aabb_from_points_iter(
             wire.points
                 .iter()
                 .copied()
                 .chain(wire.fill_tris.iter().copied())
+                .chain(wire.pick_tris.iter().copied())
                 .chain(wire.text_verts.iter().map(|v| v.pos)),
         );
         let is_fill_only = wire.points.is_empty() && !wire.fill_tris.is_empty();

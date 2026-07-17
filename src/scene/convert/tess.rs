@@ -208,7 +208,7 @@ pub(crate) fn tessellate_entity(
         );
         let ab = entity_aabb(e);
         for w in &mut wires {
-            w.aabb = ab;
+            set_wire_aabb(w, ab);
         }
         return wires;
     }
@@ -321,7 +321,7 @@ pub(crate) fn tessellate_entity(
                             // AABB; only stroke/fill wires take the whole-block
                             // box as a broad-phase pick hint.
                             if !w.points.is_empty() || !w.fill_tris.is_empty() {
-                                w.aabb = aabb;
+                                set_wire_aabb(w, aabb);
                             }
                         }
                         return wires;
@@ -356,7 +356,7 @@ pub(crate) fn tessellate_entity(
             // text — clicking empty space inside the dimension selects nothing,
             // only the lines or the text do.
             if !w.points.is_empty() || !w.fill_tris.is_empty() {
-                w.aabb = aabb;
+                set_wire_aabb(w, aabb);
             }
         }
         return wires;
@@ -380,7 +380,7 @@ pub(crate) fn tessellate_entity(
             // As with dimensions: keep the whole-leader box only on stroke/fill
             // wires; empty SDF-text wires keep their tight glyph-box AABB.
             if !w.points.is_empty() || !w.fill_tris.is_empty() {
-                w.aabb = aabb;
+                set_wire_aabb(w, aabb);
             }
         }
         return wires;
@@ -448,7 +448,7 @@ pub(crate) fn tessellate_entity(
                             // AABB; only stroke/fill wires take the whole-block
                             // box as a broad-phase pick hint.
                             if !w.points.is_empty() || !w.fill_tris.is_empty() {
-                                w.aabb = aabb;
+                                set_wire_aabb(w, aabb);
                             }
                         }
                         return wires;
@@ -478,7 +478,7 @@ pub(crate) fn tessellate_entity(
                 // stroke/fill wires take the whole-table box as a broad-phase
                 // pick hint (matches the dim / mleader / baked-block paths).
                 if !w.points.is_empty() || !w.fill_tris.is_empty() {
-                    w.aabb = aabb;
+                    set_wire_aabb(w, aabb);
                 }
             }
             return wires;
@@ -642,11 +642,12 @@ pub(crate) fn tessellate_entity(
                     // (UNBOUNDED) — otherwise it never culls and stalls snapping on
                     // block-heavy drawings.
                     if w.text_verts.is_empty() {
-                        w.aabb = if sub_aabb == WireModel::UNBOUNDED_AABB {
+                        let box_ = if sub_aabb == WireModel::UNBOUNDED_AABB {
                             wire_points_aabb(w)
                         } else {
                             sub_aabb
                         };
+                        set_wire_aabb(w, box_);
                     }
                 }
                 wires
@@ -698,7 +699,7 @@ pub(crate) fn tessellate_entity(
         // in the Text arm; entity_aabb would mis-place the pick box for MTEXT,
         // so don't clobber it. Every other wire takes the entity AABB.
         if b.text_verts.is_empty() {
-            b.aabb = aabb;
+            set_wire_aabb(b, aabb);
         }
     }
 
@@ -723,7 +724,7 @@ pub(crate) fn tessellate_entity(
             );
             if !wires.is_empty() {
                 for w in &mut wires {
-                    w.aabb = aabb;
+                    set_wire_aabb(w, aabb);
                 }
                 return wires;
             }
@@ -796,7 +797,7 @@ pub(crate) fn tessellate_entity(
                         );
                         for x in &mut w {
                             x.aci = aci;
-                            x.aabb = aabb;
+                            set_wire_aabb(x, aabb);
                             if wall_pat_len > 1e-6 {
                                 x.pattern = wall_pat;
                                 x.pattern_length = wall_pat_len;
@@ -835,7 +836,7 @@ pub(crate) fn tessellate_entity(
                 for w in &mut wires {
                     w.name = host_name.clone();
                     w.aci = aci;
-                    w.aabb = aabb;
+                    set_wire_aabb(w, aabb);
                 }
                 bases.extend(wires);
             }
@@ -1009,6 +1010,37 @@ pub(crate) fn wire_points_aabb(w: &WireModel) -> [f32; 4] {
     }
 }
 
+/// Assign `entity_box` as `w`'s cullable box, widened to cover the wire's
+/// pick-only geometry.
+///
+/// `entity_aabb`'s box comes from acadrust's `bounding_box()`, which for a
+/// polyline is the box of its stored vertices — it knows nothing about the band
+/// a width paints around them, nor the wall a thickness extrudes. Hit-testing
+/// rejects on this box before it looks at `pick_tris`, so a box that stops short
+/// of them makes them silently unpickable: a donut's vertices are two points on
+/// one horizontal line, giving a zero-height box that rejects every click on the
+/// disc it draws.
+///
+/// A no-op for the entities that have no `pick_tris`, which is nearly all.
+pub(crate) fn set_wire_aabb(w: &mut WireModel, entity_box: [f32; 4]) {
+    if w.pick_tris.is_empty() || entity_box == WireModel::UNBOUNDED_AABB {
+        w.aabb = entity_box;
+        return;
+    }
+    let [mut x0, mut y0, mut x1, mut y1] = entity_box;
+    for (i, p) in w.pick_tris.iter().enumerate() {
+        let lo = w.pick_tris_low.get(i).copied().unwrap_or([0.0; 3]);
+        let (x, y) = (p[0] + lo[0], p[1] + lo[1]);
+        if x.is_finite() && y.is_finite() {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    w.aabb = [x0, y0, x1, y1];
+}
+
 pub(crate) fn entity_aabb(e: &acadrust::EntityType) -> [f32; 4] {
     let bbox = e.as_entity().bounding_box();
     let min_x = (bbox.min.x) as f32;
@@ -1054,3 +1086,4 @@ pub(crate) fn is_unindexable_entity(e: &acadrust::EntityType) -> bool {
         E::Insert(_) | E::Viewport(_) | E::Block(_) | E::BlockEnd(_)
     )
 }
+

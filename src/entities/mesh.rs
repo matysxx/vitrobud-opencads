@@ -13,7 +13,7 @@ use crate::scene::model::wire_model::SnapHint;
 /// from vertex 0 is only valid for convex faces — a concave face (e.g. an
 /// L-shaped mesh face) fans into triangles that spill outside the outline. Ear
 /// clipping handles both. Falls back to a fan when the polygon is degenerate.
-fn triangulate_planar(poly: &[[f64; 3]]) -> Vec<[f64; 3]> {
+pub(crate) fn triangulate_planar(poly: &[[f64; 3]]) -> Vec<[f64; 3]> {
     let n = poly.len();
     if n < 3 {
         return Vec::new();

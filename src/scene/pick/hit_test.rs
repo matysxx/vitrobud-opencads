@@ -212,14 +212,15 @@ pub fn click_hit<'a>(
         return Some(n);
     }
 
-    // No drawn surface either. Entities extruded by a thickness draw their wall
-    // as four edges and nothing in between, so the interior is a hole the cursor
-    // falls straight through even though the wall reads as a face. Test the
-    // pick-only wall geometry to close it, front-most first.
+    // No fill of this wire's own either. `pick_tris` closes the surfaces that
+    // `points` only bounds: a thickness wall (drawn as four edges with nothing
+    // between them) and a wide polyline's band (drawn, but by the hatch
+    // pipeline, so no fill hangs off this wire). Without them the cursor falls
+    // through what plainly reads as solid. Front-most wins.
     //
-    // Ranked below `fill_tris` on purpose: those triangles are actually
-    // rendered, these are invisible, and where an opaque face overlaps a wall
-    // the user is looking at the face — so the face is what they mean to click.
+    // Ranked below `fill_tris` because that geometry is this wire's own drawn
+    // surface — where the two overlap, the nearer thing to the eye is decided
+    // by depth, but a wire that has a real fill should win on it first.
     let mut best_wall: Option<(f32, &str)> = None;
     for wire in wires {
         if wire.pick_tris.is_empty() {

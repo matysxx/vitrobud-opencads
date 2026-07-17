@@ -311,6 +311,29 @@ impl BulgeArc {
     }
 }
 
+/// Triangulate the solid bands a `wide_fills` returns into the flat WCS f64
+/// triangle list `TruckEntity::pick_tris` carries, so a wide polyline is
+/// selectable across the band it draws and not just along its centreline.
+///
+/// `origin` and `fills` are that function's own pair: 2-D offsets from the
+/// first vertex, which is the exact frame the band's `HatchModel` renders in
+/// (`world_origin` + boundary, no elevation). Building the pick geometry from
+/// the same numbers keeps hit-testing on whatever the fill actually drew.
+///
+/// An arc band is an annular sector — concave on its inner edge — so this ear
+/// clips rather than fans.
+pub(crate) fn wide_band_tris(origin: [f64; 2], fills: &[Vec<[f32; 2]>]) -> Vec<[f64; 3]> {
+    let mut out = Vec::new();
+    for poly in fills {
+        let ring: Vec<[f64; 3]> = poly
+            .iter()
+            .map(|&[x, y]| [origin[0] + x as f64, origin[1] + y as f64, 0.0])
+            .collect();
+        out.extend(crate::entities::mesh::triangulate_planar(&ring));
+    }
+    out
+}
+
 /// Compute the filled boundary polygon for one polyline segment.
 /// For straight segments: a rectangle/trapezoid.
 /// For arc segments: an arc band (outer arc + reversed inner arc).
@@ -392,3 +415,4 @@ pub(crate) fn polyline_segment_fill(
         Some(boundary)
     }
 }
+

@@ -96,15 +96,22 @@ pub struct WireModel {
     /// tessellation from CAD f64 fills it so fills stay precise at UTM scale.
     pub fill_tris_low: Vec<[f32; 3]>,
     /// Pre-triangulated pick-only geometry: flat vertex list, 3 per triangle.
-    /// Hit-testing treats these as solid, the renderer never uploads them.
+    /// Hit-testing treats these as solid; this wire's own draw never uses them.
     ///
-    /// Non-empty only for entities extruded by a DXF thickness (code 39): the
-    /// swept wall between each base segment and its extruded copy. The wall is
-    /// drawn as its four wireframe edges (which live in [`points`]), so it has
-    /// no fill geometry to pick — without this the interior is a hole the
-    /// cursor falls through. Separate from [`fill_tris`] because that channel
-    /// reaches the GPU, and a wall that renders shaded would change how every
-    /// thickness drawing looks.
+    /// Carries the interior of things whose surface the cursor would otherwise
+    /// fall through, because [`points`] only bounds them:
+    ///
+    /// - An entity extruded by a DXF thickness (code 39) — the swept wall
+    ///   between each base segment and its extruded copy. Drawn as its four
+    ///   wireframe edges, with nothing in between to pick.
+    /// - A wide polyline (codes 43 / 40 / 41) — the solid band. It *is* drawn,
+    ///   but by the hatch pipeline off `wide_fills`, so the wire that carries
+    ///   its centreline has no fill of its own to hit-test.
+    ///
+    /// Separate from [`fill_tris`] because that channel reaches the GPU: a
+    /// thickness wall put there would render shaded and change how every such
+    /// drawing looks, and a polyline band would be drawn a second time on top
+    /// of the hatch that already draws it.
     pub pick_tris: Vec<[f32; 3]>,
     /// Low residual paired with [`pick_tris`] (double-single). Empty = all-zero.
     pub pick_tris_low: Vec<[f32; 3]>,

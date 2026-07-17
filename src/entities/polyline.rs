@@ -303,8 +303,9 @@ fn tessellate_polyline2d(pl: &Polyline2D) -> TruckEntity {
         key_verts.push([p1.x, p1.y, p1.z]);
     }
 
+    let (fill_origin, fills) = wide_fills(pl);
     TruckEntity {
-        pick_tris: Vec::new(),
+        pick_tris: crate::entities::common::wide_band_tris(fill_origin, &fills),
         object: TruckObject::Contour(edges.into_iter().collect::<Wire>()),
         snap_pts: vec![],
         tangent_geoms: tangents,
