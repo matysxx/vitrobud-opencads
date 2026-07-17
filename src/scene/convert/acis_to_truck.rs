@@ -7,8 +7,10 @@
 //
 //   plane-surface   → planar face from the sampled boundary loop
 //   cone-surface    → surface of revolution (cylinder / cone) via rsweep
-//   sphere-surface  → meridian revolved about the pole
-//   torus-surface   → tube circle revolved about the spine
+//   sphere-surface  → bespoke sampler, clipped to the boundary window (truck
+//                     builds a full ball and cannot trim it to a partial face)
+//   torus-surface   → bespoke sampler, clipped to the revolution arc between
+//                     the tube's end caps (truck builds a full closed ring)
 //   spline-surface  → truck BSplineSurface, grid-sampled (see spline_tess)
 //
 // Each face is meshed independently and its triangles are oriented outward
@@ -26,11 +28,11 @@ use acadrust::entities::acis::{
     SatConeSurface, SatDocument, SatFace, SatPlaneSurface, SatSphereSurface, SatTorusSurface,
 };
 
-use crate::scene::model::mesh_model::{MeshLodSet, MeshModel};
 use crate::scene::convert::solid3d_tess::{
     apply_body_transform, body_transform, collect_face_loops, cone_axis_span, tess_cone_face,
     tess_plane_face, tess_sphere_face, tess_torus_face, LodConfig,
 };
+use crate::scene::model::mesh_model::{MeshLodSet, MeshModel};
 
 /// Slightly over 2π so revolution builders close the loop.
 const FULL: f64 = std::f64::consts::TAU + 0.2;
@@ -58,14 +60,6 @@ enum Outward {
         sin: f64,
         cos: f64,
     },
-    /// Sphere: radial from the centre.
-    Sphere { center: [f64; 3] },
-    /// Torus: from the nearest point on the spine circle.
-    Torus {
-        center: [f64; 3],
-        axis: [f64; 3],
-        major: f64,
-    },
 }
 
 impl Outward {
@@ -82,23 +76,6 @@ impl Outward {
                 let h = vdot(d, *axis);
                 let radial = vnorm(vsub(d, vscale(*axis, h)));
                 vnorm(vsub(vscale(radial, *cos), vscale(*axis, *sin)))
-            }
-            Outward::Sphere { center } => vnorm(vsub(p, *center)),
-            Outward::Torus {
-                center,
-                axis,
-                major,
-            } => {
-                let d = vsub(p, *center);
-                let h = vdot(d, *axis);
-                let radial = vsub(d, vscale(*axis, h));
-                let rl = vlen(radial);
-                let spine = if rl > 1e-9 {
-                    vadd(*center, vscale(radial, major / rl))
-                } else {
-                    *center
-                };
-                vnorm(vsub(p, spine))
             }
         }
     }
@@ -187,12 +164,12 @@ fn bespoke_face(
         }
         "sphere-surface" => {
             if let Some(s) = SatSphereSurface::from_record(surf_rec) {
-                tess_sphere_face(&s, LodConfig::HIGH, v, n, i);
+                tess_sphere_face(sat, face, &s, LodConfig::HIGH, v, n, i);
             }
         }
         "torus-surface" => {
             if let Some(t) = SatTorusSurface::from_record(surf_rec) {
-                tess_torus_face(&t, LodConfig::HIGH, v, n, i);
+                tess_torus_face(sat, face, &t, LodConfig::HIGH, v, n, i);
             }
         }
         _ => {}
@@ -227,30 +204,17 @@ fn build_face_group(
             let (faces, out) = cone_faces(sat, face, &cone)?;
             Some((faces, out, tol))
         }
-        "sphere-surface" => {
-            let sphere = SatSphereSurface::from_record(surf_rec)?;
-            let (cx, cy, cz) = sphere.center();
-            let tol = curve_tol(sphere.radius());
-            Some((
-                sphere_faces(&sphere),
-                Outward::Sphere { center: [cx, cy, cz] },
-                tol,
-            ))
-        }
-        "torus-surface" => {
-            let torus = SatTorusSurface::from_record(surf_rec)?;
-            let (cx, cy, cz) = torus.center();
-            let (nx, ny, nz) = torus.normal();
-            // Tube (minor) curvature is the tighter of the two, so sampling it
-            // to the circle tolerance keeps the whole torus at least that smooth.
-            let tol = curve_tol(torus.minor_radius());
-            let out = Outward::Torus {
-                center: [cx, cy, cz],
-                axis: vnorm([nx, ny, nz]),
-                major: torus.major_radius(),
-            };
-            Some((torus_faces(&torus), out, tol))
-        }
+        // Truck builds a sphere as a full revolution and cannot trim it to the
+        // face's boundary, so a partial sphere renders as a whole ball. Route
+        // sphere faces to the bespoke sampler instead — it meshes only the
+        // boundary's parametric window (see `tess_sphere_face`).
+        "sphere-surface" => None,
+        // Like a sphere, truck builds a torus as a full revolution and cannot
+        // trim it to the face's boundary, so an open "C" tube renders as a whole
+        // closed ring. Route torus faces to the bespoke sampler, which meshes
+        // only the revolution arc between the tube's end caps (see
+        // `tess_torus_face` / `torus_phi_range`).
+        "torus-surface" => None,
         _ => None,
     }
 }
@@ -450,50 +414,6 @@ fn cone_boundary_arc(
     (start, span)
 }
 
-// ── Sphere face ──────────────────────────────────────────────────────────────
-
-fn sphere_faces(sphere: &SatSphereSurface) -> Vec<Face> {
-    let (cx, cy, cz) = sphere.center();
-    let r = sphere.radius();
-    let (px, py, pz) = sphere.pole();
-    let (ux, uy, uz) = sphere.u_direction();
-
-    let center = Point3::new(cx, cy, cz);
-    let pole = norm(Vector3::new(px, py, pz));
-    let mut perp = Vector3::new(ux, uy, uz);
-    if perp.magnitude2() < 1e-12 || perp.dot(pole).abs() > 0.999 {
-        perp = perpendicular(pole);
-    } else {
-        perp = norm(perp - pole * perp.dot(pole));
-    }
-
-    let top = builder::vertex(center + pole * r);
-    let meridian: Wire = builder::rsweep(&top, center, perp, Rad(std::f64::consts::PI));
-    let shell: Shell = builder::cone(&meridian, pole, Rad(FULL));
-    shell.face_iter().cloned().collect()
-}
-
-// ── Torus face ───────────────────────────────────────────────────────────────
-
-fn torus_faces(torus: &SatTorusSurface) -> Vec<Face> {
-    let (cx, cy, cz) = torus.center();
-    let (nx, ny, nz) = torus.normal();
-    let (ux, uy, uz) = torus.u_direction();
-    let major = torus.major_radius();
-    let minor = torus.minor_radius();
-
-    let center = Point3::new(cx, cy, cz);
-    let axis = norm(Vector3::new(nx, ny, nz));
-    let udir = norm(Vector3::new(ux, uy, uz));
-    let binormal = norm(axis.cross(udir));
-
-    let ring_center = center + udir * major;
-    let tube_start = builder::vertex(ring_center + axis * minor);
-    let tube: Wire = builder::rsweep(&tube_start, ring_center, binormal, Rad(FULL));
-    let shell: Shell = builder::rsweep(&tube, center, axis, Rad(FULL));
-    shell.face_iter().cloned().collect()
-}
-
 // ── Spline faces (NURBS) ─────────────────────────────────────────────────────
 
 /// Append meshes for every `spline-surface` face, reusing the truck
@@ -577,25 +497,11 @@ fn norm(v: Vector3) -> Vector3 {
     }
 }
 
-/// Any unit vector perpendicular to `v`.
-fn perpendicular(v: Vector3) -> Vector3 {
-    let a = if v.x.abs() < 0.9 {
-        Vector3::unit_x()
-    } else {
-        Vector3::unit_y()
-    };
-    norm(v.cross(a))
-}
-
 // ── Vector helpers ([f64; 3]) ────────────────────────────────────────────────
 
 #[inline]
 fn vsub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-#[inline]
-fn vadd(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 #[inline]
 fn vscale(a: [f64; 3], s: f64) -> [f64; 3] {

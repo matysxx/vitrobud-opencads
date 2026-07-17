@@ -94,17 +94,41 @@ fn tessellate_sat(
             }
             "cone-surface" => {
                 if let Some(cone) = SatConeSurface::from_record(surf_rec) {
-                    tess_cone_face(sat, &face, &cone, lod, &mut verts, &mut normals, &mut indices);
+                    tess_cone_face(
+                        sat,
+                        &face,
+                        &cone,
+                        lod,
+                        &mut verts,
+                        &mut normals,
+                        &mut indices,
+                    );
                 }
             }
             "sphere-surface" => {
                 if let Some(sphere) = SatSphereSurface::from_record(surf_rec) {
-                    tess_sphere_face(&sphere, lod, &mut verts, &mut normals, &mut indices);
+                    tess_sphere_face(
+                        sat,
+                        &face,
+                        &sphere,
+                        lod,
+                        &mut verts,
+                        &mut normals,
+                        &mut indices,
+                    );
                 }
             }
             "torus-surface" => {
                 if let Some(torus) = SatTorusSurface::from_record(surf_rec) {
-                    tess_torus_face(&torus, lod, &mut verts, &mut normals, &mut indices);
+                    tess_torus_face(
+                        sat,
+                        &face,
+                        &torus,
+                        lod,
+                        &mut verts,
+                        &mut normals,
+                        &mut indices,
+                    );
                 }
             }
             "spline-surface" => {
@@ -144,22 +168,26 @@ fn tessellate_acis(
     facet_res: f64,
     isolines: usize,
 ) -> Option<MeshLodSet> {
-    let mut set =
-        if let Some(set) = crate::scene::convert::acis_to_truck::tessellate_sat_truck(sat, name.clone(), color, facet_res) {
-            if std::env::var_os("OCS_TESS_DEBUG").is_some() {
-                let tris = set.lods.first().map(|m| m.indices.len() / 3).unwrap_or(0);
-                eprintln!("acis_tess[{name}]: truck ({tris} tris)");
-            }
-            set
-        } else {
-            // truck couldn't rebuild the shell — fall back to the bespoke sampler.
-            let fallback = tessellate_sat_lods(sat, name.clone(), color, facet_res);
-            eprintln!(
-                "acis_tess[{name}]: manual fallback ({})",
-                if fallback.is_some() { "ok" } else { "empty" }
-            );
-            fallback?
-        };
+    let mut set = if let Some(set) = crate::scene::convert::acis_to_truck::tessellate_sat_truck(
+        sat,
+        name.clone(),
+        color,
+        facet_res,
+    ) {
+        if std::env::var_os("OCS_TESS_DEBUG").is_some() {
+            let tris = set.lods.first().map(|m| m.indices.len() / 3).unwrap_or(0);
+            eprintln!("acis_tess[{name}]: truck ({tris} tris)");
+        }
+        set
+    } else {
+        // truck couldn't rebuild the shell — fall back to the bespoke sampler.
+        let fallback = tessellate_sat_lods(sat, name.clone(), color, facet_res);
+        eprintln!(
+            "acis_tess[{name}]: manual fallback ({})",
+            if fallback.is_some() { "ok" } else { "empty" }
+        );
+        fallback?
+    };
     // Attach the B-rep face-boundary edges plus ISOLINES on curved faces
     // (body-transformed, split into the double-single pair) so the solid's
     // wireframe shows real edges and curved faces read from any angle.
@@ -190,8 +218,11 @@ fn attach_feature_edges(set: &mut MeshLodSet, sat: &SatDocument, isolines: usize
         }
         let (hx, hy, hz) = (x as f32, y as f32, z as f32);
         set.edge_verts.push([hx, hy, hz]);
-        set.edge_verts_low
-            .push([(x - hx as f64) as f32, (y - hy as f64) as f32, (z - hz as f64) as f32]);
+        set.edge_verts_low.push([
+            (x - hx as f64) as f32,
+            (y - hy as f64) as f32,
+            (z - hz as f64) as f32,
+        ]);
     }
 }
 
@@ -252,7 +283,11 @@ fn cone_face_geom(sat: &SatDocument, face: &SatFace) -> Option<ConeFaceGeom> {
     if (h_max - h_min).abs() < 1e-10 || theta_span.abs() < 1e-10 {
         return None;
     }
-    let tan_a = if cos_a.abs() > 1e-9 { sin_a / cos_a } else { 0.0 };
+    let tan_a = if cos_a.abs() > 1e-9 {
+        sin_a / cos_a
+    } else {
+        0.0
+    };
     Some(ConeFaceGeom {
         center: [cx, cy, cz],
         axis,
@@ -311,8 +346,12 @@ fn cone_isolines(sat: &SatDocument, face: &SatFace, count: usize, out: &mut Vec<
     let [cx, cy, cz] = g.center;
     let (r0, r1) = (g.radius + g.h_min * g.tan_a, g.radius + g.h_max * g.tan_a);
     for a in iso_params(g.theta_min, g.theta_span, g.full, count) {
-        out.push(cone_pt(cx, cy, cz, g.axis, g.u_dir, g.v_dir, r0, a, g.h_min));
-        out.push(cone_pt(cx, cy, cz, g.axis, g.u_dir, g.v_dir, r1, a, g.h_max));
+        out.push(cone_pt(
+            cx, cy, cz, g.axis, g.u_dir, g.v_dir, r0, a, g.h_min,
+        ));
+        out.push(cone_pt(
+            cx, cy, cz, g.axis, g.u_dir, g.v_dir, r1, a, g.h_max,
+        ));
     }
 }
 
@@ -372,16 +411,12 @@ fn torus_isolines(sat: &SatDocument, face: &SatFace, count: usize, out: &mut Vec
     let v = cross3(axis, u);
     let major = torus.major_radius();
     let minor = torus.minor_radius();
-    // The face boundary of a tube is just its two end caps, clustered at the
-    // ends — it never covers the revolution arc, so the boundary can't say which
-    // way round the tube runs (a limitation `torus_phi_range` shares). Draw the
-    // full revolution: correct for a closed or nearly-closed ring like this one,
-    // at the cost of over-drawing a short torus fillet, which a later
-    // winding-aware extent would tighten.
+    let (phi_min, phi_span, full) = torus_phi_range(sat, face, [cx, cy, cz], u, v);
+    let phi_total = if full { TAU } else { phi_span };
 
     // Minor (cross-section) circles — constant revolution angle, full tube.
     const M: usize = 20;
-    for phi in iso_params(0.0, TAU, true, count) {
+    for phi in iso_params(phi_min, phi_span, full, count) {
         for t in 0..M {
             let t0 = TAU * (t as f64 / M as f64);
             let t1 = TAU * ((t + 1) as f64 / M as f64);
@@ -390,17 +425,17 @@ fn torus_isolines(sat: &SatDocument, face: &SatFace, count: usize, out: &mut Vec
         }
     }
 
-    // Major (ring-direction) arcs — constant tube angle, swept along the full
-    // revolution. The outer (θ=0) and inner (θ=π) circles are the torus's
+    // Major (ring-direction) arcs — constant tube angle, swept along the face's
+    // revolution arc. The outer (θ=0) and inner (θ=π) circles are the torus's
     // defining profile — the ring outline; without them it reads as disconnected
     // cross-sections. `count.max(2)` guarantees outer + inner even at ISOLINES=1.
-    const RING_SEGS: usize = 64;
+    let ring_segs = (((phi_total / TAU) * 64.0).ceil() as usize).max(6);
     let n_ring = count.max(2);
     for k in 0..n_ring {
         let theta = TAU * (k as f64 / n_ring as f64);
-        for s in 0..RING_SEGS {
-            let p0 = TAU * (s as f64 / RING_SEGS as f64);
-            let p1 = TAU * ((s + 1) as f64 / RING_SEGS as f64);
+        for s in 0..ring_segs {
+            let p0 = phi_min + phi_total * (s as f64 / ring_segs as f64);
+            let p1 = phi_min + phi_total * ((s + 1) as f64 / ring_segs as f64);
             out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, theta, p0));
             out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, theta, p1));
         }
@@ -434,22 +469,112 @@ fn sphere_param_range(
     let (theta_min, theta_span, full) = angular_span(&thetas);
     // Meridians converge at the poles, so pad the colatitude a touch toward each
     // pole the face reaches so the lines meet the rim rather than stopping short.
-    (theta_min, theta_span, full, (phi_min - 0.05).max(0.0), (phi_max + 0.05).min(PI))
+    (
+        theta_min,
+        theta_span,
+        full,
+        (phi_min - 0.05).max(0.0),
+        (phi_max + 0.05).min(PI),
+    )
 }
 
-/// Revolution-angle span of a torus face from its boundary polygon.
-fn torus_phi_range(poly: &[[f64; 3]], center: [f64; 3], u: [f64; 3], v: [f64; 3]) -> (f64, f64, bool) {
-    if poly.len() < 2 {
+/// Revolution-angle arc a torus face spans, walking all its boundary loops.
+///
+/// A partial tube ends in two minor-circle caps sitting in constant-φ planes;
+/// the arc between them is the opening. But the tube body can also carry
+/// interior hole loops where another solid punches through it, so the widest
+/// empty gap is *not* reliably the opening — a hole splits the body into wide
+/// hole-free stretches that masquerade as it. Only a gap flanked by two end
+/// caps is genuinely surface-free, so that is the opening; the body is the rest
+/// of the turn. Returns `(body_start, body_span, full)`.
+pub(crate) fn torus_phi_range(
+    sat: &SatDocument,
+    face: &SatFace,
+    center: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+) -> (f64, f64, bool) {
+    // Below this revolution-angle spread a loop is a minor circle sitting in a
+    // constant-φ plane — a tube end cap. Interference loops (where another solid
+    // punches through the tube) wander several degrees in φ, well above it.
+    const CAP_SPREAD: f64 = 0.15; // rad (~8.6°)
+                                  // Ignore sub-degree gaps *within* a cap's own point cluster; a genuine tube
+                                  // opening is far wider.
+    const MIN_OPENING: f64 = 0.02; // rad (~1.1°)
+
+    let phi_of = |p: [f64; 3]| -> f64 {
+        let rel = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
+        dot3(rel, v).atan2(dot3(rel, u)).rem_euclid(TAU)
+    };
+    // Angular spread of a set of φ values, wrap-aware: the turn minus the widest
+    // gap between them. A cap collapses to ~0; a hole loop keeps its real width.
+    let spread = |phis: &[f64]| -> f64 {
+        if phis.len() < 2 {
+            return 0.0;
+        }
+        let mut s = phis.to_vec();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut gmax = 0.0f64;
+        for i in 0..s.len() {
+            let next = if i + 1 < s.len() {
+                s[i + 1]
+            } else {
+                s[0] + TAU
+            };
+            gmax = gmax.max(next - s[i]);
+        }
+        TAU - gmax
+    };
+
+    // Every boundary point, tagged by whether its loop is a tube end cap.
+    let mut tagged: Vec<(f64, bool)> = Vec::new();
+    let mut lp = face.first_loop();
+    let mut seen: HashSet<i32> = HashSet::default();
+    while !lp.is_null() && seen.insert(lp.0) {
+        let Some(lr) = sat.resolve(lp) else { break };
+        let Some(sl) = SatLoop::from_record(lr) else {
+            break;
+        };
+        let poly = collect_loop_polygon(sat, &sl, 48);
+        lp = sl.next_loop();
+        if poly.is_empty() {
+            continue;
+        }
+        let phis: Vec<f64> = poly.iter().map(|&p| phi_of(p)).collect();
+        let is_cap = spread(&phis) < CAP_SPREAD;
+        for phi in phis {
+            tagged.push((phi, is_cap));
+        }
+    }
+    if tagged.len() < 2 {
         return (0.0, TAU, true);
     }
-    let phis: Vec<f64> = poly
-        .iter()
-        .map(|&p| {
-            let rel = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
-            dot3(rel, v).atan2(dot3(rel, u))
-        })
-        .collect();
-    angular_span(&phis)
+    tagged.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    // The opening is the arc with no surface: a gap flanked on *both* sides by
+    // end-cap points (a hole never bounds the opening). Of those, the tube's own
+    // opening is the narrowest above the intra-cluster noise floor; the body is
+    // the rest of the turn. No cap-cap gap ⇒ the tube closes into a full ring.
+    let n = tagged.len();
+    let mut opening_gap = f64::MAX;
+    let mut body_start = 0.0;
+    for i in 0..n {
+        let (phi_i, cap_i) = tagged[i];
+        let (phi_j, cap_j) = if i + 1 < n {
+            tagged[i + 1]
+        } else {
+            (tagged[0].0 + TAU, tagged[0].1)
+        };
+        let gap = phi_j - phi_i;
+        if cap_i && cap_j && gap > MIN_OPENING && gap < opening_gap {
+            opening_gap = gap;
+            body_start = phi_j.rem_euclid(TAU); // body resumes past the far cap
+        }
+    }
+    if opening_gap == f64::MAX {
+        return (0.0, TAU, true);
+    }
+    (body_start, TAU - opening_gap, false)
 }
 
 /// Reduce a set of angles to a `(min, span, full)` arc. Mirrors `angular_range`'s
@@ -465,7 +590,11 @@ fn angular_span(angles: &[f64]) -> (f64, f64, bool) {
     let mut gap_max = 0.0;
     let mut gap_at = 0usize;
     for i in 0..a.len() {
-        let next = if i + 1 < a.len() { a[i + 1] } else { a[0] + TAU };
+        let next = if i + 1 < a.len() {
+            a[i + 1]
+        } else {
+            a[0] + TAU
+        };
         let gap = next - a[i];
         if gap > gap_max {
             gap_max = gap;
@@ -513,7 +642,11 @@ fn collect_curved_gens(
         let (hx, hy, hz) = (wx as f32, wy as f32, wz as f32);
         (
             [hx, hy, hz],
-            [(wx - hx as f64) as f32, (wy - hy as f64) as f32, (wz - hz as f64) as f32],
+            [
+                (wx - hx as f64) as f32,
+                (wy - hy as f64) as f32,
+                (wz - hz as f64) as f32,
+            ],
         )
     };
     let mut out = Vec::new();
@@ -523,7 +656,9 @@ fn collect_curved_gens(
         };
         match surf.entity_type.as_str() {
             "cone-surface" => {
-                let Some(g) = cone_face_geom(sat, &face) else { continue };
+                let Some(g) = cone_face_geom(sat, &face) else {
+                    continue;
+                };
                 let base_local = [
                     g.center[0] + g.h_min * g.axis[0],
                     g.center[1] + g.h_min * g.axis[1],
@@ -545,7 +680,9 @@ fn collect_curved_gens(
                 });
             }
             "sphere-surface" => {
-                let Some(sphere) = SatSphereSurface::from_record(surf) else { continue };
+                let Some(sphere) = SatSphereSurface::from_record(surf) else {
+                    continue;
+                };
                 let (cx, cy, cz) = sphere.center();
                 let pole = norm3([sphere.pole().0, sphere.pole().1, sphere.pole().2]);
                 let u = norm3([
@@ -573,7 +710,9 @@ fn collect_curved_gens(
                 });
             }
             "torus-surface" => {
-                let Some(torus) = SatTorusSurface::from_record(surf) else { continue };
+                let Some(torus) = SatTorusSurface::from_record(surf) else {
+                    continue;
+                };
                 let (cx, cy, cz) = torus.center();
                 let axis = norm3([torus.normal().0, torus.normal().1, torus.normal().2]);
                 let u = norm3([
@@ -582,8 +721,7 @@ fn collect_curved_gens(
                     torus.u_direction().2,
                 ]);
                 let v = cross3(axis, u);
-                let poly = collect_face_polygon(sat, &face, 48);
-                let (pmin, pspan, full) = torus_phi_range(&poly, [cx, cy, cz], u, v);
+                let (pmin, pspan, full) = torus_phi_range(sat, &face, [cx, cy, cz], u, v);
                 let (center, center_low) = place([cx, cy, cz]);
                 out.push(CurvedGen::Torus {
                     center,
@@ -710,7 +848,12 @@ pub(crate) fn body_transform(sat: &SatDocument) -> Option<([f64; 9], [f64; 3], f
     // (`$-1`) and the trailing rotate/reflect/shear flags aren't floats, so
     // collecting float tokens skips them — reading by raw token index would
     // be thrown off by the leading pointer.
-    let v: Vec<f64> = t.tokens.iter().filter_map(|tok| tok.as_float()).take(13).collect();
+    let v: Vec<f64> = t
+        .tokens
+        .iter()
+        .filter_map(|tok| tok.as_float())
+        .take(13)
+        .collect();
     if v.len() < 13 {
         return None;
     }
@@ -781,10 +924,18 @@ pub(crate) fn mesh_aabb(mesh: &MeshModel) -> [f32; 4] {
         if !x.is_finite() || !y.is_finite() {
             continue;
         }
-        if x < min_x { min_x = x; }
-        if y < min_y { min_y = y; }
-        if x > max_x { max_x = x; }
-        if y > max_y { max_y = y; }
+        if x < min_x {
+            min_x = x;
+        }
+        if y < min_y {
+            min_y = y;
+        }
+        if x > max_x {
+            max_x = x;
+        }
+        if y > max_y {
+            max_y = y;
+        }
     }
     [min_x, min_y, max_x, max_y]
 }
@@ -804,7 +955,12 @@ fn parse_acis(
 }
 
 /// Tessellate a `Region` entity (2D planar ACIS body) at all three LOD levels.
-pub fn tessellate_region(region: &Region, color: [f32; 4], facet_res: f64, isolines: usize) -> Option<MeshLodSet> {
+pub fn tessellate_region(
+    region: &Region,
+    color: [f32; 4],
+    facet_res: f64,
+    isolines: usize,
+) -> Option<MeshLodSet> {
     let sat = parse_acis(
         || region.parse_sat(),
         region.acis_data.is_binary,
@@ -815,7 +971,12 @@ pub fn tessellate_region(region: &Region, color: [f32; 4], facet_res: f64, isoli
 }
 
 /// Tessellate a `Body` entity (3D ACIS body) at all three LOD levels.
-pub fn tessellate_body(body: &Body, color: [f32; 4], facet_res: f64, isolines: usize) -> Option<MeshLodSet> {
+pub fn tessellate_body(
+    body: &Body,
+    color: [f32; 4],
+    facet_res: f64,
+    isolines: usize,
+) -> Option<MeshLodSet> {
     let sat = parse_acis(
         || body.parse_sat(),
         body.acis_data.is_binary,
@@ -849,7 +1010,12 @@ pub fn tessellate_surface(
 /// Returns `None` when the entity has no parseable SAT data or produces no
 /// triangles (e.g. the solid uses only unsupported surface types).
 /// `facet_res` mirrors the header FACETRES variable (0.01–10.0).
-pub fn tessellate_solid3d(solid: &Solid3D, color: [f32; 4], facet_res: f64, isolines: usize) -> Option<MeshLodSet> {
+pub fn tessellate_solid3d(
+    solid: &Solid3D,
+    color: [f32; 4],
+    facet_res: f64,
+    isolines: usize,
+) -> Option<MeshLodSet> {
     let sat = parse_acis(
         || solid.parse_sat(),
         solid.acis_data.is_binary,
@@ -871,7 +1037,11 @@ pub fn tessellate_solid3d(solid: &Solid3D, color: [f32; 4], facet_res: f64, isol
 ///
 /// Returns an empty `Vec` when the loop topology is broken or has fewer than
 /// three distinct points.
-pub(crate) fn collect_face_polygon(sat: &SatDocument, face: &SatFace, circ_segs: usize) -> Vec<[f64; 3]> {
+pub(crate) fn collect_face_polygon(
+    sat: &SatDocument,
+    face: &SatFace,
+    circ_segs: usize,
+) -> Vec<[f64; 3]> {
     let Some(loop_rec) = sat.resolve(face.first_loop()) else {
         return vec![];
     };
@@ -1321,7 +1491,11 @@ fn angular_range(
     let (mut max_gap, mut gap_i) = (0.0_f64, 0_usize);
     for i in 0..n {
         let a = angles[i];
-        let b = if i + 1 < n { angles[i + 1] } else { angles[0] + TAU };
+        let b = if i + 1 < n {
+            angles[i + 1]
+        } else {
+            angles[0] + TAU
+        };
         let gap = b - a;
         if gap > max_gap {
             max_gap = gap;
@@ -1368,11 +1542,7 @@ pub(crate) fn cone_axis_span(
         let d = [ec.0 - center[0], ec.1 - center[1], ec.2 - center[2]];
         let h = dot3(d, axis);
         // Radial offset from the axis line: must be ~0 to be coaxial.
-        let radial = [
-            d[0] - h * axis[0],
-            d[1] - h * axis[1],
-            d[2] - h * axis[2],
-        ];
+        let radial = [d[0] - h * axis[0], d[1] - h * axis[1], d[2] - h * axis[2]];
         let radial_len = dot3(radial, radial).sqrt();
         let n = e.normal();
         let n_dot = dot3(norm3([n.0, n.1, n.2]), axis).abs();
@@ -1407,6 +1577,8 @@ pub(crate) fn cone_axis_span(
 // ── Sphere face ───────────────────────────────────────────────────────────────
 
 pub(crate) fn tess_sphere_face(
+    sat: &SatDocument,
+    face: &SatFace,
     sphere: &SatSphereSurface,
     lod: LodConfig,
     verts: &mut Vec<[f32; 3]>,
@@ -1424,13 +1596,30 @@ pub(crate) fn tess_sphere_face(
     let nu = lod.grid_u.max(3);
     let nv = lod.grid_v.max(2);
 
+    // Mesh only the part of the sphere the face covers — its boundary loop's
+    // longitude/colatitude window. A partial sphere (a fillet cap) otherwise
+    // builds as a full ball floating where the solid is open.
+    let poly = collect_face_polygon(sat, face, nu.max(24));
+    let (t_min, t_span, full, p_min, p_max) =
+        sphere_param_range(&poly, [cx, cy, cz], pole, u_dir, v_dir);
+    let (theta_lo, theta_hi) = if full {
+        (0.0, TAU)
+    } else {
+        (t_min, t_min + t_span)
+    };
+    let (phi_lo, phi_hi) = if full {
+        (0.0, std::f64::consts::PI)
+    } else {
+        (p_min, p_max)
+    };
+
     for j in 0..nv {
-        let phi0 = std::f64::consts::PI * (j as f64 / nv as f64); // 0..π
-        let phi1 = std::f64::consts::PI * ((j + 1) as f64 / nv as f64);
+        let phi0 = phi_lo + (phi_hi - phi_lo) * (j as f64 / nv as f64);
+        let phi1 = phi_lo + (phi_hi - phi_lo) * ((j + 1) as f64 / nv as f64);
 
         for i in 0..nu {
-            let theta0 = TAU * (i as f64 / nu as f64);
-            let theta1 = TAU * ((i + 1) as f64 / nu as f64);
+            let theta0 = theta_lo + (theta_hi - theta_lo) * (i as f64 / nu as f64);
+            let theta1 = theta_lo + (theta_hi - theta_lo) * ((i + 1) as f64 / nu as f64);
 
             let n00 = sphere_dir(pole, u_dir, v_dir, theta0, phi0);
             let n10 = sphere_dir(pole, u_dir, v_dir, theta0, phi1);
@@ -1473,6 +1662,8 @@ fn sphere_dir(pole: [f64; 3], u_dir: [f64; 3], v_dir: [f64; 3], theta: f64, phi:
 // ── Torus face ────────────────────────────────────────────────────────────────
 
 pub(crate) fn tess_torus_face(
+    sat: &SatDocument,
+    face: &SatFace,
     torus: &SatTorusSurface,
     lod: LodConfig,
     verts: &mut Vec<[f32; 3]>,
@@ -1489,11 +1680,17 @@ pub(crate) fn tess_torus_face(
     let minor_r = torus.minor_radius();
 
     let nu = lod.grid_u.max(3); // around the tube
-    let nv = lod.grid_v.max(3); // around the torus
+
+    // Mesh only the revolution arc the face covers. A partial tube (an open "C")
+    // otherwise builds as a full closed ring where the solid is open.
+    let (phi_start, phi_arc, full) = torus_phi_range(sat, face, [cx, cy, cz], u_dir, v_dir);
+    let phi_total = if full { TAU } else { phi_arc };
+    // Keep the along-length facet density independent of the arc length.
+    let nv = (((phi_total / TAU) * lod.grid_v as f64).ceil() as usize).max(3);
 
     for j in 0..nv {
-        let phi0 = TAU * (j as f64 / nv as f64);
-        let phi1 = TAU * ((j + 1) as f64 / nv as f64);
+        let phi0 = phi_start + phi_total * (j as f64 / nv as f64);
+        let phi1 = phi_start + phi_total * ((j + 1) as f64 / nv as f64);
 
         for i in 0..nu {
             let theta0 = TAU * (i as f64 / nu as f64);

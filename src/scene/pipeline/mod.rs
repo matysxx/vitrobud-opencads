@@ -1608,7 +1608,7 @@ impl Pipeline {
         };
         for set in sets {
             let color = set.lods.first().map(|m| m.color).unwrap_or([0.0, 0.0, 0.0, 1.0]);
-            let mut mk = |w: glam::DVec3| -> MeshVertex {
+            let mk = |w: glam::DVec3| -> MeshVertex {
                 let (hx, hy, hz) = (w.x as f32, w.y as f32, w.z as f32);
                 MeshVertex {
                     position: [hx, hy, hz],
