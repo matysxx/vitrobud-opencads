@@ -15,8 +15,9 @@ use std::f64::consts::TAU;
 
 use acadrust::entities::acis::types::Sense;
 use acadrust::entities::acis::{
-    SabReader, SatCoedge, SatConeSurface, SatDocument, SatEdge, SatEllipseCurve, SatFace, SatLoop,
-    SatPlaneSurface, SatPoint, SatPointer, SatSphereSurface, SatTorusSurface, SatVertex,
+    SabReader, SatCoedge, SatConeSurface, SatDocument, SatEdge, SatEllipseCurve, SatFace,
+    SatIntCurve, SatLoop, SatPlaneSurface, SatPoint, SatPointer, SatSphereSurface, SatTorusSurface,
+    SatVertex,
 };
 use acadrust::entities::{Body, Region, Solid3D};
 
@@ -608,6 +609,15 @@ fn collect_feature_edges(sat: &SatDocument) -> Vec<[f64; 3]> {
                 if let Some(p) = vertex_point(sat, edge.end_vertex()) {
                     pts.push(p);
                 }
+            } else if let Some(ic) = SatIntCurve::from_record(cr) {
+                // Spline edge — sample the actual curve instead of the straight
+                // chord the fallback below would draw (or nothing, for a closed
+                // loop whose endpoints coincide).
+                pts = ic
+                    .sample_range(edge.start_param(), edge.end_param(), EDGE_SEGS)
+                    .into_iter()
+                    .map(|(x, y, z)| [x, y, z])
+                    .collect();
             }
         }
         if pts.len() < 2 {
@@ -940,6 +950,25 @@ pub(crate) fn append_coedge_points(
                 reversed,
             );
             if !sampled.is_empty() {
+                if !fwd {
+                    sampled.reverse();
+                }
+                pts.extend(sampled);
+                return;
+            }
+        }
+        // Spline (intcurve) edge: sample its own arc so a curved face boundary
+        // (fillet/blend) is a real loop rather than a straight chord — without
+        // this the face's parametric extent collapses and it can't be trimmed.
+        if let Some(ic) = SatIntCurve::from_record(curve_rec) {
+            let mut sampled: Vec<[f64; 3]> = ic
+                .sample_range(edge.start_param(), edge.end_param(), circ_segs)
+                .into_iter()
+                .map(|(x, y, z)| [x, y, z])
+                .collect();
+            // Drop the shared end point so adjacent coedges don't double up.
+            sampled.pop();
+            if sampled.len() >= 2 {
                 if !fwd {
                     sampled.reverse();
                 }
