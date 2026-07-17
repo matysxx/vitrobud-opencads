@@ -372,15 +372,37 @@ fn torus_isolines(sat: &SatDocument, face: &SatFace, count: usize, out: &mut Vec
     let v = cross3(axis, u);
     let major = torus.major_radius();
     let minor = torus.minor_radius();
-    let poly = collect_face_polygon(sat, face, 48);
-    let (phi_min, phi_span, full) = torus_phi_range(&poly, [cx, cy, cz], u, v);
+    // The face boundary of a tube is just its two end caps, clustered at the
+    // ends — it never covers the revolution arc, so the boundary can't say which
+    // way round the tube runs (a limitation `torus_phi_range` shares). Draw the
+    // full revolution: correct for a closed or nearly-closed ring like this one,
+    // at the cost of over-drawing a short torus fillet, which a later
+    // winding-aware extent would tighten.
+
+    // Minor (cross-section) circles — constant revolution angle, full tube.
     const M: usize = 20;
-    for phi in iso_params(phi_min, phi_span, full, count) {
+    for phi in iso_params(0.0, TAU, true, count) {
         for t in 0..M {
             let t0 = TAU * (t as f64 / M as f64);
             let t1 = TAU * ((t + 1) as f64 / M as f64);
             out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, t0, phi));
             out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, t1, phi));
+        }
+    }
+
+    // Major (ring-direction) arcs — constant tube angle, swept along the full
+    // revolution. The outer (θ=0) and inner (θ=π) circles are the torus's
+    // defining profile — the ring outline; without them it reads as disconnected
+    // cross-sections. `count.max(2)` guarantees outer + inner even at ISOLINES=1.
+    const RING_SEGS: usize = 64;
+    let n_ring = count.max(2);
+    for k in 0..n_ring {
+        let theta = TAU * (k as f64 / n_ring as f64);
+        for s in 0..RING_SEGS {
+            let p0 = TAU * (s as f64 / RING_SEGS as f64);
+            let p1 = TAU * ((s + 1) as f64 / RING_SEGS as f64);
+            out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, theta, p0));
+            out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, theta, p1));
         }
     }
 }
