@@ -770,8 +770,9 @@ impl Transformable for Polyline3D {
 /// relative to (the first vertex). See `lwpolyline::wide_fills` — offsets are
 /// f32 from `origin` so the band stays precise at UTM-scale coordinates.
 pub(crate) fn wide_fills(pl: &acadrust::entities::Polyline2D) -> ([f64; 2], Vec<Vec<[f32; 2]>>) {
-    // Width is applied full to each side of the centreline (not halved).
-    let hw_default = pl.start_width.max(pl.end_width) as f32;
+    // The stored widths are the band's FULL width and `polyline_segment_fill`
+    // offsets ±hw about the centreline — halve them. See `lwpolyline::wide_fills`.
+    let hw_default = pl.start_width.max(pl.end_width) as f32 * 0.5;
     let verts = &pl.vertices;
     let n = verts.len();
     if n < 2 {
@@ -784,12 +785,12 @@ pub(crate) fn wide_fills(pl: &acadrust::entities::Polyline2D) -> ([f64; 2], Vec<
         let v0 = &verts[i];
         let v1 = &verts[(i + 1) % n];
         let hw0 = if v0.start_width > 1e-9 {
-            v0.start_width as f32
+            v0.start_width as f32 * 0.5
         } else {
             hw_default
         };
         let hw1 = if v0.end_width > 1e-9 {
-            v0.end_width as f32
+            v0.end_width as f32 * 0.5
         } else {
             hw_default
         };

@@ -662,9 +662,12 @@ impl crate::entities::traits::Transformable for LwPolyline {
 /// UTM-scale coordinates — building them in absolute f32 collapsed the band into
 /// a string of squares far from the origin.
 pub(crate) fn wide_fills(pl: &acadrust::entities::LwPolyline) -> ([f64; 2], Vec<Vec<[f32; 2]>>) {
-    // The stored width is applied to EACH side of the centreline (not halved),
-    // so `polyline_segment_fill`'s ±offset spans the full width on either side.
-    let hw_const = pl.constant_width as f32;
+    // Codes 43 / 40 / 41 store the band's FULL width, and
+    // `polyline_segment_fill` offsets ±hw about the centreline — so halve it.
+    // Feeding the stored width in whole draws every wide polyline twice as wide
+    // as the file asks for, which on a donut (a closed 2-vertex bulge-1 polyline)
+    // shows up as a disc 1.5× its real radius.
+    let hw_const = pl.constant_width as f32 * 0.5;
     let verts = &pl.vertices;
     let n = verts.len();
     if n < 2 {
@@ -677,12 +680,12 @@ pub(crate) fn wide_fills(pl: &acadrust::entities::LwPolyline) -> ([f64; 2], Vec<
         let v0 = &verts[i];
         let v1 = &verts[(i + 1) % n];
         let hw0 = if v0.start_width > 1e-9 {
-            v0.start_width as f32
+            v0.start_width as f32 * 0.5
         } else {
             hw_const
         };
         let hw1 = if v0.end_width > 1e-9 {
-            v0.end_width as f32
+            v0.end_width as f32 * 0.5
         } else {
             hw_const
         };
