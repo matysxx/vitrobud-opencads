@@ -297,12 +297,27 @@ pub(crate) fn body_transform(sat: &SatDocument) -> Option<([f64; 9], [f64; 3], f
 /// vectors (`p' = scale·(p·M) + T`), so the 3×3 is indexed transposed relative
 /// to a column-vector multiply. Normals get the rotation only, renormalized.
 pub(crate) fn apply_body_transform(mesh: &mut MeshModel, m: &[f64; 9], tr: &[f64; 3], scale: f64) {
-    for v in &mut mesh.verts {
-        let (x, y, z) = (v[0] as f64, v[1] as f64, v[2] as f64);
+    // The body translation `tr` is where a solid gets its world placement, so at
+    // UTM scale this is exactly where the coordinate stops fitting in an f32.
+    // Compute each world vertex in f64 and split it into the double-single
+    // (high, low) pair the mesh shader reconstructs relative to the eye — the
+    // same treatment the feature edges already get. Without the low half the
+    // shaded faces sit on a ~0.06 m grid while their own edges stay exact, so the
+    // surface visibly crawls against its wireframe as the camera moves.
+    mesh.verts_low = Vec::with_capacity(mesh.verts.len());
+    for i in 0..mesh.verts.len() {
+        let [vx, vy, vz] = mesh.verts[i];
+        let (x, y, z) = (vx as f64, vy as f64, vz as f64);
         let wx = scale * (x * m[0] + y * m[3] + z * m[6]) + tr[0];
         let wy = scale * (x * m[1] + y * m[4] + z * m[7]) + tr[1];
         let wz = scale * (x * m[2] + y * m[5] + z * m[8]) + tr[2];
-        *v = [wx as f32, wy as f32, wz as f32];
+        let (hx, hy, hz) = (wx as f32, wy as f32, wz as f32);
+        mesh.verts[i] = [hx, hy, hz];
+        mesh.verts_low.push([
+            (wx - hx as f64) as f32,
+            (wy - hy as f64) as f32,
+            (wz - hz as f64) as f32,
+        ]);
     }
     for n in &mut mesh.normals {
         let (x, y, z) = (n[0] as f64, n[1] as f64, n[2] as f64);
@@ -1142,5 +1157,3 @@ fn norm3(v: [f64; 3]) -> [f64; 3] {
         [v[0] / len, v[1] / len, v[2] / len]
     }
 }
-
-
