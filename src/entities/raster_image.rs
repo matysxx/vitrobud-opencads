@@ -88,12 +88,17 @@ impl TruckConvertible for RasterImage {
             ]
         };
 
+        // Clip-boundary Y is in image raster space (row 0 = top, Y down); the
+        // image's v-vector points up, so flip each vertex's Y (`ih - y`) to
+        // place the boundary where AutoCAD draws it. Must match the raster's
+        // own clip triangulation in `ImageModel` so outline and pixels align.
+        let ih = self.size.y;
         let pts = if self.clipping_enabled {
             let cb = &self.clip_boundary;
             match cb.clip_type {
                 acadrust::entities::ClipType::Polygonal if cb.vertices.len() >= 3 => {
                     let mut poly: Vec<[f64; 3]> =
-                        cb.vertices.iter().map(|v| px_to_world(v.x, v.y)).collect();
+                        cb.vertices.iter().map(|v| px_to_world(v.x, ih - v.y)).collect();
                     if let Some(&first) = poly.first() {
                         poly.push(first);
                     }
@@ -103,7 +108,8 @@ impl TruckConvertible for RasterImage {
                     let v0 = &cb.vertices[0];
                     let v1 = &cb.vertices[1];
                     let (xa, xb) = (v0.x.min(v1.x), v0.x.max(v1.x));
-                    let (ya, yb) = (v0.y.min(v1.y), v0.y.max(v1.y));
+                    let (y0, y1) = (ih - v0.y, ih - v1.y);
+                    let (ya, yb) = (y0.min(y1), y0.max(y1));
                     let c0 = px_to_world(xa, ya);
                     let c1 = px_to_world(xb, ya);
                     let c2 = px_to_world(xb, yb);
@@ -116,14 +122,18 @@ impl TruckConvertible for RasterImage {
             image_wire(corners, true)
         };
 
-        // A raster that OCS can actually open renders its pixels (built
-        // separately) inside this frame — just draw the frame/clip outline.
-        // A reference OCS cannot resolve (a URL, or a missing/renamed file)
-        // gets AutoCAD's broken-reference treatment: the frame plus the saved
-        // path drawn as text, so the user sees WHICH reference is unresolved
-        // instead of an empty box. OCS never fetches a remote path.
+        // A raster OCS can display renders its pixels (built separately) inside
+        // this frame — just draw the frame/clip outline. A reference it cannot
+        // resolve (an offline/broken URL, a missing or renamed file) gets
+        // AutoCAD's broken-reference treatment: the frame plus the saved path
+        // drawn as text, so the user sees WHICH reference is unresolved instead
+        // of an empty box. `resolve_image` is memoised and shared with the
+        // raster loader, so a URL that fetches online is treated as resolvable
+        // (no placeholder — the image shows) while an offline one falls back to
+        // the path text, and neither is fetched twice.
         let path = self.file_path.trim();
-        let resolvable = path.is_empty() || std::path::Path::new(path).is_file();
+        let resolvable =
+            path.is_empty() || crate::scene::model::image_model::resolve_image(path).is_some();
         if resolvable {
             return Some(TruckEntity {
                 pick_tris: Vec::new(),

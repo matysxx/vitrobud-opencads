@@ -2177,7 +2177,7 @@ impl Pipeline {
                 }
                 pass.set_bind_group(1, &img.bind_group, &[]);
                 pass.set_vertex_buffer(0, img.vertex_buffer.slice(..));
-                pass.draw(0..6, 0..1);
+                pass.draw(0..img.vertex_count, 0..1);
             }
             if scissor_active {
                 pass.set_scissor_rect(0, 0, vp.width, vp.height);

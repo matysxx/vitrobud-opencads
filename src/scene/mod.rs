@@ -235,6 +235,10 @@ pub struct OpenTimings {
 /// Build hatch / image / mesh caches from a document without needing `&mut Scene`.
 /// Intended to run on a background thread during file load.
 pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
+    // A new drawing must not inherit the previous one's resolved images — drop
+    // the memoised set so each reference re-reads / re-fetches once here (and
+    // stays cached across this document's later cache rebuilds).
+    crate::scene::model::image_model::clear_image_cache();
     // model-space block handle (same logic as Scene::model_space_block_handle)
     let model_block = doc
         .objects
