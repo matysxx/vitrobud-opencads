@@ -312,9 +312,15 @@ fn build_defn(
             continue;
         }
         match entity {
-            EntityType::Block(_)
-            | EntityType::BlockEnd(_)
-            | EntityType::AttributeDefinition(_) => continue,
+            EntityType::Block(_) | EntityType::BlockEnd(_) => continue,
+            // A non-constant ATTDEF is only a template — the insert supplies an
+            // ATTRIB with the real value (tessellated separately). A CONSTANT
+            // attribute has no ATTRIB; its value lives in the block itself, so
+            // it must render as part of the block content (unless flagged
+            // invisible).
+            EntityType::AttributeDefinition(ad) if !ad.flags.constant || ad.flags.invisible => {
+                continue
+            }
             EntityType::Insert(nested_ins) => {
                 subs.push(LocalSub::Nested(build_nested_ref(nested_ins, doc, bg_color)));
             }
