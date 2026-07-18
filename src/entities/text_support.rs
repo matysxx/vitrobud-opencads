@@ -1266,6 +1266,11 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
     // otherwise a small line still leaves a full-height gap and the block
     // grows several times too tall. Accumulated per column (columns stack
     // independently). Uniform-height text reduces to the constant `line_h`.
+    // A blank line (an empty `\P` paragraph) carries no glyph to size it, so it
+    // takes the height of the text around it — the last non-empty line — not the
+    // full entity height, which would blow a small-text blank line up several
+    // times too tall and shove everything below it down the page.
+    let mut last_line_h = entity_h;
     let per_line_h: Vec<f32> = sub_lines
         .iter()
         .map(|s| {
@@ -1277,7 +1282,12 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                     _ => None,
                 })
                 .fold(0.0_f32, f32::max);
-            let mh = if mh > 0.0 { mh } else { entity_h };
+            let mh = if mh > 0.0 {
+                last_line_h = mh;
+                mh
+            } else {
+                last_line_h
+            };
             // A paragraph's own `\psm#`/`\pse#` overrides the entity factor for
             // its lines; `Exact` fixes the baseline gap outright.
             match s.line_spacing {
