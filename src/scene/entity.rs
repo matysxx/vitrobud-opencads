@@ -626,7 +626,12 @@ impl Scene {
                 // emitted first so LessEqual layering keeps it underneath.
                 let mut backdrop: Option<HatchModel> = None;
                 if let Some(e) = entity {
-                    m.color = self.render_style(e).0;
+                    // A gradient's colour is its first stop (already baked into
+                    // the cached model); only solid / pattern fills take the
+                    // entity's resolved colour.
+                    if !matches!(m.pattern, model::hatch_model::HatchPattern::Gradient { .. }) {
+                        m.color = self.render_style(e).0;
+                    }
                     if let EntityType::Hatch(dxf) = e {
                         if let Some(bg) = crate::entities::hatch::background_color(dxf) {
                             let mut b = m.clone();
@@ -1421,16 +1426,27 @@ impl Scene {
             && !dxf.gradient_color.is_enabled()
             && !dxf.pattern.lines.is_empty();
 
+        // The gradient's first stop is the fill's start colour (not the
+        // entity colour); capture it so the HatchModel draws stop-0 → stop-1.
+        let mut gradient_color1: Option<[f32; 4]> = None;
         let mut pattern = if dxf.gradient_color.is_enabled() {
-            let color2 = dxf
-                .gradient_color
-                .colors
-                .get(1)
-                .and_then(|e| e.color.rgb())
-                .map(|(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
-                .unwrap_or(color);
+            let stop = |i: usize| {
+                dxf.gradient_color.colors.get(i).and_then(|e| e.color.rgb()).map(
+                    |(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
+                )
+            };
+            gradient_color1 = stop(0);
+            let color2 = stop(1).unwrap_or(color);
             let angle_deg = dxf.pattern_angle.to_degrees() as f32;
-            model::hatch_model::HatchPattern::Gradient { angle_deg, color2 }
+            // Spherical / hemispherical / curved names are radial fills; linear
+            // and cylinder names run along the angle.
+            let n = dxf.gradient_color.name.to_ascii_uppercase();
+            let radial = n.contains("SPHERICAL") || n.contains("CURVED");
+            model::hatch_model::HatchPattern::Gradient {
+                angle_deg,
+                color2,
+                radial,
+            }
         } else if dxf.is_solid {
             model::hatch_model::HatchPattern::Solid
         } else if prebaked {
@@ -1571,7 +1587,9 @@ impl Scene {
             boundary_wcs: None,
             pattern,
             name,
-            color,
+            // A gradient starts from its first stop; other fills use the
+            // entity colour.
+            color: gradient_color1.unwrap_or(color),
             angle_offset: if prebaked { 0.0 } else { dxf.pattern_angle as f32 },
             scale: if prebaked { 1.0 } else { dxf.pattern_scale as f32 },
             world_origin,

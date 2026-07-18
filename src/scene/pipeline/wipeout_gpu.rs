@@ -138,7 +138,7 @@ impl WipeoutGpu {
         let (mode, color2, grad_cos, grad_sin) = match &model.pattern {
             HatchPattern::Solid => (1u32, [0.0f32; 4], 0.0f32, 0.0f32),
             HatchPattern::Pattern(_) => (0u32, [0.0f32; 4], 0.0f32, 0.0f32),
-            HatchPattern::Gradient { angle_deg, color2 } => {
+            HatchPattern::Gradient { angle_deg, color2, .. } => {
                 let r = angle_deg.to_radians();
                 (2u32, *color2, r.cos(), r.sin())
             }

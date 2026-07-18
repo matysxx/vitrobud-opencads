@@ -395,6 +395,7 @@ impl GradientCommand {
             pattern: HatchPattern::Gradient {
                 angle_deg: 0.0,
                 color2: [0.18, 0.18, 0.18, 0.0],
+                radial: false,
             },
             name: "LINEAR".into(),
             color: [0.30, 0.60, 0.95, 0.80],

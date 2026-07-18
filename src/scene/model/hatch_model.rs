@@ -36,8 +36,14 @@ pub enum HatchPattern {
     Solid,
     /// One or more line families (PAT format).
     Pattern(Vec<PatFamily>),
-    /// Linear gradient from `color` to `color2` along `angle_deg`.
-    Gradient { angle_deg: f32, color2: [f32; 4] },
+    /// Two-stop gradient from `color` to `color2`. Linear along `angle_deg`
+    /// unless `radial`, in which case it runs from the boundary centre outward
+    /// (spherical / hemispherical / curved fills).
+    Gradient {
+        angle_deg: f32,
+        color2: [f32; 4],
+        radial: bool,
+    },
 }
 
 /// A hatched region defined by a closed polygon boundary.

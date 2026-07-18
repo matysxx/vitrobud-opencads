@@ -228,6 +228,11 @@ fn check_family(
         let proj = v.xz.x * h.grad_cos + v.xz.y * h.grad_sin;
         let t    = clamp((proj - h.grad_min) / h.grad_range, 0.0, 1.0);
         return mix(h.color, h.color2, t);
+    } else if h.mode == 3u {
+        // Radial gradient: centre is (grad_cos, grad_sin), radius is grad_range.
+        let d = length(v.xz - vec2<f32>(h.grad_cos, h.grad_sin));
+        let t = clamp(d / h.grad_range, 0.0, 1.0);
+        return mix(h.color, h.color2, t);
     }
 
     // Pattern LOD: when the densest family projects below 2 px, lines blur into
