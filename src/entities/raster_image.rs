@@ -2,9 +2,11 @@ use acadrust::entities::{RasterImage, Wipeout};
 
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, ro_prop as ro, square_grip};
+use crate::entities::text_support::{resolve_text_style, text_local_bounds};
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable, TruckConvertible};
-use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
+use crate::scene::convert::acad_to_truck::{GlyphRun, TextStroke, TruckEntity, TruckObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
+use crate::scene::text::lff;
 
 // ── Shared geometry helpers ───────────────────────────────────────────────────
 
@@ -65,7 +67,7 @@ fn reflect_vec3(vx: &mut f64, vy: &mut f64, ax: f64, ay: f64, len2: f64) {
 // ── RasterImage ───────────────────────────────────────────────────────────────
 
 impl TruckConvertible for RasterImage {
-    fn to_truck(&self, _document: &acadrust::CadDocument) -> Option<TruckEntity> {
+    fn to_truck(&self, document: &acadrust::CadDocument) -> Option<TruckEntity> {
         let corners = image_corners(
             &self.insertion_point,
             &self.u_vector,
@@ -114,9 +116,105 @@ impl TruckConvertible for RasterImage {
             image_wire(corners, true)
         };
 
+        // A raster that OCS can actually open renders its pixels (built
+        // separately) inside this frame — just draw the frame/clip outline.
+        // A reference OCS cannot resolve (a URL, or a missing/renamed file)
+        // gets AutoCAD's broken-reference treatment: the frame plus the saved
+        // path drawn as text, so the user sees WHICH reference is unresolved
+        // instead of an empty box. OCS never fetches a remote path.
+        let path = self.file_path.trim();
+        let resolvable = path.is_empty() || std::path::Path::new(path).is_file();
+        if resolvable {
+            return Some(TruckEntity {
+                pick_tris: Vec::new(),
+                object: TruckObject::Lines(pts),
+                snap_pts: vec![],
+                tangent_geoms: vec![],
+                key_vertices: corners.to_vec(),
+                fill_tris: vec![],
+            });
+        }
+
+        // ── Unresolved reference: frame outline + path text, image colour ──
+        let ins = [self.insertion_point.x, self.insertion_point.y];
+        // Boundary → run-less stroke groups (local to `ins`), split on the
+        // NaN gaps the wire uses to separate disjoint segments.
+        let mut boundary: Vec<Vec<[f32; 2]>> = Vec::new();
+        let mut seg: Vec<[f32; 2]> = Vec::new();
+        for p in &pts {
+            if p[0].is_nan() {
+                if seg.len() >= 2 {
+                    boundary.push(std::mem::take(&mut seg));
+                } else {
+                    seg.clear();
+                }
+            } else {
+                seg.push([(p[0] - ins[0]) as f32, (p[1] - ins[1]) as f32]);
+            }
+        }
+        if seg.len() >= 2 {
+            boundary.push(seg);
+        }
+
+        let mut groups: Vec<TextStroke> = vec![TextStroke {
+            strokes: boundary,
+            origin: ins,
+            color: None,
+            fill_tris: vec![],
+            run: None,
+        }];
+
+        // Place the path text centred in the frame, sized to span ~90% of the
+        // frame width (capped so it also fits vertically).
+        let c0 = corners[0];
+        let c2 = corners[2];
+        let uw = [corners[1][0] - c0[0], corners[1][1] - c0[1]];
+        let vh = [corners[3][0] - c0[0], corners[3][1] - c0[1]];
+        let frame_w = (uw[0] * uw[0] + uw[1] * uw[1]).sqrt();
+        let frame_h = (vh[0] * vh[0] + vh[1] * vh[1]).sqrt();
+        if frame_w > 1e-9 && frame_h > 1e-9 {
+            let u_hat = [uw[0] / frame_w, uw[1] / frame_w];
+            let v_hat = [vh[0] / frame_h, vh[1] / frame_h];
+            let rotation = (u_hat[1] as f32).atan2(u_hat[0] as f32);
+            let font = resolve_text_style("", document).font_name;
+            // advance at height 1.0 → width per unit height.
+            let adv = text_local_bounds(&font, path, 1.0, 1.0, 0.0)
+                .map(|b| b.advance)
+                .filter(|a| *a > 1e-3)
+                .unwrap_or(0.6 * path.chars().count().max(1) as f32);
+            let height = ((frame_w as f32 * 0.9) / adv)
+                .min(frame_h as f32 * 0.5)
+                .max(frame_h as f32 * 0.02);
+            let text_w = (adv * height) as f64;
+            let center = [(c0[0] + c2[0]) * 0.5, (c0[1] + c2[1]) * 0.5];
+            // Shift the baseline-left origin so the run is centred both ways.
+            let origin = [
+                center[0] - u_hat[0] * text_w * 0.5 - v_hat[0] * height as f64 * 0.35,
+                center[1] - u_hat[1] * text_w * 0.5 - v_hat[1] * height as f64 * 0.35,
+            ];
+            let (strokes, fill_tris) =
+                lff::tessellate_text_ex([0.0, 0.0], height, rotation, 1.0, 0.0, &font, path);
+            groups.push(TextStroke {
+                strokes,
+                origin,
+                color: None,
+                fill_tris,
+                run: Some(GlyphRun {
+                    text: path.to_string(),
+                    font,
+                    height,
+                    rotation,
+                    width_factor: 1.0,
+                    oblique: 0.0,
+                    tracking: 1.0,
+                    bold: false,
+                }),
+            });
+        }
+
         Some(TruckEntity {
             pick_tris: Vec::new(),
-            object: TruckObject::Lines(pts),
+            object: TruckObject::Text(groups),
             snap_pts: vec![],
             tangent_geoms: vec![],
             key_vertices: corners.to_vec(),
