@@ -774,6 +774,10 @@ pub fn wrap_paragraph(
     let mut cur: Vec<LayoutAtom> = Vec::new();
     let mut cur_w = 0.0_f32;
     let mut subline_idx: usize = 0;
+    // The field after a center/right/decimal tab is aligned on the stop, so it
+    // reaches only part of its width to the right — don't wrap it off the line
+    // by its full width as a left-flushed word would be.
+    let mut after_align_tab = false;
     let line_start_x = |idx: usize| if idx == 0 { indent_first } else { indent_left };
     let line_max_w = |idx: usize| (rect_w - indent_right - line_start_x(idx)).max(0.0);
 
@@ -783,7 +787,7 @@ pub fn wrap_paragraph(
             AtomKind::Word(_) | AtomKind::Stack { .. } => {
                 let w = atom_width(&atom, entity_h, base_wf, base_font);
                 let max_w = line_max_w(subline_idx);
-                if !cur.is_empty() && cur_w + w > max_w {
+                if !cur.is_empty() && cur_w + w > max_w && !after_align_tab {
                     while matches!(cur.last().map(|a| &a.kind), Some(AtomKind::Space)) {
                         cur.pop();
                     }
@@ -791,10 +795,12 @@ pub fn wrap_paragraph(
                     cur_w = 0.0;
                     subline_idx += 1;
                 }
+                after_align_tab = false;
                 cur.push(atom);
                 cur_w += w;
             }
             AtomKind::Space => {
+                after_align_tab = false;
                 if cur.is_empty() {
                     continue;
                 }
@@ -803,6 +809,12 @@ pub fn wrap_paragraph(
             }
             AtomKind::Tab => {
                 let start_x = line_start_x(subline_idx);
+                let local = cur_w + start_x - indent_left;
+                let is_align = tab_stops
+                    .iter()
+                    .find(|ts| ts.position > local + 1e-4)
+                    .map(|ts| !matches!(ts.kind, TabKind::Left))
+                    .unwrap_or(false);
                 let new_w = next_tab_position(cur_w + start_x, tab_stops, indent_left, entity_h)
                     - start_x;
                 let max_w = line_max_w(subline_idx);
@@ -814,6 +826,7 @@ pub fn wrap_paragraph(
                     cur.push(atom);
                     cur_w = new_w.min(max_w);
                 }
+                after_align_tab = is_align;
             }
         }
     }
@@ -1759,7 +1772,13 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                     // the tab (the run of words up to the next space/tab) rather
                     // than just advancing the pen. Decimal places the first `.`
                     // on the stop; right the field's end; center its middle.
-                    let local = cursor_x - sub.indent_left;
+                    //
+                    // Stop positions are relative to the paragraph's own left
+                    // edge, so measure against `box_left` (the column's left,
+                    // which `cursor_x` already carries) — not the raw indent, or
+                    // a second column's tabs miss every stop and shoot off right.
+                    let tab_base = box_left + sub.indent_left;
+                    let local = cursor_x - tab_base;
                     let stop = sub
                         .tab_stops
                         .iter()
@@ -1767,7 +1786,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                         .copied();
                     match stop.map(|s| s.kind) {
                         Some(TabKind::Center | TabKind::Right | TabKind::Decimal) => {
-                            let sx = sub.indent_left + stop.unwrap().position;
+                            let sx = tab_base + stop.unwrap().position;
                             let mut field_w = 0.0_f32;
                             let mut before_dot: Option<f32> = None;
                             for next in &sub.atoms[ai + 1..] {
@@ -1824,7 +1843,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             cursor_x = next_tab_position(
                                 cursor_x,
                                 &sub.tab_stops,
-                                sub.indent_left,
+                                tab_base,
                                 entity_h,
                             );
                         }
