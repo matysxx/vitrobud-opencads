@@ -246,22 +246,39 @@ pub(crate) fn tessellate_entity(
         if let Some(blob) = e.common().graphic_data.as_ref() {
             let polys = convert::proxy_graphics::decode(blob);
             if !polys.is_empty() {
-                // One wire for the whole preview: concatenate the poly-lines
-                // with NaN separators (arcs are already flattened to points).
+                // Group primitives by their preview colour so each colour draws
+                // in its own wire (the poly-lines within share a wire, joined by
+                // NaN separators; arcs are already flattened to points).
+                use std::collections::BTreeMap;
                 let nan = [f64::NAN; 3];
-                let mut pts64: Vec<[f64; 3]> = Vec::new();
+                let mut by_color: BTreeMap<i32, Vec<[f64; 3]>> = BTreeMap::new();
                 for poly in &polys {
-                    if !pts64.is_empty() {
-                        pts64.push(nan);
+                    let buf = by_color.entry(poly.color).or_default();
+                    if !buf.is_empty() {
+                        buf.push(nan);
                     }
-                    pts64.extend_from_slice(&poly.points);
+                    buf.extend_from_slice(&poly.points);
                 }
-                let (pts, pts_low) = convert::tessellate::points_to_ds(pts64);
-                let mut w = WireModel::solid(h.value().to_string(), pts, entity_color, sel);
-                w.points_low = pts_low;
-                w.line_weight_px = line_weight_px;
-                w.aci = aci;
-                return vec![w];
+                let mut wires = Vec::with_capacity(by_color.len());
+                for (pcolor, pts64) in by_color {
+                    // A real ACI index overrides the entity colour; ByLayer
+                    // (256) / ByBlock (0) inherit it.
+                    let (col, w_aci) = if (1..=255).contains(&pcolor) {
+                        let rgba = convert::tess_util::aci_to_rgba(
+                            &acadrust::types::Color::Index(pcolor as u8),
+                        );
+                        (view::render::adapt_to_bg(rgba, bg_color), pcolor as u8)
+                    } else {
+                        (entity_color, aci)
+                    };
+                    let (pts, pts_low) = convert::tessellate::points_to_ds(pts64);
+                    let mut w = WireModel::solid(h.value().to_string(), pts, col, sel);
+                    w.points_low = pts_low;
+                    w.line_weight_px = line_weight_px;
+                    w.aci = w_aci;
+                    wires.push(w);
+                }
+                return wires;
             }
         }
     }

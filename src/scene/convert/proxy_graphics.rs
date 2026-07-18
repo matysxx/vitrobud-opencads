@@ -33,12 +33,22 @@
 /// line strips.
 pub struct ProxyPolyline {
     pub points: Vec<[f64; 3]>,
+    /// The colour in force when this primitive was emitted, as an AutoCAD
+    /// Color Index. 256 = ByLayer / 0 = ByBlock (inherit the entity's colour);
+    /// 1..=255 override it. Set from the preview's colour traits.
+    pub color: i32,
 }
+
+/// AutoCAD Color Index meaning "inherit from the layer" — the default until a
+/// colour trait says otherwise.
+const COLOR_BYLAYER: i32 = 256;
 
 const REC_ARC: u32 = 4;
 const REC_ARC5: u32 = 5;
 const REC_POLYLINE: u32 = 6;
 const REC_POLYGON: u32 = 7;
+/// Trait record that sets the current colour (ACI) for following primitives.
+const REC_COLOR: u32 = 14;
 
 fn u32_at(b: &[u8], o: usize) -> Option<u32> {
     b.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
@@ -74,6 +84,7 @@ pub fn decode(blob: &[u8]) -> Vec<ProxyPolyline> {
     }
 
     let mut pos = 8usize;
+    let mut color = COLOR_BYLAYER;
     for _ in 0..count {
         let Some(rsize) = u32_at(blob, pos) else { break };
         let rsize = rsize as usize;
@@ -82,6 +93,11 @@ pub fn decode(blob: &[u8]) -> Vec<ProxyPolyline> {
             break;
         }
         match rtype {
+            REC_COLOR => {
+                if let Some(c) = u32_at(blob, pos + 8) {
+                    color = c as i32;
+                }
+            }
             REC_POLYLINE | REC_POLYGON => {
                 if let Some(n) = u32_at(blob, pos + 8) {
                     let n = n as usize;
@@ -101,18 +117,18 @@ pub fn decode(blob: &[u8]) -> Vec<ProxyPolyline> {
                                     pts.push(first);
                                 }
                             }
-                            out.push(ProxyPolyline { points: pts });
+                            out.push(ProxyPolyline { points: pts, color });
                         }
                     }
                 }
             }
             REC_ARC | REC_ARC5 => {
-                if let Some(poly) = decode_arc(blob, pos) {
-                    out.push(poly);
+                if let Some(points) = decode_arc(blob, pos) {
+                    out.push(ProxyPolyline { points, color });
                 }
             }
-            // Every other record is a trait (colour, layer, lineweight, …) —
-            // skipped in phase 1; `rsize` still advances us past it.
+            // Every other record is a trait (layer, lineweight, …) — skipped
+            // for now; `rsize` still advances us past it.
             _ => {}
         }
         pos += rsize;
@@ -121,8 +137,9 @@ pub fn decode(blob: &[u8]) -> Vec<ProxyPolyline> {
 }
 
 /// Flatten a circular-arc record (centre, radius, normal, start direction,
-/// sweep) into a poly-line. The normal's Z sign gives the sweep direction.
-fn decode_arc(blob: &[u8], pos: usize) -> Option<ProxyPolyline> {
+/// sweep) into a strip of points. The normal's Z sign gives the sweep
+/// direction.
+fn decode_arc(blob: &[u8], pos: usize) -> Option<Vec<[f64; 3]>> {
     let center = pt3_at(blob, pos + 8)?;
     let radius = f64_at(blob, pos + 32)?;
     let normal = pt3_at(blob, pos + 40)?;
@@ -144,7 +161,7 @@ fn decode_arc(blob: &[u8], pos: usize) -> Option<ProxyPolyline> {
             center[2],
         ]);
     }
-    Some(ProxyPolyline { points })
+    Some(points)
 }
 
 #[cfg(test)]
