@@ -291,6 +291,15 @@ pub(crate) fn tessellate_entity(
                         let Some(sub) = document.get_entity(eh) else {
                             continue;
                         };
+                        // A dimension's definition points are baked into the
+                        // block as POINTs on the Defpoints layer. AutoCAD never
+                        // draws them as PDMODE glyphs — they're grip markers, not
+                        // geometry — so rendering them adds a stray tick at each
+                        // measured point that makes the extension lines look like
+                        // they run past the geometry. Skip them.
+                        if matches!(sub, EntityType::Point(_)) {
+                            continue;
+                        }
                         // Sub-entities inside *D### / DIMBLOCK## blocks
                         // typically use ByBlock color/linetype/lineweight —
                         // they should inherit from the Dimension entity.
