@@ -1,7 +1,11 @@
 // SOLID entity — 2D filled quadrilateral (or triangle when p3 == p4).
 //
 // Wireframe: the 4 perimeter edges as TruckObject::Lines.
-// Filled:    the scene injects a solid-fill HatchModel (like hatch.rs).
+// Filled:    two triangles on `fill_tris`, so a SOLID nested in a block (e.g.
+//            a `_BoxFilled` dimension arrowhead) renders filled — block
+//            expansion has no separate hatch-model injection. Top-level SOLIDs
+//            also get a solid-fill HatchModel; the duplicate fill is invisible
+//            for the opaque solids these are (arrowheads, cell fills).
 // Grips:     4 corner grip points.
 
 use acadrust::entities::Solid;
@@ -53,13 +57,17 @@ impl TruckConvertible for Solid {
             (dv(&self.fourth_corner), SnapHint::Node),
         ];
 
+        // Fill the visual quad p0→p1→p3→p2 (Z-order) as two triangles; a
+        // triangle SOLID (p2 == p3) degenerates the second, which is harmless.
+        let fill_tris = vec![p0, p1, p3, p0, p3, p2];
+
         Some(TruckEntity {
             pick_tris: Vec::new(),
             object: TruckObject::Lines(pts),
             snap_pts: snap,
             tangent_geoms: vec![],
             key_vertices: vec![p0, p1, p2, p3],
-            fill_tris: vec![],
+            fill_tris,
         })
     }
 }
@@ -146,15 +154,24 @@ impl PropertyEditable for Solid {
 
 impl Transformable for Solid {
     fn apply_transform(&mut self, t: &EntityTransform) {
-        crate::scene::view::transform::apply_standard_entity_transform(self, t, |entity, p1, p2| {
-            for corner in [
-                &mut entity.first_corner,
-                &mut entity.second_corner,
-                &mut entity.third_corner,
-                &mut entity.fourth_corner,
-            ] {
-                crate::scene::view::transform::reflect_xy_point(&mut corner.x, &mut corner.y, p1, p2);
-            }
-        });
+        crate::scene::view::transform::apply_standard_entity_transform(
+            self,
+            t,
+            |entity, p1, p2| {
+                for corner in [
+                    &mut entity.first_corner,
+                    &mut entity.second_corner,
+                    &mut entity.third_corner,
+                    &mut entity.fourth_corner,
+                ] {
+                    crate::scene::view::transform::reflect_xy_point(
+                        &mut corner.x,
+                        &mut corner.y,
+                        p1,
+                        p2,
+                    );
+                }
+            },
+        );
     }
 }
