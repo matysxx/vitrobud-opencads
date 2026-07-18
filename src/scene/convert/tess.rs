@@ -24,7 +24,6 @@ fn fade_if_locked(
 // requiring `Scene` (which contains `Rc<RefCell<...>>` and is `!Send`) to
 // cross thread boundaries.
 
-
 /// Tessellate a synthesised dimension-text entity through `tessellate_entity`
 /// so it picks up the standard text LOD ladder (baseline / greek / full),
 /// then re-color the returned wires with the dimension's resolved text colour
@@ -41,8 +40,15 @@ pub(crate) fn tessellate_entity_dim_text(
     text_color: [f32; 4],
 ) -> Vec<WireModel> {
     let mut wires = tessellate_entity(
-        document, selected, active_viewport, bg_color,
-        anno_scale, e, None, view_aabb, world_per_pixel,
+        document,
+        selected,
+        active_viewport,
+        bg_color,
+        anno_scale,
+        e,
+        None,
+        view_aabb,
+        world_per_pixel,
     );
     for w in &mut wires {
         // Synth dim text carries no real entity colour — paint everything
@@ -266,8 +272,7 @@ pub(crate) fn tessellate_entity(
                 .find(|br| br.name.eq_ignore_ascii_case(block_name))
             {
                 if !br.entity_handles.is_empty() {
-                    let mut wires: Vec<WireModel> =
-                        Vec::with_capacity(br.entity_handles.len());
+                    let mut wires: Vec<WireModel> = Vec::with_capacity(br.entity_handles.len());
                     // The Dimension's own layer style — layer-0 inheritance
                     // target for baked sub-entities on layer "0" (#221).
                     let dim_l0_color = view::render::adapt_to_bg(
@@ -283,7 +288,9 @@ pub(crate) fn tessellate_entity(
                         })
                         .unwrap_or(0);
                     for &eh in &br.entity_handles {
-                        let Some(sub) = document.get_entity(eh) else { continue };
+                        let Some(sub) = document.get_entity(eh) else {
+                            continue;
+                        };
                         // Sub-entities inside *D### / DIMBLOCK## blocks
                         // typically use ByBlock color/linetype/lineweight —
                         // they should inherit from the Dimension entity.
@@ -292,10 +299,17 @@ pub(crate) fn tessellate_entity(
                         let sub_is_l0_bylayer = sub.common().layer == "0"
                             && sub.common().color == acadrust::types::Color::ByLayer;
                         let sub_wires = tessellate_entity(
-                            document, selected, active_viewport, bg_color,
+                            document,
+                            selected,
+                            active_viewport,
+                            bg_color,
                             // Block contents are baked at the final WCS size —
                             // don't let downstream paths re-apply anno_scale.
-                            1.0, sub, block_cache, view_aabb, world_per_pixel,
+                            1.0,
+                            sub,
+                            block_cache,
+                            view_aabb,
+                            world_per_pixel,
                         );
                         for mut w in sub_wires {
                             w.name = h.value().to_string();
@@ -305,7 +319,11 @@ pub(crate) fn tessellate_entity(
                             // fallback that render_style_for produces. A layer-0
                             // sub inherits the dim's layer colour instead.
                             if sub_color_is_byblock {
-                                w.color = if sel { WireModel::SELECTED } else { entity_color };
+                                w.color = if sel {
+                                    WireModel::SELECTED
+                                } else {
+                                    entity_color
+                                };
                                 w.aci = aci;
                             } else if sub_is_l0_bylayer && !sel {
                                 w.color = dim_l0_color;
@@ -397,14 +415,9 @@ pub(crate) fn tessellate_entity(
     // Dimension's `block_name`.
     if let EntityType::Table(tab) = e {
         if let Some(br_h) = tab.block_record_handle {
-            if let Some(br) = document
-                .block_records
-                .iter()
-                .find(|br| br.handle == br_h)
-            {
+            if let Some(br) = document.block_records.iter().find(|br| br.handle == br_h) {
                 if !br.entity_handles.is_empty() {
-                    let mut wires: Vec<WireModel> =
-                        Vec::with_capacity(br.entity_handles.len());
+                    let mut wires: Vec<WireModel> = Vec::with_capacity(br.entity_handles.len());
                     // The Table's own layer style — layer-0 inheritance target
                     // for baked sub-entities on layer "0" (#221).
                     let tab_l0_color = view::render::adapt_to_bg(
@@ -419,20 +432,54 @@ pub(crate) fn tessellate_entity(
                             _ => 0,
                         })
                         .unwrap_or(0);
+                    // The *T block is laid out in block-local space (origin at
+                    // the table's top-left corner); the Table entity carries the
+                    // world placement in `insertion_point` + `horizontal_direction`
+                    // (like an INSERT). Place each baked sub-entity there before
+                    // tessellating — without it the whole table renders at the
+                    // origin. Rotating about the local origin then translating
+                    // gives world = insertion + R·local; tessellate_entity then
+                    // handles the UTM-scale relative-to-eye split as usual.
+                    let ins = tab.insertion_point;
+                    let angle = tab.horizontal_direction.y.atan2(tab.horizontal_direction.x);
                     for &eh in &br.entity_handles {
-                        let Some(sub) = document.get_entity(eh) else { continue };
+                        let Some(sub) = document.get_entity(eh) else {
+                            continue;
+                        };
                         let sub_color_is_byblock =
                             sub.common().color == acadrust::types::Color::ByBlock;
                         let sub_is_l0_bylayer = sub.common().layer == "0"
                             && sub.common().color == acadrust::types::Color::ByLayer;
+                        let mut placed = sub.clone();
+                        {
+                            let ent = placed.as_entity_mut();
+                            if angle.abs() > 1e-9 {
+                                ent.apply_rotation(
+                                    acadrust::types::Vector3::new(0.0, 0.0, 1.0),
+                                    angle,
+                                );
+                            }
+                            ent.translate(ins);
+                        }
                         let sub_wires = tessellate_entity(
-                            document, selected, active_viewport, bg_color,
-                            anno_scale, sub, block_cache, view_aabb, world_per_pixel,
+                            document,
+                            selected,
+                            active_viewport,
+                            bg_color,
+                            anno_scale,
+                            &placed,
+                            block_cache,
+                            view_aabb,
+                            world_per_pixel,
                         );
                         for mut w in sub_wires {
                             w.name = h.value().to_string();
                             if sub_color_is_byblock {
-                                w.color = if sel { WireModel::SELECTED } else { entity_color };
+                                w.color = if sel {
+                                    WireModel::SELECTED
+                                } else {
+                                    entity_color
+                                };
                                 w.aci = aci;
                             } else if sub_is_l0_bylayer && !sel {
                                 w.color = tab_l0_color;
@@ -468,7 +515,12 @@ pub(crate) fn tessellate_entity(
             1.0
         };
         let mut wires = crate::entities::table::tessellate_table(
-            tab, document, sel, entity_color, line_weight_px, table_anno,
+            tab,
+            document,
+            sel,
+            entity_color,
+            line_weight_px,
+            table_anno,
         );
         if !wires.is_empty() {
             let aabb = entity_aabb(e);
@@ -487,7 +539,8 @@ pub(crate) fn tessellate_entity(
 
     if let EntityType::Insert(ins) = e {
         // Resolve the INSERT's own style so ByBlock sub-entities can inherit it.
-        let (ins_color, ins_pat_len, ins_pat, ins_lw_px, _) = view::render::render_style_for(document, e);
+        let (ins_color, ins_pat_len, ins_pat, ins_lw_px, _) =
+            view::render::render_style_for(document, e);
         let ins_color = view::render::adapt_to_bg(ins_color, bg_color);
         // Resolve the INSERT's *layer* style — the layer-0 inheritance target
         // for sub-entities on layer "0" with ByLayer properties (#221).
@@ -778,9 +831,7 @@ pub(crate) fn tessellate_entity(
                 };
                 let mut rails = Vec::new();
                 for sgn in [1.0_f64, -1.0] {
-                    if let Some(off) =
-                        convert::dgn_linestyle::offset_host_entity(e, sgn * radius)
-                    {
+                    if let Some(off) = convert::dgn_linestyle::offset_host_entity(e, sgn * radius) {
                         let mut w = convert::tessellate::tessellate(
                             document,
                             h,
@@ -885,9 +936,9 @@ fn lod_stub_wire(
     WireModel {
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+        dash_from_start: false,
+        dash_align_end: None,
+        text_verts: Vec::new(),
         name,
         // Diagonal of the entity's 3D AABB so depth tests against
         // shaded / hidden-line geometry are correct — the stub doesn't
@@ -929,16 +980,35 @@ fn lod_stub_wire_3d(
     z_max: f32,
 ) -> WireModel {
     let [x0, y0, x1, y1] = aabb;
-    let (z0, z1) = if z_min <= z_max { (z_min, z_max) } else { (z_max, z_min) };
+    let (z0, z1) = if z_min <= z_max {
+        (z_min, z_max)
+    } else {
+        (z_max, z_min)
+    };
     let p = [
-        [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
-        [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+        [x0, y0, z0],
+        [x1, y0, z0],
+        [x1, y1, z0],
+        [x0, y1, z0],
+        [x0, y0, z1],
+        [x1, y0, z1],
+        [x1, y1, z1],
+        [x0, y1, z1],
     ];
     // 12 edges = 4 bottom-face + 4 top-face + 4 vertical connectors.
     const EDGES: [(usize, usize); 12] = [
-        (0, 1), (1, 2), (2, 3), (3, 0),
-        (4, 5), (5, 6), (6, 7), (7, 4),
-        (0, 4), (1, 5), (2, 6), (3, 7),
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
     ];
     let mut points: Vec<[f32; 3]> = Vec::with_capacity(EDGES.len() * 3);
     for (a, b) in EDGES {
@@ -952,9 +1022,9 @@ fn lod_stub_wire_3d(
     WireModel {
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
-            dash_from_start: false,
-            dash_align_end: None,
-            text_verts: Vec::new(),
+        dash_from_start: false,
+        dash_align_end: None,
+        text_verts: Vec::new(),
         name,
         points,
         points_low: Vec::new(),
@@ -1086,4 +1156,3 @@ pub(crate) fn is_unindexable_entity(e: &acadrust::EntityType) -> bool {
         E::Insert(_) | E::Viewport(_) | E::Block(_) | E::BlockEnd(_)
     )
 }
-
