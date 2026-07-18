@@ -111,6 +111,9 @@ fn point_glyph(cx: f64, cy: f64, z: f64, pdmode: i16, s_half: f64) -> Vec<[f64; 
     let circle = (pdmode & 32) != 0;
     let square = (pdmode & 64) != 0;
     let s = s_half;
+    // The '+' and '×' arms reach the full PDSIZE (twice the radius), so the
+    // cross pokes out past any enclosing circle/square, which sit at the radius.
+    let arm = 2.0 * s_half;
     let nan = [f64::NAN, f64::NAN, f64::NAN];
     let mut pts: Vec<[f64; 3]> = Vec::new();
     let mut push_seg = |a: [f64; 3], b: [f64; 3]| {
@@ -129,15 +132,17 @@ fn point_glyph(cx: f64, cy: f64, z: f64, pdmode: i16, s_half: f64) -> Vec<[f64; 
         }
         1 => {} // explicit nothing
         2 => {
-            push_seg([cx - s, cy, z], [cx + s, cy, z]);
-            push_seg([cx, cy - s, z], [cx, cy + s, z]);
+            push_seg([cx - arm, cy, z], [cx + arm, cy, z]);
+            push_seg([cx, cy - arm, z], [cx, cy + arm, z]);
         }
         3 => {
-            push_seg([cx - s, cy - s, z], [cx + s, cy + s, z]);
-            push_seg([cx - s, cy + s, z], [cx + s, cy - s, z]);
+            push_seg([cx - arm, cy - arm, z], [cx + arm, cy + arm, z]);
+            push_seg([cx - arm, cy + arm, z], [cx + arm, cy - arm, z]);
         }
         4 => {
-            push_seg([cx, cy - s, z], [cx, cy + s, z]);
+            // Upward tick rising from the point (length = PDSIZE/2), not a
+            // vertical line centred on it.
+            push_seg([cx, cy, z], [cx, cy + s, z]);
         }
         _ => {
             push_seg([cx - s, cy, z], [cx + s, cy, z]);
