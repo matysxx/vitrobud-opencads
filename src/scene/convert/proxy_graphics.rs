@@ -1,70 +1,148 @@
 //! Proxy entity graphics — the cached vector preview an application stores
 //! alongside a custom entity so viewers without its object enabler can still
-//! draw something. AutoCAD falls back to exactly this; so do we.
+//! draw something. AutoCAD falls back to exactly this; so do we (e.g. an
+//! AutoCAD Architecture door/wall arrives as an `Unknown` entity we cannot
+//! interpret, but it ships this preview).
 //!
-//! No reference decoder exists to copy: LibreDWG keeps the blob raw and points
-//! at the spec ("see par 29"), ACadSharp likewise stores `ProxyGraphics` bytes
-//! and never parses them. The full record grammar is therefore unverified here,
-//! and guessing at it from a sample is how you end up misreading every file.
+//! LibreDWG and ACadSharp both keep the blob raw and never parse it, so there
+//! is no reference decoder to copy. The layout below was reverse-engineered
+//! from real previews (a Raster Design image frame, an ACA door and wall) and
+//! is deliberately conservative: it reads only the primitive records it has
+//! verified and treats every other record as an opaque trait to skip. Phase 1
+//! covers geometry (poly-lines, poly-gons and circular arcs); colour/lineweight
+//! traits are ignored, so everything renders in the entity's own colour.
 //!
-//! So this decodes exactly one shape — a single polyline record — and only when
-//! the blob matches it byte-for-byte. Anything else returns `None` and draws
-//! nothing, which is what happened before this existed: no regression, no
-//! invented geometry.
+//! Blob grammar (all little-endian):
+//! ```text
+//! u32 total_size        (== blob length)
+//! u32 record_count
+//! record_count × {
+//!     u32 record_size   (bytes, including this 8-byte header)
+//!     u32 record_type
+//!     u8[record_size-8] data
+//! }
+//! ```
+//! Record types decoded here:
+//! * 6 poly-line / 7 poly-gon: `u32 point_count`, then `[f64;3] × point_count`
+//!   (type 7 closes back to the first point).
+//! * 4 / 5 circular arc: `[f64;3] centre`, `f64 radius`, `[f64;3] normal`,
+//!   `[f64;3] start_dir`, `f64 sweep` (radians), then a trailing flag.
 
-/// A closed/open polyline lifted from a proxy-graphics blob (world coords).
+/// A poly-line lifted from a proxy-graphics blob, in world coordinates. Arcs
+/// and closed poly-gons are pre-flattened into points so callers only draw
+/// line strips.
 pub struct ProxyPolyline {
     pub points: Vec<[f64; 3]>,
 }
 
-/// Record type for a polyline entry. The only one accepted.
-const ENTRY_POLYLINE: u32 = 6;
+const REC_ARC: u32 = 4;
+const REC_ARC5: u32 = 5;
+const REC_POLYLINE: u32 = 6;
+const REC_POLYGON: u32 = 7;
 
-/// Layout accepted (little-endian), validated in full before anything is
-/// emitted:
-///
-/// ```text
-/// u32 total_size      == blob.len()
-/// u32 entry_count     == 1
-/// u32 payload_size    == blob.len() - 8
-/// u32 entry_type      == 6 (polyline)
-/// u32 point_count
-/// [f64; 3] * point_count
-/// ```
-///
-/// Verified against an Autodesk Raster Design embedded raster image, whose
-/// 140-byte preview decodes to its image frame with 0 bytes left over.
-pub fn decode_polyline(blob: &[u8]) -> Option<ProxyPolyline> {
-    let u32_at = |o: usize| -> Option<u32> {
-        blob.get(o..o + 4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+fn u32_at(b: &[u8], o: usize) -> Option<u32> {
+    b.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+fn f64_at(b: &[u8], o: usize) -> Option<f64> {
+    b.get(o..o + 8)
+        .map(|s| f64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+}
+
+fn pt3_at(b: &[u8], o: usize) -> Option<[f64; 3]> {
+    let p = [f64_at(b, o)?, f64_at(b, o + 8)?, f64_at(b, o + 16)?];
+    p.iter().all(|v| v.is_finite() && v.abs() < 1e12).then_some(p)
+}
+
+/// Decode every geometry record in a proxy-graphics `blob` into world-space
+/// poly-lines. Returns an empty vec when the blob is absent, malformed, or
+/// carries no geometry this decoder models — never any invented shape.
+pub fn decode(blob: &[u8]) -> Vec<ProxyPolyline> {
+    let mut out = Vec::new();
+    let total = match u32_at(blob, 0) {
+        Some(t) => t as usize,
+        None => return out,
     };
-
-    if blob.len() < 20 || u32_at(0)? as usize != blob.len() || u32_at(4)? != 1 {
-        return None;
+    // Trust the length field only when it fits; a mismatch means a layout this
+    // decoder does not model, so bail rather than walk off the end.
+    if total > blob.len() || total < 8 {
+        return out;
     }
-    if u32_at(8)? as usize != blob.len() - 8 || u32_at(12)? != ENTRY_POLYLINE {
-        return None;
-    }
-    let n = u32_at(16)? as usize;
-    // The points must account for every remaining byte — a short read would
-    // mean the record carries something this decoder does not model.
-    if n < 2 || 20usize.checked_add(n.checked_mul(24)?)? != blob.len() {
-        return None;
+    let count = u32_at(blob, 4).unwrap_or(0);
+    if count > 1_000_000 {
+        return out;
     }
 
-    let mut points = Vec::with_capacity(n);
-    for i in 0..n {
-        let o = 20 + i * 24;
-        let f = |k: usize| -> f64 {
-            let b = &blob[o + k * 8..o + k * 8 + 8];
-            f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
-        };
-        let (x, y, z) = (f(0), f(1), f(2));
-        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-            return None;
+    let mut pos = 8usize;
+    for _ in 0..count {
+        let Some(rsize) = u32_at(blob, pos) else { break };
+        let rsize = rsize as usize;
+        let Some(rtype) = u32_at(blob, pos + 4) else { break };
+        if rsize < 8 || pos + rsize > total {
+            break;
         }
-        points.push([x, y, z]);
+        match rtype {
+            REC_POLYLINE | REC_POLYGON => {
+                if let Some(n) = u32_at(blob, pos + 8) {
+                    let n = n as usize;
+                    if n >= 2 && 12 + n * 24 <= rsize {
+                        let mut pts = Vec::with_capacity(n + 1);
+                        let ok = (0..n).all(|i| match pt3_at(blob, pos + 12 + i * 24) {
+                            Some(p) => {
+                                pts.push(p);
+                                true
+                            }
+                            None => false,
+                        });
+                        if ok {
+                            // A poly-gon is a closed loop.
+                            if rtype == REC_POLYGON {
+                                if let Some(&first) = pts.first() {
+                                    pts.push(first);
+                                }
+                            }
+                            out.push(ProxyPolyline { points: pts });
+                        }
+                    }
+                }
+            }
+            REC_ARC | REC_ARC5 => {
+                if let Some(poly) = decode_arc(blob, pos) {
+                    out.push(poly);
+                }
+            }
+            // Every other record is a trait (colour, layer, lineweight, …) —
+            // skipped in phase 1; `rsize` still advances us past it.
+            _ => {}
+        }
+        pos += rsize;
+    }
+    out
+}
+
+/// Flatten a circular-arc record (centre, radius, normal, start direction,
+/// sweep) into a poly-line. The normal's Z sign gives the sweep direction.
+fn decode_arc(blob: &[u8], pos: usize) -> Option<ProxyPolyline> {
+    let center = pt3_at(blob, pos + 8)?;
+    let radius = f64_at(blob, pos + 32)?;
+    let normal = pt3_at(blob, pos + 40)?;
+    let start_dir = pt3_at(blob, pos + 64)?;
+    let sweep = f64_at(blob, pos + 88)?;
+    if !radius.is_finite() || radius <= 0.0 || radius > 1e9 || !sweep.is_finite() {
+        return None;
+    }
+    let start = start_dir[1].atan2(start_dir[0]);
+    let dir = if normal[2] < 0.0 { -1.0 } else { 1.0 };
+    // Segment the sweep — ~64 per full turn, at least 2.
+    let segs = ((sweep.abs() / std::f64::consts::TAU * 64.0).ceil() as usize).clamp(2, 512);
+    let mut points = Vec::with_capacity(segs + 1);
+    for i in 0..=segs {
+        let a = start + dir * sweep * (i as f64 / segs as f64);
+        points.push([
+            center[0] + radius * a.cos(),
+            center[1] + radius * a.sin(),
+            center[2],
+        ]);
     }
     Some(ProxyPolyline { points })
 }
@@ -74,7 +152,7 @@ mod tests {
     use super::*;
 
     /// The real 140-byte preview of an Autodesk Raster Design embedded raster
-    /// image: its frame, 1192.149 x 877.824, closed back to the origin.
+    /// image: a single type-6 poly-line, its frame closed back to the origin.
     #[test]
     fn decodes_the_raster_design_image_frame() {
         let hex = "8C00000001000000840000000600000005000000\
@@ -91,21 +169,19 @@ mod tests {
             .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
             .collect();
         assert_eq!(blob.len(), 140);
-
-        let p = decode_polyline(&blob).expect("frame decodes");
-        assert_eq!(p.points.len(), 5);
-        assert!((p.points[2][0] - 1192.1490).abs() < 1e-3);
-        assert!((p.points[2][1] - 877.8240).abs() < 1e-3);
-        // Closed: last point returns to the first.
-        assert_eq!(p.points[0], p.points[4]);
+        let polys = decode(&blob);
+        assert_eq!(polys.len(), 1);
+        assert_eq!(polys[0].points.len(), 5);
+        assert!((polys[0].points[2][0] - 1192.1490).abs() < 1e-3);
+        assert!((polys[0].points[2][1] - 877.8240).abs() < 1e-3);
     }
 
     #[test]
     fn rejects_anything_it_does_not_model() {
-        assert!(decode_polyline(&[]).is_none());
-        assert!(decode_polyline(&[0u8; 140]).is_none()); // size field wrong
+        assert!(decode(&[]).is_empty());
+        assert!(decode(&[0u8; 140]).is_empty()); // size field wrong
         let mut b = vec![0u8; 140];
-        b[0] = 140; // right size, wrong everything else
-        assert!(decode_polyline(&b).is_none());
+        b[0] = 140; // right size, zero records
+        assert!(decode(&b).is_empty());
     }
 }

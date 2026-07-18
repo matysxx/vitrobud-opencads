@@ -244,8 +244,19 @@ pub(crate) fn tessellate_entity(
     // occupies its real place instead of silently disappearing.
     if let EntityType::Unknown(_) = e {
         if let Some(blob) = e.common().graphic_data.as_ref() {
-            if let Some(p) = convert::proxy_graphics::decode_polyline(blob) {
-                let (pts, pts_low) = convert::tessellate::points_to_ds(p.points);
+            let polys = convert::proxy_graphics::decode(blob);
+            if !polys.is_empty() {
+                // One wire for the whole preview: concatenate the poly-lines
+                // with NaN separators (arcs are already flattened to points).
+                let nan = [f64::NAN; 3];
+                let mut pts64: Vec<[f64; 3]> = Vec::new();
+                for poly in &polys {
+                    if !pts64.is_empty() {
+                        pts64.push(nan);
+                    }
+                    pts64.extend_from_slice(&poly.points);
+                }
+                let (pts, pts_low) = convert::tessellate::points_to_ds(pts64);
                 let mut w = WireModel::solid(h.value().to_string(), pts, entity_color, sel);
                 w.points_low = pts_low;
                 w.line_weight_px = line_weight_px;
