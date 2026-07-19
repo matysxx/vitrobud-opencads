@@ -719,7 +719,12 @@ fn collect_curved_gens(
                     axis: rot_dir(g.axis),
                     u_dir: rot_dir(g.u_dir),
                     v_dir: rot_dir(g.v_dir),
-                    radius: (g.radius * scale) as f32,
+                    // `radius` is the cone radius at `base`, which sits at h_min —
+                    // NOT at the surface's h=0 root. `cone_face_geom.radius` is the
+                    // root radius, so add the h_min offset (`radius + h_min·tan_a`)
+                    // or the silhouette's `r0 = radius` lands at the wrong radius
+                    // and its top `r1 = radius + span·tan_a` overshoots the apex.
+                    radius: ((g.radius + g.h_min * g.tan_a) * scale) as f32,
                     tan_a: g.tan_a as f32,
                     h_max: ((g.h_max - g.h_min) * scale) as f32,
                     theta_min: g.theta_min as f32,
