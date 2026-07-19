@@ -1107,13 +1107,17 @@ pub fn tessellate(
                     .map(|[x, y, z]| [x, y, z])
                     .collect();
                 let (fill_tris, fill_tris_low) = points_to_ds(te.fill_tris);
-                // Only a real 3-D mesh surface (PolyfaceMesh / PolygonMesh) fill
-                // renders shaded-only with hidden-surface depth; every other
-                // `fill_tris` here (a SOLID's filled quad — e.g. a `_BoxFilled`
-                // arrowhead) is a flat 2-D overlay visible in every view mode.
+                // Only a real 3-D mesh surface (PolyfaceMesh / PolygonMesh /
+                // the modern subdivision Mesh) fill renders shaded-only with
+                // hidden-surface depth; every other `fill_tris` here (a SOLID's
+                // filled quad — e.g. a `_BoxFilled` arrowhead) is a flat 2-D
+                // overlay visible in every view mode. Leaving `Mesh` out drops
+                // its face fill into the 2-D buffer, so it drew in wireframe too.
                 let fill_is_3d = matches!(
                     entity,
-                    EntityType::PolyfaceMesh(_) | EntityType::PolygonMesh(_)
+                    EntityType::PolyfaceMesh(_)
+                        | EntityType::PolygonMesh(_)
+                        | EntityType::Mesh(_)
                 );
                 // Thickness walls ride on the wire that carries their edges, not
                 // on a wire of their own: they are pick geometry for that entity,
