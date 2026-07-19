@@ -261,11 +261,13 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
         let collapsed = self.caret_on && self.sel.map(|(a, b)| a == b).unwrap_or(true);
         if collapsed && self.boxes.is_empty() {
             // Empty text: show a caret at the top-left so the user can type.
+            // Its height matches the preview's constant em (see EM_PX) so the
+            // empty-editor caret isn't tiny.
             let path = Path::new(|p| {
                 p.move_to(iced::Point::new(MTEXT_PREVIEW_PAD, MTEXT_PREVIEW_PAD));
                 p.line_to(iced::Point::new(
                     MTEXT_PREVIEW_PAD,
-                    (MTEXT_PREVIEW_PAD + 22.0).min(self.content_h),
+                    (MTEXT_PREVIEW_PAD + 40.0).min(self.content_h),
                 ));
             });
             frame.stroke(
@@ -570,12 +572,55 @@ pub(super) fn mtext_editor_overlay<'a>(
             maxx = maxx.max(b.xmax);
             maxy = maxy.max(b.ymax);
         }
-        let h_unit = ed.height_value() as f32;
-        // Real text size: fixed pixels per em so more/taller text grows the
-        // canvas (and scrolls) instead of shrinking to fit.
-        let scale = (22.0 / h_unit.max(1e-3)).clamp(2.0, 600.0);
+        // Normalize the display by the DOMINANT rendered text height — the run
+        // height the most glyphs share (the body) — NOT the entity's base height
+        // field. That field can be many times the visible text: `\H…x;` runs
+        // compound, so an entity of height 1 whose body is `\H0.2x` renders at
+        // 0.2, and normalizing by 1 would shrink everything 5×. The mode lands
+        // the body at EM_PX while headings / fine print keep their proportions
+        // (one uniform factor, so no height is distorted). Zero-width boxes —
+        // the empty-line caret slots, which carry the raw entity height — are
+        // skipped so they can't skew it.
+        let h_unit = {
+            let mut heights: Vec<f32> = ed
+                .glyph_boxes
+                .iter()
+                .filter(|b| b.xmax - b.xmin > 1e-6)
+                .map(|b| b.ymax - b.ymin)
+                .filter(|h| h.is_finite() && *h > 1e-6)
+                .collect();
+            if heights.is_empty() {
+                ed.height_value() as f32
+            } else {
+                heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                // Largest cluster of near-equal heights (within 5%) = the body.
+                let (mut best_h, mut best_n, mut i) = (heights[0], 0usize, 0usize);
+                while i < heights.len() {
+                    let mut j = i;
+                    while j < heights.len() && heights[j] <= heights[i] * 1.05 {
+                        j += 1;
+                    }
+                    if j - i > best_n {
+                        best_n = j - i;
+                        best_h = heights[(i + j - 1) / 2];
+                    }
+                    i = j;
+                }
+                best_h
+            }
+        };
+        const EM_PX: f32 = 15.0;
+        let scale = (EM_PX / h_unit.max(1e-6)).clamp(1e-4, 1e6);
         let content_h = if maxx >= minx {
             ((maxy - miny) * scale + 2.0 * MTEXT_PREVIEW_PAD).max(40.0)
+        } else {
+            40.0
+        };
+        // Multi-column MTEXT lays its columns out side by side, so the content
+        // can be wider than the editor; size the canvas to the real content
+        // width and let the scroll area pan horizontally to reach later columns.
+        let content_w = if maxx >= minx {
+            (maxx - minx) * scale + 2.0 * MTEXT_PREVIEW_PAD
         } else {
             40.0
         };
@@ -591,11 +636,21 @@ pub(super) fn mtext_editor_overlay<'a>(
             content_h,
         };
         let cv = canvas(prog)
-            .width(Fill)
+            .width(iced::Length::Fixed(content_w))
             .height(iced::Length::Fixed(content_h));
-        // The preview fills the space the toolbars leave, so the resizable
-        // modal's extra height goes to the text area (it scrolls if taller).
-        container(iced::widget::scrollable(cv).height(Fill))
+        // The preview fills the space the toolbars leave; it scrolls in BOTH
+        // directions so a taller-than-view text scrolls vertically and a
+        // wider-than-view multi-column text scrolls horizontally.
+        use iced::widget::scrollable::{Direction, Scrollbar};
+        container(
+            iced::widget::scrollable(cv)
+                .direction(Direction::Both {
+                    vertical: Scrollbar::default(),
+                    horizontal: Scrollbar::default(),
+                })
+                .width(Fill)
+                .height(Fill),
+        )
             .style(move |_: &Theme| container::Style {
                 background: Some(Background::Color(FIELD_BG)),
                 border: Border {
