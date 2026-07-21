@@ -770,7 +770,7 @@ impl OpenCADStudio {
                 // the submit path, which tokenises multi-token lines — so a typed
                 // token, a pasted `LINE 0,0 10,10`, or API-fed text all run their
                 // spaces as step separators. A leading `>` keeps spaces literal.
-                if !s.starts_with('>') && s.contains(' ') {
+                if !self.command_line.literal_spaces && !s.starts_with('>') && s.contains(' ') {
                     self.command_line.input = s;
                     return self.update(Message::CommandSubmit);
                 }
@@ -856,6 +856,12 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::CommandLiteralToggle => {
+                self.command_line.literal_spaces = !self.command_line.literal_spaces;
+                self.save_config();
+                self.focus_cmd_input()
+            }
+
             Message::CommandHistoryToggle => {
                 self.command_line.toggle_history();
                 // On open, snapshot the current log into the read-only editor
@@ -924,10 +930,11 @@ impl OpenCADStudio {
                     self.mtext_type(" ");
                     return Task::none();
                 }
-                // A leading `>` puts the command line in "literal space" mode so
-                // the user can type arguments that contain spaces; otherwise
-                // Space works like Enter. The `>` is stripped on submit.
-                if self.command_line.input.starts_with('>') {
+                // A leading `>` (or the persistent `>` toggle) puts the command
+                // line in "literal space" mode so the user can type arguments
+                // that contain spaces; otherwise Space works like Enter. The
+                // typed `>` is stripped on submit.
+                if self.command_line.literal_spaces || self.command_line.input.starts_with('>') {
                     self.command_line.input.push(' ');
                     return Task::none();
                 }

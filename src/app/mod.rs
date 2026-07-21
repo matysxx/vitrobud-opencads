@@ -1364,6 +1364,10 @@ pub enum Message {
     CommandHistoryNext,
     /// Toggle the dropdown listing the full command-line history.
     CommandHistoryToggle,
+    /// Toggle the persistent literal-space mode (the `>` button): while on,
+    /// every command line behaves as if it started with `>` — Space stays in
+    /// the input instead of submitting. Saved in the user config.
+    CommandLiteralToggle,
     /// Copy the full command-line history (every line) to the system
     /// clipboard as plain text — issue #232, so output can be pasted for
     /// debugging instead of screenshotted.

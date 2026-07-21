@@ -75,6 +75,7 @@ impl OpenCADStudio {
                 v
             },
             plugin_repos: self.plugin_repos.clone(),
+            literal_spaces: self.command_line.literal_spaces,
             texteditmode: self.texteditmode,
             textfill: crate::scene::text::sdf_atlas::textfill(),
             backup_on_save: self.backup_on_save,
@@ -96,6 +97,7 @@ impl OpenCADStudio {
         self.default_assoc_prompted = s.default_assoc_prompted;
         self.disabled_plugins = s.disabled_plugins.iter().cloned().collect();
         self.plugin_repos = s.plugin_repos.clone();
+        self.command_line.literal_spaces = s.literal_spaces;
         self.texteditmode = s.texteditmode;
         crate::scene::text::sdf_atlas::set_textfill(s.textfill);
         self.backup_on_save = s.backup_on_save;
