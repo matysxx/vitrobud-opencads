@@ -107,7 +107,9 @@ impl Scene {
         if min == max {
             return;
         }
-        self.camera.borrow_mut().fit_to_bounds(min, max);
+        self.camera
+            .borrow_mut()
+            .fit_to_bounds(min, max, self.last_render_aspect.get().max(0.01));
         self.camera_generation += 1;
     }
 
@@ -850,7 +852,9 @@ impl Scene {
         if min == max {
             max += glam::Vec3::splat(1.0);
         }
-        self.camera.borrow_mut().fit_to_bounds(min, max);
+        self.camera
+            .borrow_mut()
+            .fit_to_bounds(min, max, self.last_render_aspect.get().max(0.01));
         self.camera_generation += 1;
     }
 

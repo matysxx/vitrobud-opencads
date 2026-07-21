@@ -396,18 +396,22 @@ impl Camera {
     /// horizontal zoom out with it: a 140-unit drawing carrying a single entity
     /// 800 km below its plane zoomed out to 800 km and became a dot. The two
     /// agree on a flat drawing, which is why it went unnoticed.
-    pub fn fit_to_bounds(&mut self, min: Vec3, max: Vec3) {
+    pub fn fit_to_bounds(&mut self, min: Vec3, max: Vec3, aspect: f32) {
         self.target = ((min + max) * 0.5).as_dvec3();
         let corners = self.bounds_in_view(min, max);
-        // Circumscribed radius across the screen plane — aspect-agnostic, so the
-        // content fits whatever the viewport's shape turns out to be.
-        let screen_r = corners
+        // Half-height the view needs so the box fits BOTH axes at the given
+        // viewport aspect. The old circumscribed-radius rule fitted the box's
+        // DIAGONAL into the height regardless of shape, which left a wide
+        // drawing filling only a small central patch of the window (#364).
+        let a = aspect.max(0.01);
+        let half_h = corners
             .iter()
-            .fold(0.0_f32, |m, c| m.max(c.x.hypot(c.y)))
+            .fold(0.0_f32, |m, c| m.max(c.y.abs()).max(c.x.abs() / a))
             .max(1e-6);
         // `ortho_size` (the half-height) is `distance * tan(fov/2)`, so invert
-        // that to get the distance which just contains `screen_r`, plus margin.
-        self.distance = (screen_r / (self.fov_y * 0.5).tan() * 1.2).max(1e-3);
+        // that to get the distance which just contains `half_h`, plus a small
+        // border margin.
+        self.distance = (half_h / (self.fov_y * 0.5).tan() * 1.1).max(1e-3);
         self.fit_depth_to_bounds(min, max);
     }
 
@@ -588,11 +592,11 @@ mod tests {
         let flat_max = Vec3::new(-1199960.0, -800000.0, 10.0);
 
         let mut flat = Camera::default();
-        flat.fit_to_bounds(flat_min, flat_max);
+        flat.fit_to_bounds(flat_min, flat_max, 1.0);
 
         // Same drawing, plus the benchmark's entity 800 km down.
         let mut deep = Camera::default();
-        deep.fit_to_bounds(Vec3::new(flat_min.x, flat_min.y, -800017.5), flat_max);
+        deep.fit_to_bounds(Vec3::new(flat_min.x, flat_min.y, -800017.5), flat_max, 1.0);
 
         // Top view: the outlier is along the eye direction, so the on-screen
         // framing must barely move.
@@ -612,7 +616,7 @@ mod tests {
         let min = Vec3::new(-1200100.0, -800081.5, -800017.5);
         let max = Vec3::new(-1199960.0, -800000.0, 10.0);
         let mut cam = Camera::default();
-        cam.fit_to_bounds(min, max);
+        cam.fit_to_bounds(min, max, 1.0);
 
         let (near, far) = cam.ortho_depth_range();
         // Depth of a point from the eye, along the view direction. Top view, so
@@ -633,7 +637,7 @@ mod tests {
         let min = Vec3::new(-70.0, -40.0, 0.0);
         let max = Vec3::new(70.0, 40.0, 0.0);
         let mut cam = Camera::default();
-        cam.fit_to_bounds(min, max);
+        cam.fit_to_bounds(min, max, 1.0);
         // Old rule: distance = 3-D diagonal * 1.5.
         let old = (max - min).length() * 1.5;
         let ratio = cam.distance / old;
