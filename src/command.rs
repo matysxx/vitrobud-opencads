@@ -908,6 +908,10 @@ pub enum CmdResult {
         scale: f32,
         angle: f32,
     },
+    /// Implicit STRETCH selection: the crossing window was drawn with no prior
+    /// selection, so the host resolves which entities it touches and restarts
+    /// the command at the base-point step with them. (#338)
+    StretchWindow { win_min: DVec3, win_max: DVec3 },
     /// Stretch entities: move only vertices/endpoints inside the crossing window.
     StretchEntities {
         handles: Vec<Handle>,

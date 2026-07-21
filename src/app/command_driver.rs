@@ -1404,6 +1404,49 @@ impl OpenCADStudio {
                 self.restore_pre_cmd_tangent();
                 return self.on_quick_print_handles(handles);
             }
+            CmdResult::StretchWindow { win_min, win_max } => {
+                // Implicit STRETCH selection (#338): the crossing window drawn
+                // with no prior selection picks the objects itself. Entities
+                // whose world AABB touches the window are handed back to the
+                // command at the base-point step — over-selection is harmless,
+                // since only points INSIDE the window move anyway.
+                let mut handles: Vec<Handle> = Vec::new();
+                {
+                    let scene = &self.tabs[i].scene;
+                    let mut seen: rustc_hash::FxHashSet<Handle> = rustc_hash::FxHashSet::default();
+                    for w in scene.entity_wires().iter() {
+                        let Some(h) = crate::scene::Scene::handle_from_wire_name(&w.name) else {
+                            continue;
+                        };
+                        if !seen.insert(h) || scene.is_layer_locked(h) {
+                            continue;
+                        }
+                        let [ax, ay, bx, by] = w.aabb;
+                        if ax as f64 <= win_max.x
+                            && bx as f64 >= win_min.x
+                            && ay as f64 <= win_max.y
+                            && by as f64 >= win_min.y
+                        {
+                            handles.push(h);
+                        }
+                    }
+                }
+                if handles.is_empty() {
+                    self.command_line
+                        .push_output("STRETCH: nothing crosses the window.");
+                    self.tabs[i].active_cmd = None;
+                    self.tabs[i].snap_result = None;
+                    self.tabs[i].scene.clear_preview_wire();
+                    self.restore_pre_cmd_tangent();
+                } else {
+                    use crate::command::CadCommand;
+                    use crate::modules::draw::modify::stretch::StretchCommand;
+                    let wires = self.tabs[i].scene.wire_models_for(&handles);
+                    let cmd = StretchCommand::with_window(handles, wires, win_min, win_max);
+                    self.command_line.push_info(&CadCommand::prompt(&cmd));
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                }
+            }
             CmdResult::StretchEntities {
                 handles,
                 win_min,

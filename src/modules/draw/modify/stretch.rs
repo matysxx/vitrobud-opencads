@@ -64,6 +64,22 @@ impl StretchCommand {
             step: Step::WindowCorner1,
         }
     }
+
+    /// Restart at the base-point step with the window already known — the
+    /// implicit-selection flow: the host resolved which entities the crossing
+    /// window touches and hands them in together with the window. (#338)
+    pub fn with_window(
+        handles: Vec<Handle>,
+        wire_models: Vec<WireModel>,
+        win_min: DVec3,
+        win_max: DVec3,
+    ) -> Self {
+        Self {
+            handles,
+            wire_models,
+            step: Step::Base { win_min, win_max },
+        }
+    }
 }
 
 impl CadCommand for StretchCommand {
@@ -73,10 +89,18 @@ impl CadCommand for StretchCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::WindowCorner1 => format!(
-                "STRETCH  Specify first corner of crossing window  [{} objects]:",
-                self.handles.len()
-            ),
+            Step::WindowCorner1 => {
+                if self.handles.is_empty() {
+                    // Implicit mode: the window both selects the objects and
+                    // marks which of their points move.
+                    "STRETCH  Specify first corner of crossing window:".into()
+                } else {
+                    format!(
+                        "STRETCH  Specify first corner of crossing window  [{} objects]:",
+                        self.handles.len()
+                    )
+                }
+            }
             Step::WindowCorner2(_) => "STRETCH  Specify opposite corner:".into(),
             Step::Base { .. } => "STRETCH  Specify base point:".into(),
             Step::Target { base, .. } => format!(
@@ -95,6 +119,12 @@ impl CadCommand for StretchCommand {
             Step::WindowCorner2(c1) => {
                 let win_min = c1.min(pt);
                 let win_max = c1.max(pt);
+                if self.handles.is_empty() {
+                    // Implicit mode: hand the window to the host, which
+                    // resolves the touched entities and restarts the command
+                    // at the base-point step via `with_window`. (#338)
+                    return CmdResult::StretchWindow { win_min, win_max };
+                }
                 self.step = Step::Base { win_min, win_max };
                 CmdResult::NeedPoint
             }

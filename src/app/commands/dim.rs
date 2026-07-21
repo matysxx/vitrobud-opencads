@@ -738,24 +738,26 @@ impl OpenCADStudio {
             }
 
             "STRETCH" => {
+                // With a prior selection the window only marks which points
+                // move. With none, the crossing window itself selects the
+                // objects — one round instead of a separate object-selection
+                // step (#338); the command emits StretchWindow for the host
+                // to resolve.
+                use crate::modules::draw::modify::stretch::StretchCommand;
                 let handles: Vec<_> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()
                     .map(|(h, _)| h)
                     .collect();
-                if handles.is_empty() {
-                    use crate::modules::draw::select::SelectObjectsCommand;
-                    let cmd = SelectObjectsCommand::new("STRETCH");
-                    self.command_line.push_info(&cmd.prompt());
-                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                let wires = if handles.is_empty() {
+                    Vec::new()
                 } else {
-                    use crate::modules::draw::modify::stretch::StretchCommand;
-                    let wires = self.tabs[i].scene.wire_models_for(&handles);
-                    let new_cmd = StretchCommand::new(handles, wires);
-                    self.command_line.push_info(&new_cmd.prompt());
-                    self.tabs[i].active_cmd = Some(Box::new(new_cmd));
-                }
+                    self.tabs[i].scene.wire_models_for(&handles)
+                };
+                let new_cmd = StretchCommand::new(handles, wires);
+                self.command_line.push_info(&new_cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
             "FILLET" => {
