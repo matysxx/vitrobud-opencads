@@ -543,7 +543,14 @@ fn arc_seg_ts(
                 }
                 cc_angles(cx, cy, r, *cx2, *cy2, *r2)
                     .into_iter()
-                    .filter(|&a| in_arc(a, *a02, *a12))
+                    .filter(|&a| {
+                        // `a` lies on the TARGET circle — re-express the
+                        // intersection point as an angle on the BOUNDARY
+                        // circle before testing that arc's span (#370).
+                        let px = cx + r * a.cos();
+                        let py = cy + r * a.sin();
+                        in_arc((py - cy2).atan2(px - cx2), *a02, *a12)
+                    })
                     .collect()
             }
             Geo::Circle {
