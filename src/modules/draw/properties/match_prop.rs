@@ -43,7 +43,7 @@ impl CadCommand for MatchPropCommand {
         if !self.phase1_done() {
             "MATCHPROP  Select source object:".into()
         } else {
-            "MATCHPROP  Select destination objects (Enter to apply):".into()
+            "MATCHPROP  Select destination objects (Enter to finish):".into()
         }
     }
 

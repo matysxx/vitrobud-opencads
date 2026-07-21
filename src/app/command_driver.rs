@@ -864,10 +864,8 @@ impl OpenCADStudio {
                 }
             }
             CmdResult::MatchProperties { dest, src } => {
-                self.tabs[i].active_cmd = None;
-                self.tabs[i].snap_result = None;
-                self.tabs[i].scene.clear_preview_wire();
-
+                // The command stays active after each apply so more targets
+                // can keep being picked; Enter / Esc ends it (#362).
                 let props = self.tabs[i].scene.document.get_entity(src).map(|e| {
                     let c = e.common();
                     (
@@ -924,8 +922,16 @@ impl OpenCADStudio {
                     self.refresh_properties();
                     self.command_line
                         .push_info(&format!("Properties matched to {} object(s).", dest.len()));
+                    // Clear the consumed target selection and keep prompting.
+                    self.tabs[i].scene.deselect_all();
+                    if let Some(cmd) = &self.tabs[i].active_cmd {
+                        self.command_line.push_info(&cmd.prompt());
+                    }
                 } else {
                     self.command_line.push_error("Source object not found.");
+                    self.tabs[i].active_cmd = None;
+                    self.tabs[i].snap_result = None;
+                    self.tabs[i].scene.clear_preview_wire();
                 }
             }
             CmdResult::PasteClipboard { base_pt } => {
