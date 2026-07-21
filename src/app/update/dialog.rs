@@ -114,7 +114,20 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
                 self.ribbon.note_panel_tool(&tool_id);
                 self.ribbon.activate_tool(&tool_id);
                 match event {
-                    ModuleEvent::Command(cmd) => return self.dispatch_command(&cmd),
+                    ModuleEvent::Command(cmd) => {
+                        let task = self.dispatch_command(&cmd);
+                        // One-shot tools (view changes, clipboard, toggles,
+                        // audits…) leave nothing running: no interactive
+                        // command and no dialog. Their highlight would stick
+                        // forever — turn it off now. Interactive commands and
+                        // dialog owners keep theirs; the command end / modal
+                        // close clears those. (#355)
+                        let i = self.active_tab;
+                        if self.tabs[i].active_cmd.is_none() && self.active_modal.is_none() {
+                            self.ribbon.deactivate_tool();
+                        }
+                        return task;
+                    }
                     ModuleEvent::OpenFileDialog => {
                         self.command_line
                             .push_info("Open DWG/DXF: not yet implemented.");
@@ -166,6 +179,10 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
                         );
                     }
                 }
+                // Every non-Command event above is a one-shot (state toggle,
+                // clear, dialog spawn) — nothing stays running to clear the
+                // highlight later, so turn it off here. (#355)
+                self.ribbon.deactivate_tool();
                 Task::none()
     }
 

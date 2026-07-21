@@ -312,6 +312,7 @@ impl Ribbon {
     fn toggle_state(&self) -> widgets::ToggleState {
         use widgets::ToggleState;
         ToggleState {
+            start_mode: false,
             wireframe: self.wireframe,
             ortho_mode: self.ortho_mode,
             show_viewcube: self.show_viewcube,
@@ -387,16 +388,17 @@ impl Ribbon {
     pub fn view(
         &self,
         is_paper: bool,
+        is_start: bool,
         undo_count: usize,
         redo_count: usize,
     ) -> Element<'_, Message> {
         // ── Quick-access file commands + undo/redo, one merged flow ────────
         let lead = WrapFlow::new(vec![
-            quick_access_btn(crate::ui::icons::DOC_NEW, "New", "NEW").into(),
-            quick_access_btn(crate::ui::icons::FOLDER_OPEN, "Open", "OPEN").into(),
-            quick_access_btn(crate::ui::icons::SAVE, "Save", "SAVE").into(),
-            quick_access_btn(crate::ui::icons::FILE_EXPORT, "Save As", "SAVEAS").into(),
-            quick_access_btn(crate::ui::icons::PRINT, "Print", "PRINT").into(),
+            quick_access_btn(crate::ui::icons::DOC_NEW, "New", "NEW", is_start).into(),
+            quick_access_btn(crate::ui::icons::FOLDER_OPEN, "Open", "OPEN", is_start).into(),
+            quick_access_btn(crate::ui::icons::SAVE, "Save", "SAVE", is_start).into(),
+            quick_access_btn(crate::ui::icons::FILE_EXPORT, "Save As", "SAVEAS", is_start).into(),
+            quick_access_btn(crate::ui::icons::PRINT, "Print", "PRINT", is_start).into(),
             render_history_control("Undo", UNDO_HISTORY_ID, undo_count, &self.open_dropdown).into(),
             render_history_control("Redo", REDO_HISTORY_ID, redo_count, &self.open_dropdown).into(),
         ])
@@ -575,7 +577,8 @@ impl Ribbon {
                 let panels: Vec<Panel<'_>> = groups
                     .iter()
                     .map(|g| {
-                        let ts = self.toggle_state();
+                        let mut ts = self.toggle_state();
+                        ts.start_mode = is_start;
                         Panel {
                         id: g.title.to_string(),
                         full: render_group(

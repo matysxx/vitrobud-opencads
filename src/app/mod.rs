@@ -5,7 +5,7 @@ mod config;
 #[cfg(not(target_arch = "wasm32"))]
 pub use automation::{export_headless, serve};
 mod command_driver;
-mod commands;
+pub(crate) mod commands;
 mod document;
 mod expr_eval;
 mod helpers;

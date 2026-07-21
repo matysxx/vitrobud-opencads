@@ -1304,6 +1304,7 @@ impl OpenCADStudio {
             if !self.clean_screen {
                 col = col.push(self.ribbon.view(
                     is_paper,
+                    self.tabs[self.active_tab].is_start,
                     self.tabs[self.active_tab].history.undo_stack.len(),
                     self.tabs[self.active_tab].history.redo_stack.len(),
                 ));

@@ -108,27 +108,7 @@ impl OpenCADStudio {
         // editors (shortcuts, aliases) — none of them read the scene. This is
         // the single place that decides; `on_ribbon_tool_click` defers to it
         // rather than keeping a second, blunter copy (#388, #389).
-        if self.tabs[i].is_start
-            && !matches!(
-                cmd,
-                "NEW"
-                    | "OPEN"
-                    | "EXIT"
-                    | "QUIT"
-                    | "REPORT"
-                    | "CHANGELOG"
-                    | "ABOUT"
-                    | "PLUGINS"
-                    | "PLUGINMANAGER"
-                    | "DONATE"
-                    | "WEBVERSION"
-                    | "HELP"
-                    | "CUI"
-                    | "ALIASEDIT"
-                    | "CUILOAD"
-                    | "CUIIMPORT"
-            )
-        {
+        if self.tabs[i].is_start && !start_allowed(cmd) {
             self.command_line
                 .push_info("No drawing open. Use NEW or OPEN to start a drawing.");
             return Task::none();
@@ -233,6 +213,32 @@ impl OpenCADStudio {
             Task::none()
         }
     }
+}
+
+/// Whether `cmd` makes sense on the Start (welcome) tab — document lifecycle,
+/// links, and app-wide configuration; nothing that reads the scene. Single
+/// source of truth: the dispatch gate refuses everything else, and the ribbon
+/// dims the tools this rejects.
+pub fn start_allowed(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "NEW"
+            | "OPEN"
+            | "EXIT"
+            | "QUIT"
+            | "REPORT"
+            | "CHANGELOG"
+            | "ABOUT"
+            | "PLUGINS"
+            | "PLUGINMANAGER"
+            | "DONATE"
+            | "WEBVERSION"
+            | "HELP"
+            | "CUI"
+            | "ALIASEDIT"
+            | "CUILOAD"
+            | "CUIIMPORT"
+    )
 }
 
 // ── Autocomplete registry — one-shot commands ──────────────────────────────

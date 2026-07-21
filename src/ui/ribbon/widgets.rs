@@ -25,6 +25,9 @@ use super::LayerInfo;
 /// and call site.
 #[derive(Clone, Copy)]
 pub(super) struct ToggleState {
+    /// Start (welcome) tab is active — tools whose command the start-tab
+    /// gate refuses render dimmed and read as unusable.
+    pub start_mode: bool,
     pub wireframe: bool,
     pub ortho_mode: bool,
     pub show_viewcube: bool,
@@ -299,6 +302,32 @@ pub(super) fn make_icon(icon: IconKind, size: f32) -> Element<'static, Message> 
     }
 }
 
+/// Unusable on the Start tab: dim it. Mirrors the dispatch gate — the single
+/// authority is `crate::app::commands::start_allowed`.
+pub(super) fn start_dimmed(state: &ToggleState, event: &ModuleEvent) -> bool {
+    state.start_mode
+        && !matches!(event, ModuleEvent::Command(c) if crate::app::commands::start_allowed(c))
+}
+
+/// Label / glyph color for a possibly-dimmed tool.
+pub(super) const DIM_TOOL: Color = Color {
+    r: 0.42,
+    g: 0.42,
+    b: 0.45,
+    a: 1.0,
+};
+
+/// `make_icon`, greyed out when `dim` (SVGs render monochrome via tint).
+pub(super) fn make_icon_dim(icon: IconKind, size: f32, dim: bool) -> Element<'static, Message> {
+    if !dim {
+        return make_icon(icon, size);
+    }
+    match icon {
+        IconKind::Glyph(s) => text(s).size(size * 0.7).color(DIM_TOOL).into(),
+        IconKind::Svg(bytes) => icons::tinted(bytes, size, DIM_TOOL),
+    }
+}
+
 pub(super) fn is_active_tool(
     id: &str,
     active_tool: &Option<String>,
@@ -373,10 +402,11 @@ pub(super) fn render_small<'a>(
         // large buttons to icon-only columns when the width is tight.
         RibbonItem::Tool(t) | RibbonItem::LargeTool(t) => {
             let active = is_active_tool(t.id, active_tool, &state);
+            let dim = start_dimmed(&state, &t.event);
             let event = t.event.clone();
             let tool_id = t.id.to_string();
             let tip_text = format!("{}\nCommand: {}", t.label, t.id);
-            let btn = button(make_icon(t.icon, SMALL_ICON))
+            let btn = button(make_icon_dim(t.icon, SMALL_ICON, dim))
                 .on_press(Message::RibbonToolClick { tool_id, event })
                 .style(move |_: &Theme, status| tool_btn_style(active, status))
                 .width(Length::Fixed(SMALL_W))
@@ -403,10 +433,15 @@ pub(super) fn render_small<'a>(
             default,
             ..
         } => {
-            let active = active_tool.as_deref() == Some(*id)
-                || items
+            let dim = state.start_mode
+                && !items
                     .iter()
-                    .any(|(cmd, _, _)| active_tool.as_deref() == Some(*cmd));
+                    .any(|(cmd, _, _)| crate::app::commands::start_allowed(cmd));
+            let active = !dim
+                && (active_tool.as_deref() == Some(*id)
+                    || items
+                        .iter()
+                        .any(|(cmd, _, _)| active_tool.as_deref() == Some(*cmd)));
             let dd_open = open_dd.as_deref() == Some(*id);
             let last = last_cmd.get(id).copied().unwrap_or(*default);
             let cur_icon = last_cmd
@@ -434,7 +469,7 @@ pub(super) fn render_small<'a>(
                 .unwrap_or(*id);
             let tip_text = format!("{}\nCommand: {}", cur_label, last);
 
-            let icon_btn = button(make_icon(cur_icon, SMALL_ICON))
+            let icon_btn = button(make_icon_dim(cur_icon, SMALL_ICON, dim))
                 .on_press(Message::RibbonToolClick {
                     tool_id: last.to_string(),
                     event: ModuleEvent::Command(last.to_string()),
@@ -505,11 +540,13 @@ pub(super) fn render_large_dropdown<'a>(
     active_tool: &Option<String>,
     open_dd: &Option<String>,
     last_cmd: &HashMap<&'static str, &'static str>,
+    dim: bool,
 ) -> Element<'a, Message> {
-    let active = active_tool.as_deref() == Some(id)
-        || items
-            .iter()
-            .any(|(cmd, _, _)| active_tool.as_deref() == Some(*cmd));
+    let active = !dim
+        && (active_tool.as_deref() == Some(id)
+            || items
+                .iter()
+                .any(|(cmd, _, _)| active_tool.as_deref() == Some(*cmd)));
     let dd_open = open_dd.as_deref() == Some(id);
     let last = last_cmd.get(id).copied().unwrap_or(default);
     let cur_icon = last_cmd
@@ -531,8 +568,8 @@ pub(super) fn render_large_dropdown<'a>(
     // Icon on top with the label beneath it, then the ▾ strip at the very bottom.
     let top_btn = button(
         column![
-            make_icon(cur_icon, LARGE_ICON),
-            text(label.to_string()).size(10).color(LABEL_COLOR),
+            make_icon_dim(cur_icon, LARGE_ICON, dim),
+            text(label.to_string()).size(10).color(if dim { DIM_TOOL } else { LABEL_COLOR }),
         ]
         .align_x(iced::Center)
         .spacing(3),
@@ -615,13 +652,14 @@ pub(super) fn render_large<'a>(
         // representative tool as a big icon.
         RibbonItem::LargeTool(t) | RibbonItem::Tool(t) => {
             let active = is_active_tool(t.id, active_tool, &state);
+            let dim = start_dimmed(&state, &t.event);
             let event = t.event.clone();
             let tool_id = t.id.to_string();
             let tip_text = format!("{}\nCommand: {}", t.label, t.id);
             let btn = button(
                 column![
-                    make_icon(t.icon, LARGE_ICON),
-                    text(t.label).size(10).color(LABEL_COLOR),
+                    make_icon_dim(t.icon, LARGE_ICON, dim),
+                    text(t.label).size(10).color(if dim { DIM_TOOL } else { LABEL_COLOR }),
                 ]
                 .align_x(iced::Center)
                 .spacing(3),
@@ -649,16 +687,23 @@ pub(super) fn render_large<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(
-            *id,
-            *icon,
-            Some(*label),
-            items,
-            *default,
-            active_tool,
-            open_dd,
-            last_cmd,
-        ),
+        } => {
+                let dim = state.start_mode
+                    && !items
+                        .iter()
+                        .any(|(cmd, _, _)| crate::app::commands::start_allowed(cmd));
+                render_large_dropdown(
+                    *id,
+                    *icon,
+                    Some(*label),
+                    items,
+                    *default,
+                    active_tool,
+                    open_dd,
+                    last_cmd,
+                    dim,
+                )
+            }
 
         // A plain Dropdown renders large too (used by a collapsed panel whose
         // representative tool is a dropdown).
@@ -667,9 +712,16 @@ pub(super) fn render_large<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(
-            *id, *icon, None, items, *default, active_tool, open_dd, last_cmd,
-        ),
+        } => {
+                let dim = state.start_mode
+                    && !items
+                        .iter()
+                        .any(|(cmd, _, _)| crate::app::commands::start_allowed(cmd));
+                render_large_dropdown(
+                    *id, *icon, None, items, *default, active_tool, open_dd, last_cmd,
+                    dim,
+                )
+            }
 
         RibbonItem::LayerComboGroup { row2, row3 } => {
             const COMBO_W: f32 = LARGE_W * 2.5;
@@ -736,9 +788,12 @@ pub(super) fn render_large<'a>(
                     .iter()
                     .map(|t| {
                         let is_active = active_tool.as_deref() == Some(t.id);
+                        let dim = start_dimmed(&state, &t.event);
                         let tip = t.label;
                         let event = t.event.clone();
-                        let icon_el: Element<Message> = match t.icon {
+                        let icon_el: Element<Message> = if dim {
+                            make_icon_dim(t.icon, 16.0, true)
+                        } else { match t.icon {
                             IconKind::Glyph(g) => text(g).size(13).color(Color::WHITE).into(),
                             IconKind::Svg(bytes) => {
                                 iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
@@ -746,7 +801,7 @@ pub(super) fn render_large<'a>(
                                     .height(16)
                                     .into()
                             }
-                        };
+                        } };
                         let msg = module_event_to_message(event);
                         tooltip(
                             button(icon_el)
@@ -802,13 +857,14 @@ pub(super) fn render_large<'a>(
                 )
             } else {
                 let mp_active = is_active_tool(match_prop.id, active_tool, &state);
+                let mp_dim = start_dimmed(&state, &match_prop.event);
                 let mp_event = match_prop.event.clone();
                 let mp_id = match_prop.id.to_string();
                 let mp_tip = format!("{}\nCommand: {}", match_prop.label, match_prop.id);
                 let mp_btn = button(
                     column![
-                        make_icon(match_prop.icon, LARGE_ICON),
-                        text(match_prop.label).size(10).color(LABEL_COLOR),
+                        make_icon_dim(match_prop.icon, LARGE_ICON, mp_dim),
+                        text(match_prop.label).size(10).color(if mp_dim { DIM_TOOL } else { LABEL_COLOR }),
                     ]
                     .align_x(iced::Center)
                     .spacing(3),
@@ -984,9 +1040,12 @@ pub(super) fn render_large<'a>(
                     .iter()
                     .map(|t| {
                         let is_active = active_tool.as_deref() == Some(t.id);
+                        let dim = start_dimmed(&state, &t.event);
                         let tip = t.label;
                         let event = t.event.clone();
-                        let icon_el: Element<Message> = match t.icon {
+                        let icon_el: Element<Message> = if dim {
+                            make_icon_dim(t.icon, 16.0, true)
+                        } else { match t.icon {
                             IconKind::Glyph(g) => text(g).size(13).color(Color::WHITE).into(),
                             IconKind::Svg(bytes) => {
                                 iced::widget::svg(iced::widget::svg::Handle::from_memory(bytes))
@@ -994,7 +1053,7 @@ pub(super) fn render_large<'a>(
                                     .height(16)
                                     .into()
                             }
-                        };
+                        } };
                         let msg = module_event_to_message(event);
                         tooltip(
                             button(icon_el)
@@ -1063,10 +1122,13 @@ pub(super) fn quick_access_btn<'a>(
     icon_bytes: &'static [u8],
     label: &'static str,
     cmd: &'static str,
+    is_start: bool,
 ) -> Element<'a, Message> {
     // The bundled UI SVGs are black-stroked; tint them to a light chrome grey so
     // they read on the dark top strip (raw black is invisible there).
-    let icon = icons::tinted(icon_bytes, 16.0, QA_ICON_COLOR);
+    // On the Start tab, commands the start gate refuses render dimmed.
+    let dim = is_start && !crate::app::commands::start_allowed(cmd);
+    let icon = icons::tinted(icon_bytes, 16.0, if dim { DIM_TOOL } else { QA_ICON_COLOR });
     let btn = button(
         container(icon)
             .width(Fill)

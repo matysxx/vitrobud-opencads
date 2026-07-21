@@ -81,33 +81,6 @@ impl OpenCADStudio {
             self.scale_stage_discard();
         }
         match self.active_modal {
-            Some(Layers) => self.ribbon.deactivate_tool_if("LAYERS"),
-            Some(Plot) => {
-                self.ribbon.deactivate_tool_if("PLOT");
-                self.ribbon.deactivate_tool_if("PRINT");
-                self.ribbon.deactivate_tool_if("PAGESETUP");
-            }
-            Some(TextStyle) => {
-                self.ribbon.deactivate_tool_if("STYLE");
-                self.ribbon.deactivate_tool_if("TEXTSTYLE");
-            }
-            Some(TableStyle) => self.ribbon.deactivate_tool_if("TABLESTYLE"),
-            Some(MlStyle) => self.ribbon.deactivate_tool_if("MLSTYLE"),
-            Some(MLeaderStyle) => self.ribbon.deactivate_tool_if("MLEADERSTYLE"),
-            Some(LayoutManager) => {
-                self.ribbon.deactivate_tool_if("LAYOUTMANAGER");
-                self.ribbon.deactivate_tool_if("LAYOUTPANEL");
-            }
-            Some(Plotstyle) => {
-                self.ribbon.deactivate_tool_if("PLOTSTYLE");
-                self.ribbon.deactivate_tool_if("STYLESMANAGER");
-            }
-            Some(DimStyle) => self.ribbon.deactivate_tool_if("DIMSTYLE"),
-            Some(Shortcuts) => {
-                self.ribbon.deactivate_tool_if("SHORTCUTS");
-                self.ribbon.deactivate_tool_if("KEYBOARD");
-            }
-            Some(About) => self.ribbon.deactivate_tool_if("ABOUT"),
             // Dismissing these via ✕ is the cancel/decline path.
             Some(Unsaved) => self.pending_close = None,
             Some(AssocPrompt) => self.mark_assoc_prompted(),
@@ -125,9 +98,16 @@ impl OpenCADStudio {
             // style editors. Committing happens only through the Apply button.
             Some(Aliases) => {
                 self.alias_editor_rows.clear();
-                self.ribbon.deactivate_tool_if("ALIASEDIT");
             }
             _ => {}
+        }
+        // The tool that opened this dialog is done with it now. Keep the
+        // highlight only while an interactive command still runs (it owns
+        // it). Replaces the old per-modal deactivate_tool_if list, which
+        // missed every newly added dialog (CUI, Plugin Manager, Point
+        // Style, Attribute Editor…). (#355)
+        if self.tabs[self.active_tab].active_cmd.is_none() {
+            self.ribbon.deactivate_tool();
         }
         self.active_modal = None;
         // Recentre / reset the size of the next dialog and drop any drag.
