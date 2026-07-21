@@ -3246,10 +3246,18 @@ impl OpenCADStudio {
                 self.modal_drag_last = None;
                 Task::none()
             }
+            Message::LayerNameColGrab => {
+                // Start a Name-column divider drag; rides ModalDragMove.
+                self.layer_col_dragging = true;
+                self.modal_drag_last = None;
+                Task::none()
+            }
             Message::ModalDragMove(p) => {
                 if let Some(last) = self.modal_drag_last {
                     let (dx, dy) = (p.x - last.x, p.y - last.y);
-                    if self.modal_resizing {
+                    if self.layer_col_dragging {
+                        self.layer_name_col_w = (self.layer_name_col_w + dx).clamp(60.0, 640.0);
+                    } else if self.modal_resizing {
                         // The grip sits bottom-right, so dragging out grows the
                         // box. The delta is added to each dialog's natural size,
                         // so clamp it at zero — dragging in past the natural size
@@ -3280,7 +3288,7 @@ impl OpenCADStudio {
                         }
                     }
                 }
-                if self.modal_dragging || self.modal_resizing {
+                if self.modal_dragging || self.modal_resizing || self.layer_col_dragging {
                     self.modal_drag_last = Some(p);
                 }
                 Task::none()
@@ -3288,6 +3296,7 @@ impl OpenCADStudio {
             Message::ModalDragRelease => {
                 self.modal_dragging = false;
                 self.modal_resizing = false;
+                self.layer_col_dragging = false;
                 self.modal_drag_last = None;
                 Task::none()
             }

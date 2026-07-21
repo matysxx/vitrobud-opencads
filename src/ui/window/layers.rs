@@ -276,11 +276,11 @@ impl LayerPanel {
     }
 
     /// Render the layer panel as the full content of its own OS window.
-    pub fn view_window(&self) -> Element<'_, Message> {
-        self.view_content()
+    pub fn view_window(&self, name_col_w: f32) -> Element<'_, Message> {
+        self.view_content(name_col_w)
     }
 
-    fn view_content(&self) -> Element<'_, Message> {
+    fn view_content(&self, name_col_w: f32) -> Element<'_, Message> {
         let has_sel = self.selected.is_some();
         let sel_is_zero = self
             .selected
@@ -318,22 +318,34 @@ impl LayerPanel {
         let sa = self.sort_asc;
         let mut header_row = row![
             text("Status").size(10).color(DIM).width(50),
-            sortable_header("Name", LayerSortCol::Name, COL_NAME, sc, sa),
-            sortable_header("On", LayerSortCol::On, COL_ICON, sc, sa),
-            sortable_header("Freeze", LayerSortCol::Freeze, COL_ICON, sc, sa),
-            sortable_header("Lock", LayerSortCol::Lock, COL_ICON, sc, sa),
-            sortable_header("Color", LayerSortCol::Color, COL_COLOR, sc, sa),
-            sortable_header("Linetype", LayerSortCol::Linetype, COL_LT, sc, sa),
-            sortable_header("Lineweight", LayerSortCol::Lineweight, COL_LW, sc, sa),
+            sortable_header("Name", LayerSortCol::Name, Length::Fixed(name_col_w), sc, sa),
+            // Draggable divider: adjusts the Name column width (#359).
+            iced::widget::mouse_area(
+                container(iced::widget::Space::new().width(2).height(14)).style(
+                    |_: &Theme| container::Style {
+                        background: Some(Background::Color(BORDER_COLOR)),
+                        ..Default::default()
+                    },
+                ),
+            )
+            .on_press(Message::LayerNameColGrab)
+            .interaction(iced::mouse::Interaction::ResizingHorizontally),
+            sortable_header("On", LayerSortCol::On, Length::Fixed(COL_ICON), sc, sa),
+            sortable_header("Freeze", LayerSortCol::Freeze, Length::Fixed(COL_ICON), sc, sa),
+            sortable_header("Lock", LayerSortCol::Lock, Length::Fixed(COL_ICON), sc, sa),
+            sortable_header("Color", LayerSortCol::Color, Length::Fixed(COL_COLOR), sc, sa),
+            sortable_header("Linetype", LayerSortCol::Linetype, Length::Fixed(COL_LT), sc, sa),
+            sortable_header("Lineweight", LayerSortCol::Lineweight, Length::Fixed(COL_LW), sc, sa),
             sortable_header(
                 "Transparency",
                 LayerSortCol::Transparency,
-                COL_TRANS,
+                Length::Fixed(COL_TRANS),
                 sc,
                 sa
             ),
         ]
         .spacing(4)
+        .width(Fill)
         .align_y(iced::Center);
 
         for vp in &self.vp_cols {
@@ -386,6 +398,7 @@ impl LayerPanel {
                 ltc,
                 lwc,
                 &self.vp_cols,
+                name_col_w,
             ));
 
         }
@@ -419,7 +432,7 @@ fn color_sort_key(c: Color) -> u32 {
 fn sortable_header<'a>(
     label: &'a str,
     col: LayerSortCol,
-    width: f32,
+    width: Length,
     active: Option<LayerSortCol>,
     asc: bool,
 ) -> Element<'a, Message> {
@@ -453,7 +466,7 @@ fn sortable_header<'a>(
             left: 2.0,
             right: 2.0,
         })
-        .width(Length::Fixed(width))
+        .width(width)
         .into()
 }
 
@@ -591,6 +604,7 @@ fn layer_row<'a>(
     lt_combo: Option<&'a combo_box::State<LinetypeItem>>,
     lw_combo_state: Option<&'a combo_box::State<LwItem>>,
     vp_cols: &'a [VpCol],
+    name_col_w: f32,
 ) -> Element<'a, Message> {
     let svg_btn = |bytes: &'static [u8], on_press: Message| -> Element<'a, Message> {
         button(
@@ -693,12 +707,13 @@ fn layer_row<'a>(
                     a: 0.5,
                 },
             })
-            .width(Length::Fixed(COL_NAME))
+            .width(Length::Fixed(name_col_w))
             .into()
     } else {
-        const NAME_BUDGET: usize = 17;
+        // ~6 px per glyph at the 10 px row font — track the column width.
+        let name_budget = ((name_col_w / 6.0) as usize).max(8);
         let name_btn = button(
-            text(crate::ui::text_util::elide(&layer.name, NAME_BUDGET))
+            text(crate::ui::text_util::elide(&layer.name, name_budget))
                 .size(FONT_SZ)
                 .color(ROW_TEXT),
         )
@@ -722,10 +737,10 @@ fn layer_row<'a>(
             right: 4.0,
         })
         .height(Length::Fixed(ROW_H))
-        .width(Length::Fixed(COL_NAME));
+        .width(Length::Fixed(name_col_w));
         // When the name is truncated, reveal the full text on hover so the
         // user can still read it without widening the column.
-        if layer.name.chars().count() > NAME_BUDGET {
+        if layer.name.chars().count() > name_budget {
             tooltip(name_btn, name_tip(&layer.name), tooltip::Position::FollowCursor).into()
         } else {
             name_btn.into()
@@ -853,6 +868,7 @@ fn layer_row<'a>(
             .align_x(iced::Center)
             .align_y(iced::Center),
         name_cell,
+        iced::widget::Space::new().width(2),
         container(svg_btn(vis_svg, Message::LayerToggleVisible(index)))
             .width(Length::Fixed(COL_ICON))
             .align_x(iced::Center),
@@ -868,6 +884,7 @@ fn layer_row<'a>(
         trans_cell,
     ]
     .spacing(4)
+    .width(Fill)
     .align_y(iced::Center);
 
     // Per-viewport freeze columns
@@ -988,7 +1005,8 @@ pub fn iced_color_from_acad(c: &AcadColor) -> Color {
 
 // ── Column widths ─────────────────────────────────────────────────────────
 
-const COL_NAME: f32 = 130.0;
+// Name column width is user-adjustable via the header divider drag (#359);
+// the app passes the current width into `view_window`.
 const COL_ICON: f32 = 44.0;
 const COL_COLOR: f32 = 90.0;
 const COL_LT: f32 = 110.0;

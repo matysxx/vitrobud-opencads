@@ -461,6 +461,11 @@ pub(super) struct OpenCADStudio {
     modal_drag_last: Option<Point>,
     /// True while the modal title bar is held (a drag is in progress).
     modal_dragging: bool,
+    /// Layer Manager: dragging the Name-column divider (width follows the
+    /// shared ModalDragMove flow).
+    layer_col_dragging: bool,
+    /// Layer Manager Name column width in px, adjusted by the divider drag.
+    layer_name_col_w: f32,
     /// How far the user has dragged the modal's corner resize grip from the
     /// dialog's natural size (added to each modal's default width/height). Reset
     /// with `modal_offset` so every dialog opens at its own size.
@@ -1364,6 +1369,8 @@ pub enum Message {
     CommandHistoryNext,
     /// Toggle the dropdown listing the full command-line history.
     CommandHistoryToggle,
+    /// Start dragging the Layer Manager's Name-column divider.
+    LayerNameColGrab,
     /// Toggle the persistent literal-space mode (the `>` button): while on,
     /// every command line behaves as if it started with `>` — Space stays in
     /// the input instead of submitting. Saved in the user config.
@@ -2286,6 +2293,8 @@ impl OpenCADStudio {
             modal_offset: iced::Vector::ZERO,
             modal_drag_last: None,
             modal_dragging: false,
+            layer_col_dragging: false,
+            layer_name_col_w: 130.0,
             modal_resize: iced::Vector::ZERO,
             modal_resizing: false,
             attr_editor_handle: None,
