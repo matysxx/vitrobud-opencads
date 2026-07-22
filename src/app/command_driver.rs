@@ -1277,25 +1277,58 @@ impl OpenCADStudio {
                 self.restore_pre_cmd_tangent();
             }
             CmdResult::PeditOp { handle, op } => {
-                use crate::modules::draw::modify::pedit::apply_pedit;
-                let changed = self.tabs[i]
-                    .scene
-                    .document
-                    .get_entity_mut(handle)
-                    .map(|e| apply_pedit(e, &op))
-                    .unwrap_or(false);
-                if changed {
-                    self.push_undo_snapshot(i, "PEDIT");
-                    self.tabs[i].dirty = true;
-                    self.command_line.push_output("PEDIT: applied.");
-                    self.refresh_properties();
-                } else {
-                    self.command_line
-                        .push_error("PEDIT: operation not applicable to this entity.");
+                use crate::modules::draw::modify::pedit::{
+                    apply_pedit, convert_to_polyline, PeditOp,
+                };
+                match &op {
+                    // The convert replaces the entity (new handle).
+                    PeditOp::ConvertToPolyline => {
+                        let converted = self.tabs[i]
+                            .scene
+                            .document
+                            .get_entity(handle)
+                            .and_then(convert_to_polyline);
+                        match converted {
+                            Some(pl) => {
+                                return self.apply_cmd_result(CmdResult::ReplaceEntity(
+                                    handle,
+                                    vec![pl],
+                                ));
+                            }
+                            None => self
+                                .command_line
+                                .push_error("PEDIT: cannot convert this entity."),
+                        }
+                    }
+                    _ => {
+                        // Snapshot BEFORE the mutation — an after-the-fact
+                        // snapshot records the changed state and undo no-ops.
+                        self.push_undo_snapshot(i, "PEDIT");
+                        let changed = self.tabs[i]
+                            .scene
+                            .document
+                            .get_entity_mut(handle)
+                            .map(|e| apply_pedit(e, &op))
+                            .unwrap_or(false);
+                        if changed {
+                            self.tabs[i].dirty = true;
+                            // Repaint immediately (wide-band fill included).
+                            self.tabs[i].scene.mark_entity_dirty(handle);
+                            self.tabs[i].scene.refresh_fill_model(handle);
+                            self.tabs[i].scene.bump_geometry_no_blocks();
+                            self.command_line.push_output("PEDIT: applied.");
+                            self.refresh_properties();
+                        } else {
+                            let _ = self.tabs[i].history.undo_stack.pop();
+                            self.command_line
+                                .push_error("PEDIT: operation not applicable to this entity.");
+                        }
+                    }
                 }
-                // Keep command active — user may apply more ops
-                self.command_line
-                    .push_info("PEDIT  Enter option [C=Close O=Open W=Width X=Exit]:");
+                let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
+                if let Some(p) = prompt {
+                    self.command_line.push_info(&p);
+                }
             }
             CmdResult::JoinEntities(handles) => {
                 use crate::modules::draw::modify::join::join_entities;

@@ -139,6 +139,9 @@ pub enum GripMenuAction {
     AddVertex,
     RemoveVertex,
     ConvertToArc,
+    /// Split the polyline at this vertex (a closed one opens here; an open
+    /// one splits into two). Handled by the driver — it replaces the entity.
+    BreakVertex,
     ConvertToLine,
     StretchVertex,
     AddLeader,

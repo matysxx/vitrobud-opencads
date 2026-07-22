@@ -92,15 +92,18 @@ fn v3(p: DVec3) -> Vector3 {
     Vector3::new(p.x, p.y, p.z)
 }
 
-/// Build the chain segment for one entity, or `None` for an entity type
-/// JOIN can't carry (which aborts the whole join).
-fn seg_of(e: &EntityType) -> Option<Seg> {
+/// Build the chain segments for one entity, or `None` for an entity type
+/// JOIN can't carry (which aborts the whole join). Lines and arcs contribute
+/// one segment; an OPEN polyline contributes one per span (bulges kept), so
+/// polylines merge with their neighbours too — the PEDIT Join set always
+/// contains the target polyline (#263). A closed polyline can't be joined.
+fn segs_of(e: &EntityType) -> Option<Vec<Seg>> {
     match e {
-        EntityType::Line(l) => Some(Seg {
+        EntityType::Line(l) => Some(vec![Seg {
             a: DVec3::new(l.start.x, l.start.y, l.start.z),
             b: DVec3::new(l.end.x, l.end.y, l.end.z),
             bulge: 0.0,
-        }),
+        }]),
         EntityType::Arc(arc) => {
             // The bulge below assumes the arc lies in a +Z plane; a tilted
             // or flipped normal would invert the CCW sweep, so reject it.
@@ -111,11 +114,42 @@ fn seg_of(e: &EntityType) -> Option<Seg> {
             let r = arc.radius;
             let (sa, ea) = (arc.start_angle, arc.end_angle);
             let swept = (ea - sa).rem_euclid(std::f64::consts::TAU);
-            Some(Seg {
+            Some(vec![Seg {
                 a: DVec3::new(cx + r * sa.cos(), cy + r * sa.sin(), cz),
                 b: DVec3::new(cx + r * ea.cos(), cy + r * ea.sin(), cz),
                 bulge: (swept / 4.0).tan(),
-            })
+            }])
+        }
+        EntityType::LwPolyline(p) => {
+            if p.is_closed || p.vertices.len() < 2 {
+                return None;
+            }
+            let z = p.elevation;
+            Some(
+                p.vertices
+                    .windows(2)
+                    .map(|w| Seg {
+                        a: DVec3::new(w[0].location.x, w[0].location.y, z),
+                        b: DVec3::new(w[1].location.x, w[1].location.y, z),
+                        bulge: w[0].bulge,
+                    })
+                    .collect(),
+            )
+        }
+        EntityType::Polyline2D(p) => {
+            if p.is_closed() || p.vertices.len() < 2 {
+                return None;
+            }
+            Some(
+                p.vertices
+                    .windows(2)
+                    .map(|w| Seg {
+                        a: DVec3::new(w[0].location.x, w[0].location.y, w[0].location.z),
+                        b: DVec3::new(w[1].location.x, w[1].location.y, w[1].location.z),
+                        bulge: w[0].bulge,
+                    })
+                    .collect(),
+            )
         }
         _ => None,
     }
@@ -135,7 +169,7 @@ pub fn join_entities(entities: &[(Handle, &EntityType)]) -> Option<(Vec<Handle>,
 
     let mut segs = Vec::with_capacity(entities.len());
     for (_, e) in entities {
-        segs.push(seg_of(e)?);
+        segs.extend(segs_of(e)?);
     }
     let handles: Vec<Handle> = entities.iter().map(|(h, _)| *h).collect();
     let common = entities[0].1.common().clone();

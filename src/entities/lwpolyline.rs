@@ -404,6 +404,42 @@ fn tapered_band_verts(pline: &LwPolyline) -> Option<Vec<([f64; 2], f64, f64, f64
     }
 }
 
+/// Split at vertex `idx`: a closed polyline re-opens there (one piece); an
+/// open one splits into two (interior vertices only). `None` when invalid.
+pub(crate) fn break_at_vertex(
+    p: &acadrust::LwPolyline,
+    idx: usize,
+) -> Option<Vec<acadrust::EntityType>> {
+    use acadrust::EntityType;
+    let n = p.vertices.len();
+    if n < 3 || idx >= n {
+        return None;
+    }
+    if p.is_closed {
+        let mut verts = Vec::with_capacity(n + 1);
+        verts.extend_from_slice(&p.vertices[idx..]);
+        verts.extend_from_slice(&p.vertices[..=idx]);
+        let mut out = p.clone();
+        out.common.handle = acadrust::Handle::NULL;
+        out.is_closed = false;
+        out.vertices = verts;
+        return Some(vec![EntityType::LwPolyline(out)]);
+    }
+    if idx == 0 || idx == n - 1 {
+        return None;
+    }
+    let mut a = p.clone();
+    a.common.handle = acadrust::Handle::NULL;
+    a.vertices = p.vertices[..=idx].to_vec();
+    if let Some(last) = a.vertices.last_mut() {
+        last.bulge = 0.0;
+    }
+    let mut b = p.clone();
+    b.common.handle = acadrust::Handle::NULL;
+    b.vertices = p.vertices[idx..].to_vec();
+    Some(vec![EntityType::LwPolyline(a), EntityType::LwPolyline(b)])
+}
+
 fn grips(pline: &LwPolyline) -> Vec<GripDef> {
     let elev = pline.elevation;
     let n = pline.vertices.len();
@@ -678,8 +714,10 @@ impl crate::entities::traits::Grippable for LwPolyline {
         use crate::scene::model::object::{GripMenuAction, GripMenuItem};
         let n = self.vertices.len();
         if grip_id < n {
-            // Vertex grip.
-            return vec![
+            // Vertex grip. Break only where a split is possible: any vertex
+            // of a closed polyline, interior vertices of an open one.
+            let breakable = n >= 3 && (self.is_closed || (grip_id > 0 && grip_id < n - 1));
+            let mut items = vec![
                 GripMenuItem {
                     label: "Stretch",
                     action: GripMenuAction::Stretch,
@@ -693,6 +731,13 @@ impl crate::entities::traits::Grippable for LwPolyline {
                     action: GripMenuAction::RemoveVertex,
                 },
             ];
+            if breakable {
+                items.push(GripMenuItem {
+                    label: "Break",
+                    action: GripMenuAction::BreakVertex,
+                });
+            }
+            return items;
         }
         // Segment midpoint grip.
         let seg = grip_id - n;
