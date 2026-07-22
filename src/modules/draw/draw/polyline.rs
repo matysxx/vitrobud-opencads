@@ -64,6 +64,36 @@ impl PlineCommand {
         }
     }
 
+    /// Drop the last placed vertex but keep drawing (#352): the U option and
+    /// mid-command Ctrl+Z both land here. Repeatable down to (and including)
+    /// the start point.
+    fn undo_last_vertex(&mut self) -> CmdResult {
+        if self.vertices.is_empty() {
+            return CmdResult::NeedPoint;
+        }
+        self.vertices.pop();
+        self.bulges.pop();
+        // Restore the exit tangent of the segment that is now last so a
+        // following Arc segment stays tangent-continuous.
+        let n = self.vertices.len();
+        self.last_tangent = if n >= 2 {
+            seg_exit_tangent(self.vertices[n - 2], self.vertices[n - 1], self.bulges[n - 2])
+        } else {
+            None
+        };
+        match n {
+            // Start point undone too — back to "Specify start point".
+            0 => CmdResult::NeedPoint,
+            // One vertex left: the live entity needs two, so it leaves the
+            // document until the next point re-creates it.
+            1 => match self.live_handle.take() {
+                Some(h) => CmdResult::RemoveLiveEntity(h),
+                None => CmdResult::NeedPoint,
+            },
+            _ => self.sync_live(false, false),
+        }
+    }
+
     /// Build the result that publishes the current vertices to the document:
     /// create the live entity at the 2nd vertex, then replace it in place as
     /// more vertices land. `finish` ends the command (used for close/done).
@@ -348,33 +378,18 @@ impl CadCommand for PlineCommand {
             // Undo: drop the last placed vertex but keep drawing (#352).
             // Repeatable — each U backs off one more segment, down to (and
             // including) the start point.
-            "U" | "UNDO" => {
-                if self.vertices.is_empty() {
-                    return Some(CmdResult::NeedPoint);
-                }
-                self.vertices.pop();
-                self.bulges.pop();
-                // Restore the exit tangent of the segment that is now last so
-                // a following Arc segment stays tangent-continuous.
-                let n = self.vertices.len();
-                self.last_tangent = if n >= 2 {
-                    seg_exit_tangent(self.vertices[n - 2], self.vertices[n - 1], self.bulges[n - 2])
-                } else {
-                    None
-                };
-                Some(match n {
-                    // Start point undone too — back to "Specify start point".
-                    0 => CmdResult::NeedPoint,
-                    // One vertex left: the live entity needs two, so it leaves
-                    // the document until the next point re-creates it.
-                    1 => match self.live_handle.take() {
-                        Some(h) => CmdResult::RemoveLiveEntity(h),
-                        None => CmdResult::NeedPoint,
-                    },
-                    _ => self.sync_live(false, false),
-                })
-            }
+            "U" | "UNDO" => Some(self.undo_last_vertex()),
             _ => None,
+        }
+    }
+
+    fn on_undo_step(&mut self) -> Option<CmdResult> {
+        // Ctrl+Z while drawing steps back one vertex; with nothing placed
+        // yet the document undo takes over.
+        if self.vertices.is_empty() {
+            None
+        } else {
+            Some(self.undo_last_vertex())
         }
     }
 

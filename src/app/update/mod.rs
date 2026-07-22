@@ -3709,6 +3709,17 @@ impl OpenCADStudio {
             Message::PspaceCommand => Task::done(Message::ExitViewport),
 
             Message::Undo => {
+                // Mid-command Ctrl+Z: a drawing command steps itself back
+                // (PLINE pops the last vertex) instead of the document undo
+                // swallowing the whole in-progress object.
+                let i = self.active_tab;
+                let step = self.tabs[i]
+                    .active_cmd
+                    .as_mut()
+                    .and_then(|c| c.on_undo_step());
+                if let Some(r) = step {
+                    return self.apply_cmd_result(r);
+                }
                 self.undo_active_tab();
                 Task::none()
             }

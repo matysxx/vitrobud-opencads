@@ -205,9 +205,6 @@ impl Snapper {
         }
     }
 
-    pub fn override_active(&self) -> bool {
-        self.override_saved.is_some()
-    }
 
     /// Whether temporary tracking points are being acquired and drawn: OTRACK
     /// on, or the Extension object snap on. Extension tracks a segment's line

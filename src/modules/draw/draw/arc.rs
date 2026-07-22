@@ -1334,6 +1334,10 @@ pub struct ArcContCommand {
     tangent: DVec3,
     /// Live Ctrl state (set via `set_ctrl`): flips the arc to the other way.
     ctrl: bool,
+    /// Anchor history for mid-command Ctrl+Z: the (start, tangent) each
+    /// committed arc was drawn from, so undoing a segment resumes the run
+    /// from the prior anchor instead of ending it.
+    history: Vec<(DVec3, DVec3)>,
 }
 
 impl ArcContCommand {
@@ -1342,6 +1346,7 @@ impl ArcContCommand {
             s,
             tangent,
             ctrl: false,
+            history: Vec::new(),
         }
     }
 }
@@ -1360,6 +1365,9 @@ impl CadCommand for ArcContCommand {
         match arc_continue(self.s, self.tangent, pt, self.ctrl) {
             Some((center, radius, sa, ea)) => {
                 let arc = make_arc(center, radius, sa, ea);
+                // Remember the anchor this arc was drawn from — mid-command
+                // Ctrl+Z reverts the commit and resumes from here.
+                self.history.push((self.s, self.tangent));
                 // Keep drawing: re-anchor at the arc just committed so the next
                 // click starts another tangent-continuing arc from its end,
                 // until the user ends the run with Enter/Esc (#327).
@@ -1373,6 +1381,15 @@ impl CadCommand for ArcContCommand {
             // whole run — stay active and wait for the next end point.
             None => CmdResult::NeedPoint,
         }
+    }
+    fn on_undo_step(&mut self) -> Option<CmdResult> {
+        // Ctrl+Z mid-run: revert the last committed arc and resume from the
+        // anchor it was drawn from. With none committed this run, the
+        // document undo takes over.
+        let (s, tangent) = self.history.pop()?;
+        self.s = s;
+        self.tangent = tangent;
+        Some(CmdResult::UndoDocument)
     }
     fn on_enter(&mut self) -> CmdResult {
         CmdResult::Cancel

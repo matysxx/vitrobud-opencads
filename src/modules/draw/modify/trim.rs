@@ -2393,7 +2393,6 @@ fn fence_pieces(
     window: Option<[[f64; 2]; 2]>,
     extend: bool,
 ) -> Option<Vec<EntityType>> {
-    use acadrust::entities::Entity as _;
     // Sentinel handle: keeps the self-exclusion in *_seg_ts from matching any
     // real boundary geo while the piece is being re-picked.
     const TMP: u64 = u64::MAX - 7;

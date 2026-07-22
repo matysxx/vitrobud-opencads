@@ -1829,11 +1829,29 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         return Task::none();
                     }
                     self.tabs[i].active_grip = None;
-                    // Commit the grip drag: keep the doc's dragged geometry
-                    // (drop the cancel backup), un-hide the edited entity and
-                    // re-tessellate the base once, dropping the overlay preview.
+                    // Commit the grip drag: keep the doc's dragged geometry,
+                    // un-hide the edited entity and re-tessellate the base
+                    // once, dropping the overlay preview.
                     if let Some(h) = self.grip_preview_handle.take() {
-                        self.grip_original = None;
+                        // Undo entry for the drag (#332): the pre-drag backup
+                        // swaps in, the PRE state is snapshotted, then the
+                        // dragged result swaps back. Without this a grip edit
+                        // (e.g. reshaping a polyline vertex) was un-undoable —
+                        // the drag mutated the document without any history.
+                        if let Some(orig) = self.grip_original.take() {
+                            if let Some(e) = self.tabs[i].scene.document.get_entity_mut(h) {
+                                let dragged = std::mem::replace(e, orig);
+                                let snap = self.capture_history_snapshot(i, "GRIP");
+                                if let Some(e2) =
+                                    self.tabs[i].scene.document.get_entity_mut(h)
+                                {
+                                    *e2 = dragged;
+                                }
+                                self.tabs[i].history.undo_stack.push(snap);
+                                self.tabs[i].history.redo_stack.clear();
+                                self.tabs[i].dirty = true;
+                            }
+                        }
                         self.grip_text_verts = Vec::new();
                         self.grip_text_slide = false;
                         self.tabs[i].scene.hidden.remove(&h);

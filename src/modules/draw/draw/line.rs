@@ -198,6 +198,16 @@ impl CadCommand for LineCommand {
         }
     }
 
+    fn on_undo_step(&mut self) -> Option<CmdResult> {
+        // Ctrl+Z while drawing = the U option: revert the last committed
+        // segment and keep drawing from the previous point. With nothing
+        // placed yet the document undo takes over.
+        if self.points.is_empty() {
+            return None;
+        }
+        self.on_text_input("U")
+    }
+
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         let last = *self.points.last()?;
         // With a deferred first tangent, slide the rubber band's start point

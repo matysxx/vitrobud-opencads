@@ -1218,6 +1218,14 @@ pub trait CadCommand: Send {
     /// during TRIM and trims during EXTEND, #336). Default no-op.
     fn set_shift(&mut self, _shift: bool) {}
 
+    /// Mid-command Ctrl+Z: a multi-point drawing command can take the undo
+    /// itself (PLINE pops its last vertex) instead of the document undo
+    /// swallowing the whole in-progress object. `None` (default) lets the
+    /// normal document undo run.
+    fn on_undo_step(&mut self) -> Option<CmdResult> {
+        None
+    }
+
     /// Called when the user left-clicks in the viewport (point pick).
     fn on_point(&mut self, pt: DVec3) -> CmdResult;
 
