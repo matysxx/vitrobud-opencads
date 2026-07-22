@@ -10,18 +10,23 @@ set -a
 source .env
 set +a
 : "${PODMAN_COMPOSE_VERSION:?Set PODMAN_COMPOSE_VERSION in .env}"
+: "${PODMAN_COMPOSE_SHA256:?Set PODMAN_COMPOSE_SHA256 in .env}"
 
 runtime_dir="${project_dir}/dev-ops/.runtime/podman-compose"
-provider="${runtime_dir}/bin/podman-compose"
+provider="${runtime_dir}/podman-compose"
 
 if [[ -x "${provider}" ]] && [[ "$("${provider}" --version)" == *"${PODMAN_COMPOSE_VERSION}"* ]]; then
   exit 0
 fi
 
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required." >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "curl is required." >&2; exit 1; }
+command -v sha256sum >/dev/null 2>&1 || { echo "sha256sum is required." >&2; exit 1; }
 rm -rf "${runtime_dir}"
-python3 -m venv "${runtime_dir}"
-"${runtime_dir}/bin/python" -m pip install \
-  --disable-pip-version-check \
-  --no-input \
-  "podman-compose==${PODMAN_COMPOSE_VERSION}"
+mkdir -p "${runtime_dir}"
+download="${provider}.download"
+curl -fsSL \
+  "https://raw.githubusercontent.com/containers/podman-compose/v${PODMAN_COMPOSE_VERSION}/podman_compose.py" \
+  -o "${download}"
+printf '%s  %s\n' "${PODMAN_COMPOSE_SHA256}" "${download}" | sha256sum -c -
+mv "${download}" "${provider}"
+chmod 0755 "${provider}"

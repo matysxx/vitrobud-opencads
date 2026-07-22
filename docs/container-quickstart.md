@@ -2,8 +2,9 @@
 
 ## Prerequisites
 
-- rootless Podman and Python 3 with `venv`; `./dev-ops/setup` installs the
-  pinned Compose provider privately under `dev-ops/.runtime/`
+- rootless Podman, Python 3, `curl`, and `sha256sum`; `./dev-ops/setup`
+  installs the checksum-verified Compose provider privately under
+  `dev-ops/.runtime/`
 - Git
 - a user session capable of running `systemd --user`
 

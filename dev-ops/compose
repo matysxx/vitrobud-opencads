@@ -13,7 +13,7 @@ if command -v podman >/dev/null 2>&1; then
   source .env
   set +a
   : "${OPENCADS_POD_NAME:?Set OPENCADS_POD_NAME in .env}"
-  provider="${project_dir}/dev-ops/.runtime/podman-compose/bin/podman-compose"
+  provider="${project_dir}/dev-ops/.runtime/podman-compose/podman-compose"
   [[ -x "${provider}" ]] || {
     echo "Missing pinned podman-compose provider; run ./dev-ops/setup-compose-provider." >&2
     exit 1
