@@ -19,6 +19,8 @@ cp src/.env.dist src/.env
 The default endpoint is `http://127.0.0.1:8088`. For a server rollout, set
 private bind/port/project values only in the untracked `.env`. The external
 reverse proxy terminates HTTPS; certificates do not belong in this repository.
+The setup script installs the pinned `podman-compose` provider into an ignored
+project-local virtual environment; it never replaces the host package.
 
 Operational commands:
 

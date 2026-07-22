@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${project_dir}"
+
+[[ -f .env ]] || { echo "Missing .env; copy .env.dist first." >&2; exit 1; }
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+: "${PODMAN_COMPOSE_VERSION:?Set PODMAN_COMPOSE_VERSION in .env}"
+
+runtime_dir="${project_dir}/dev-ops/.runtime/podman-compose"
+provider="${runtime_dir}/bin/podman-compose"
+
+if [[ -x "${provider}" ]] && [[ "$("${provider}" --version)" == *"${PODMAN_COMPOSE_VERSION}"* ]]; then
+  exit 0
+fi
+
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required." >&2; exit 1; }
+rm -rf "${runtime_dir}"
+python3 -m venv "${runtime_dir}"
+"${runtime_dir}/bin/python" -m pip install \
+  --disable-pip-version-check \
+  --no-input \
+  "podman-compose==${PODMAN_COMPOSE_VERSION}"

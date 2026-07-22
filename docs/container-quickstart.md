@@ -2,7 +2,8 @@
 
 ## Prerequisites
 
-- rootless Podman with a Compose provider
+- rootless Podman and Python 3 with `venv`; `./dev-ops/setup` installs the
+  pinned Compose provider privately under `dev-ops/.runtime/`
 - Git
 - a user session capable of running `systemd --user`
 

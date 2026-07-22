@@ -9,6 +9,7 @@ cd "${project_dir}"
 mkdir -p dev-ops/storage/backup
 chmod 0700 dev-ops/storage dev-ops/storage/backup
 
+./dev-ops/setup-compose-provider
 ./dev-ops/compose build web
 ./dev-ops/compose up -d web
 ./dev-ops/compose ps

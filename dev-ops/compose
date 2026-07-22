@@ -13,7 +13,12 @@ if command -v podman >/dev/null 2>&1; then
   source .env
   set +a
   : "${OPENCADS_POD_NAME:?Set OPENCADS_POD_NAME in .env}"
-  exec podman compose --in-pod "${OPENCADS_POD_NAME}" "$@"
+  provider="${project_dir}/dev-ops/.runtime/podman-compose/bin/podman-compose"
+  [[ -x "${provider}" ]] || {
+    echo "Missing pinned podman-compose provider; run ./dev-ops/setup-compose-provider." >&2
+    exit 1
+  }
+  exec "${provider}" --in-pod "${OPENCADS_POD_NAME}" "$@"
 elif command -v docker >/dev/null 2>&1; then
   exec docker compose "$@"
 else
