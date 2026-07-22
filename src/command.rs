@@ -148,10 +148,10 @@ enum RenameStep {
 
 impl RenameCommand {
     /// `(button label, keyword)` for the object types the inline handler can
-    /// actually rename. BLOCK is intentionally omitted — the inline handler
-    /// does not implement it, so offering the button would do nothing.
-    const TYPES: [(&'static str, &'static str); 6] = [
+    /// actually rename.
+    const TYPES: [(&'static str, &'static str); 7] = [
         ("Layer", "LAYER"),
+        ("Block", "BLOCK"),
         ("Text style", "STYLE"),
         ("Dim style", "DIMSTYLE"),
         ("Linetype", "LINETYPE"),
@@ -200,30 +200,35 @@ impl CadCommand for RenameCommand {
             // Keep prompting for the current step.
             return None;
         }
+        // NOTE: a consumed-but-still-prompting input must return
+        // `Some(NeedPoint)` (reprint the prompt), NOT `None` — the driver
+        // treats `None` as "not consumed" and offers the same text to the
+        // command a second time, which would advance two steps at once.
         match &self.step {
             RenameStep::Type => {
                 // Accept a known type (or a common alias); re-prompt otherwise so
                 // a typo doesn't advance to a rename that can't happen.
                 let canonical = match t.to_uppercase().as_str() {
                     "LAYER" | "LA" => "LAYER",
+                    "BLOCK" | "B" => "BLOCK",
                     "STYLE" | "TEXTSTYLE" | "ST" => "STYLE",
                     "DIMSTYLE" | "D" => "DIMSTYLE",
                     "LINETYPE" | "LT" => "LINETYPE",
                     "UCS" => "UCS",
                     "VIEW" | "V" => "VIEW",
-                    _ => return None,
+                    _ => return Some(CmdResult::NeedPoint),
                 };
                 self.step = RenameStep::Old {
                     ty: canonical.to_string(),
                 };
-                None
+                Some(CmdResult::NeedPoint)
             }
             RenameStep::Old { ty } => {
                 self.step = RenameStep::New {
                     ty: ty.clone(),
                     old: t.to_string(),
                 };
-                None
+                Some(CmdResult::NeedPoint)
             }
             RenameStep::New { ty, old } => {
                 Some(CmdResult::Dispatch(format!("RENAME {ty} {old} {t}")))
@@ -289,14 +294,13 @@ impl CadCommand for UserRegCommand {
         }
         match self.slot {
             None => {
-                // Accept a register 1–5; re-prompt on anything else.
-                match t.parse::<u8>() {
-                    Ok(n @ 1..=5) => {
-                        self.slot = Some(n);
-                        None
-                    }
-                    _ => None,
+                // Accept a register 1–5; re-prompt on anything else. Consumed
+                // either way (`Some(NeedPoint)`) — `None` would feed the same
+                // text to the command a second time.
+                if let Ok(n @ 1..=5) = t.parse::<u8>() {
+                    self.slot = Some(n);
                 }
+                Some(CmdResult::NeedPoint)
             }
             // The inline handler validates the value (int vs real) and reports
             // usage if it doesn't parse, so just hand the whole line over.
@@ -381,18 +385,20 @@ impl CadCommand for KeywordCommand {
             // Second step: the argument for the already-chosen verb.
             Some((keyword, _)) => Some(CmdResult::Dispatch(format!("{} {keyword} {t}", self.name))),
             // First step: match the typed / clicked token to a sub-verb.
+            // Consumed inputs that keep prompting return `Some(NeedPoint)` —
+            // `None` would hand the same text to the command a second time.
             None => {
                 let up = t.to_uppercase();
                 let Some((_, keyword, value_prompt)) =
                     self.options.iter().find(|(_, k, _)| k.eq_ignore_ascii_case(&up))
                 else {
                     // Unknown verb — keep prompting rather than dispatch garbage.
-                    return None;
+                    return Some(CmdResult::NeedPoint);
                 };
                 match value_prompt {
                     Some(vp) => {
                         self.pending = Some((keyword, vp));
-                        None
+                        Some(CmdResult::NeedPoint)
                     }
                     None => Some(CmdResult::Dispatch(format!("{} {keyword}", self.name))),
                 }
@@ -456,7 +462,9 @@ impl CadCommand for TwoValuePromptCommand {
                     return None;
                 }
                 self.first = Some(t.to_string());
-                None
+                // Consumed; `None` here would feed the same text back as the
+                // second value and dispatch `<name> <x> <x>` in one step.
+                Some(CmdResult::NeedPoint)
             }
             Some(first) => Some(CmdResult::Dispatch(if t.is_empty() {
                 format!("{} {first}", self.name)
@@ -577,12 +585,14 @@ impl CadCommand for SelectThenKeywordCommand {
                 let Some((_, keyword, value_prompt)) =
                     self.options.iter().find(|(_, k, _)| k.eq_ignore_ascii_case(&up))
                 else {
-                    return None;
+                    // Unknown verb — consumed, keep prompting (`None` would
+                    // feed the same text to the command a second time).
+                    return Some(CmdResult::NeedPoint);
                 };
                 match value_prompt {
                     Some(vp) => {
                         self.pending = Some((keyword, vp));
-                        None
+                        Some(CmdResult::NeedPoint)
                     }
                     None => Some(CmdResult::Dispatch(format!("{} {keyword}", self.name))),
                 }
@@ -743,7 +753,9 @@ impl CadCommand for SelectThenTwoValueCommand {
         match &self.first {
             None => {
                 self.first = Some(t.to_string());
-                None
+                // Consumed; `None` would feed the same text back as the second
+                // value and dispatch `<name> <x> <x>` in one step.
+                Some(CmdResult::NeedPoint)
             }
             Some(first) => Some(CmdResult::Dispatch(format!("{} {first} {t}", self.name))),
         }

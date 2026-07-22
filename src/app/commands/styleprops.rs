@@ -1543,77 +1543,64 @@ impl OpenCADStudio {
                         "Usage: RENAME <type> <old> <new>  (types: LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW)"
                     );
                 } else {
-                    let doc = &mut self.tabs[i].scene.document;
-                    let ok = match type_str.as_str() {
-                        "LAYER" => {
-                            if let Some(l) = doc.layers.get_mut(&old_name) {
-                                l.name = new_name.clone();
-                                // Update entity references
-                                for e in doc.entities_mut() {
-                                    if e.common().layer == old_name {
-                                        e.common_mut().layer = new_name.clone();
-                                    }
-                                }
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        "STYLE" | "TEXTSTYLE" => {
-                            if let Some(s) = doc.text_styles.get_mut(&old_name) {
-                                s.name = new_name.clone();
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        "DIMSTYLE" => {
-                            if let Some(s) = doc.dim_styles.get_mut(&old_name) {
-                                s.name = new_name.clone();
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        "LINETYPE" | "LT" => {
-                            if let Some(lt) = doc.line_types.get_mut(&old_name) {
-                                lt.name = new_name.clone();
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        "UCS" => {
-                            if let Some(u) = doc.ucss.get_mut(&old_name) {
-                                u.name = new_name.clone();
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        "VIEW" => {
-                            if let Some(v) = doc.views.get_mut(&old_name) {
-                                v.name = new_name.clone();
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        _ => {
-                            self.command_line.push_error(&format!("RENAME: unknown type '{}'. Use LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW", type_str));
-                            false
-                        }
+                    // Snapshot BEFORE mutating (undo must restore the old
+                    // name); dropped again if nothing was renamed.
+                    self.push_undo_snapshot(i, "RENAME");
+                    let known = matches!(
+                        type_str.as_str(),
+                        "LAYER"
+                            | "BLOCK"
+                            | "STYLE"
+                            | "TEXTSTYLE"
+                            | "DIMSTYLE"
+                            | "LINETYPE"
+                            | "LT"
+                            | "UCS"
+                            | "VIEW"
+                    );
+                    let ok = if type_str == "BLOCK" {
+                        // Re-keys the record, syncs the Block marker and every
+                        // INSERT reference; refuses anonymous/xref sources and
+                        // invalid/taken names.
+                        self.tabs[i].scene.rename_block(&old_name, &new_name)
+                    } else if known {
+                        rename_symbol(
+                            &mut self.tabs[i].scene.document,
+                            &type_str,
+                            &old_name,
+                            &new_name,
+                        )
+                    } else {
+                        false
                     };
                     if ok {
-                        self.push_undo_snapshot(i, "RENAME");
+                        // Renamed references resolve at tessellation time —
+                        // rebuild so nothing renders off a stale name.
+                        self.tabs[i].scene.bump_geometry_no_blocks();
+                        // The per-tab active layer tracks the name.
+                        if type_str == "LAYER"
+                            && self.tabs[i].active_layer.eq_ignore_ascii_case(&old_name)
+                        {
+                            self.tabs[i].active_layer = new_name.clone();
+                        }
                         self.tabs[i].dirty = true;
                         self.command_line
                             .push_output(&format!("RENAME: '{}' → '{}'.", old_name, new_name));
-                    } else if type_str != "BLOCK" {
-                        self.command_line.push_error(&format!(
-                            "RENAME: '{}' not found in {}.",
-                            old_name, type_str
-                        ));
+                    } else {
+                        let _ = self.tabs[i].history.undo_stack.pop();
+                        if !known {
+                            self.command_line.push_error(&format!("RENAME: unknown type '{}'. Use LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW", type_str));
+                        } else if type_str == "BLOCK" {
+                            self.command_line.push_error(&format!(
+                                "RENAME: could not rename block '{}' — missing/anonymous/xref, or '{}' is invalid or taken.",
+                                old_name, new_name
+                            ));
+                        } else {
+                            self.command_line.push_error(&format!(
+                                "RENAME: could not rename '{}' in {} — not found or protected, or '{}' is invalid or taken.",
+                                old_name, type_str, new_name
+                            ));
+                        }
                     }
                 }
             }
@@ -2033,5 +2020,141 @@ impl OpenCADStudio {
             _ => return None,
         }
         Some(self.finish_dispatch(cmd))
+    }
+}
+
+/// RENAME for the name-keyed symbol tables (layer / text style / dim style /
+/// linetype / UCS / view). `Table<T>` stores entries in a map keyed by
+/// UPPERCASE name, so a rename must remove + re-add — mutating `.name` in
+/// place leaves the map keyed by the old name and every later
+/// `get(new_name)` lookup silently fails. Name-based references (entity
+/// layer/linetype/style fields, layer linetypes, header current-* names) are
+/// chased case-insensitively, matching how the tables resolve names.
+fn rename_symbol(doc: &mut acadrust::CadDocument, ty: &str, old: &str, new: &str) -> bool {
+    use acadrust::{EntityType, Table, TableEntry};
+
+    fn rekey<T: TableEntry>(table: &mut Table<T>, old: &str, new: &str) -> bool {
+        if !crate::scene::valid_block_name(new) {
+            return false;
+        }
+        // A case-only rename reuses its own key; any other target must be free.
+        if !old.eq_ignore_ascii_case(new) && table.contains(new) {
+            return false;
+        }
+        let Some(mut e) = table.remove(old) else {
+            return false;
+        };
+        e.set_name(new.to_string());
+        let _ = table.add(e);
+        true
+    }
+
+    match ty {
+        "LAYER" => {
+            // Layer 0 and Defpoints are fixed names; xref-dependent ("|")
+            // layers belong to the referenced file.
+            if old == "0" || old.eq_ignore_ascii_case("Defpoints") || old.contains('|') {
+                return false;
+            }
+            if !rekey(&mut doc.layers, old, new) {
+                return false;
+            }
+            for e in doc.entities_mut() {
+                if e.common().layer.eq_ignore_ascii_case(old) {
+                    e.common_mut().layer = new.to_string();
+                }
+            }
+            if doc.header.current_layer_name.eq_ignore_ascii_case(old) {
+                doc.header.current_layer_name = new.to_string();
+            }
+            true
+        }
+        "STYLE" | "TEXTSTYLE" => {
+            if !rekey(&mut doc.text_styles, old, new) {
+                return false;
+            }
+            for e in doc.entities_mut() {
+                match e {
+                    EntityType::Text(t) if t.style.eq_ignore_ascii_case(old) => {
+                        t.style = new.to_string();
+                    }
+                    EntityType::MText(m) if m.style.eq_ignore_ascii_case(old) => {
+                        m.style = new.to_string();
+                    }
+                    EntityType::AttributeDefinition(a)
+                        if a.text_style.eq_ignore_ascii_case(old) =>
+                    {
+                        a.text_style = new.to_string();
+                    }
+                    EntityType::Insert(ins) => {
+                        for a in &mut ins.attributes {
+                            if a.text_style.eq_ignore_ascii_case(old) {
+                                a.text_style = new.to_string();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if doc.header.current_text_style_name.eq_ignore_ascii_case(old) {
+                doc.header.current_text_style_name = new.to_string();
+            }
+            true
+        }
+        "DIMSTYLE" => {
+            if !rekey(&mut doc.dim_styles, old, new) {
+                return false;
+            }
+            for e in doc.entities_mut() {
+                match e {
+                    EntityType::Dimension(d)
+                        if d.base().style_name.eq_ignore_ascii_case(old) =>
+                    {
+                        d.base_mut().style_name = new.to_string();
+                    }
+                    EntityType::Leader(l) if l.dimension_style.eq_ignore_ascii_case(old) => {
+                        l.dimension_style = new.to_string();
+                    }
+                    EntityType::Tolerance(t)
+                        if t.dimension_style_name.eq_ignore_ascii_case(old) =>
+                    {
+                        t.dimension_style_name = new.to_string();
+                    }
+                    _ => {}
+                }
+            }
+            if doc.header.current_dimstyle_name.eq_ignore_ascii_case(old) {
+                doc.header.current_dimstyle_name = new.to_string();
+            }
+            true
+        }
+        "LINETYPE" | "LT" => {
+            // The three built-ins are fixed names every drawing relies on.
+            if ["BYLAYER", "BYBLOCK", "CONTINUOUS"]
+                .contains(&old.to_uppercase().as_str())
+            {
+                return false;
+            }
+            if !rekey(&mut doc.line_types, old, new) {
+                return false;
+            }
+            for e in doc.entities_mut() {
+                if e.common().linetype.eq_ignore_ascii_case(old) {
+                    e.common_mut().linetype = new.to_string();
+                }
+            }
+            for l in doc.layers.iter_mut() {
+                if l.line_type.eq_ignore_ascii_case(old) {
+                    l.line_type = new.to_string();
+                }
+            }
+            if doc.header.current_linetype_name.eq_ignore_ascii_case(old) {
+                doc.header.current_linetype_name = new.to_string();
+            }
+            true
+        }
+        "UCS" => rekey(&mut doc.ucss, old, new),
+        "VIEW" => rekey(&mut doc.views, old, new),
+        _ => false,
     }
 }
