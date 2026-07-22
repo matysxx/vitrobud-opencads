@@ -21,6 +21,7 @@ LABEL org.opencontainers.image.title="Open CAD Studio Web" \
 RUN cp /usr/bin/caddy /usr/local/bin/caddy && chmod 0755 /usr/local/bin/caddy
 COPY --from=builder /build/dist /srv
 COPY container/Caddyfile /etc/caddy/Caddyfile
+RUN chmod 0644 /etc/caddy/Caddyfile && chmod -R a=rX /srv
 USER 1000:1000
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/caddy"]
