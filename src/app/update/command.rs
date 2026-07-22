@@ -981,6 +981,24 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         self.grip_add_provisional = Some((popup.handle, new_gid));
                     }
                 }
+                // Convert to Arc enters placement: the segment grip goes hot
+                // in Absolute mode, so the arc re-fits through the cursor as
+                // it moves and the next click seats it (#339).
+                if matches!(item.action, GripMenuAction::ConvertToArc) {
+                    if let Some(g) = self.tabs[i]
+                        .selected_grips
+                        .iter()
+                        .find(|g| g.id == popup.grip_id)
+                    {
+                        self.tabs[i].active_grip = Some(GripEdit {
+                            handle: popup.handle,
+                            grip_id: popup.grip_id,
+                            is_translate: false,
+                            origin_world: g.world,
+                            last_world: g.world,
+                        });
+                    }
+                }
                 Task::none()
     }
 

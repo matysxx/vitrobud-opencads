@@ -23,6 +23,13 @@ fn arc_midpoint(p0: [f64; 2], p1: [f64; 2], bulge: f64) -> [f64; 2] {
 
 /// Compute the DXF bulge for an arc that passes through p0, mid_pt, and p1.
 /// Returns None when the three points are collinear (straight segment).
+///
+/// The sign and sweep follow the p0 → mid → p1 traversal orientation, which
+/// keeps it the exact inverse of `BulgeArc::from_bulge` + `sample(0.5)` (a
+/// CCW traversal = positive bulge). It used to key off which chord side the
+/// midpoint lies on — the opposite convention — so every grip-drag frame
+/// flipped the arc to the other side and the radius jumped wildly instead of
+/// following the cursor (#339).
 fn bulge_from_midpoint(p0: [f64; 2], p1: [f64; 2], mid: [f64; 2]) -> Option<f64> {
     // Circumcircle of (p0, mid, p1)
     let ax = 2.0 * (mid[0] - p0[0]);
@@ -39,15 +46,20 @@ fn bulge_from_midpoint(p0: [f64; 2], p1: [f64; 2], mid: [f64; 2]) -> Option<f64>
     let cy = (ax * cb - bx * ca) / det;
     let a0 = (p0[1] - cy).atan2(p0[0] - cx);
     let a1 = (p1[1] - cy).atan2(p1[0] - cx);
-    // Determine arc direction: cross product (p1-p0) × (mid-p0)
-    let cross = (p1[0] - p0[0]) * (mid[1] - p0[1]) - (p1[1] - p0[1]) * (mid[0] - p0[0]);
-    let (sa, mut ea) = if cross > 0.0 { (a0, a1) } else { (a1, a0) };
-    if ea < sa {
-        ea += TAU;
+    // Arc direction = orientation of the p0 → mid → p1 turn.
+    let cross =
+        (mid[0] - p0[0]) * (p1[1] - mid[1]) - (mid[1] - p0[1]) * (p1[0] - mid[0]);
+    if cross == 0.0 {
+        return None;
     }
-    let span = ea - sa; // central angle in (0, TAU]
-    let bulge = (span / 4.0).tan();
-    Some(if cross >= 0.0 { bulge } else { -bulge })
+    // Central angle measured along that direction, in (0, TAU).
+    let sweep = if cross > 0.0 {
+        (a1 - a0).rem_euclid(TAU)
+    } else {
+        (a0 - a1).rem_euclid(TAU)
+    };
+    let bulge = (sweep / 4.0).tan();
+    Some(if cross > 0.0 { bulge } else { -bulge })
 }
 
 /// Tessellate a thick polyline segment list into NaN-separated Lines geometry.
@@ -429,11 +441,13 @@ fn grips(pline: &LwPolyline) -> Vec<GripDef> {
         };
         let dx = (v1.location.x - v0.location.x) as f32;
         let dy = (v1.location.y - v0.location.y) as f32;
-        out.push(rectangle_grip(
-            n + i,
-            glam::DVec3::new(mx, my, elev),
-            [dx, dy],
-        ));
+        let mut g = rectangle_grip(n + i, glam::DVec3::new(mx, my, elev), [dx, dy]);
+        // An arc's mid grip re-fits the arc THROUGH the cursor, so it must
+        // drag in Absolute mode; only a straight segment's grip translates.
+        // Feeding per-frame Translate deltas through the recomputed arc
+        // midpoint deadlocks the moment the cursor crosses the chord (#339).
+        g.is_midpoint = v0.bulge.abs() < 1e-9;
+        out.push(g);
     }
     out
 }
