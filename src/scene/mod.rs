@@ -1061,9 +1061,15 @@ pub struct Scene {
     /// [`WIRE_CONTENT_GEN`] id. `split_face3d_wires` is an O(N) per-wire
     /// handle lookup + clone that otherwise re-runs every frame. A map, not a
     /// slot: a paper frame walks several sources (sheet + viewports).
+    ///
+    /// `None` for the second element means "no Face3D wire in this set — use
+    /// the base set itself". The base `Arc` is deliberately NOT stored here:
+    /// `try_resident_patch` can only move a resident set out for an
+    /// incremental patch while its `Arc` is uniquely held, so pinning it in
+    /// this cache would silently force a full rebuild on every edit (#358).
     #[allow(clippy::type_complexity)]
     split_cache:
-        RefCell<HashMap<u64, (Arc<Vec<WireModel>>, Arc<Vec<WireModel>>)>>,
+        RefCell<HashMap<u64, (Arc<Vec<WireModel>>, Option<Arc<Vec<WireModel>>>)>>,
     /// Cached `selected ∪ hover` handle set for the GPU xray overlay, keyed by
     /// `selection_generation`. Rebuilt only when the selection changes so
     /// `build_primitive` doesn't clone the set every frame.
