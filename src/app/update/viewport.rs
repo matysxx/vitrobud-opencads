@@ -4,7 +4,8 @@
 use super::util::*;
 use super::{format_size, VIEWCUBE_HIT_SIZE};
 use crate::app::helpers::{
-    ortho_constrain, parse_coord, polar_constrain_near, ucs_rotate_vec, ucs_to_wcs, ucs_z_axis,
+    axis_lock_apply, axis_lock_capture, ortho_constrain, parse_coord, polar_constrain_near,
+    ucs_rotate_vec, ucs_to_wcs, ucs_z_axis,
     CoordKind,
 };
 use crate::app::{Message, OpenCADStudio, POLY_START_DELAY_MS};
@@ -767,7 +768,26 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         s.screen.y += tile_b.y;
                     }
 
-                    if snap_hit.is_none() {
+                    // Hard axis lock (#312) works for grip drags too: Shift
+                    // pins the drag to the nearest polar/ortho ray from the
+                    // grip's origin, osnap hits included.
+                    if self.shift_down {
+                        if self.axis_lock_dir.is_none() {
+                            let ucs_xf = self.tabs[i].ucs_xform();
+                            self.axis_lock_dir = axis_lock_capture(
+                                raw,
+                                grip.origin_world,
+                                self.polar_mode,
+                                self.polar_increment_deg,
+                                &ucs_xf,
+                            );
+                        }
+                    } else {
+                        self.axis_lock_dir = None;
+                    }
+                    if let Some(dir) = self.axis_lock_dir {
+                        snapped = axis_lock_apply(snapped, grip.origin_world, dir);
+                    } else if snap_hit.is_none() {
                         let base = grip.origin_world;
                         let ucs_xf = self.tabs[i].ucs_xform();
                         if self.ortho_mode {
@@ -1025,6 +1045,42 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 .snap_result
                                 .map(|s| s.world)
                                 .unwrap_or(cursor_world);
+                            // Hard axis lock (#312): Shift during a rubber-band
+                            // pick captures the nearest polar/ortho direction
+                            // and pins the pick to that ray — even an osnap hit
+                            // contributes only its along-axis component.
+                            // Only while an active command is asking for a
+                            // POINT — Shift has other meanings during entity
+                            // picks (TRIM/EXTEND swap) and selection.
+                            let wants_point = self.tabs[i].active_cmd.as_ref().is_some_and(|c| {
+                                !c.needs_entity_pick()
+                                    && !c.needs_tangent_pick()
+                                    && !c.is_selection_gathering()
+                            });
+                            if let Some(base) = self.last_point {
+                                if self.shift_down && wants_point && !is_window_corner {
+                                    if self.axis_lock_dir.is_none() {
+                                        let ucs_xf = self.tabs[i].ucs_xform();
+                                        self.axis_lock_dir = axis_lock_capture(
+                                            cursor_world,
+                                            base,
+                                            self.polar_mode,
+                                            self.polar_increment_deg,
+                                            &ucs_xf,
+                                        );
+                                    }
+                                } else if !self.shift_down {
+                                    self.axis_lock_dir = None;
+                                }
+                            } else if !self.shift_down {
+                                self.axis_lock_dir = None;
+                            }
+                            if let (Some(dir), Some(base)) =
+                                (self.axis_lock_dir, self.last_point)
+                            {
+                                pt = axis_lock_apply(pt, base, dir);
+                                pt
+                            } else {
                             // Object snap wins over ortho/polar: a snapped point
                             // is taken as-is so it isn't pulled onto the ortho
                             // axis. Grid snap is positional, not an object snap,
@@ -1052,6 +1108,7 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                                 }
                             }
                             pt
+                            }
                         };
                         // Clamp to world XY only when no UCS is active; with a
                         // UCS the point already lies on the UCS XY plane.
@@ -1966,9 +2023,20 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                         if self.tabs[i].active_ucs.is_none() {
                             pt.z = 0.0;
                         }
+                        let mut world_pt_locked = false;
+                        // Hard axis lock (#312): the held Shift lock projects
+                        // the committed point — osnap hits included — onto the
+                        // locked ray, matching the preview exactly.
+                        if let (Some(dir), Some(base)) = (self.axis_lock_dir, self.last_point) {
+                            pt = axis_lock_apply(pt, base, dir);
+                            if self.tabs[i].active_ucs.is_none() {
+                                pt.z = 0.0;
+                            }
+                            world_pt_locked = true;
+                        }
                         // OTRACK alignment wins over ortho/polar; otherwise apply
                         // ortho/polar relative to the last point.
-                        let otrack = if snap_hit.is_none() {
+                        let otrack = if !world_pt_locked && snap_hit.is_none() {
                             let step = if self.polar_mode && !is_window_corner {
                                 Some(self.polar_increment_deg)
                             } else {
@@ -1985,7 +2053,8 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             if self.tabs[i].active_ucs.is_none() {
                                 pt.z = 0.0;
                             }
-                        } else if !is_window_corner
+                        } else if !world_pt_locked
+                            && !is_window_corner
                             && !snap_hit
                                 .is_some_and(|s| s.snap_type != crate::snap::SnapType::Grid)
                         {

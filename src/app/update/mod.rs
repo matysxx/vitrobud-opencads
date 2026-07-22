@@ -2243,6 +2243,11 @@ impl OpenCADStudio {
                 let ctrl_changed = self.ctrl_down != ctrl;
                 self.shift_down = shift;
                 self.ctrl_down = ctrl;
+                // Releasing Shift drops the hard axis lock immediately (#312)
+                // — without this a lock could linger until the next move.
+                if !shift {
+                    self.axis_lock_dir = None;
+                }
                 // A live command may key its preview off Ctrl (arc-direction
                 // flip). Rebuild it at the current cursor so the flip shows
                 // without waiting for the next mouse move.

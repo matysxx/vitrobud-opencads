@@ -559,6 +559,11 @@ pub(super) struct OpenCADStudio {
     /// Cursor-anchored one-shot snap override menu (Shift+RMB): the canvas
     /// point it opened at, or `None` when closed (#337).
     snap_override_popup: Option<iced::Point>,
+    /// Hard axis lock (#312): the WCS direction captured when Shift went down
+    /// during a rubber-band point pick. While `Some`, every candidate point —
+    /// osnap hits included — projects onto this ray from `last_point` (or the
+    /// grip origin). Cleared when Shift releases.
+    axis_lock_dir: Option<glam::DVec3>,
     /// Inline rename state: (original_name, current_edit_value).
     layout_rename_state: Option<(String, String)>,
     /// Timestamp of the previous viewport left-click release (for double-click detection).
@@ -2358,6 +2363,7 @@ impl OpenCADStudio {
             text_inline: None,
             layout_context_menu: None,
             snap_override_popup: None,
+            axis_lock_dir: None,
             layout_rename_state: None,
             last_vp_click_time: None,
             last_vp_click_pos: None,

@@ -250,6 +250,41 @@ pub(super) fn polar_constrain_near(
     }
 }
 
+/// Hard axis lock (#312): the locked ray's direction — the nearest polar
+/// increment (or ortho axis) from `base` toward `cursor`, in the active UCS
+/// plane. `None` when the cursor sits on the base point.
+pub(super) fn axis_lock_capture(
+    cursor: glam::DVec3,
+    base: glam::DVec3,
+    polar: bool,
+    step_deg: f32,
+    xf: &UcsXform,
+) -> Option<glam::DVec3> {
+    let p = xf.to_ucs(cursor);
+    let b = xf.to_ucs(base);
+    let dx = p.x - b.x;
+    let dy = p.y - b.y;
+    if dx.hypot(dy) < 1e-9 {
+        return None;
+    }
+    let step = (if polar { step_deg as f64 } else { 90.0 }).to_radians();
+    let ang = (dy.atan2(dx) / step).round() * step;
+    let dir_ucs = glam::DVec3::new(ang.cos(), ang.sin(), 0.0);
+    let dir = xf.to_wcs(b + dir_ucs) - xf.to_wcs(b);
+    (dir.length_squared() > 1e-12).then(|| dir.normalize())
+}
+
+/// Project `pt` onto the locked ray through `base` — the hard lock applies to
+/// EVERYTHING, including an osnap hit, so a snap far off-axis contributes only
+/// its along-axis component (#312).
+pub(super) fn axis_lock_apply(
+    pt: glam::DVec3,
+    base: glam::DVec3,
+    dir: glam::DVec3,
+) -> glam::DVec3 {
+    base + dir * (pt - base).dot(dir)
+}
+
 // ── Clipboard / selection helpers ──────────────────────────────────────────
 
 /// Copy/paste anchor: the lower-left corner of the bounding box that encloses
