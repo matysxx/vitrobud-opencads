@@ -348,8 +348,13 @@ fn build_defn(
             // ATTRIB with the real value (tessellated separately). A CONSTANT
             // attribute has no ATTRIB; its value lives in the block itself, so
             // it must render as part of the block content (unless flagged
-            // invisible).
-            EntityType::AttributeDefinition(ad) if !ad.flags.constant || ad.flags.invisible => {
+            // invisible). With an empty value there is nothing to draw: the
+            // ATTDEF tessellator would fall back to its tag-placeholder
+            // preview, which belongs to a standalone definition, not to
+            // placed block content.
+            EntityType::AttributeDefinition(ad)
+                if !ad.flags.constant || ad.flags.invisible || ad.default_value.is_empty() =>
+            {
                 continue
             }
             EntityType::Insert(nested_ins) => {
