@@ -9,13 +9,13 @@ set -a
 # shellcheck disable=SC1091
 source .env
 set +a
-: "${PODMAN_COMPOSE_VERSION:?Set PODMAN_COMPOSE_VERSION in .env}"
-: "${PODMAN_COMPOSE_SHA256:?Set PODMAN_COMPOSE_SHA256 in .env}"
+: "${COMPOSE_PROVIDER_VERSION:?Set COMPOSE_PROVIDER_VERSION in .env}"
+: "${COMPOSE_PROVIDER_SHA256:?Set COMPOSE_PROVIDER_SHA256 in .env}"
 
 runtime_dir="${project_dir}/dev-ops/.runtime/podman-compose"
 provider="${runtime_dir}/podman-compose"
 
-if [[ -x "${provider}" ]] && [[ "$("${provider}" --version)" == *"${PODMAN_COMPOSE_VERSION}"* ]]; then
+if [[ -x "${provider}" ]] && [[ "$("${provider}" --version)" == *"${COMPOSE_PROVIDER_VERSION}"* ]]; then
   exit 0
 fi
 
@@ -25,8 +25,8 @@ rm -rf "${runtime_dir}"
 mkdir -p "${runtime_dir}"
 download="${provider}.download"
 curl -fsSL \
-  "https://raw.githubusercontent.com/containers/podman-compose/v${PODMAN_COMPOSE_VERSION}/podman_compose.py" \
+  "https://raw.githubusercontent.com/containers/podman-compose/v${COMPOSE_PROVIDER_VERSION}/podman_compose.py" \
   -o "${download}"
-printf '%s  %s\n' "${PODMAN_COMPOSE_SHA256}" "${download}" | sha256sum -c -
+printf '%s  %s\n' "${COMPOSE_PROVIDER_SHA256}" "${download}" | sha256sum -c -
 mv "${download}" "${provider}"
 chmod 0755 "${provider}"
