@@ -137,6 +137,12 @@ pub struct Snapper {
     /// direction + point under the cursor, when it was first hovered, and
     /// whether this dwell has already fired (so it acquires/toggles once).
     parallel_dwell: Option<(Vec3, Vec3, Instant, bool)>,
+    /// One-shot snap override (Shift+RMB menu): the (enabled set, snap on)
+    /// pair saved when the override engaged, restored when it is consumed by
+    /// the next point pick or cancelled. While `Some`, `enabled` holds only
+    /// the override mode and `snap_enabled` is forced on — the override works
+    /// even with running osnap off (#337).
+    override_saved: Option<(HashSet<SnapType>, bool)>,
 }
 
 impl Default for Snapper {
@@ -164,6 +170,7 @@ impl Default for Snapper {
             from_point: None,
             parallel_ref: None,
             parallel_dwell: None,
+            override_saved: None,
         }
     }
 }
@@ -176,6 +183,30 @@ impl Snapper {
 
     pub fn is_on(&self, t: SnapType) -> bool {
         self.enabled.contains(&t)
+    }
+
+    /// Engage a one-shot snap override (Shift+RMB menu): only `t` snaps, even
+    /// with running osnap off, until `clear_override` restores the saved
+    /// configuration. Re-picking while active replaces the mode but keeps the
+    /// original saved state.
+    pub fn set_override(&mut self, t: SnapType) {
+        if self.override_saved.is_none() {
+            self.override_saved = Some((self.enabled.clone(), self.snap_enabled));
+        }
+        self.enabled = std::iter::once(t).collect();
+        self.snap_enabled = true;
+    }
+
+    /// Restore the pre-override snap configuration. No-op when inactive.
+    pub fn clear_override(&mut self) {
+        if let Some((enabled, on)) = self.override_saved.take() {
+            self.enabled = enabled;
+            self.snap_enabled = on;
+        }
+    }
+
+    pub fn override_active(&self) -> bool {
+        self.override_saved.is_some()
     }
 
     /// Whether temporary tracking points are being acquired and drawn: OTRACK
@@ -748,6 +779,7 @@ impl Snapper {
             from_point: None,
             parallel_ref: None,
             parallel_dwell: None,
+            override_saved: None,
         };
         // Tangent-only: Grid is disabled here, so the grid basis is irrelevant.
         tmp.snap(

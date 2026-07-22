@@ -556,6 +556,9 @@ pub(super) struct OpenCADStudio {
     text_inline: Option<text_inline::TextInlineState>,
     /// Which layout tab has its context menu open (None = closed).
     layout_context_menu: Option<String>,
+    /// Cursor-anchored one-shot snap override menu (Shift+RMB): the canvas
+    /// point it opened at, or `None` when closed (#337).
+    snap_override_popup: Option<iced::Point>,
     /// Inline rename state: (original_name, current_edit_value).
     layout_rename_state: Option<(String, String)>,
     /// Timestamp of the previous viewport left-click release (for double-click detection).
@@ -1262,6 +1265,11 @@ pub enum Message {
     OpenPathPicked(Option<(PathBuf, u64)>),
     /// A file was dragged from the desktop and dropped on the window (#344).
     FileDropped(PathBuf),
+    /// Pick from the one-shot snap override menu (Shift+RMB): only this snap
+    /// applies to the next point pick, then the configuration restores (#337).
+    SnapOverridePick(crate::snap::SnapType),
+    /// Close the one-shot snap override menu without picking.
+    SnapOverrideClose,
     /// Open a path from the Start tab's recent-documents list (skips the
     /// file picker; the path is already known).
     OpenRecent(PathBuf),
@@ -2338,6 +2346,7 @@ impl OpenCADStudio {
             mtext_editor: None,
             text_inline: None,
             layout_context_menu: None,
+            snap_override_popup: None,
             layout_rename_state: None,
             last_vp_click_time: None,
             last_vp_click_pos: None,

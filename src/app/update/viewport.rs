@@ -2175,6 +2175,9 @@ pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
                             }
                         }
                         self.last_point = Some(world_pt);
+                        // The one-shot snap override is spent by this pick —
+                        // restore the running osnap configuration (#337).
+                        self.snapper.clear_override();
                         self.dyn_user_reshaped = false;
                         self.sync_dyn_fields();
                         self.reset_tracking_after_point();

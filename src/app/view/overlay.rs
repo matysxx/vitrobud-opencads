@@ -1021,6 +1021,89 @@ pub(super) fn layout_context_menu_overlay(name: &str, win: (f32, f32)) -> Elemen
     stack![catcher, positioned].into()
 }
 
+/// One-shot snap override menu (Shift+RMB, #337): a cursor-anchored grid of
+/// snap ICONS only — the names show as hover tooltips. Picking one applies
+/// that snap to just the next point pick.
+pub(super) fn snap_override_overlay(pos: iced::Point) -> Element<'static, Message> {
+    const PANEL_BG: Color = Color { r: 0.16, g: 0.16, b: 0.16, a: 0.98 };
+    const PANEL_BORDER: Color = Color { r: 0.35, g: 0.35, b: 0.35, a: 1.0 };
+    const ICON_COLOR: Color = Color { r: 0.85, g: 0.85, b: 0.85, a: 1.0 };
+    const HOVER: Color = Color { r: 0.25, g: 0.45, b: 0.70, a: 1.0 };
+    const TIP_BG: Color = Color { r: 0.10, g: 0.10, b: 0.10, a: 0.98 };
+    const COLS: usize = 4;
+
+    let cell = |snap_type: crate::snap::SnapType, label: &'static str| -> Element<'static, Message> {
+        let icon = container(crate::ui::icons::tinted::<Message>(
+            crate::ui::icons::osnap(snap_type),
+            16.0,
+            ICON_COLOR,
+        ))
+        .width(26)
+        .height(26)
+        .align_x(iced::Center)
+        .align_y(iced::Center);
+        let btn = button(icon)
+            .on_press(Message::SnapOverridePick(snap_type))
+            .style(|_: &Theme, status| button::Style {
+                background: Some(Background::Color(match status {
+                    button::Status::Hovered | button::Status::Pressed => HOVER,
+                    _ => Color::TRANSPARENT,
+                })),
+                border: Border::default(),
+                ..Default::default()
+            })
+            .padding(2);
+        iced::widget::tooltip(
+            btn,
+            container(text(label).size(11).color(Color::WHITE))
+                .style(|_: &Theme| container::Style {
+                    background: Some(Background::Color(TIP_BG)),
+                    border: Border {
+                        color: PANEL_BORDER,
+                        width: 1.0,
+                        radius: 2.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .padding([2, 6]),
+            iced::widget::tooltip::Position::Bottom,
+        )
+        .into()
+    };
+
+    let mut grid = column![].spacing(2);
+    for chunk in crate::snap::ALL_SNAP_MODES.chunks(COLS) {
+        let mut r = row![].spacing(2);
+        for &(snap_type, _glyph, label) in chunk {
+            r = r.push(cell(snap_type, label));
+        }
+        grid = grid.push(r);
+    }
+
+    let panel = container(grid)
+        .style(|_: &Theme| container::Style {
+            background: Some(Background::Color(PANEL_BG)),
+            border: Border {
+                color: PANEL_BORDER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        })
+        .padding(4);
+
+    // Full-screen click-catcher closes on an outside click.
+    let catcher = mouse_area(
+        container(iced::widget::Space::new().width(Fill).height(Fill))
+            .width(Fill)
+            .height(Fill),
+    )
+    .on_press(Message::SnapOverrideClose)
+    .on_right_press(Message::SnapOverrideClose);
+
+    stack![catcher, position_canvas_overlay(pos, panel.into())].into()
+}
+
 // ── Quick Select panel ─────────────────────────────────────────────────────
 
 const QSELECT_ANY_TYPE: &str = "(Any type)";

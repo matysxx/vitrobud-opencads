@@ -1511,6 +1511,13 @@ impl OpenCADStudio {
             iced::widget::Space::new().width(0).height(0).into()
         };
 
+        let snap_override_layer: Element<'_, Message> =
+            if let Some(pos) = self.snap_override_popup {
+                overlay::snap_override_overlay(pos)
+            } else {
+                iced::widget::Space::new().width(0).height(0).into()
+            };
+
         let qselect_layer: Element<'_, Message> = if let Some(state) = &self.qselect {
             let types = tab.scene.entity_type_names_in_layout();
             let properties = tab.scene.qselect_properties(state.type_filter.as_deref());
@@ -1538,6 +1545,7 @@ impl OpenCADStudio {
             dropdown_layer,
             layout_ctx_layer,
             qselect_layer,
+            snap_override_layer,
             open_progress_layer,
         ];
 

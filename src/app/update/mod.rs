@@ -292,6 +292,24 @@ impl OpenCADStudio {
                 }
             }
 
+            Message::SnapOverridePick(t) => {
+                self.snap_override_popup = None;
+                self.snapper.set_override(t);
+                let label = crate::snap::ALL_SNAP_MODES
+                    .iter()
+                    .find(|(m, _, _)| *m == t)
+                    .map(|(_, _, l)| *l)
+                    .unwrap_or("Snap");
+                self.command_line
+                    .push_info(&format!("Snap override: {label} (next pick only)."));
+                Task::none()
+            }
+
+            Message::SnapOverrideClose => {
+                self.snap_override_popup = None;
+                Task::none()
+            }
+
             Message::FileDropped(path) => {
                 // Desktop drag & drop (#344): accept the formats the Open
                 // dialog accepts — a drop has no picker filter, so anything
@@ -1367,6 +1385,15 @@ impl OpenCADStudio {
             Message::ViewportRightPress => {
                 let i = self.active_tab;
                 self.ribbon.close_dropdown();
+                // Shift+RMB: the one-shot snap override menu at the cursor —
+                // pick a snap for just the next point, then it expires (#337).
+                if self.shift_down {
+                    let pos = self.tabs[i].scene.selection.borrow().last_move_pos;
+                    if let Some(p) = pos {
+                        self.snap_override_popup = Some(p);
+                    }
+                    return Task::none();
+                }
                 let mut sel = self.tabs[i].scene.selection.borrow_mut();
                 let Some(p) = sel.last_move_pos else {
                     return Task::none();
