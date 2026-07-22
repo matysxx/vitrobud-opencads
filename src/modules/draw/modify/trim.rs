@@ -3110,6 +3110,31 @@ fn preview_sample_xy(e: &EntityType) -> Vec<[f64; 2]> {
                 })
                 .collect()
         }
+        // Polylines sample only their vertices — subdivide the straight
+        // segments so the preview cut follows the boundary instead of
+        // jumping at the nearest vertex (#340).
+        EntityType::LwPolyline(_)
+        | EntityType::Polyline(_)
+        | EntityType::Polyline2D(_)
+        | EntityType::Polyline3D(_) => {
+            let mut pts: Vec<[f64; 2]> = Vec::new();
+            for seg in crate::modules::draw::modify::explode::explode_polyline_segments(e) {
+                let sp: Vec<[f64; 2]> = match &seg {
+                    EntityType::Line(l) => {
+                        let p1 = [l.start.x, l.start.y];
+                        let p2 = [l.end.x, l.end.y];
+                        (0..=24).map(|i| lerp2(p1, p2, i as f64 / 24.0)).collect()
+                    }
+                    _ => sample_entity_xy(&seg),
+                };
+                if pts.last() == sp.first() {
+                    pts.extend_from_slice(&sp[1..]);
+                } else {
+                    pts.extend(sp);
+                }
+            }
+            pts
+        }
         _ => sample_entity_xy(e),
     }
 }
@@ -3168,31 +3193,66 @@ fn preview_wire(points: Vec<[f32; 3]>, color: [f32; 4], name: &str) -> WireModel
     }
 }
 
+/// Insert the exact boundary crossings between consecutive samples so a
+/// sampled cut lands ON the boundary instead of at the nearest sample. A
+/// polyline samples only its vertices, so without this a straight segment
+/// crossing the boundary was cut at the wrong place — or not at all when
+/// both endpoints were on the kept side (#340).
+fn insert_boundary_crossings(pts: &[[f64; 2]], geos: &[Geo]) -> Vec<[f64; 2]> {
+    let Some(last) = pts.last() else {
+        return Vec::new();
+    };
+    let mut out: Vec<[f64; 2]> = Vec::with_capacity(pts.len());
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        out.push(a);
+        let mut ts = line_seg_ts(a[0], a[1], b[0], b[1], Handle::NULL, geos);
+        ts.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        for t in ts {
+            if t > 1e-6 && t < 1.0 - 1e-6 {
+                out.push(lerp2(a, b, t));
+            }
+        }
+    }
+    out.push(*last);
+    out
+}
+
 /// Sampled trim: `None` leaves the entity unchanged, `Some(vec![])` erases it,
 /// `Some(runs)` replaces it with the surviving pieces as LwPolylines.
-fn extrim_sampled(pts: &[[f64; 2]], side: &dyn Fn([f64; 2]) -> bool) -> Option<Vec<EntityType>> {
+/// Classification is per SEGMENT midpoint (samples + exact crossings), so a
+/// vertex sitting exactly on the boundary can't flip the parity test.
+fn extrim_sampled(
+    pts: &[[f64; 2]],
+    geos: &[Geo],
+    side: &dyn Fn([f64; 2]) -> bool,
+) -> Option<Vec<EntityType>> {
     if pts.len() < 2 {
         return None;
     }
-    let any_removed = pts.iter().any(|p| side(*p));
-    if !any_removed {
+    let dense = insert_boundary_crossings(pts, geos);
+    let seg_kept: Vec<bool> = dense
+        .windows(2)
+        .map(|w| !side([(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5]))
+        .collect();
+    if seg_kept.iter().all(|&k| k) {
         return None; // wholly on the kept side — untouched
     }
-    let any_kept = pts.iter().any(|p| !side(*p));
-    if !any_kept {
+    if seg_kept.iter().all(|&k| !k) {
         return Some(vec![]); // wholly on the pick side — erased
     }
     let mut runs: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut cur: Vec<[f64; 2]> = Vec::new();
-    for &p in pts {
-        if side(p) {
-            if cur.len() >= 2 {
-                runs.push(std::mem::take(&mut cur));
-            } else {
-                cur.clear();
+    for (i, &kept) in seg_kept.iter().enumerate() {
+        if kept {
+            if cur.is_empty() {
+                cur.push(dense[i]);
             }
+            cur.push(dense[i + 1]);
+        } else if cur.len() >= 2 {
+            runs.push(std::mem::take(&mut cur));
         } else {
-            cur.push(p);
+            cur.clear();
         }
     }
     if cur.len() >= 2 {
@@ -3251,7 +3311,13 @@ impl CadCommand for ExtrimCommand {
             return CmdResult::NeedPoint;
         };
         let mut geos = build_geos(std::slice::from_ref(e));
-        extend_line_geos(&mut geos);
+        // Only a picked LINE boundary is treated as infinite. A polyline
+        // explodes into per-segment Line geos — extending those turns a
+        // closed boundary into a grid of infinite lines and the parity
+        // side-test breaks (#340).
+        if matches!(e, EntityType::Line(_)) {
+            extend_line_geos(&mut geos);
+        }
         if geos.is_empty() {
             return CmdResult::NeedPoint; // not a usable boundary; keep asking
         }
@@ -3323,7 +3389,7 @@ impl CadCommand for ExtrimCommand {
                 | EntityType::Ellipse(_)
                 | EntityType::Spline(_) => {
                     let pts = sample_entity_xy(e);
-                    if let Some(res) = extrim_sampled(&pts, &side) {
+                    if let Some(res) = extrim_sampled(&pts, &geos, &side) {
                         repl.push((*h, res));
                     }
                 }
