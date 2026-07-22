@@ -8,5 +8,5 @@ cd "${project_dir}"
 
 if command -v podman >/dev/null 2>&1; then
   podman rm -f vitrobud-opencads-web >/dev/null 2>&1 || true
-  podman pod rm -f "pod_${COMPOSE_PROJECT_NAME:-opencads}" >/dev/null 2>&1 || true
+  podman pod rm -f "${OPENCADS_POD_NAME:-opencads}" >/dev/null 2>&1 || true
 fi
