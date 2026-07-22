@@ -2851,9 +2851,9 @@ impl Scene {
     /// Collect closed polygon outlines (world XY) from the current layout.
     pub fn closed_outlines(&self) -> Vec<Vec<[f32; 2]>> {
         self.entity_wires()
-            .into_iter()
+            .iter()
             .filter_map(|wire| {
-                let pts = wire.points;
+                let pts = &wire.points;
                 if pts.len() < 4 {
                     return None;
                 }
@@ -2872,7 +2872,7 @@ impl Scene {
                 // boundary commands) see one vertex per corner — not the doubled
                 // ring that otherwise shows two grips at every corner.
                 let mut ring: Vec<[f32; 2]> = Vec::with_capacity(pts.len());
-                for p in &pts {
+                for p in pts {
                     if !p[0].is_finite() || !p[1].is_finite() {
                         continue;
                     }
@@ -3342,8 +3342,12 @@ impl Scene {
     }
 
     /// Build WireModels from all document entities + optional preview wire.
-    pub fn entity_wires(&self) -> Vec<WireModel> {
-        (*self.entity_wires_arc()).clone()
+    ///
+    /// Returns the memoized set by `Arc` — callers only ever iterate it, and
+    /// the previous per-call deep clone was a full copy of every wire buffer
+    /// (hundreds of MB on large mesh imports, #358).
+    pub fn entity_wires(&self) -> Arc<Vec<WireModel>> {
+        self.entity_wires_arc()
     }
 
     /// Per-entity normalized draw-order depth, keyed by entity handle value.
