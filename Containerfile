@@ -23,3 +23,5 @@ COPY --from=builder /build/dist /srv
 COPY container/Caddyfile /etc/caddy/Caddyfile
 USER 1000:1000
 EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/caddy"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
