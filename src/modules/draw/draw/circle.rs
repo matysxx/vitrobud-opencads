@@ -749,7 +749,52 @@ fn ttt_solve_sign(objs: &[TangentObject; 3], eps: &[f64; 3]) -> Vec<(DVec3, f64)
     let e1 = &lin_eqs[1];
     let det = e0.lx * e1.ly - e1.lx * e0.ly;
     if det.abs() < 1e-9 {
-        return vec![];
+        // Degenerate 2x2 — the CONCENTRIC circle pair case (#318): the
+        // pair-difference equation loses its cx/cy terms (lx = ly = 0) and
+        // pins r directly, so the solve above has nothing to invert. Recover
+        // the centers instead: r from the pinning equation, then intersect
+        // the other equation (a line in cx/cy once r is known) with the
+        // first circle's distance constraint |C - P| = |r + eps·cr|.
+        let (pin, other) = if e0.lx.hypot(e0.ly) < 1e-9 {
+            (e0, e1)
+        } else {
+            (e1, e0)
+        };
+        if pin.lx.hypot(pin.ly) >= 1e-9
+            || pin.lr.abs() < 1e-9
+            || other.lx.hypot(other.ly) < 1e-9
+        {
+            return vec![];
+        }
+        let r = pin.k / pin.lr;
+        if r <= 1e-4 {
+            return vec![];
+        }
+        let Some(&ci) = circle_idx.first() else {
+            return vec![];
+        };
+        let TangentObject::Circle {
+            center: cp,
+            radius: cr,
+        } = objs[ci]
+        else {
+            return vec![];
+        };
+        let rho = (r + eps[ci] * cr).abs();
+        // The center line: other.lx·cx + other.ly·cy = m.
+        let m = other.k - other.lr * r;
+        let l2 = other.lx * other.lx + other.ly * other.ly;
+        let l = l2.sqrt();
+        let bx = other.lx * m / l2;
+        let by = other.ly * m / l2;
+        let dx = -other.ly / l;
+        let dy = other.lx / l;
+        let p = bx - cp.x;
+        let q = by - cp.y;
+        return solve_quadratic(1.0, 2.0 * (p * dx + q * dy), p * p + q * q - rho * rho)
+            .into_iter()
+            .map(|t| (DVec3::new(bx + dx * t, by + dy * t, 0.0), r))
+            .collect();
     }
 
     // cx = a_cx + b_cx*r,  cy = a_cy + b_cy*r
@@ -994,3 +1039,32 @@ inventory::submit!(crate::command::CommandRegistration { names: &["CIRCLE_CD"] }
 inventory::submit!(crate::command::CommandRegistration { names: &["CIRCLE"] });  // CircleCommand
 inventory::submit!(crate::command::CommandRegistration { names: &["CIRCLE_TTR"] });  // CircleTTRCommand
 inventory::submit!(crate::command::CommandRegistration { names: &["CIRCLE_TTT"] });  // CircleTTTCommand
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #318: concentric ring + a line through the center — the degenerate
+    /// circle-pair equation must still yield the annulus circle.
+    #[test]
+    fn ttt_concentric_ring_with_line() {
+        let inner = TangentObject::Circle { center: DVec3::ZERO, radius: 3.5 };
+        let outer = TangentObject::Circle { center: DVec3::ZERO, radius: 5.0 };
+        let dir = DVec3::new(0.35, 1.0, 0.0).normalize();
+        let line = TangentObject::Line { p1: DVec3::ZERO, p2: dir * 10.0 };
+        for order in [
+            [inner, outer, line],
+            [line, inner, outer],
+            [outer, line, inner],
+        ] {
+            let cands = ttt_candidates(order[0], order[1], order[2]);
+            let ok = cands.iter().any(|&(c, r)| {
+                let d = (c.x * c.x + c.y * c.y).sqrt();
+                (r - 0.75).abs() < 1e-6
+                    && (d - 4.25).abs() < 1e-6
+                    && (c.x * dir.y - c.y * dir.x).abs() - 0.75 < 1e-6
+            });
+            assert!(ok, "no annulus candidate, got {cands:?}");
+        }
+    }
+}
