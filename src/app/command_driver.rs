@@ -2568,7 +2568,6 @@ impl OpenCADStudio {
         }
     }
 }
-
 /// Clone one captured xdictionary subtree into `doc` with fresh handles,
 /// remapping every internal reference (and the owning entity, when known),
 /// returning the new root handle. `allocate_handle` advances the document's
@@ -2915,4 +2914,3 @@ fn match_special_props(src: &acadrust::EntityType, dst: &mut acadrust::EntityTyp
         dm.property_override_flags = sm.property_override_flags;
     }
 }
-
