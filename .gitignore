@@ -48,3 +48,6 @@ container-*.service
 *.service.generated
 *.timer.generated
 .ai/prd/task-status.local.md
+
+# AI task context wiki — local operational memory only
+.ai/wiki/tasks/
