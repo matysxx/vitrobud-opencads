@@ -1,6 +1,3 @@
-x-podman:
-  in_pod: ${OPENCADS_POD_NAME:?Set OPENCADS_POD_NAME in .env}
-
 services:
   web:
     image: ${OPENCADS_IMAGE:?Set OPENCADS_IMAGE in .env}:${OPENCADS_TAG:?Set OPENCADS_TAG in .env}

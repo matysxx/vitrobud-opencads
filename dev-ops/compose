@@ -8,7 +8,12 @@ cd "${project_dir}"
 [[ -f src/.env ]] || { echo "Missing src/.env; copy src/.env.dist first." >&2; exit 1; }
 
 if command -v podman >/dev/null 2>&1; then
-  exec podman compose "$@"
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+  : "${OPENCADS_POD_NAME:?Set OPENCADS_POD_NAME in .env}"
+  exec podman compose --in-pod "${OPENCADS_POD_NAME}" "$@"
 elif command -v docker >/dev/null 2>&1; then
   exec docker compose "$@"
 else
