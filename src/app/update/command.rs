@@ -935,6 +935,33 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     self.command_line.push_info(&format!("{label}:"));
                     return self.focus_cmd_input();
                 }
+                // Break at vertex replaces the entity with the split pieces —
+                // structural, so it can't ride the in-place apply below.
+                if matches!(item.action, GripMenuAction::BreakVertex) {
+                    let pieces = match self.tabs[i].scene.document.get_entity(popup.handle) {
+                        Some(acadrust::EntityType::LwPolyline(p)) => {
+                            crate::entities::lwpolyline::break_at_vertex(p, popup.grip_id)
+                        }
+                        _ => None,
+                    };
+                    match pieces {
+                        Some(pieces) => {
+                            self.push_undo_snapshot(i, "BREAK");
+                            self.tabs[i].scene.erase_entities(&[popup.handle]);
+                            for e in pieces {
+                                self.tabs[i].scene.add_entity(e);
+                            }
+                            self.tabs[i].dirty = true;
+                            self.refresh_selected_grips();
+                            self.refresh_properties();
+                            self.command_line.push_output("Polyline broken at vertex.");
+                        }
+                        None => self
+                            .command_line
+                            .push_error("Cannot break at this vertex."),
+                    }
+                    return Task::none();
+                }
                 // One-shot action — apply immediately.
                 self.push_undo_snapshot(i, item.label);
                 // For Add Leader, the new arrow becomes the last grip; remember

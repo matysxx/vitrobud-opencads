@@ -223,6 +223,15 @@ impl OpenCADStudio {
             // ── Break / Join ─────────────────────────────────────────────────
             "JOIN" => {
                 use crate::modules::draw::modify::join::JoinCommand;
+                // Pickfirst: with objects already selected, join them right
+                // away instead of asking for a selection again.
+                let selected: Vec<acadrust::Handle> =
+                    self.tabs[i].scene.selected.iter().copied().collect();
+                if selected.len() >= 2 {
+                    let task =
+                        self.apply_cmd_result(crate::command::CmdResult::JoinEntities(selected));
+                    return Some(task);
+                }
                 let cmd = JoinCommand::new();
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
@@ -243,8 +252,40 @@ impl OpenCADStudio {
             }
 
             "PEDIT" => {
-                use crate::modules::draw::modify::pedit::PeditCommand;
-                let cmd_obj = PeditCommand::new();
+                use crate::modules::draw::modify::pedit::{PeditCommand, PeditTarget};
+                let info = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .filter_map(|e| {
+                        let h = e.common().handle.value();
+                        match e {
+                            acadrust::EntityType::LwPolyline(_)
+                            | acadrust::EntityType::Polyline2D(_) => Some((
+                                h,
+                                PeditTarget {
+                                    is_poly: true,
+                                    convertible: false,
+                                },
+                            )),
+                            acadrust::EntityType::Line(_) | acadrust::EntityType::Arc(_) => {
+                                Some((
+                                    h,
+                                    PeditTarget {
+                                        is_poly: false,
+                                        convertible: true,
+                                    },
+                                ))
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                // Pickfirst: an already-selected polyline (or line/arc, via
+                // the convert prompt) skips the select step.
+                let preselected: Vec<acadrust::Handle> =
+                    self.tabs[i].scene.selected.iter().copied().collect();
+                let cmd_obj = PeditCommand::new(info).with_preselection(&preselected);
                 self.command_line.push_info(&cmd_obj.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd_obj));
             }
