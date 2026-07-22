@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${project_dir}"
+umask 077
+backup_root="${BACKUP_ROOT:-${project_dir}/dev-ops/storage/backup}"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+target="${backup_root}/opencads-config-${stamp}.tar.gz"
+mkdir -p "${backup_root}"
+
+files=()
+for candidate in .env src/.env compose.override.yaml; do
+  [[ -f "${candidate}" ]] && files+=("${candidate}")
+done
+(( ${#files[@]} > 0 )) || { echo "No private runtime configuration to back up." >&2; exit 1; }
+tar -czf "${target}" "${files[@]}"
+chmod 0600 "${target}"
+echo "Created ${target}"

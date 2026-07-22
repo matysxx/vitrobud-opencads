@@ -1,0 +1,38 @@
+services:
+  web:
+    image: ${OPENCADS_IMAGE:?Set OPENCADS_IMAGE in .env}:${OPENCADS_TAG:?Set OPENCADS_TAG in .env}
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        RUST_IMAGE: ${RUST_IMAGE:?Set RUST_IMAGE in .env}
+        CADDY_IMAGE: ${CADDY_IMAGE:?Set CADDY_IMAGE in .env}
+        TRUNK_VERSION: ${TRUNK_VERSION:?Set TRUNK_VERSION in .env}
+    container_name: vitrobud-opencads-web
+    restart: unless-stopped
+    env_file:
+      - ./src/.env
+    environment:
+      XDG_CONFIG_HOME: /tmp
+      XDG_DATA_HOME: /tmp
+    ports:
+      - "${OPENCADS_BIND_ADDRESS:?Set OPENCADS_BIND_ADDRESS in .env}:${OPENCADS_HTTP_PORT:?Set OPENCADS_HTTP_PORT in .env}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - opencads
+
+networks:
+  opencads:
+    driver: bridge

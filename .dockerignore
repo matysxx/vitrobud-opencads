@@ -1,0 +1,11 @@
+.git
+.DS_Store
+.env
+src/.env
+compose.override.yaml
+dev-ops/storage
+target
+dist
+*.tar.gz
+*.dwg
+*.dxf

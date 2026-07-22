@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${project_dir}"
+
+[[ -f .env ]] || cp .env.dist .env
+[[ -f src/.env ]] || cp src/.env.dist src/.env
+mkdir -p dev-ops/storage/backup
+chmod 0700 dev-ops/storage dev-ops/storage/backup
+
+./dev-ops/compose build web
+./dev-ops/compose up -d web
+./dev-ops/compose ps

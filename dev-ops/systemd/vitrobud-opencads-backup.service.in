@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up Open CAD Studio private runtime configuration
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_DIR@
+ExecStart=@PROJECT_DIR@/dev-ops/backup
+ExecStart=@PROJECT_DIR@/dev-ops/cleanup

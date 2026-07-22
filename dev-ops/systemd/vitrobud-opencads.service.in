@@ -1,0 +1,19 @@
+[Unit]
+Description=Open CAD Studio web stack
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=@PROJECT_DIR@/.env
+ConditionPathExists=@PROJECT_DIR@/src/.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@PROJECT_DIR@
+ExecStart=@PROJECT_DIR@/dev-ops/start
+ExecReload=@PROJECT_DIR@/dev-ops/update
+ExecStop=@PROJECT_DIR@/dev-ops/shutdown
+TimeoutStartSec=1800
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

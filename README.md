@@ -1,5 +1,45 @@
 # Open CAD Studio
 
+> This maintained fork adds an anonymized, reusable rootless-Podman web stack.
+> It preserves upstream history and keeps private runtime configuration outside
+> Git. The delivery path is always `local -> GitHub -> server`.
+
+## Container stack quick start
+
+The container serves the upstream WebAssembly edition. It is stateless: local
+browser file selection is used for opening drawings and browser downloads are
+used for saving them. LDAP and Nextcloud integration are intentionally deferred.
+
+```bash
+cp .env.dist .env
+cp src/.env.dist src/.env
+./dev-ops/setup
+```
+
+The default endpoint is `http://127.0.0.1:8088`. For a server rollout, set
+private bind/port/project values only in the untracked `.env`. The external
+reverse proxy terminates HTTPS; certificates do not belong in this repository.
+
+Operational commands:
+
+- `./dev-ops/start` and `./dev-ops/shutdown`
+- `./dev-ops/update` with a full verified `ROLLOUT_REVISION`
+- `./dev-ops/backup` and `./dev-ops/cleanup`
+- `./dev-ops/install-systemd-user-unit`
+- `./dev-ops/install-systemd-user-backup`
+
+See [container quick start](docs/container-quickstart.md),
+[deployment plan](docs/deployment-plan.md), and
+[upstream maintenance](docs/upstream-maintenance.md). Production-style private
+access is described in [external reverse proxy](docs/external-reverse-proxy.md).
+
+### Web limitations
+
+The web build is not equivalent to the native desktop application. In
+particular, upstream disables 3D solid modeling for WASM and documents further
+limitations for hatch rendering, fonts, file I/O, and parallelism in
+[`docs/native-vs-web.md`](docs/native-vs-web.md).
+
 [![Release](https://img.shields.io/github/v/release/HakanSeven12/OpenCADStudio)](https://github.com/HakanSeven12/OpenCADStudio/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/HakanSeven12/OpenCADStudio/total)](https://github.com/HakanSeven12/OpenCADStudio/releases)
 [![Stars](https://img.shields.io/github/stars/HakanSeven12/OpenCADStudio)](https://github.com/HakanSeven12/OpenCADStudio/stargazers)

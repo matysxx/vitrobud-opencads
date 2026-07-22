@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Open CAD Studio host-side backup
+
+[Timer]
+OnCalendar=@ON_CALENDAR@
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

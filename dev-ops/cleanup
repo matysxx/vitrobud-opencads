@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${project_dir}"
+[[ -f .env ]] && { set -a; . ./.env; set +a; }
+backup_root="${BACKUP_ROOT:-${project_dir}/dev-ops/storage/backup}"
+retention="${BACKUP_RETENTION_DAYS:-30}"
+[[ "${retention}" =~ ^[0-9]+$ ]] || { echo "Invalid retention." >&2; exit 1; }
+[[ -d "${backup_root}" ]] || exit 0
+find "${backup_root}" -type f -name 'opencads-config-*.tar.gz' -mtime "+${retention}" -print -delete

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${project_dir}"
+
+[[ -f .env ]] || { echo "Missing .env; copy .env.dist first." >&2; exit 1; }
+[[ -f src/.env ]] || { echo "Missing src/.env; copy src/.env.dist first." >&2; exit 1; }
+
+if command -v podman >/dev/null 2>&1; then
+  exec podman compose "$@"
+elif command -v docker >/dev/null 2>&1; then
+  exec docker compose "$@"
+else
+  echo "Neither podman nor docker is installed." >&2
+  exit 1
+fi

@@ -35,3 +35,15 @@ __pycache__/
 
 # Claude Code local preview/dev-server config
 .claude/launch.json
+
+# Container stack local/runtime files
+.DS_Store
+.env
+src/.env
+compose.override.yaml
+dev-ops/storage/**
+!dev-ops/storage/.gitignore
+container-*.service
+*.service.generated
+*.timer.generated
+.ai/prd/task-status.local.md

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${project_dir}"
+[[ -f .env ]] && { set -a; . ./.env; set +a; }
+./dev-ops/compose down --remove-orphans
+
+if command -v podman >/dev/null 2>&1; then
+  podman rm -f vitrobud-opencads-web >/dev/null 2>&1 || true
+  podman pod rm -f "pod_${COMPOSE_PROJECT_NAME:-opencads}" >/dev/null 2>&1 || true
+fi

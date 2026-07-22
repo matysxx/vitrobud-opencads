@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${project_dir}"
+[[ -f .env ]] || { echo "Missing .env." >&2; exit 1; }
+set -a
+. ./.env
+set +a
+schedule="${BACKUP_ON_CALENDAR:-*-*-* 03:30:00}"
+user_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+mkdir -p "${user_dir}"
+sed "s|@PROJECT_DIR@|${project_dir}|g" dev-ops/systemd/vitrobud-opencads-backup.service.in \
+  > "${user_dir}/vitrobud-opencads-backup.service"
+sed -e "s|@ON_CALENDAR@|${schedule}|g" dev-ops/systemd/vitrobud-opencads-backup.timer.in \
+  > "${user_dir}/vitrobud-opencads-backup.timer"
+systemctl --user daemon-reload
+echo "Installed backup units; enable with: systemctl --user enable --now vitrobud-opencads-backup.timer"
