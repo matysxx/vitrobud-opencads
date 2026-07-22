@@ -998,6 +998,7 @@ impl Scene {
         wires: &[WireModel],
         wire_content_id: u64,
         source_key: u64,
+        depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
     ) -> std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>> {
         use std::sync::Arc;
         {
@@ -1010,12 +1011,19 @@ impl Scene {
         // text-bearing entity changed since the last build, the glyphs are
         // identical, so reuse them instead of re-walking every wire. Reuse is
         // per `source_key`: another source's glyphs are a different wire set,
-        // not an older build of this one (#403).
+        // not an older build of this one (#403). The glyphs also bake the
+        // entity draw-order depth (below), which shifts whenever an entity is
+        // added or removed — reuse only across rank-stable (all-Modified)
+        // edits.
         {
             let reuse = {
                 let last = self.last_sdf_text.borrow();
                 match last.get(&source_key) {
-                    Some((epoch, arc)) if self.text_unchanged(*epoch) => Some(arc.clone()),
+                    Some((epoch, arc))
+                        if self.text_unchanged(*epoch) && self.draw_ranks_stable(*epoch) =>
+                    {
+                        Some(arc.clone())
+                    }
                     _ => None,
                 }
             };
@@ -1032,7 +1040,22 @@ impl Scene {
         let mut out: Vec<crate::scene::pipeline::text_gpu::TextVertex> = Vec::new();
         for w in wires {
             if !w.text_verts.is_empty() {
-                out.extend_from_slice(&w.text_verts);
+                // Bake the host wire's draw-order depth into its glyphs so
+                // text layers like the rest of the entity: its own background
+                // fill lands at the same biased depth (glyphs draw after fills
+                // and win the LessEqual test), and a hatch later in draw order
+                // still covers the text. A tessellation-time value (block-local
+                // compose) survives as an offset on top of the wire's depth.
+                let d = crate::scene::pipeline::wire_gpu::wire_draw_depth(w, depth_map);
+                if d == 0.0 {
+                    out.extend_from_slice(&w.text_verts);
+                } else {
+                    out.extend(w.text_verts.iter().map(|tv| {
+                        let mut tv = *tv;
+                        tv.draw_depth += d;
+                        tv
+                    }));
+                }
             }
         }
         let verts = Arc::new(out);
@@ -1370,7 +1393,12 @@ impl Scene {
         } else {
             0x3000_0000_0000_0000 | inst.handle.value()
         };
-        let text_verts = self.gather_text_verts(&all_wires, wire_content_id, text_source_key);
+        let text_verts = self.gather_text_verts(
+            &all_wires,
+            wire_content_id,
+            text_source_key,
+            &self.draw_depth_map(),
+        );
         // Grip-drag / command-preview glyphs, excluded from the epoch-cached base
         // gather above. Two sources, both tiny (one operation's worth) and walked
         // per frame: the overlay wires' own glyphs (MOVE / COPY / ROTATE / SCALE /

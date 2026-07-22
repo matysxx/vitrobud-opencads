@@ -1416,6 +1416,17 @@ impl Scene {
     /// references (their baked text moves with the instance) — an edit to any of
     /// those, or any removal, invalidates it; a plain line / arc / polyline edit
     /// does not.
+    /// Whether the per-entity draw-order ranks are unchanged since
+    /// `last_epoch`: every delta is a Modify (an Add / Remove changes the rank
+    /// denominator and shifts every sibling's bias — same rule as the
+    /// `draw_depth_map` cache).
+    pub(super) fn draw_ranks_stable(&self, last_epoch: u64) -> bool {
+        match self.replay_since(last_epoch) {
+            Some(deltas) => deltas.iter().all(|&(_, k)| k == ChangeKind::Modified),
+            None => false,
+        }
+    }
+
     fn text_unchanged(&self, last_epoch: u64) -> bool {
         match self.replay_since(last_epoch) {
             Some(deltas) => deltas.iter().all(|&(h, k)| {
