@@ -24,6 +24,6 @@ git diff --quiet && git diff --cached --quiet || {
 }
 git checkout --detach "${ROLLOUT_REVISION}"
 ./dev-ops/setup-compose-provider
-./dev-ops/compose build --pull web
+./dev-ops/compose build --pull=always web
 ./dev-ops/compose up -d --force-recreate web
 ./dev-ops/compose ps
