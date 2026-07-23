@@ -60,8 +60,9 @@ fn file_cache() -> &'static Mutex<HashMap<String, Option<Arc<ShxFile>>>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn shape_cache() -> &'static Mutex<HashMap<(String, u16), Option<ShapePolylines>>> {
-    static C: OnceLock<Mutex<HashMap<(String, u16), Option<ShapePolylines>>>> = OnceLock::new();
+fn shape_cache() -> &'static Mutex<HashMap<(String, u16), Option<(ShapePolylines, f64)>>> {
+    static C: OnceLock<Mutex<HashMap<(String, u16), Option<(ShapePolylines, f64)>>>> =
+        OnceLock::new();
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -115,9 +116,26 @@ fn parse_file(path: &str) -> Option<ShxFile> {
     Some(ShxFile { shapes })
 }
 
+/// Tessellate the shape named `name` (case-insensitive) from the SHX at
+/// `path` — the `.lin` catalog references linetype shapes by name.
+pub fn shape_polylines_by_name(path: &str, name: &str) -> Option<ShapePolylines> {
+    let file = load_file(path)?;
+    let num = file
+        .shapes
+        .iter()
+        .find(|(_, (n, _))| n.eq_ignore_ascii_case(name))
+        .map(|(&num, _)| num)?;
+    shape_polylines(path, num)
+}
+
 /// Tessellate `shape_number` from the SHX at `path` into unit-space
 /// polylines. `None` when the file/shape is missing or not a shapes file.
 pub fn shape_polylines(path: &str, shape_number: u16) -> Option<ShapePolylines> {
+    shape_with_advance(path, shape_number).map(|(p, _)| p)
+}
+
+/// Like [`shape_polylines`], plus the pen's final X — a font glyph's advance.
+pub fn shape_with_advance(path: &str, shape_number: u16) -> Option<(ShapePolylines, f64)> {
     let key = (path.to_string(), shape_number);
     if let Ok(c) = shape_cache().lock() {
         if let Some(hit) = c.get(&key) {
@@ -131,7 +149,7 @@ pub fn shape_polylines(path: &str, shape_number: u16) -> Option<ShapePolylines> 
     built
 }
 
-fn build_shape(path: &str, shape_number: u16) -> Option<ShapePolylines> {
+fn build_shape(path: &str, shape_number: u16) -> Option<(ShapePolylines, f64)> {
     let file = load_file(path)?;
     let mut out: Vec<Vec<[f64; 2]>> = Vec::new();
     let mut cur: Vec<[f64; 2]> = vec![[0.0, 0.0]];
@@ -146,10 +164,76 @@ fn build_shape(path: &str, shape_number: u16) -> Option<ShapePolylines> {
     if cur.len() > 1 {
         out.push(cur);
     }
+    let advance = st.x;
     if out.is_empty() {
+        // A pen-up-only glyph (space) still carries its advance.
+        if advance.abs() < 1e-12 {
+            return None;
+        }
+        return Some((Arc::new(Vec::new()), advance));
+    }
+    Some((Arc::new(out), advance))
+}
+
+// ── SHX text fonts ────────────────────────────────────────────────────────────
+//
+// A classic SHX *font* is the same container with glyphs keyed by character
+// code and shape #0 holding the font header: `above, below, modes, 0` (the
+// cap height above the baseline and the descender depth).
+
+/// Font metrics: (above, below). `None` when the file has no shape #0 header.
+pub fn font_metrics(path: &str) -> Option<(f64, f64)> {
+    let file = load_file(path)?;
+    let (_, spec) = file.shapes.get(&0)?;
+    let above = *spec.first()? as f64;
+    let below = *spec.get(1)? as f64;
+    if above <= 0.0 {
         return None;
     }
-    Some(Arc::new(out))
+    Some((above, below))
+}
+
+fn glyph_cache(
+) -> &'static Mutex<HashMap<(String, u16), Option<Arc<crate::scene::text::lff::Glyph>>>> {
+    static C: OnceLock<
+        Mutex<HashMap<(String, u16), Option<Arc<crate::scene::text::lff::Glyph>>>>,
+    > = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Look up character `code` as a font glyph, normalised so the font's
+/// `above` (cap height) maps to 9 units — the scale every stroke-font
+/// consumer in the text pipeline expects.
+pub fn font_glyph(path: &str, code: u16) -> Option<Arc<crate::scene::text::lff::Glyph>> {
+    let key = (path.to_string(), code);
+    if let Ok(c) = glyph_cache().lock() {
+        if let Some(hit) = c.get(&key) {
+            return hit.clone();
+        }
+    }
+    let built = (|| {
+        let (above, _) = font_metrics(path)?;
+        let (polys, advance) = shape_with_advance(path, code)?;
+        let k = 9.0 / above;
+        let strokes: Vec<Vec<[f32; 2]>> = polys
+            .iter()
+            .filter(|p| p.len() > 1)
+            .map(|p| {
+                p.iter()
+                    .map(|&[x, y]| [(x * k) as f32, (y * k) as f32])
+                    .collect()
+            })
+            .collect();
+        Some(Arc::new(crate::scene::text::lff::Glyph {
+            strokes,
+            advance: (advance * k) as f32,
+            fill_tris: Vec::new(),
+        }))
+    })();
+    if let Ok(mut c) = glyph_cache().lock() {
+        c.insert(key, built.clone());
+    }
+    built
 }
 
 struct InterpState {

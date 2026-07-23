@@ -24,14 +24,34 @@ pub fn resolve_text_style(style_name: &str, document: &CadDocument) -> ResolvedT
             style.true_type_font.trim().to_string()
         } else if !style.font_file.trim().is_empty() {
             let file = style.font_file.trim();
-            let basename = file.rsplit(['/', '\\']).next().unwrap_or(file);
-            let stem = basename.split('.').next().unwrap_or(basename).trim();
-            if !stem.is_empty() {
-                stem.to_string()
-            } else if !style.name.trim().is_empty() {
-                style.name.trim().to_string()
+            // A .shx font that resolves on disk (as stored, or next to the
+            // drawing) renders its REAL stroke glyphs — pass the absolute
+            // path through so `Face::resolve` picks the SHX face. Only an
+            // unresolvable file falls back to the stem's LFF substitute.
+            let shx_path = file
+                .to_ascii_lowercase()
+                .ends_with(".shx")
+                .then(|| {
+                    let base = document
+                        .source_path
+                        .as_deref()
+                        .map(std::path::Path::new)
+                        .and_then(|p| p.parent());
+                    crate::io::resolve_image_file(file, base)
+                })
+                .flatten();
+            if let Some(p) = shx_path {
+                p
             } else {
-                "Standard".to_string()
+                let basename = file.rsplit(['/', '\\']).next().unwrap_or(file);
+                let stem = basename.split('.').next().unwrap_or(basename).trim();
+                if !stem.is_empty() {
+                    stem.to_string()
+                } else if !style.name.trim().is_empty() {
+                    style.name.trim().to_string()
+                } else {
+                    "Standard".to_string()
+                }
             }
         } else if !style.name.trim().is_empty() {
             style.name.trim().to_string()
