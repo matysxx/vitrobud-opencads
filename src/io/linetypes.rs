@@ -131,7 +131,9 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         x: c.offset[0] as f32,
                         y: c.offset[1] as f32,
                         scale: if scale.abs() < 1e-6 { 1.0 } else { scale },
-                        rot_deg: c.rotation as f32,
+                        // DWG stores the element rotation in RADIANS; the
+                        // segment field carries degrees (the `.lin` unit).
+                        rot_deg: (c.rotation as f32).to_degrees(),
                     });
                 }
                 LineTypeComplexContent::Shape { shape_number } => {
@@ -144,7 +146,7 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         .find(|s| s.handle == c.style_handle)
                         .map(|s| s.font_file.trim().to_string())
                         .unwrap_or_default();
-                    if font.is_empty() || *shape_number <= 0 {
+                    if *shape_number <= 0 {
                         continue;
                     }
                     let base = document
@@ -152,18 +154,33 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         .as_deref()
                         .map(std::path::Path::new)
                         .and_then(|p| p.parent());
-                    let Some(resolved) = crate::io::resolve_image_file(&font, base) else {
-                        continue;
+                    let resolved = (!font.is_empty())
+                        .then(|| crate::io::resolve_image_file(&font, base))
+                        .flatten();
+                    // The standard ltypeshp.shx numbers map to the bundled
+                    // LFF substitute shapes, so the glyph still draws when
+                    // the shape file isn't on disk (the usual case — traded
+                    // drawings rarely ship their .shx).
+                    let sub_name = match *shape_number {
+                        130 => "TRACK1",
+                        131 => "ZIG",
+                        132 => "BOX",
+                        133 => "CIRC1",
+                        134 => "BAT",
+                        _ => "",
                     };
+                    if resolved.is_none() && sub_name.is_empty() {
+                        continue;
+                    }
                     let scale = c.scale as f32;
                     segments.push(LtSegment::Shape {
-                        name: String::new(),
-                        shx_file: resolved,
+                        name: sub_name.to_string(),
+                        shx_file: resolved.unwrap_or_default(),
                         number: *shape_number as u16,
                         x: c.offset[0] as f32,
                         y: c.offset[1] as f32,
                         scale: if scale.abs() < 1e-6 { 1.0 } else { scale },
-                        rot_deg: c.rotation as f32,
+                        rot_deg: (c.rotation as f32).to_degrees(),
                     });
                 }
             }
