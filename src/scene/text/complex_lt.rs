@@ -229,6 +229,8 @@ pub fn apply_along(
 
                 LtSeg::Shape {
                     name: sh_name,
+                    shx_file,
+                    number,
                     x,
                     y,
                     scale: sh_scale,
@@ -239,7 +241,9 @@ pub fn apply_along(
                     let insert = lerp(ps, pe, pos / seg_len);
                     let insert = offset_pt(insert, fwd, perp, *x, *y);
 
-                    let shape_strokes = emit_shape(sh_name, insert, fwd, perp, *sh_scale, *rot_deg);
+                    let shape_strokes = emit_shape(
+                        sh_name, shx_file, *number, insert, fwd, perp, *sh_scale, *rot_deg,
+                    );
                     strokes.extend(shape_strokes);
 
                     elem_idx += 1;
@@ -386,6 +390,8 @@ enum LtSeg {
     Dot,
     Shape {
         name: String,
+        shx_file: String,
+        number: u16,
         x: f32,
         y: f32,
         scale: f32,
@@ -409,12 +415,16 @@ fn scale_segments(segs: &[LtSegment], scale: f32) -> Vec<LtSeg> {
             LtSegment::Dot => LtSeg::Dot,
             LtSegment::Shape {
                 name,
+                shx_file,
+                number,
                 x,
                 y,
                 scale: sh_scale,
                 rot_deg,
             } => LtSeg::Shape {
                 name: name.clone(),
+                shx_file: shx_file.clone(),
+                number: *number,
                 x: x * scale,
                 y: y * scale,
                 scale: *sh_scale * scale,
@@ -461,16 +471,50 @@ fn offset_pt(pt: [f32; 3], fwd: [f32; 3], perp: [f32; 3], dx: f32, dy: f32) -> [
     ]
 }
 
-/// Transform a named linetype shape (from the converted `ltypeshp` LFF font)
-/// into world-space strokes at the pen position.
+/// Transform a linetype shape into world-space strokes at the pen position:
+/// the real .SHX glyph when the segment carries a resolved shape file (by
+/// number for document linetypes, by name for `.lin` references), falling
+/// back to the converted `ltypeshp` LFF substitute set.
 fn emit_shape(
     name: &str,
+    shx_file: &str,
+    number: u16,
     insert: [f32; 3],
     fwd: [f32; 3],
     perp: [f32; 3],
     scale: f32,
     rot_deg: f32,
 ) -> Vec<Vec<[f32; 3]>> {
+    if !shx_file.is_empty() {
+        let polys = if number > 0 {
+            crate::scene::text::shx::shape_polylines(shx_file, number)
+        } else {
+            crate::scene::text::shx::shape_polylines_by_name(shx_file, name)
+        };
+        if let Some(polys) = polys {
+            let rot_r = rot_deg.to_radians();
+            let (cos_r, sin_r) = (rot_r.cos(), rot_r.sin());
+            return polys
+                .iter()
+                .map(|stroke| {
+                    stroke
+                        .iter()
+                        .map(|&[lx, ly]| {
+                            let scaled_x = lx as f32 * scale;
+                            let scaled_y = ly as f32 * scale;
+                            let along_fwd = cos_r * scaled_x - sin_r * scaled_y;
+                            let along_perp = sin_r * scaled_x + cos_r * scaled_y;
+                            [
+                                insert[0] + fwd[0] * along_fwd + perp[0] * along_perp,
+                                insert[1] + fwd[1] * along_fwd + perp[1] * along_perp,
+                                insert[2] + fwd[2] * along_fwd + perp[2] * along_perp,
+                            ]
+                        })
+                        .collect()
+                })
+                .collect();
+        }
+    }
     let shape = match lff::shape(name) {
         Some(s) => s,
         None => return vec![],

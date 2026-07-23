@@ -37,6 +37,38 @@ fn cross_wire(origin: [f64; 3], size: f64) -> Vec<[f64; 3]> {
 
 // ── TruckConvertible ──────────────────────────────────────────────────────────
 
+/// The underlay's page rectangle in world space (CCW from the insertion),
+/// when its definition resolves and the page rasterises: page inches × the
+/// entity scale, rotated about the insertion. `None` keeps the cross
+/// placeholder.
+fn page_quad(
+    u: &Underlay,
+    document: &acadrust::CadDocument,
+) -> Option<[[f64; 3]; 4]> {
+    let def = match document.objects.get(&u.definition_handle) {
+        Some(acadrust::objects::ObjectType::UnderlayDefinition(d)) => d,
+        _ => return None,
+    };
+    let page = if def.page_name.trim().is_empty() {
+        "1"
+    } else {
+        def.page_name.trim()
+    };
+    let raster = crate::scene::model::pdf_raster::rasterize_page(&def.file_path, page)?;
+    let w = raster.width as f64 / raster.dpi as f64 * u.x_scale;
+    let h = raster.height as f64 / raster.dpi as f64 * u.y_scale;
+    let (c, s) = (u.rotation.cos(), u.rotation.sin());
+    let o = &u.insertion_point;
+    let ux = (c * w, s * w);
+    let vx = (-s * h, c * h);
+    Some([
+        [o.x, o.y, o.z],
+        [o.x + ux.0, o.y + ux.1, o.z],
+        [o.x + ux.0 + vx.0, o.y + ux.1 + vx.1, o.z],
+        [o.x + vx.0, o.y + vx.1, o.z],
+    ])
+}
+
 impl TruckConvertible for Underlay {
     fn to_truck(&self, _document: &acadrust::CadDocument) -> Option<TruckEntity> {
         let origin = v3(&self.insertion_point);
@@ -62,6 +94,19 @@ impl TruckConvertible for Underlay {
                 snap_pts: vec![(glam::DVec3::new(self.insertion_point.x, self.insertion_point.y, self.insertion_point.z), SnapHint::Node)],
                 tangent_geoms: vec![],
                 key_vertices: key,
+                fill_tris: vec![],
+            })
+        } else if let Some(q) = page_quad(self, _document) {
+            // Rendered page: draw its frame so selection/pick cover the
+            // visible extent instead of a lone cross under the raster.
+            let pts = vec![q[0], q[1], q[2], q[3], q[0]];
+            let pick_tris = crate::entities::mesh::triangulate_planar(&q.to_vec());
+            Some(TruckEntity {
+                pick_tris,
+                object: TruckObject::Lines(pts),
+                snap_pts: vec![(glam::DVec3::new(self.insertion_point.x, self.insertion_point.y, self.insertion_point.z), SnapHint::Node)],
+                tangent_geoms: vec![],
+                key_vertices: q.to_vec(),
                 fill_tris: vec![],
             })
         } else {

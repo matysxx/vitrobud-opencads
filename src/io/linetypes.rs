@@ -22,11 +22,15 @@ pub enum LtSegment {
     Space(f32),
     /// Draw a dot (zero-length element, rendered as a tiny mark).
     Dot,
-    /// Draw a shape at the current pen position. Embedded SHAPE elements are
-    /// no longer rendered (the LFF font set ships no shape file).
+    /// Draw a shape at the current pen position.
     Shape {
-        /// Shape name (retained for round-tripping; not drawn).
+        /// Shape name (`.lin` catalog reference; empty for document shapes).
         name: String,
+        /// Resolved .SHX shape-file path ("" when none resolved — the LFF
+        /// substitute set is the fallback for catalog names).
+        shx_file: String,
+        /// Shape number inside the file (0 = look up by name).
+        number: u16,
         /// X offset along the linetype direction (can be negative).
         x: f32,
         /// Y offset perpendicular to the linetype direction.
@@ -127,12 +131,58 @@ pub fn document_lt_segments(document: &CadDocument, name: &str) -> Option<Comple
                         x: c.offset[0] as f32,
                         y: c.offset[1] as f32,
                         scale: if scale.abs() < 1e-6 { 1.0 } else { scale },
-                        rot_deg: c.rotation as f32,
+                        // DWG stores the element rotation in RADIANS; the
+                        // segment field carries degrees (the `.lin` unit).
+                        rot_deg: (c.rotation as f32).to_degrees(),
                     });
                 }
-                // Embedded SHAPE glyphs need a .shp set we don't ship; skip the
-                // draw (matches the bundled-catalog behaviour).
-                LineTypeComplexContent::Shape { .. } => {}
+                LineTypeComplexContent::Shape { shape_number } => {
+                    // Resolve the style's shape file with the shared path
+                    // fallbacks (as stored / next to the drawing) so the real
+                    // SHX glyph draws; unresolved files simply skip.
+                    let font = document
+                        .text_styles
+                        .iter()
+                        .find(|s| s.handle == c.style_handle)
+                        .map(|s| s.font_file.trim().to_string())
+                        .unwrap_or_default();
+                    if *shape_number <= 0 {
+                        continue;
+                    }
+                    let base = document
+                        .source_path
+                        .as_deref()
+                        .map(std::path::Path::new)
+                        .and_then(|p| p.parent());
+                    let resolved = (!font.is_empty())
+                        .then(|| crate::io::resolve_image_file(&font, base))
+                        .flatten();
+                    // The standard ltypeshp.shx numbers map to the bundled
+                    // LFF substitute shapes, so the glyph still draws when
+                    // the shape file isn't on disk (the usual case — traded
+                    // drawings rarely ship their .shx).
+                    let sub_name = match *shape_number {
+                        130 => "TRACK1",
+                        131 => "ZIG",
+                        132 => "BOX",
+                        133 => "CIRC1",
+                        134 => "BAT",
+                        _ => "",
+                    };
+                    if resolved.is_none() && sub_name.is_empty() {
+                        continue;
+                    }
+                    let scale = c.scale as f32;
+                    segments.push(LtSegment::Shape {
+                        name: sub_name.to_string(),
+                        shx_file: resolved.unwrap_or_default(),
+                        number: *shape_number as u16,
+                        x: c.offset[0] as f32,
+                        y: c.offset[1] as f32,
+                        scale: if scale.abs() < 1e-6 { 1.0 } else { scale },
+                        rot_deg: (c.rotation as f32).to_degrees(),
+                    });
+                }
             }
         }
     }
@@ -447,6 +497,7 @@ fn parse_shape_element(inner: &str) -> Option<LtSegment> {
     let mut y = 0.0f32;
     let mut scale = 1.0f32;
     let mut rot_deg = 0.0f32;
+    let mut shx_file = String::new();
 
     for part in parts {
         let p = part.trim();
@@ -463,11 +514,16 @@ fn parse_shape_element(inner: &str) -> Option<LtSegment> {
             .or_else(|| p.strip_prefix("U="))
         {
             rot_deg = v.parse().unwrap_or(0.0);
+        } else if p.to_ascii_lowercase().ends_with(".shx") {
+            // `[NAME,ltypeshp.shx,…]` — the shape file reference.
+            shx_file = p.to_string();
         }
     }
 
     Some(LtSegment::Shape {
         name,
+        shx_file,
+        number: 0,
         x,
         y,
         scale,

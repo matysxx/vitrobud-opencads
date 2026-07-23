@@ -1341,6 +1341,13 @@ pub(crate) fn tessellate_entity(
                     w.name = host_name.clone();
                     w.aci = aci;
                     set_wire_aabb(w, aabb);
+                    // A wipeout's frame sits ABOVE its own mask: the mask
+                    // draws at the entity's rank, the frame half a rank
+                    // closer, so the later mask pass fails the depth test at
+                    // the frame's pixels instead of erasing it.
+                    if matches!(e, EntityType::Wipeout(_)) {
+                        w.depth_override = Some(0.5);
+                    }
                 }
                 bases.extend(wires);
             }

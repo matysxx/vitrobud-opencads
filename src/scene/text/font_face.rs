@@ -12,7 +12,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::scene::text::lff::{self, Glyph};
-use crate::scene::text::{sysfont, ttf_glyph};
+use crate::scene::text::{shx, sysfont, ttf_glyph};
 
 /// A glyph borrowed from a static LFF font or owned (cached `Arc`) from a TTF
 /// face. Derefs to [`Glyph`] either way.
@@ -39,12 +39,37 @@ pub enum Face {
         /// Cached space-glyph advance (9-unit), used for word spacing.
         word: f32,
     },
+    /// A real compiled .SHX stroke font on disk (glyphs keyed by char code).
+    Shx {
+        path: String,
+        /// (above + below) / above — baseline step relative to cap height.
+        line: f32,
+        /// Space advance (9-unit).
+        word: f32,
+    },
 }
 
 impl Face {
     /// Resolve a style's font name to a concrete face. Embedded stroke fonts
     /// take priority; only otherwise-unknown names try the system fonts.
     pub fn resolve(font_name: &str) -> Face {
+        // A resolvable on-disk .SHX font renders its real stroke glyphs; the
+        // LFF substitutes only cover names we can't load.
+        if font_name.to_ascii_lowercase().ends_with(".shx")
+            && std::path::Path::new(font_name).is_file()
+        {
+            if let Some((above, below)) = shx::font_metrics(font_name) {
+                let word = shx::font_glyph(font_name, ' ' as u16)
+                    .map(|g| g.advance)
+                    .filter(|a| *a > 0.0)
+                    .unwrap_or(4.5);
+                return Face::Shx {
+                    path: font_name.to_string(),
+                    line: ((above + below) / above) as f32,
+                    word,
+                };
+            }
+        }
         let is_builtin = lff::is_builtin(font_name);
         let has_sys = sysfont::has_family(font_name);
         if !is_builtin && has_sys {
@@ -75,6 +100,9 @@ impl Face {
             Face::Ttf { family, .. } => ttf_glyph::glyph(family, ch)
                 .or_else(|| ttf_glyph::fallback_glyph(ch))
                 .map(GlyphRef::Owned),
+            Face::Shx { path, .. } => shx::font_glyph(path, ch as u16)
+                .map(GlyphRef::Owned)
+                .or_else(|| ttf_glyph::fallback_glyph(ch).map(GlyphRef::Owned)),
         }
     }
 
@@ -84,6 +112,8 @@ impl Face {
         match self {
             Face::Lff(f) => f.letter_spacing,
             Face::Ttf { .. } => 0.0,
+            // SHX advances already include the trailing gap by design.
+            Face::Shx { .. } => 0.0,
         }
     }
 
@@ -91,7 +121,7 @@ impl Face {
     pub fn word_spacing(&self) -> f32 {
         match self {
             Face::Lff(f) => f.word_spacing,
-            Face::Ttf { word, .. } => *word,
+            Face::Ttf { word, .. } | Face::Shx { word, .. } => *word,
         }
     }
 
@@ -101,7 +131,7 @@ impl Face {
     pub fn ttf_family(&self) -> Option<&str> {
         match self {
             Face::Ttf { family, .. } => Some(family),
-            Face::Lff(_) => None,
+            Face::Lff(_) | Face::Shx { .. } => None,
         }
     }
 
@@ -111,6 +141,7 @@ impl Face {
         match self {
             Face::Lff(f) => f.line_spacing,
             Face::Ttf { .. } => 1.0,
+            Face::Shx { line, .. } => *line,
         }
     }
 }

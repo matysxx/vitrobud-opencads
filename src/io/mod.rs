@@ -190,6 +190,7 @@ pub fn load_file(path: &Path) -> Result<CadDocument, String> {
             fix_viewport_status_flags(&mut doc);
             fix_current_style_names(&mut doc);
             resolve_raster_image_paths(&mut doc, path.parent());
+            doc.source_path = Some(path.to_string_lossy().into_owned());
             Ok(doc)
         }
         "dxf" => {
@@ -201,6 +202,7 @@ pub fn load_file(path: &Path) -> Result<CadDocument, String> {
             fix_viewport_status_flags(&mut doc);
             fix_current_style_names(&mut doc);
             resolve_raster_image_paths(&mut doc, path.parent());
+            doc.source_path = Some(path.to_string_lossy().into_owned());
             Ok(doc)
         }
         _ => Err(format!("Unsupported file format: .{ext}")),
@@ -246,12 +248,26 @@ fn resolve_raster_image_paths(doc: &mut CadDocument, base_dir: Option<&Path>) {
             }
         }
     }
+
+    // Underlay definitions (PDF/DWF/DGN) store their file the same way raster
+    // images do — resolve them with the same fallbacks so a drawing shipped
+    // next to its PDF finds it even when the stored relative path is stale.
+    for o in doc.objects.values_mut() {
+        if let ObjectType::UnderlayDefinition(def) = o {
+            if def.file_path.trim().is_empty() {
+                continue;
+            }
+            if let Some(resolved) = resolve_image_file(&def.file_path, base_dir) {
+                def.file_path = resolved;
+            }
+        }
+    }
 }
 
 /// Resolve a (possibly foreign / absolute) image path to an existing file:
 /// as stored, then relative to the drawing folder, then just the file name
 /// next to the drawing.
-fn resolve_image_file(raw: &str, base_dir: Option<&Path>) -> Option<String> {
+pub(crate) fn resolve_image_file(raw: &str, base_dir: Option<&Path>) -> Option<String> {
     if Path::new(raw).is_file() {
         return Some(raw.to_string());
     }

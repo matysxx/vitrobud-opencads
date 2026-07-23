@@ -129,11 +129,7 @@ impl Scene {
         } else {
             None
         };
-        let image_seed = if let EntityType::RasterImage(img) = &entity {
-            ImageModel::from_raster_image(img)
-        } else {
-            None
-        };
+        let image_seed = self.image_seed_for(&entity);
         let facet_res = self.document.header.facet_resolution;
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
@@ -321,11 +317,7 @@ impl Scene {
         } else {
             None
         };
-        let image_seed = if let EntityType::RasterImage(img) = &entity {
-            ImageModel::from_raster_image(img)
-        } else {
-            None
-        };
+        let image_seed = self.image_seed_for(&entity);
         let facet_res = self.document.header.facet_resolution;
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
@@ -402,11 +394,7 @@ impl Scene {
                 } else {
                     None
                 };
-                let image_seed = if let EntityType::RasterImage(img) = entity {
-                    ImageModel::from_raster_image(img)
-                } else {
-                    None
-                };
+                let image_seed = self.image_seed_for(entity);
                 let facet_res = self.document.header.facet_resolution;
                 let isolines = self.document.header.isolines.max(0) as usize;
                 let mesh_seed = if matches!(
@@ -1044,6 +1032,7 @@ impl Scene {
         // epoch boundary and never re-evaluate as the user pans. The
         // pipeline's `wipeout_skip_flags` (compute_wipeout_lod) does
         // the per-frame skip at draw time instead.
+        let depth_map = self.draw_depth_map();
         let mut models = Vec::new();
         for entity in self.document.entities() {
             let EntityType::Wipeout(wo) = entity else {
@@ -1084,7 +1073,12 @@ impl Scene {
                     angle_offset: 0.0,
                     scale: 1.0,
                     world_origin: fill_origin,
-                    draw_depth: 0.0,
+                    // The mask erases what draws below the wipeout and loses
+                    // to what draws above — including its own frame wire,
+                    // which rides a +half-rank override on top of this.
+                    draw_depth: depth_map
+                        .get(&wo.common.handle.value())
+                        .map_or(0.0, |d| d[0]),
                 });
             }
         }
@@ -1716,6 +1710,21 @@ impl Scene {
     ///
     /// Called after loading a document or after undo/redo so that every
     /// `Solid3D` entity is represented in the mesh cache.
+    /// ImageModel for an edited image-bearing entity (RasterImage, or a PDF
+    /// UNDERLAY resolved through its definition object). `None` for others.
+    fn image_seed_for(&self, entity: &acadrust::entities::EntityType) -> Option<ImageModel> {
+        match entity {
+            EntityType::RasterImage(img) => ImageModel::from_raster_image(img),
+            EntityType::Underlay(u) => match self.document.objects.get(&u.definition_handle) {
+                Some(acadrust::objects::ObjectType::UnderlayDefinition(def)) => {
+                    ImageModel::from_underlay(u, def)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn populate_meshes_from_document(&mut self) {
         self.populate_meshes_impl(false);
     }
