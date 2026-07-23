@@ -1032,6 +1032,7 @@ impl Scene {
         // epoch boundary and never re-evaluate as the user pans. The
         // pipeline's `wipeout_skip_flags` (compute_wipeout_lod) does
         // the per-frame skip at draw time instead.
+        let depth_map = self.draw_depth_map();
         let mut models = Vec::new();
         for entity in self.document.entities() {
             let EntityType::Wipeout(wo) = entity else {
@@ -1072,7 +1073,12 @@ impl Scene {
                     angle_offset: 0.0,
                     scale: 1.0,
                     world_origin: fill_origin,
-                    draw_depth: 0.0,
+                    // The mask erases what draws below the wipeout and loses
+                    // to what draws above — including its own frame wire,
+                    // which rides a +half-rank override on top of this.
+                    draw_depth: depth_map
+                        .get(&wo.common.handle.value())
+                        .map_or(0.0, |d| d[0]),
                 });
             }
         }

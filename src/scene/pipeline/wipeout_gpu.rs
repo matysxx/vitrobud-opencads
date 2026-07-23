@@ -47,7 +47,7 @@ impl HatchVertex {
 
 // ── Uniform structs ───────────────────────────────────────────────────────
 
-/// Per-hatch parameters (binding 0).  Must be 80 bytes (16-byte aligned).
+/// Per-hatch parameters (binding 0).  Must be 96 bytes (16-byte aligned).
 ///
 /// `mode` encoding:
 ///   0 → Pattern  (families in FamilyBatchData)
@@ -75,7 +75,9 @@ pub struct HatchUniformData {
     //                       //     is small (e.g. UTM drawing + sub-mm hatch).
     pub origin_low: [f32; 2], // 72: anchor low residual (double-single) so the
     //                        //     vertex clip position stays precise at UTM scale.
-} // total 80 bytes
+    pub draw_depth: f32,      // 80: signed (-1,1) draw-order bias
+    pub _pad: [f32; 3],       // 84..96
+} // total 96 bytes
 
 /// Boundary polygon (binding 1).  Matches WGSL `Boundary`.
 #[repr(C)]
@@ -298,6 +300,8 @@ impl WipeoutGpu {
                 (origin[0] - origin[0] as f32 as f64) as f32,
                 (origin[1] - origin[1] as f32 as f64) as f32,
             ],
+            draw_depth: model.draw_depth,
+            _pad: [0.0; 3],
         };
 
         // ── BoundaryData (in snapped-local space) ────────────────────────

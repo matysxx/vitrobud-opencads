@@ -52,6 +52,9 @@ struct HatchUniforms {
     //                        //     catastrophically cancel when world coords
     //                        //     are large and pattern spacing is small.
     origin_low:   vec2<f32>,  // 72: anchor low residual (double-single)
+    draw_depth:   f32,        // 80: signed (-1,1) draw-order bias; 0 = neutral
+    _pad0:        f32,        // 84
+    _pad1:        vec2<f32>,  // 88
 }
 @group(1) @binding(0) var<uniform> h: HatchUniforms;
 
@@ -111,6 +114,10 @@ struct VOut {
                        v.pos.y + h.origin_low.y - u.eye_low.y,
                        v.pos.z - u.eye_low.z);
     o.clip = u.view_rot * vec4<f32>(hi + lo, 1.0);
+    // Draw-order bias (see wire.wgsl): the mask erases what draws BELOW its
+    // entity and loses to what draws above — including its own frame wire,
+    // which rides a +half-rank override.
+    o.clip.z = o.clip.z - h.draw_depth * 0.001 * o.clip.w;
     o.xz   = vec2<f32>(v.pos.x, v.pos.y);
     return o;
 }
