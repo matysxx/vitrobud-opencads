@@ -246,6 +246,20 @@ fn resolve_raster_image_paths(doc: &mut CadDocument, base_dir: Option<&Path>) {
             }
         }
     }
+
+    // Underlay definitions (PDF/DWF/DGN) store their file the same way raster
+    // images do — resolve them with the same fallbacks so a drawing shipped
+    // next to its PDF finds it even when the stored relative path is stale.
+    for o in doc.objects.values_mut() {
+        if let ObjectType::UnderlayDefinition(def) = o {
+            if def.file_path.trim().is_empty() {
+                continue;
+            }
+            if let Some(resolved) = resolve_image_file(&def.file_path, base_dir) {
+                def.file_path = resolved;
+            }
+        }
+    }
 }
 
 /// Resolve a (possibly foreign / absolute) image path to an existing file:

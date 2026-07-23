@@ -129,11 +129,7 @@ impl Scene {
         } else {
             None
         };
-        let image_seed = if let EntityType::RasterImage(img) = &entity {
-            ImageModel::from_raster_image(img)
-        } else {
-            None
-        };
+        let image_seed = self.image_seed_for(&entity);
         let facet_res = self.document.header.facet_resolution;
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
@@ -321,11 +317,7 @@ impl Scene {
         } else {
             None
         };
-        let image_seed = if let EntityType::RasterImage(img) = &entity {
-            ImageModel::from_raster_image(img)
-        } else {
-            None
-        };
+        let image_seed = self.image_seed_for(&entity);
         let facet_res = self.document.header.facet_resolution;
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
@@ -402,11 +394,7 @@ impl Scene {
                 } else {
                     None
                 };
-                let image_seed = if let EntityType::RasterImage(img) = entity {
-                    ImageModel::from_raster_image(img)
-                } else {
-                    None
-                };
+                let image_seed = self.image_seed_for(entity);
                 let facet_res = self.document.header.facet_resolution;
                 let isolines = self.document.header.isolines.max(0) as usize;
                 let mesh_seed = if matches!(
@@ -1716,6 +1704,21 @@ impl Scene {
     ///
     /// Called after loading a document or after undo/redo so that every
     /// `Solid3D` entity is represented in the mesh cache.
+    /// ImageModel for an edited image-bearing entity (RasterImage, or a PDF
+    /// UNDERLAY resolved through its definition object). `None` for others.
+    fn image_seed_for(&self, entity: &acadrust::entities::EntityType) -> Option<ImageModel> {
+        match entity {
+            EntityType::RasterImage(img) => ImageModel::from_raster_image(img),
+            EntityType::Underlay(u) => match self.document.objects.get(&u.definition_handle) {
+                Some(acadrust::objects::ObjectType::UnderlayDefinition(def)) => {
+                    ImageModel::from_underlay(u, def)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn populate_meshes_from_document(&mut self) {
         self.populate_meshes_impl(false);
     }

@@ -182,6 +182,123 @@ impl ImageModel {
 }
 
 impl ImageModel {
+    /// Build an ImageModel from a PDF UNDERLAY + its definition object.
+    ///
+    /// The page rasterises through `pdf_raster` (system pdftoppm, cached);
+    /// the world quad sizes from the page's physical size — 1 underlay unit =
+    /// 1 PDF inch — times the entity's scale, placed at the insertion with
+    /// the entity's rotation. `None` when the underlay is off, non-PDF, or
+    /// the page can't be rendered (caller keeps the outline placeholder).
+    pub fn from_underlay(
+        u: &acadrust::entities::Underlay,
+        def: &acadrust::entities::UnderlayDefinition,
+    ) -> Option<Self> {
+        use acadrust::entities::{UnderlayDisplayFlags, UnderlayType};
+        if !u.flags.contains(UnderlayDisplayFlags::ON) {
+            return None;
+        }
+        if !matches!(def.underlay_type, UnderlayType::Pdf) {
+            return None;
+        }
+        let page = if def.page_name.trim().is_empty() {
+            "1"
+        } else {
+            def.page_name.trim()
+        };
+        let raster = super::pdf_raster::rasterize_page(&def.file_path, page)?;
+
+        // Page size in drawing units (1 unit per PDF inch), entity scale applied.
+        let w_du = raster.width as f64 / raster.dpi as f64 * u.x_scale;
+        let h_du = raster.height as f64 / raster.dpi as f64 * u.y_scale;
+        if w_du <= 0.0 || h_du <= 0.0 {
+            return None;
+        }
+        let (c, s) = (u.rotation.cos(), u.rotation.sin());
+        let (uxv, uyv) = (c * w_du, s * w_du);
+        let (vxv, vyv) = (-s * h_du, c * h_du);
+
+        let oxv = u.insertion_point.x;
+        let oyv = u.insertion_point.y;
+        let ozv = u.insertion_point.z;
+        let ox = oxv as f32;
+        let oy = oyv as f32;
+        let oz = ozv as f32;
+        let oxl = (oxv - ox as f64) as f32;
+        let oyl = (oyv - oy as f64) as f32;
+        let ozl = (ozv - oz as f64) as f32;
+        let (ux, uy) = (uxv as f32, uyv as f32);
+        let (vx, vy) = (vxv as f32, vyv as f32);
+        let corners = [
+            [ox, oy, oz],
+            [ox + ux, oy + uy, oz],
+            [ox + ux + vx, oy + uy + vy, oz],
+            [ox + vx, oy + vy, oz],
+        ];
+        let corners_low = [[oxl, oyl, ozl]; 4];
+
+        // Visible region: the clip polygon (vertices in underlay units,
+        // scaled like the quad) fan-triangulated, or the full page. Inverted
+        // clips fall back to the full page (rare; better whole than hidden).
+        let clipping = u.flags.contains(UnderlayDisplayFlags::CLIPPING)
+            && !u.clip_inverted
+            && u.clip_boundary_vertices.len() >= 3;
+        let tris_uv: Vec<[f64; 2]> = if clipping {
+            let pts: Vec<[f64; 2]> = u
+                .clip_boundary_vertices
+                .iter()
+                .map(|p| {
+                    (
+                        [
+                            p.x * u.x_scale / w_du,
+                            p.y * u.y_scale / h_du,
+                        ]
+                    )
+                })
+                .collect();
+            let mut tris = Vec::with_capacity((pts.len().saturating_sub(2)) * 3);
+            for i in 1..pts.len() - 1 {
+                tris.push(pts[0]);
+                tris.push(pts[i]);
+                tris.push(pts[i + 1]);
+            }
+            tris
+        } else {
+            vec![
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0],
+            ]
+        };
+        let verts: Vec<ImageQuadVertex> = tris_uv
+            .iter()
+            .map(|&[fu, fv]| {
+                let (fu, fv) = (fu as f32, fv as f32);
+                ImageQuadVertex {
+                    pos: [ox + ux * fu + vx * fv, oy + uy * fu + vy * fv, oz],
+                    uv: [fu, 1.0 - fv],
+                    pos_low: [oxl, oyl, ozl],
+                }
+            })
+            .collect();
+
+        Some(Self {
+            file_path: def.file_path.clone(),
+            pixels: raster.pixels.clone(),
+            width: raster.width,
+            height: raster.height,
+            opacity: 1.0 - u.fade as f32 / 100.0,
+            corners,
+            corners_low,
+            draw_depth: 0.0,
+            verts,
+        })
+    }
+}
+
+impl ImageModel {
     /// Build an ImageModel from an OLE2FRAME's embedded presentation.
     /// The blob's compound file is parsed for the native raster or the cached
     /// metafile picture (rasterized by the `gdi` player); returns `None` when

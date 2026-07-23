@@ -4,6 +4,7 @@ pub mod hatch_model;
 pub mod hatch_patterns;
 pub mod image_model;
 pub mod ole_pres;
+pub mod pdf_raster;
 pub mod mesh_model;
 pub mod solid_model;
 pub mod object;
