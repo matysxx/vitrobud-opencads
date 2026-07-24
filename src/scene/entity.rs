@@ -847,6 +847,52 @@ impl Scene {
         // at world position, like a block-internal hatch. (#222)
         let mut wide_block_memo: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
+        // `explode_from_document` returns a Dimension child verbatim (it carries
+        // no fill of its own), so a filled arrowhead that lives as a nested
+        // Insert(hatch) inside the dimension's baked `*D` block never reaches
+        // this fill explosion. Expand each dimension child's `*D` content into
+        // the owning block's frame — translate by the dimension insertion_point
+        // (WCS → block-local) then apply the insert transform (block-local →
+        // world) — so its arrow inserts / hatches ride the normal walk. Only
+        // fill-bearing children (Insert / Hatch) are lifted; the dimension's
+        // lines and text still render through the wire path.
+        fn explode_including_dims(ins: &DxfInsert, doc: &CadDocument) -> Vec<EntityType> {
+            let mut out = ins.explode_from_document(doc);
+            let Some(br) = doc.block_records.get(&ins.block_name) else {
+                return out;
+            };
+            let xform = ins.get_transform();
+            for &beh in &br.entity_handles {
+                let Some(EntityType::Dimension(dim)) = doc.get_entity(beh) else {
+                    continue;
+                };
+                let bn = dim.base().block_name.clone();
+                if bn.trim().is_empty() {
+                    continue;
+                }
+                let ins_pt = dim.base().insertion_point;
+                let Some(dblk) = doc
+                    .block_records
+                    .iter()
+                    .find(|r| r.name.eq_ignore_ascii_case(&bn))
+                else {
+                    continue;
+                };
+                for &deh in &dblk.entity_handles {
+                    let Some(dsub) = doc.get_entity(deh) else {
+                        continue;
+                    };
+                    if !matches!(dsub, EntityType::Insert(_) | EntityType::Hatch(_)) {
+                        continue;
+                    }
+                    let mut placed = dsub.clone();
+                    placed.as_entity_mut().translate(ins_pt);
+                    placed.apply_transform(&xform);
+                    out.push(placed);
+                }
+            }
+            out
+        }
         for entity in self.document.entities() {
             let EntityType::Insert(ins) = entity else {
                 continue;
@@ -864,6 +910,14 @@ impl Scene {
                 ins.common.owner_handle,
                 layout_block,
             ) {
+                continue;
+            }
+            // Off-scale annotative representation (model space only — paper
+            // viewports use their per-viewport frozen scale layers). Skips its
+            // whole fill subtree, matching the wire path.
+            if frozen.is_none()
+                && crate::scene::annotative::annotative_offscale(&self.document, &ins.common)
+            {
                 continue;
             }
             if !self.block_has_hatch(&ins.block_name, &mut hatch_block_memo)
@@ -896,15 +950,26 @@ impl Scene {
                 .get(&ins.common.handle.value())
                 .copied()
                 .unwrap_or([0.0, 0.0]);
+            // Drop off-scale annotative representations (e.g. a 10× copy on
+            // layer "0 @ 10" when the current scale is 1:1) before `normalize`
+            // strips their handle — otherwise their whole fill subtree stacks
+            // under the current-scale copy. Model space only; paper viewports
+            // use their per-viewport frozen scale layers. `explode` preserves
+            // the child handle, so the membership lookup still resolves here.
+            let offscale = |e: &EntityType| -> bool {
+                frozen.is_none()
+                    && matches!(e, EntityType::Insert(ni)
+                        if crate::scene::annotative::annotative_offscale(&self.document, &ni.common))
+            };
             let mut stack: Vec<(
                 EntityType,
                 usize,
                 [f32; 4],
                 crate::scene::view::render::InheritStyle,
                 (f32, f32),
-            )> = ins
-                .explode_from_document(&self.document)
+            )> = explode_including_dims(ins, &self.document)
                 .into_iter()
+                .filter(|e| !offscale(e))
                 .map(|e| (normalize(e), 0usize, ins_color, l0, (base_depth, half_gap)))
                 .collect();
             while let Some((sub, depth, sub_ins_color, sub_l0, (d_base, d_half))) = stack.pop() {
@@ -947,7 +1012,10 @@ impl Scene {
                                 .map_or(0.0, |d| d[0])
                                 * d_half;
                         let nd_half = d_half / (block_count(&nins.block_name) as f32 + 1.0);
-                        for e in nins.explode_from_document(&self.document) {
+                        for e in explode_including_dims(&nins, &self.document) {
+                            if offscale(&e) {
+                                continue;
+                            }
                             stack.push((
                                 normalize(e),
                                 depth + 1,
@@ -1033,12 +1101,24 @@ impl Scene {
         // pipeline's `wipeout_skip_flags` (compute_wipeout_lod) does
         // the per-frame skip at draw time instead.
         let depth_map = self.draw_depth_map();
+        let layout_block = self.current_layout_block_handle();
         let mut models = Vec::new();
         for entity in self.document.entities() {
             let EntityType::Wipeout(wo) = entity else {
                 continue;
             };
             if entity.common().invisible {
+                continue;
+            }
+            // Reject block-defn-only wipeouts (owned by a BLOCK record that is
+            // neither model nor a paper layout block): those are placed via
+            // insert descent below, in world space. Without this they also draw
+            // once at their raw block-local coordinates. Mirrors the hatch path.
+            if !self.belongs_to_visible_block(
+                wo.common.handle,
+                wo.common.owner_handle,
+                layout_block,
+            ) {
                 continue;
             }
             if self
@@ -1082,7 +1162,132 @@ impl Scene {
                 });
             }
         }
+        // Wipeouts nested inside block inserts: the loop above only sees
+        // top-level wipeouts, so a wipeout defined inside a block never masked
+        // once the block was inserted (it did in block-edit, where it is
+        // top-level). Descend visible inserts and place each block-internal
+        // wipeout in world space. The insert transform is applied here (apply /
+        // apply_rotation) rather than through Insert::explode — the latter
+        // double-scales the u/v basis.
+        for entity in self.document.entities() {
+            let EntityType::Insert(ins) = entity else {
+                continue;
+            };
+            let c = &ins.common;
+            if c.invisible
+                || self
+                    .document
+                    .layers
+                    .get(&c.layer)
+                    .map(|l| l.flags.off || l.flags.frozen)
+                    .unwrap_or(false)
+                || self.layer_frozen_in(&c.layer, frozen)
+            {
+                continue;
+            }
+            if !self.belongs_to_visible_block(c.handle, c.owner_handle, layout_block) {
+                continue;
+            }
+            if frozen.is_none()
+                && crate::scene::annotative::annotative_offscale(&self.document, c)
+            {
+                continue;
+            }
+            self.collect_block_wipeouts(
+                &ins.get_transform(),
+                &ins.block_name,
+                0,
+                frozen,
+                bg_color,
+                &depth_map,
+                &mut models,
+            );
+        }
         models
+    }
+
+    /// Recursively collect wipeout masks defined inside a block, transformed to
+    /// world space by the accumulated insert transform. See `wipeout_models`.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_block_wipeouts(
+        &self,
+        xform: &acadrust::types::Transform,
+        block_name: &str,
+        depth: usize,
+        frozen: Option<&rustc_hash::FxHashSet<Handle>>,
+        bg_color: [f32; 4],
+        depth_map: &HashMap<u64, [f32; 2]>,
+        models: &mut Vec<HatchModel>,
+    ) {
+        if depth > 32 {
+            return;
+        }
+        let Some(br) = self
+            .document
+            .block_records
+            .iter()
+            .find(|b| b.name.eq_ignore_ascii_case(block_name))
+        else {
+            return;
+        };
+        for &eh in &br.entity_handles {
+            let Some(e) = self.document.get_entity(eh) else {
+                continue;
+            };
+            let c = e.common();
+            if c.invisible
+                || self
+                    .document
+                    .layers
+                    .get(&c.layer)
+                    .map(|l| l.flags.off || l.flags.frozen)
+                    .unwrap_or(false)
+                || self.layer_frozen_in(&c.layer, frozen)
+            {
+                continue;
+            }
+            match e {
+                EntityType::Wipeout(wo) => {
+                    let mut w = wo.clone();
+                    w.insertion_point = xform.apply(wo.insertion_point);
+                    w.u_vector = xform.apply_rotation(wo.u_vector);
+                    w.v_vector = xform.apply_rotation(wo.v_vector);
+                    let (fill_origin, boundary) = Self::wipeout_boundary_2d(&w);
+                    if boundary.len() >= 3 {
+                        let mut fill_color = bg_color;
+                        if self.selected.contains(&c.handle) {
+                            fill_color = [0.15, 0.55, 1.00, 0.35];
+                        }
+                        models.push(HatchModel {
+                            boundary: Arc::new(boundary),
+                            boundary_wcs: None,
+                            pattern: model::hatch_model::HatchPattern::Solid,
+                            name: "WIPEOUT_FILL".into(),
+                            color: fill_color,
+                            angle_offset: 0.0,
+                            scale: 1.0,
+                            world_origin: fill_origin,
+                            draw_depth: depth_map.get(&c.handle.value()).map_or(0.0, |d| d[0]),
+                        });
+                    }
+                }
+                EntityType::Insert(ni) => {
+                    // `compose` applies the nested insert's transform first,
+                    // then the accumulated parent transform.
+                    let child = xform.compose(&ni.get_transform());
+                    self.collect_block_wipeouts(
+                        &child,
+                        &ni.block_name,
+                        depth + 1,
+                        frozen,
+                        bg_color,
+                        depth_map,
+                        models,
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Compute the 2D (XY) boundary polygon for a Wipeout entity.

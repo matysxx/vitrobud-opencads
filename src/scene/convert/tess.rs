@@ -140,21 +140,28 @@ fn section_symbol_wires(
         [vx0 / vlen, vy0 / vlen]
     });
 
-    let (show_arrows, show_plane_line, show_end_lines, arrow_size, arrow_ext, label_h) =
-        match style {
-            Some(st) => (
-                st.show_arrows,
-                st.show_plane_line,
-                st.show_end_lines,
-                st.arrow_size,
-                st.arrow_extension,
-                st.label_height,
-            ),
-            None => {
-                let t = s.tick_a.abs().max(s.tick_b.abs());
-                (true, false, true, (t * 0.66).max(2.5), t.max(5.0), t.max(2.5))
-            }
-        };
+    let (show_arrows, show_plane_line, show_end_lines, arrow_size, arrow_ext, label_h) = match style
+    {
+        Some(st) => (
+            st.show_arrows,
+            st.show_plane_line,
+            st.show_end_lines,
+            st.arrow_size,
+            st.arrow_extension,
+            st.label_height,
+        ),
+        None => {
+            let t = s.tick_a.abs().max(s.tick_b.abs());
+            (
+                true,
+                false,
+                true,
+                (t * 0.66).max(2.5),
+                t.max(5.0),
+                t.max(2.5),
+            )
+        }
+    };
     // Arrowhead via the shared dimension/leader arrow table: the style's arrow
     // block handle (null → ClosedFilled), sized from the style.
     let arrow_kind = match style {
@@ -180,11 +187,14 @@ fn section_symbol_wires(
     }
 
     // Each end: (endpoint, tick length, outward sign along the cut).
-    for (ex, ey, tick, osign) in [(ax, ay, s.tick_a.abs(), 1.0), (bx, by, s.tick_b.abs(), -1.0)] {
+    for (ex, ey, tick, osign) in [
+        (ax, ay, s.tick_a.abs(), 1.0),
+        (bx, by, s.tick_b.abs(), -1.0),
+    ] {
         let (ox, oy) = (ux * osign, uy * osign); // outward along the cut
         let tip = [ex + ox * tick, ey + oy * tick, 0.0]; // outer tick tip
-        // End segment: the short drawn extension past the end (the "broken"
-        // section line when show_plane_line is off).
+                                                         // End segment: the short drawn extension past the end (the "broken"
+                                                         // section line when show_plane_line is off).
         if show_end_lines && tick > 1e-9 {
             lines.push(nan);
             lines.push([ex, ey, 0.0]);
@@ -315,6 +325,7 @@ pub(crate) fn tessellate_entity_dim_text(
         None,
         view_aabb,
         world_per_pixel,
+        false,
     );
     for w in &mut wires {
         // Synth dim text carries no real entity colour — paint everything
@@ -341,6 +352,11 @@ pub(crate) fn tessellate_entity(
     view_aabb: Option<[f32; 4]>,
     // World units per screen pixel for LOD culling. `None` = no LOD.
     world_per_pixel: Option<f32>,
+    // True only when tessellating content shown INSIDE a paper-space viewport,
+    // where PSLTSCALE scales linetypes by the viewport scale. Model-space (and
+    // paper-sheet) rendering passes false: a drawing's annotation scale must
+    // not resize model-space linetypes (that is MSLTSCALE, off here).
+    paper_space: bool,
 ) -> Vec<WireModel> {
     let h = e.common().handle;
     let sel = selected.contains(&h);
@@ -491,8 +507,12 @@ pub(crate) fn tessellate_entity(
     let entity_color = fade_if_locked(document, e, entity_color, bg_color);
     let lt_scale = document.header.linetype_scale as f32 * e.common().linetype_scale as f32;
     let lt_name = view::render::linetype_name_for(document, e);
-    // PSLTSCALE: scale linetype dashes by viewport anno_scale so they appear uniform in paper space.
-    let pslt_factor = if document.header.paper_space_linetype_scaling {
+    // PSLTSCALE: scale linetype dashes by the viewport scale so they appear
+    // uniform in paper space. Only applies to content shown inside a paper-space
+    // viewport (`paper_space`); model space uses LTSCALE × CELTSCALE unscaled by
+    // the annotation scale, otherwise a drawing at e.g. CANNOSCALE 10:1 draws
+    // its linetypes 10× off.
+    let pslt_factor = if paper_space && document.header.paper_space_linetype_scaling {
         anno_scale
     } else {
         1.0
@@ -563,7 +583,11 @@ pub(crate) fn tessellate_entity(
                 // Text labels: draw the glyph strokes (simplex.shx etc. are
                 // single-stroke fonts, so the outline is the character).
                 for t in &dec.texts {
-                    let font = t.font.trim().trim_end_matches(".shx").trim_end_matches(".SHX");
+                    let font = t
+                        .font
+                        .trim()
+                        .trim_end_matches(".shx")
+                        .trim_end_matches(".SHX");
                     let font = if font.is_empty() { "standard" } else { font };
                     let (strokes, _) = crate::scene::text::lff::tessellate_text_ex(
                         [0.0, 0.0],
@@ -674,10 +698,7 @@ pub(crate) fn tessellate_entity(
             line_weight_px: 1.0,
             snap_pts: vec![],
             tangent_geoms: vec![],
-            key_vertices: vec![
-                [x0, y0, 0.0],
-                [x1, y1, 0.0],
-            ],
+            key_vertices: vec![[x0, y0, 0.0], [x1, y1, 0.0]],
             aabb: [x0 as f32, y0 as f32, x1 as f32, y1 as f32],
             plinegen: true,
             fill_tris: vec![],
@@ -749,6 +770,7 @@ pub(crate) fn tessellate_entity(
                             block_cache,
                             view_aabb,
                             world_per_pixel,
+                            paper_space,
                         );
                         for mut w in sub_wires {
                             w.name = h.value().to_string();
@@ -910,6 +932,7 @@ pub(crate) fn tessellate_entity(
                             block_cache,
                             view_aabb,
                             world_per_pixel,
+                            paper_space,
                         );
                         for mut w in sub_wires {
                             w.name = h.value().to_string();
@@ -1216,9 +1239,47 @@ pub(crate) fn tessellate_entity(
     // this path.
     if let Some(clt) = crate::io::linetypes::resolve_complex_lt(document, lt_name) {
         if let Some(base) = bases.first() {
+            // Walk the dash / glyph layout in a local frame so `apply_along`'s
+            // f32 math stays precise, then lift each wire back to world DS.
+            // `base.points` is the double-single HIGH half; at UTM coordinates
+            // (−1.2M) that alone quantises to ~0.1, which jitters the complex
+            // linetype's shapes and dashes. Reconstruct the absolute f64 path
+            // (high + low) and re-origin it at the first vertex before walking.
+            let abs = |i: usize| -> [f64; 3] {
+                let p = base.points[i];
+                let l = base.points_low.get(i).copied().unwrap_or([0.0; 3]);
+                [
+                    p[0] as f64 + l[0] as f64,
+                    p[1] as f64 + l[1] as f64,
+                    p[2] as f64 + l[2] as f64,
+                ]
+            };
+            let origin = base
+                .points
+                .iter()
+                .position(|p| !p[0].is_nan())
+                .map(&abs)
+                .unwrap_or([0.0; 3]);
+            let local: Vec<[f32; 3]> = base
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    if p[0].is_nan() {
+                        [f32::NAN; 3]
+                    } else {
+                        let a = abs(i);
+                        [
+                            (a[0] - origin[0]) as f32,
+                            (a[1] - origin[1]) as f32,
+                            (a[2] - origin[2]) as f32,
+                        ]
+                    }
+                })
+                .collect();
             let mut wires = text::complex_lt::apply_along(
                 &base.name,
-                &base.points,
+                &local,
                 &clt,
                 (lt_scale * pslt_factor).max(1e-4),
                 entity_color,
@@ -1230,6 +1291,7 @@ pub(crate) fn tessellate_entity(
             );
             if !wires.is_empty() {
                 for w in &mut wires {
+                    convert::tessellate::shift_wire_to_world(w, origin);
                     set_wire_aabb(w, aabb);
                 }
                 return wires;
@@ -1547,34 +1609,43 @@ pub(crate) fn wire_points_aabb(w: &WireModel) -> [f32; 4] {
 }
 
 /// Assign `entity_box` as `w`'s cullable box, widened to cover the wire's
-/// pick-only geometry.
+/// actual tessellated geometry and pick-only geometry.
 ///
 /// `entity_aabb`'s box comes from acadrust's `bounding_box()`, which for a
-/// polyline is the box of its stored vertices — it knows nothing about the band
-/// a width paints around them, nor the wall a thickness extrudes. Hit-testing
-/// rejects on this box before it looks at `pick_tris`, so a box that stops short
-/// of them makes them silently unpickable: a donut's vertices are two points on
-/// one horizontal line, giving a zero-height box that rejects every click on the
-/// disc it draws.
-///
-/// A no-op for the entities that have no `pick_tris`, which is nearly all.
+/// polyline is often the box of its stored vertices — it may know nothing about
+/// bulge arcs between them, the band a width paints around them, or the wall a
+/// thickness extrudes. Hit-testing rejects on this box before it looks at the
+/// wire segments or `pick_tris`, so a box that stops short of the drawn geometry
+/// makes that geometry silently unpickable.
 pub(crate) fn set_wire_aabb(w: &mut WireModel, entity_box: [f32; 4]) {
-    if w.pick_tris.is_empty() || entity_box == WireModel::UNBOUNDED_AABB {
-        w.aabb = entity_box;
-        return;
-    }
-    let [mut x0, mut y0, mut x1, mut y1] = entity_box;
-    for (i, p) in w.pick_tris.iter().enumerate() {
-        let lo = w.pick_tris_low.get(i).copied().unwrap_or([0.0; 3]);
+    let mut out = if entity_box == WireModel::UNBOUNDED_AABB {
+        wire_points_aabb(w)
+    } else {
+        entity_box
+    };
+
+    let mut extend = |p: [f32; 3], lo: [f32; 3]| {
         let (x, y) = (p[0] + lo[0], p[1] + lo[1]);
         if x.is_finite() && y.is_finite() {
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x);
-            y1 = y1.max(y);
+            if out == WireModel::UNBOUNDED_AABB {
+                out = [x, y, x, y];
+            } else {
+                out[0] = out[0].min(x);
+                out[1] = out[1].min(y);
+                out[2] = out[2].max(x);
+                out[3] = out[3].max(y);
+            }
         }
+    };
+
+    for (i, &p) in w.points.iter().enumerate() {
+        extend(p, w.points_low.get(i).copied().unwrap_or([0.0; 3]));
     }
-    w.aabb = [x0, y0, x1, y1];
+    for (i, &p) in w.pick_tris.iter().enumerate() {
+        extend(p, w.pick_tris_low.get(i).copied().unwrap_or([0.0; 3]));
+    }
+
+    w.aabb = out;
 }
 
 pub(crate) fn entity_aabb(e: &acadrust::EntityType) -> [f32; 4] {

@@ -74,7 +74,7 @@ pub(crate) fn points_to_ds(
 /// The MLINE complex-linetype path uses this because `apply_along` lays out its
 /// dashes and glyphs in f32, which would otherwise quantise fine spacing far
 /// from the origin.
-fn shift_wire_to_world(w: &mut WireModel, origin: [f64; 3]) {
+pub(crate) fn shift_wire_to_world(w: &mut WireModel, origin: [f64; 3]) {
     if !w.points.is_empty() {
         let mut hi = Vec::with_capacity(w.points.len());
         let mut lo = Vec::with_capacity(w.points.len());
@@ -1551,7 +1551,12 @@ fn arrow_from_block_name(name: Option<&str>, dimasz: f32) -> ArrowKind {
         "ORIGIN" | "ORIGIN2" | "ORIGININDICATOR" | "ORIGININDICATOR2" => {
             ArrowKind::Origin { size: dimasz }
         }
-        "OBLIQUE" | "ARCHTICK" => ArrowKind::Tick { size: dimasz },
+        // `ArrowKind::Tick` draws the stroke `size` to either side of the tip
+        // (total 2·size — its `size` is a half-length, matching DIMTSZ). As an
+        // arrowhead block, though, DIMASZ is the stroke's *full* length like
+        // every other arrowhead here, so pass half of it — otherwise the
+        // oblique tick renders twice the intended DIMASZ.
+        "OBLIQUE" | "ARCHTICK" => ArrowKind::Tick { size: dimasz * 0.5 },
         "BOXFILLED" => ArrowKind::Box_ {
             size: dimasz,
             filled: true,
