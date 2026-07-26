@@ -16,10 +16,9 @@ pub mod view;
 
 // Topic submodules split out of this root (each contributes `impl Scene`
 // blocks and/or free functions). Pure text-move from the original mod.rs.
+mod camera_ops;
 mod entity;
 mod group_layer;
-mod scene_markers;
-mod camera_ops;
 mod layout;
 mod modify;
 mod mspace;
@@ -27,6 +26,7 @@ mod page_setup;
 mod paper;
 mod preview;
 mod project;
+mod scene_markers;
 mod selection;
 
 // Parallel tessellation free functions live in `convert::tess` (alongside the
@@ -45,19 +45,91 @@ pub(super) struct EntityIndex {
     pub unbounded_handles: Vec<Handle>,
 }
 
-use view::camera::Camera;
-pub use view::camera::Projection;
+#[derive(Default)]
+struct DependencyTargets {
+    render_handles: HashSet<Handle>,
+    source_handles: HashSet<Handle>,
+    touches_block_definition: bool,
+}
+
+#[derive(Default)]
+struct SceneDependencyIndex {
+    layers: HashMap<String, DependencyTargets>,
+    text_styles: HashMap<String, DependencyTargets>,
+    dim_styles: HashMap<String, DependencyTargets>,
+    object_styles: HashMap<Handle, DependencyTargets>,
+}
+
+fn hatch_interaction_aabb(hatch: &model::hatch_model::HatchModel) -> Option<[f64; 4]> {
+    let mut aabb = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for [x, y] in hatch.boundary.iter().copied() {
+        if !x.is_finite() || !y.is_finite() {
+            continue;
+        }
+        let x = hatch.world_origin[0] + x as f64;
+        let y = hatch.world_origin[1] + y as f64;
+        aabb[0] = aabb[0].min(x);
+        aabb[1] = aabb[1].min(y);
+        aabb[2] = aabb[2].max(x);
+        aabb[3] = aabb[3].max(y);
+    }
+    aabb.iter().all(|value| value.is_finite()).then_some(aabb)
+}
+
+fn mesh_interaction_aabb(set: &model::mesh_model::MeshLodSet) -> Option<[f64; 6]> {
+    let mut aabb = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let mut include = |high: [f32; 3], low: [f32; 3]| {
+        let point = [
+            high[0] as f64 + low[0] as f64,
+            high[1] as f64 + low[1] as f64,
+            high[2] as f64 + low[2] as f64,
+        ];
+        if point.iter().all(|value| value.is_finite()) {
+            for axis in 0..3 {
+                aabb[axis] = aabb[axis].min(point[axis]);
+                aabb[axis + 3] = aabb[axis + 3].max(point[axis]);
+            }
+        }
+    };
+    for mesh in &set.lods {
+        for (index, &high) in mesh.verts.iter().enumerate() {
+            include(high, mesh.verts_low.get(index).copied().unwrap_or([0.0; 3]));
+        }
+    }
+    for (index, &high) in set.edge_verts.iter().enumerate() {
+        include(
+            high,
+            set.edge_verts_low.get(index).copied().unwrap_or([0.0; 3]),
+        );
+    }
+    aabb.iter().all(|value| value.is_finite()).then_some(aabb)
+}
+
 pub use model::hatch_model::HatchModel;
 pub use model::image_model::ImageModel;
 pub use model::mesh_model::MeshLodSet;
 pub use model::object::{GripApply, GripDef};
+pub use model::wire_model::WireModel;
+pub use pick::selection_state::SelectionState;
 pub use pipeline::uniforms::Uniforms;
 pub use pipeline::viewcube::{
     hit_test, hit_test_cardinal, hover_id, CubeRegion, NudgeDir, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD,
     VIEWCUBE_PX, VIEWCUBE_REGION_PX,
 };
-pub use pick::selection_state::SelectionState;
-pub use model::wire_model::WireModel;
+use view::camera::Camera;
+pub use view::camera::Projection;
 
 use crate::command::EntityTransform;
 use acadrust::entities::{Block, BlockEnd, Insert as DxfInsert};
@@ -74,8 +146,8 @@ use truck_modeling::{
 };
 
 use iced::time::Duration;
-use std::cell::RefCell;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -120,7 +192,7 @@ pub struct UndoRecording {
     /// so repeated touches within one command keep the true pre-command state).
     /// A value of `None` marks an entity *added* by the command (no prior
     /// state). `order` preserves first-touch order for a deterministic delta.
-    before: HashMap<Handle, Option<EntityType>>,
+    before: HashMap<Handle, Option<Arc<EntityType>>>,
     order: Vec<Handle>,
     poisoned: bool,
 }
@@ -140,7 +212,7 @@ impl UndoRecording {
     /// order. A `None` before-image means the entity was added by the command.
     /// The app pairs each with the entity's current (after) state to build the
     /// invertible delta entry.
-    pub fn into_before_images(mut self) -> Vec<(Handle, Option<EntityType>)> {
+    pub fn into_before_images(mut self) -> Vec<(Handle, Option<Arc<EntityType>>)> {
         self.order
             .drain(..)
             .map(|h| (h, self.before.remove(&h).flatten()))
@@ -157,6 +229,90 @@ struct GeometryDelta {
     epoch: u64,
     changes: Vec<(Handle, ChangeKind)>,
     full: bool,
+}
+
+/// Mutable assembly metadata for one resident wire set. Keeping entity ranges
+/// beside the flat render Vec lets a one-entity edit splice that run directly;
+/// rebuilding this directory by grouping every WireModel was the dominant
+/// edit-time CPU cost on dense drawings.
+struct ResidentWireSet {
+    epoch: u64,
+    gen: u64,
+    wires: Arc<Vec<WireModel>>,
+    layout: Option<ResidentWireLayout>,
+}
+
+struct ResidentWireLayout {
+    /// Entity handles in final submission order. A temporarily hidden entity
+    /// remains here with no range so grip commit can restore it in place.
+    order: Vec<Handle>,
+    /// Flat wire range `(start, len)` for each currently visible entity.
+    ranges: HashMap<Handle, (usize, usize)>,
+    /// First synthesized marker wire. Markers have no entity handle and remain
+    /// at the tail while entity runs are inserted/removed before them.
+    marker_start: usize,
+}
+
+#[derive(Clone)]
+pub struct PreparedOpenGeometry {
+    pub wires: Arc<Vec<WireModel>>,
+    pub interaction_index: Option<Arc<crate::scene::pick::interaction_index::InteractionIndex>>,
+}
+
+impl std::fmt::Debug for PreparedOpenGeometry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedOpenGeometry")
+            .field("wires", &self.wires.len())
+            .field("interaction_index", &self.interaction_index.is_some())
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct WireGpuPatch {
+    pub(crate) changes: Arc<Vec<(Handle, ChangeKind)>>,
+    pub(crate) runs: Arc<HashMap<Handle, Arc<Vec<WireModel>>>>,
+    pub(crate) index_edits: Arc<Vec<WireIndexEdit>>,
+    pub(crate) new_handles_are_suffix: bool,
+    /// Whether Face3D / generic fill buffers can differ after this patch.
+    pub(crate) face_pass_changed: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct WireIndexEdit {
+    pub(crate) handle: Handle,
+    pub(crate) start: usize,
+    pub(crate) old_len: usize,
+    pub(crate) new_len: usize,
+}
+
+struct DrawDepthCache {
+    epoch: u64,
+    depths: Arc<HashMap<u64, [f32; 2]>>,
+    /// Per-block handles already sorted by effective draw-order key.
+    blocks: HashMap<Handle, Vec<(u64, u64)>>,
+    /// Reverse owner lookup retained so Removed deltas need no document scan.
+    owners: HashMap<u64, Handle>,
+}
+
+struct PaperViewportCache {
+    epoch: u64,
+    layout: String,
+    layout_block: Handle,
+    sheet: Handle,
+    content: Arc<Vec<Handle>>,
+}
+
+struct PaperSheetRenderCache {
+    epoch: u64,
+    layout: String,
+    selected: u64,
+    paper_bg: [f32; 4],
+    hatches: Arc<Vec<HatchModel>>,
+    wipeouts: Arc<Vec<HatchModel>>,
+    images: Arc<Vec<ImageModel>>,
 }
 
 /// Bound on the geometry-delta ring. A consumer that fell more than this many
@@ -233,6 +389,15 @@ pub struct DerivedCaches {
     /// Reported back to the UI so the user knows when a file had parser-junk
     /// entities silently dropped.
     pub corrupt_dropped: usize,
+    /// Corrupt entities dropped while resolving referenced drawings.
+    pub xref_dropped: usize,
+    /// XREF resolution results produced by the loader worker. Keeping these in
+    /// the open bundle prevents parsing and merging references on the UI thread.
+    pub xrefs: Vec<crate::io::xref::XrefInfo>,
+    /// Model wire set and its spatial interaction index, prepared on the loader
+    /// thread. Installing these prevents the first visible frame from paying a
+    /// whole-drawing tessellation/index build while the progress overlay freezes.
+    pub prepared_geometry: Option<PreparedOpenGeometry>,
     /// Background-thread open-phase timings in milliseconds (parse, purge,
     /// derived-cache build). Filled in by `open_path_with_phase`; surfaced in
     /// the open-complete breakdown log so open-time regressions are visible.
@@ -245,11 +410,31 @@ pub struct OpenTimings {
     pub parse_ms: u32,
     pub purge_ms: u32,
     pub caches_ms: u32,
+    pub xref_ms: u32,
 }
 
 /// Build hatch / image / mesh caches from a document without needing `&mut Scene`.
 /// Intended to run on a background thread during file load.
+#[cfg(target_arch = "wasm32")]
 pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
+    build_derived_caches_impl(doc, None)
+}
+
+/// Build open-time caches while reporting monotonic progress in 0..=10000.
+///
+/// The callback is UI-agnostic and may run from Rayon workers. Callers should
+/// keep it cheap, normally just updating atomics.
+pub fn build_derived_caches_with_progress(
+    doc: &CadDocument,
+    progress: &(dyn Fn(u16) + Sync),
+) -> DerivedCaches {
+    build_derived_caches_impl(doc, Some(progress))
+}
+
+fn build_derived_caches_impl(
+    doc: &CadDocument,
+    progress: Option<&(dyn Fn(u16) + Sync)>,
+) -> DerivedCaches {
     // A new drawing must not inherit the previous one's resolved images — drop
     // the memoised set so each reference re-reads / re-fetches once here (and
     // stays cached across this document's later cache rebuilds).
@@ -304,21 +489,31 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
     let mut image_handles: Vec<Handle> = Vec::new();
     let mut mesh_handles: Vec<Handle> = Vec::new();
     let mut centers: Vec<[f64; 3]> = Vec::new();
-    for e in doc.entities() {
+    let entity_total = doc.entity_count().max(1);
+    for (index, e) in doc.entities().enumerate() {
         let h = e.common().handle;
         match e {
             EntityType::Hatch(_) | EntityType::Solid(_) => hatch_handles.push(h),
             EntityType::RasterImage(_) | EntityType::Ole2Frame(_) | EntityType::Underlay(_) => {
                 image_handles.push(h)
             }
-            EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) | EntityType::Surface(_) => {
-                mesh_handles.push(h)
-            }
+            EntityType::Solid3D(_)
+            | EntityType::Region(_)
+            | EntityType::Body(_)
+            | EntityType::Surface(_) => mesh_handles.push(h),
             _ => {}
         }
         if let Some(c) = offset_centroid(e, model_block, &prep) {
             centers.push(c);
         }
+        if index & 0x1fff == 0 {
+            if let Some(progress) = progress {
+                progress(((index as u64 * 4000) / entity_total as u64) as u16);
+            }
+        }
+    }
+    if let Some(progress) = progress {
+        progress(4000);
     }
     let (local_center, local_extent_max) = cluster_extent_from_centers(centers, &doc.header);
 
@@ -327,6 +522,19 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
     // `synced_hatch_models` re-runs `render_style` per-frame anyway so
     // the per-layout adaptation kicks in later regardless).
     const LOAD_BG: [f32; 4] = [33.0 / 255.0, 40.0 / 255.0, 48.0 / 255.0, 1.0];
+
+    let detail_total = hatch_handles
+        .len()
+        .saturating_add(image_handles.len())
+        .saturating_add(mesh_handles.len())
+        .max(1);
+    let detail_done = std::sync::atomic::AtomicUsize::new(0);
+    let report_detail = |done: usize| {
+        if let Some(progress) = progress {
+            let value = 4000u64 + done as u64 * 6000 / detail_total as u64;
+            progress(value.min(10000) as u16);
+        }
+    };
 
     // hatches
     let hatches: HashMap<Handle, HatchModel> = hatch_handles
@@ -340,20 +548,24 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
                 EntityType::Solid(solid) => Some(Scene::solid_hatch_model(solid, color)),
                 _ => None,
             };
-            model.map(|m| (handle, m))
+            let result = model.map(|m| (handle, m));
+            let done = detail_done.fetch_add(1, Ordering::Relaxed) + 1;
+            if done & 0xff == 0 || done == detail_total {
+                report_detail(done);
+            }
+            result
         })
         .collect();
 
     // images
     let images: HashMap<Handle, ImageModel> = image_handles
         .par_iter()
-        .filter_map(|&handle| match doc.get_entity(handle)? {
-            EntityType::RasterImage(img) => {
-                ImageModel::from_raster_image(img).map(|m| (handle, m))
-            }
-            EntityType::Ole2Frame(ole) => {
-                ImageModel::from_ole2frame(ole).map(|m| (handle, m))
-            }
+        .filter_map(|&handle| {
+            let result = match doc.get_entity(handle)? {
+                EntityType::RasterImage(img) => {
+                    ImageModel::from_raster_image(img).map(|m| (handle, m))
+                }
+            EntityType::Ole2Frame(ole) => ImageModel::from_ole2frame(ole).map(|m| (handle, m)),
             EntityType::Underlay(u) => match doc.objects.get(&u.definition_handle) {
                 Some(acadrust::objects::ObjectType::UnderlayDefinition(def)) => {
                     ImageModel::from_underlay(u, def).map(|m| (handle, m))
@@ -361,6 +573,12 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
                 _ => None,
             },
             _ => None,
+            };
+            let done = detail_done.fetch_add(1, Ordering::Relaxed) + 1;
+            if done & 0xff == 0 || done == detail_total {
+                report_detail(done);
+            }
+            result
         })
         .collect();
 
@@ -390,10 +608,16 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
             let (raw, ..) = view::render::render_style_for(doc, e);
             let color = view::render::adapt_to_bg(raw, LOAD_BG);
             let top_level = layout_blocks.contains(&e.common().owner_handle);
-            crate::entities::solid3d::tessellate_volume(e, color, facet_res, isolines).map(|m| {
+            let result = crate::entities::solid3d::tessellate_volume(e, color, facet_res, isolines)
+                .map(|m| {
                 let m = if top_level { offset_mesh_lod_set(m) } else { m };
                 (handle, m, top_level)
-            })
+                });
+            let done = detail_done.fetch_add(1, Ordering::Relaxed) + 1;
+            if done & 0xff == 0 || done == detail_total {
+                report_detail(done);
+            }
+            result
         })
         .collect();
     let mut meshes: HashMap<Handle, MeshLodSet> = HashMap::default();
@@ -406,6 +630,10 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
         }
     }
 
+    if let Some(progress) = progress {
+        progress(10000);
+    }
+
     DerivedCaches {
         local_extent_max,
         local_center,
@@ -414,8 +642,52 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
         meshes,
         block_meshes,
         corrupt_dropped: 0,
+        xref_dropped: 0,
+        xrefs: Vec::new(),
+        prepared_geometry: None,
         timings: OpenTimings::default(),
     }
+}
+
+/// Prepare the expensive first Model wire set and spatial interaction index on
+/// the loader thread. The temporary `Scene` never crosses threads (it contains
+/// `Rc`/`RefCell` state); only its Send-safe document and immutable prepared
+/// geometry are returned.
+pub fn prepare_open_geometry(
+    doc: CadDocument,
+    caches: &DerivedCaches,
+    model_bg: [f32; 4],
+) -> (CadDocument, PreparedOpenGeometry) {
+    let mut scene = Scene::new();
+    scene.document = doc;
+    scene.local_extent_max = caches.local_extent_max;
+    scene.local_center = caches.local_center;
+    scene.bg_color = model_bg;
+    let cannoscale_value = scene.document.header.annotation_scale_value;
+    scene.annotation_scale = if cannoscale_value > 1e-9 {
+        (1.0 / cannoscale_value) as f32
+    } else {
+        1.0
+    };
+    scene.current_layout = "Model".to_string();
+    let camera = scene.camera.borrow().clone();
+    let wires = scene.model_tile_wires_arc(0, &camera, 1.0, 1.0);
+    let interaction_index = if scene.interaction_index_worthwhile(&wires) {
+        let index =
+            Arc::new(crate::scene::pick::interaction_index::InteractionIndex::build(&wires));
+        index.prepare_screen();
+        Some(index)
+    } else {
+        None
+    };
+    let doc = std::mem::replace(&mut scene.document, CadDocument::new());
+    (
+        doc,
+        PreparedOpenGeometry {
+            wires,
+            interaction_index,
+        },
+    )
 }
 
 /// Mirrors `cache::block_cache::SANE_EXTENT` — wire coords past this magnitude
@@ -440,10 +712,7 @@ struct OffsetPrep {
 }
 
 fn offset_prep(doc: &acadrust::CadDocument, model_block: Handle) -> OffsetPrep {
-    let model_br = doc
-        .block_records
-        .iter()
-        .find(|br| br.handle == model_block);
+    let model_br = doc.block_records.iter().find(|br| br.handle == model_block);
     let mspace_set: Option<rustc_hash::FxHashSet<Handle>> = model_br
         .filter(|br| !br.entity_handles.is_empty())
         .map(|br| br.entity_handles.iter().copied().collect());
@@ -460,18 +729,18 @@ fn offset_prep(doc: &acadrust::CadDocument, model_block: Handle) -> OffsetPrep {
     } else {
         rustc_hash::FxHashSet::default()
     };
-    OffsetPrep { mspace_set, any_enumerated, owned_by_other_block }
+    OffsetPrep {
+        mspace_set,
+        any_enumerated,
+        owned_by_other_block,
+    }
 }
 
 /// Per-entity centroid for the world-offset scan, or `None` if the entity is
 /// not MSPACE geometry / has no usable bbox. Single-outlier-robust because
 /// the caller takes the median of these per-entity centroids rather than a
 /// global min/max midpoint.
-fn offset_centroid(
-    e: &EntityType,
-    model_block: Handle,
-    prep: &OffsetPrep,
-) -> Option<[f64; 3]> {
+fn offset_centroid(e: &EntityType, model_block: Handle, prep: &OffsetPrep) -> Option<[f64; 3]> {
     let c = e.common();
     let h = c.handle;
     let include = if let Some(ref set) = prep.mspace_set {
@@ -683,11 +952,23 @@ fn offset_mesh_lod_set(mut set: MeshLodSet) -> MeshLodSet {
             let hy = ay as f32;
             let hz = az as f32;
             *v = [hx, hy, hz];
-            *vl = [(ax - hx as f64) as f32, (ay - hy as f64) as f32, (az - hz as f64) as f32];
-            if hx < min_x { min_x = hx; }
-            if hy < min_y { min_y = hy; }
-            if hx > max_x { max_x = hx; }
-            if hy > max_y { max_y = hy; }
+            *vl = [
+                (ax - hx as f64) as f32,
+                (ay - hy as f64) as f32,
+                (az - hz as f64) as f32,
+            ];
+            if hx < min_x {
+                min_x = hx;
+            }
+            if hy < min_y {
+                min_y = hy;
+            }
+            if hx > max_x {
+                max_x = hx;
+            }
+            if hy > max_y {
+                max_y = hy;
+            }
         }
     }
     // Re-split the feature edges the same way so they track the mesh at scale.
@@ -702,7 +983,11 @@ fn offset_mesh_lod_set(mut set: MeshLodSet) -> MeshLodSet {
             let az = v[2] as f64 + vl[2] as f64;
             let (hx, hy, hz) = (ax as f32, ay as f32, az as f32);
             *v = [hx, hy, hz];
-            *vl = [(ax - hx as f64) as f32, (ay - hy as f64) as f32, (az - hz as f64) as f32];
+            *vl = [
+                (ax - hx as f64) as f32,
+                (ay - hy as f64) as f32,
+                (az - hz as f64) as f32,
+            ];
         }
     }
     if min_x.is_finite() {
@@ -752,11 +1037,23 @@ fn transform_block_mesh_lod_set(
             let hy = ay as f32;
             let hz = az as f32;
             *v = [hx, hy, hz];
-            *vl = [(ax - hx as f64) as f32, (ay - hy as f64) as f32, (az - hz as f64) as f32];
-            if hx < min_x { min_x = hx; }
-            if hy < min_y { min_y = hy; }
-            if hx > max_x { max_x = hx; }
-            if hy > max_y { max_y = hy; }
+            *vl = [
+                (ax - hx as f64) as f32,
+                (ay - hy as f64) as f32,
+                (az - hz as f64) as f32,
+            ];
+            if hx < min_x {
+                min_x = hx;
+            }
+            if hy < min_y {
+                min_y = hy;
+            }
+            if hx > max_x {
+                max_x = hx;
+            }
+            if hy > max_y {
+                max_y = hy;
+            }
         }
         for n in &mut lod.normals {
             let d = xform.apply_rotation(Vector3::new(n[0] as f64, n[1] as f64, n[2] as f64));
@@ -782,7 +1079,11 @@ fn transform_block_mesh_lod_set(
             ));
             let (hx, hy, hz) = (w.x as f32, w.y as f32, w.z as f32);
             *v = [hx, hy, hz];
-            *vl = [(w.x - hx as f64) as f32, (w.y - hy as f64) as f32, (w.z - hz as f64) as f32];
+            *vl = [
+                (w.x - hx as f64) as f32,
+                (w.y - hy as f64) as f32,
+                (w.z - hz as f64) as f32,
+            ];
         }
     }
     if min_x.is_finite() {
@@ -790,6 +1091,33 @@ fn transform_block_mesh_lod_set(
     }
     out.recompute_aabb();
     out
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum NavPerfOp {
+    Pan,
+    Zoom,
+    Rotate,
+}
+
+impl NavPerfOp {
+    pub(in crate::scene) fn label(self) -> &'static str {
+        match self {
+            Self::Pan => "pan",
+            Self::Zoom => "zoom",
+            Self::Rotate => "rotate",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(in crate::scene) struct NavPerfSample {
+    pub(in crate::scene) op: NavPerfOp,
+    pub(in crate::scene) space: &'static str,
+    pub(in crate::scene) mode: &'static str,
+    pub(in crate::scene) started: iced::time::Instant,
+    pub(in crate::scene) input_ms: f64,
+    pub(in crate::scene) build_ms: f64,
 }
 
 pub struct Scene {
@@ -808,9 +1136,8 @@ pub struct Scene {
     /// Small map (not a single slot): a paper frame renders several wire
     /// sources (sheet + content viewports), each with its own stable content
     /// id — one slot would thrash between them every frame.
-    sdf_text_cache: RefCell<
-        HashMap<u64, std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>>,
-    >,
+    sdf_text_cache:
+        RefCell<HashMap<u64, std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>>>,
     /// Per wire-source `(geometry_epoch, gathered text)` of the most recent
     /// SDF-text build. When a new content id misses the cache but the journal
     /// shows no text-bearing entity changed since that epoch, the same glyphs
@@ -820,7 +1147,13 @@ pub struct Scene {
     /// sets in one frame, and a single slot handed the sheet's glyphs to the
     /// content viewports, hiding every model-space text entity (#403).
     last_sdf_text: RefCell<
-        HashMap<u64, (u64, std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>)>,
+        HashMap<
+            u64,
+            (
+                u64,
+                std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>,
+            ),
+        >,
     >,
     /// pane_grid layout tree for the Model tab — the source of truth for the
     /// tile split layout, resize and focus. `model_tiles` (the renderer's
@@ -884,11 +1217,52 @@ pub struct Scene {
     /// Uses `Arc` so `build_primitive()` avoids a full Vec clone during navigation.
     /// The middle `u64` is the set's [`WIRE_CONTENT_GEN`] content id.
     wire_cache: RefCell<Option<((u64, u64), u64, Arc<Vec<WireModel>>)>>,
-    /// Spatial grid over the model hit-test wire set, keyed on `geometry_epoch`
-    /// so it is rebuilt only when geometry changes (not per cursor move). Lets
-    /// snap / hover query a cursor-local wire subset instead of scanning the
-    /// whole (block-exploded, multi-million-wire) set every move.
-    wire_grid_cache: RefCell<Option<(u64, Arc<crate::scene::pick::wire_grid::WireGrid>)>>,
+    /// Shared wire + segment broad phase for snapping, hover, click/cycling and
+    /// area selection. The source pointer is part of the key because a camera
+    /// cull can replace the wire Arc without changing `geometry_epoch`.
+    interaction_index_cache: RefCell<
+        Vec<(
+            u64,
+            usize,
+            std::sync::Weak<Vec<WireModel>>,
+            Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+        )>,
+    >,
+    /// Latest large source requested for off-thread preparation. A matching
+    /// cache miss returns no candidates temporarily instead of scanning the
+    /// entire scene on the UI thread.
+    interaction_index_pending_key: std::cell::Cell<Option<(u64, usize)>>,
+    /// Large resident interaction index kept as an immutable base across small
+    /// entity edits. Geometry-journal handles form a tombstone/delta overlay;
+    /// the exact index is rebuilt only after the overlay grows too large.
+    interaction_base_index_cache: RefCell<
+        Option<(
+            u64,
+            u64,
+            Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+        )>,
+    >,
+    /// Index of only the live handles changed since the immutable interaction
+    /// base. Reused across pointer events so a large unchanged block is never
+    /// re-indexed merely because one top-level entity was added or removed.
+    interaction_overlay_index_cache: RefCell<
+        Option<(
+            u64,
+            u64,
+            u64,
+            Arc<Vec<WireModel>>,
+            Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+        )>,
+    >,
+    /// Auxiliary broad phase for objects that have no wire representation:
+    /// hatch-only and solid-only block instances.
+    interaction_handle_index_cache: RefCell<
+        Option<(
+            u64,
+            u64,
+            Arc<crate::scene::pick::interaction_index::InteractionHandleIndex>,
+        )>,
+    >,
     /// Index built from every SortEntitiesTable in the document.
     /// Maps block_handle → (entity_handle.value() → sort_handle.value()).
     /// Replaces the O(objects) linear scan inside `wires_for_block()` with an O(1) lookup.
@@ -905,7 +1279,7 @@ pub struct Scene {
     /// sub-range a block INSERT's children may occupy without crossing the
     /// insert's siblings. Fill explosion and band wires compose child depths
     /// as `depth + child_rank * half`.
-    draw_depth_cache: RefCell<Option<(u64, Arc<HashMap<u64, [f32; 2]>>)>>,
+    draw_depth_cache: RefCell<Option<DrawDepthCache>>,
     /// Cached hatch fill models, keyed by geometry_epoch. View culling
     /// is handled at draw time via `hatch_skip_flags` in the pipeline,
     /// not at build time — that lets the GPU buffer stay stable across
@@ -913,14 +1287,28 @@ pub struct Scene {
     /// Keyed by `(geometry_epoch, selection_generation)` — selected hatches
     /// are tinted, so a select/deselect must rebuild even when the geometry
     /// is unchanged (issue #71).
-    hatch_cache: RefCell<Option<(u64, u64, Arc<Vec<HatchModel>>)>>,
+    hatch_cache: RefCell<HashMap<String, (u64, u64, Arc<Vec<HatchModel>>)>>,
     /// Cached wipeout fill models, keyed by geometry_epoch. Same
     /// reasoning as `hatch_cache`.
-    wipeout_cache: RefCell<Option<(u64, Arc<Vec<HatchModel>>)>>,
+    wipeout_cache: RefCell<HashMap<String, (u64, Arc<Vec<HatchModel>>)>>,
     /// Cached image models, keyed by geometry_epoch. No camera key needed here.
     image_cache: RefCell<Option<(u64, Arc<Vec<ImageModel>>)>>,
     /// Cached mesh models, keyed by geometry_epoch.
-    mesh_cache: RefCell<Option<(u64, Arc<Vec<MeshLodSet>>)>>,
+    mesh_cache: RefCell<HashMap<String, (u64, Arc<Vec<MeshLodSet>>)>>,
+    /// Picking mesh source for a non-model active space, keyed by geometry epoch
+    /// and interaction block. Model/MSPACE reuse `mesh_cache` directly.
+    interaction_mesh_cache: RefCell<Option<(u64, u64, Arc<Vec<MeshLodSet>>)>>,
+    /// Direct handle → expanded mesh-set indices for the current renderer mesh
+    /// source. Block instances may contribute several sets under one Insert
+    /// handle. The weak source guard prevents stale pointer reuse.
+    #[allow(clippy::type_complexity)]
+    mesh_pick_lookup_cache: RefCell<
+        Option<(
+            usize,
+            std::sync::Weak<Vec<MeshLodSet>>,
+            Arc<HashMap<Handle, Vec<u32>>>,
+        )>,
+    >,
     /// Per-viewport (VP-frozen-layer) filtered fill / image / mesh sets, keyed by
     /// the order-independent signature of the viewport's frozen-layer set. A
     /// content viewport that freezes layers must hide their hatches, 2-D solids,
@@ -928,21 +1316,30 @@ pub struct Scene {
     /// filtered variants. Viewports sharing a frozen set share one entry (like
     /// the resident wire set). Empty for a viewport with no frozen layers (it
     /// reuses the unfiltered `*_arc` sets directly).
-    frozen_hatch_cache: RefCell<HashMap<u64, (u64, u64, Arc<Vec<HatchModel>>)>>,
-    frozen_wipeout_cache: RefCell<HashMap<u64, (u64, Arc<Vec<HatchModel>>)>>,
+    frozen_hatch_cache: RefCell<HashMap<(String, u64), (u64, u64, Arc<Vec<HatchModel>>)>>,
+    frozen_wipeout_cache: RefCell<HashMap<(String, u64), (u64, Arc<Vec<HatchModel>>)>>,
     frozen_image_cache: RefCell<HashMap<u64, (u64, Arc<Vec<ImageModel>>)>>,
-    frozen_mesh_cache: RefCell<HashMap<u64, (u64, Arc<Vec<MeshLodSet>>)>>,
+    frozen_mesh_cache: RefCell<HashMap<(String, u64), (u64, Arc<Vec<MeshLodSet>>)>>,
     /// Cached block-INSERT hatches for hit-testing, keyed by geometry_epoch.
     /// Building this explodes every model-space INSERT, so without the cache a
     /// heavy block-instanced drawing re-explodes thousands of inserts on every
     /// hover. The set is geometry-derived, so a camera move / hover never
     /// invalidates it.
-    insert_hatch_cache: RefCell<Option<(u64, Arc<Vec<(Handle, HatchModel)>>)>>,
+    insert_hatch_cache: RefCell<Option<(u64, u64, Arc<HashMap<Handle, Vec<HatchModel>>>)>>,
     /// Sheet "dressing" cache over the unified resident set: the paper sheet
     /// drops its own border wire and appends the printable-area guide.
-    /// `(geometry_epoch, content gen, wires)` — the base is camera-independent
-    /// (no cull / LOD anywhere), so paper pan/zoom never re-tessellates it.
-    paper_sheet_cache: RefCell<Option<(u64, u64, Arc<Vec<WireModel>>)>>,
+    /// Per-layout `(geometry_epoch, content gen, wires)` — the base is
+    /// camera-independent, so paper pan/zoom and Model↔Paper tab switches keep
+    /// every already-visited sheet warm.
+    paper_sheet_cache: RefCell<HashMap<String, (u64, u64, Arc<Vec<WireModel>>)>>,
+    /// Layout viewport handles, collected from the owning block record once per
+    /// geometry epoch. Avoids walking every document entity on every Paper
+    /// pan/zoom frame just to rediscover the same handful of viewports.
+    paper_viewport_cache: RefCell<HashMap<String, PaperViewportCache>>,
+    /// Stable Paper sheet fill/image sources. Without this cache every camera
+    /// movement scanned the whole document for wipeouts and recreated the same
+    /// Arcs, making Paper frame construction CPU-bound on large drawings.
+    paper_sheet_render_cache: RefCell<HashMap<String, PaperSheetRenderCache>>,
     /// Per-viewport projected wire cache for paper-space content viewports.
     /// Stores projected + clipped wires in paper-space coordinates.
     /// Maps vp_handle → (geometry_epoch, Vec<WireModel>).
@@ -999,12 +1396,9 @@ pub struct Scene {
     /// Multiplier applied to Text/MText/Dimension sizes during tessellation.
     /// 1.0 = no scaling. 50.0 = "1:50" drawing scale.
     pub annotation_scale: f32,
-    /// Cached per-epoch: does annotation/viewport scale actually change wire
-    /// output? True iff PSLTSCALE is on (linetype dashes scale with the
-    /// viewport) or the drawing has an annotative entity (text/dim/mleader
-    /// sizing). When false the per-viewport anno scale is inert, so every
-    /// content viewport collapses onto ONE shared resident set instead of a
-    /// full re-tessellation per distinct viewport scale. `(epoch, flag)`.
+    /// Cached per-epoch: does annotation scale actually change wire geometry?
+    /// PSLTSCALE is handled by a per-viewport GPU uniform, so only real
+    /// annotative entities require a scale-specific resident set.
     annotation_affects_wires: std::cell::Cell<Option<(u64, bool)>>,
     /// Cached model-space bounding box, keyed by geometry_epoch.
     /// Avoids re-tessellating all entities on every ZOOM E / auto-fit call.
@@ -1012,10 +1406,16 @@ pub struct Scene {
     /// Reverse map: entity_handle → block_record_handle, built from entity_handles lists.
     /// Keyed by geometry_epoch. Eliminates the O(B) fallback scan in belongs_to_visible_block.
     entity_block_map_cache: RefCell<Option<(u64, HashMap<Handle, Handle>)>>,
-    /// Tessellated block definitions in block-local coords, keyed by geometry_epoch.
-    /// Lets Insert tessellation transform-copy cached wires instead of
-    /// clone+explode+re-tessellate per reference.
-    block_defn_cache: RefCell<Option<(u64, Arc<cache::block_cache::BlockCache>)>>,
+    /// Reverse dependencies from layer/style/block definitions to the top-level
+    /// entities whose resident wire runs actually change. Kept independent from
+    /// `geometry_epoch`: a layer colour toggle can reuse the index, invalidate
+    /// only its dependants, and avoid a whole-document scan on every toggle.
+    dependency_index_cache: RefCell<Option<SceneDependencyIndex>>,
+    /// Tessellated block definitions in block-local coords, keyed by render
+    /// background and block epoch. Model and Paper adapt black/white colours
+    /// differently; retaining both variants prevents a full block rebuild on
+    /// every layout-tab switch.
+    block_defn_cache: RefCell<HashMap<[u32; 4], (u64, Arc<cache::block_cache::BlockCache>)>>,
     /// Spatial index + always-emit list for top-level entities
     /// (Phase 2.1). Lazily rebuilt by `entity_index()` on
     /// `geometry_epoch` change. See `EntityIndex` for what each side
@@ -1054,6 +1454,9 @@ pub struct Scene {
     /// scene-render cache). See [`Scene::navigating_lod`].
     nav_last_gen: std::cell::Cell<u64>,
     nav_changed_at: std::cell::Cell<Option<iced::time::Instant>>,
+    /// Latest pan / zoom / rotate event waiting for the renderer. Present only
+    /// while PERF tracing is enabled; consumed by the active shader primitive.
+    nav_perf_pending: std::cell::Cell<Option<NavPerfSample>>,
     /// Unified static-hold wire cache — ONE infrastructure for EVERY space
     /// (Model tiles, BEDIT block editor, the paper sheet block, and paper
     /// content viewports): the FULL, un-culled, LOD-free tessellation per
@@ -1064,7 +1467,7 @@ pub struct Scene {
     /// camera-keyed re-tessellation anywhere. Rebuilt per key when
     /// `geometry_epoch` changes; stale entries evicted on insert.
     #[allow(clippy::type_complexity)]
-    resident_wire_sets: RefCell<HashMap<u64, (u64, u64, Arc<Vec<WireModel>>)>>,
+    resident_wire_sets: RefCell<HashMap<u64, ResidentWireSet>>,
     /// Memoized `(face3d, other)` split of a resident wire set, keyed by its
     /// [`WIRE_CONTENT_GEN`] id. `split_face3d_wires` is an O(N) per-wire
     /// handle lookup + clone that otherwise re-runs every frame. A map, not a
@@ -1076,8 +1479,7 @@ pub struct Scene {
     /// incremental patch while its `Arc` is uniquely held, so pinning it in
     /// this cache would silently force a full rebuild on every edit (#358).
     #[allow(clippy::type_complexity)]
-    split_cache:
-        RefCell<HashMap<u64, (Arc<Vec<WireModel>>, Option<Arc<Vec<WireModel>>>)>>,
+    split_cache: RefCell<HashMap<u64, (Arc<Vec<WireModel>>, Option<Arc<Vec<WireModel>>>)>>,
     /// Cached `selected ∪ hover` handle set for the GPU xray overlay, keyed by
     /// `selection_generation`. Rebuilt only when the selection changes so
     /// `build_primitive` doesn't clone the set every frame.
@@ -1120,7 +1522,7 @@ pub struct Scene {
     /// those entities' instance slabs instead of re-uploading every wire. The
     /// render layer matches `new_gen` against the viewport's content id and
     /// `prev_gen` against what the GPU currently holds; a mismatch just rebuilds.
-    model_wire_gpu_patch: RefCell<Option<(u64, u64, Arc<Vec<(Handle, ChangeKind)>>)>>,
+    model_wire_gpu_patch: RefCell<Option<(u64, u64, Arc<WireGpuPatch>)>>,
     /// Active delta-undo recording, or `None` when no entity-only command is
     /// capturing. Populated by the five mutation primitives via
     /// [`Scene::record_undo_before`]; consumed by the app (`take_undo_recording`)
@@ -1166,19 +1568,27 @@ impl Scene {
             block_epoch: GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed),
             selection_generation: 0,
             wire_cache: RefCell::new(None),
-            wire_grid_cache: RefCell::new(None),
+            interaction_index_cache: RefCell::new(Vec::new()),
+            interaction_index_pending_key: std::cell::Cell::new(None),
+            interaction_base_index_cache: RefCell::new(None),
+            interaction_overlay_index_cache: RefCell::new(None),
+            interaction_handle_index_cache: RefCell::new(None),
             sort_cache: RefCell::new(None),
             draw_depth_cache: RefCell::new(None),
-            hatch_cache: RefCell::new(None),
-            wipeout_cache: RefCell::new(None),
+            hatch_cache: RefCell::new(HashMap::default()),
+            wipeout_cache: RefCell::new(HashMap::default()),
             image_cache: RefCell::new(None),
-            mesh_cache: RefCell::new(None),
+            mesh_cache: RefCell::new(HashMap::default()),
+            interaction_mesh_cache: RefCell::new(None),
+            mesh_pick_lookup_cache: RefCell::new(None),
             frozen_hatch_cache: RefCell::new(HashMap::default()),
             frozen_wipeout_cache: RefCell::new(HashMap::default()),
             frozen_image_cache: RefCell::new(HashMap::default()),
             frozen_mesh_cache: RefCell::new(HashMap::default()),
             insert_hatch_cache: RefCell::new(None),
-            paper_sheet_cache: RefCell::new(None),
+            paper_sheet_cache: RefCell::new(HashMap::default()),
+            paper_viewport_cache: RefCell::new(HashMap::default()),
+            paper_sheet_render_cache: RefCell::new(HashMap::default()),
             paper_projected_cache: RefCell::new(HashMap::default()),
             current_layout: "Model".to_string(),
             block_edit_block: None,
@@ -1197,7 +1607,8 @@ impl Scene {
             annotation_affects_wires: std::cell::Cell::new(None),
             model_extents_cache: RefCell::new(None),
             entity_block_map_cache: RefCell::new(None),
-            block_defn_cache: RefCell::new(None),
+            dependency_index_cache: RefCell::new(None),
+            block_defn_cache: RefCell::new(HashMap::default()),
             entity_index_cache: RefCell::new(None),
             last_render_aspect: std::cell::Cell::new(16.0 / 9.0),
             last_world_per_pixel: std::cell::Cell::new(0.0),
@@ -1207,6 +1618,7 @@ impl Scene {
             last_model_wire_gen: std::cell::Cell::new(0),
             nav_last_gen: std::cell::Cell::new(0),
             nav_changed_at: std::cell::Cell::new(None),
+            nav_perf_pending: std::cell::Cell::new(None),
             resident_wire_sets: RefCell::new(HashMap::default()),
             split_cache: RefCell::new(HashMap::default()),
             tess_memo: RefCell::new(HashMap::default()),
@@ -1221,54 +1633,8 @@ impl Scene {
         }
     }
 
-    /// Compute the current camera's world-space XY view AABB with
-    /// `world_offset` already subtracted (so the result is in the same f32
-    /// space as emitted wire points). Adds a 25% margin around the
-    /// frustum to absorb pan inertia and avoid clipped-edge popping.
-    pub(super) fn view_world_aabb(&self) -> Option<[f32; 4]> {
-        if self.current_layout != "Model" {
-            // Paper-space viewport composition handles its own culling; the
-            // top-level paper view is small enough not to need it.
-            return None;
-        }
-        // Until the first explicit camera move (typically `fit_all()` after
-        // file open), the camera sits at the default origin while geometry
-        // lives at large local offsets — culling against the default rect
-        // would discard everything and starve fit_all of points to fit to.
-        if self.camera_generation == 0 {
-            return None;
-        }
-        let cam = self.camera.borrow();
-        // A world-XY rectangle only bounds the on-screen footprint in a plan
-        // (top-down) view. In a tilted / 3D view the visible area maps to a
-        // skewed world region, so an axis-aligned XY box would wrongly cull
-        // entities that are actually on screen — and because this box culls the
-        // pick wire set (while the render holds the full set), those entities
-        // render but become unselectable. Skip culling there, matching
-        // `view_cull_aabb`.
-        let fwd = cam.rotation * glam::Vec3::Z;
-        if fwd.z.abs() < 0.999 {
-            return None;
-        }
-        let aspect = self.last_render_aspect.get().max(0.01);
-        let h = cam.ortho_size();
-        let w = h * aspect;
-        let margin = 1.25_f32;
-        // `cam.target` is in the same local f32 space as emitted wire points
-        // (fit_to_bounds populates it from local wire coords). No further
-        // `world_offset` subtraction is needed.
-        let cx = cam.target.x as f32;
-        let cy = cam.target.y as f32;
-        Some([
-            cx - w * margin,
-            cy - h * margin,
-            cx + w * margin,
-            cy + h * margin,
-        ])
-    }
-
-    /// Called by the render pipeline once per frame so `view_world_aabb` knows
-    /// the active widget's aspect ratio.
+    /// Called by the render pipeline once per frame so camera fit operations
+    /// know the active widget's aspect ratio.
     pub fn set_render_aspect(&self, aspect: f32) {
         if aspect.is_finite() && aspect > 0.0 {
             self.last_render_aspect.set(aspect);
@@ -1281,7 +1647,7 @@ impl Scene {
     /// Also returns `None` in paper space: `last_world_per_pixel` tracks the
     /// model camera, so a cached value applied to mm-sheet entity AABBs would
     /// be a stale model-world wpp and cull every paper-space annotation.
-    /// Matches the same skip already in `view_world_aabb`.
+    /// Paper-space callers use their own scale instead.
     pub(super) fn world_per_pixel(&self) -> Option<f32> {
         if self.current_layout != "Model" {
             return None;
@@ -1314,19 +1680,20 @@ impl Scene {
     /// Built single-threaded — recursive nested expansion makes parallelization
     /// fiddly and the cache only rebuilds when geometry actually changes.
     pub(super) fn block_cache_arc(&self) -> Arc<cache::block_cache::BlockCache> {
-        {
-            let cache = self.block_defn_cache.borrow();
-            if let Some((epoch, ref arc)) = *cache {
-                if epoch == self.block_epoch {
-                    return Arc::clone(arc);
-                }
-            }
-        }
         let bg = if self.current_layout == "Model" {
             self.bg_color
         } else {
             self.paper_bg_color
         };
+        let key = bg.map(f32::to_bits);
+        {
+            let cache = self.block_defn_cache.borrow();
+            if let Some((epoch, arc)) = cache.get(&key) {
+                if *epoch == self.block_epoch {
+                    return Arc::clone(arc);
+                }
+            }
+        }
         // Block definitions are cached at block-local size (annotation scale
         // 1.0). An annotative block scales as ONE unit at the INSERT level, so
         // its internal geometry / text / attributes must NOT be scaled
@@ -1335,8 +1702,34 @@ impl Scene {
         let built =
             cache::block_cache::BlockCache::build(&self.document, 1.0, bg, &self.draw_depth_map());
         let arc = Arc::new(built);
-        *self.block_defn_cache.borrow_mut() = Some((self.block_epoch, Arc::clone(&arc)));
+        let mut cache = self.block_defn_cache.borrow_mut();
+        cache.retain(|_, (epoch, _)| *epoch == self.block_epoch);
+        cache.insert(key, (self.block_epoch, Arc::clone(&arc)));
         arc
+    }
+
+    /// Install loader-thread geometry into this scene's Model resident cache.
+    ///
+    /// The target scene has a different epoch from the temporary loader scene,
+    /// so only immutable geometry is transferred and re-stamped here. The
+    /// optional interaction index is cached against the exact same `Arc`.
+    pub fn install_prepared_open_geometry(&self, prepared: PreparedOpenGeometry) {
+        let block = self.model_space_block_handle();
+        let key = Self::resident_wire_key(block, self.bg_color, None, None);
+        let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
+        self.last_model_wire_gen.set(gen);
+        self.resident_wire_sets.borrow_mut().insert(
+            key,
+            ResidentWireSet {
+                epoch: self.geometry_epoch,
+                gen,
+                wires: Arc::clone(&prepared.wires),
+                layout: None,
+            },
+        );
+        if let Some(index) = prepared.interaction_index {
+            self.cache_interaction_index(self.geometry_epoch, prepared.wires, index);
+        }
     }
 
     /// Push one delta onto the journal, evicting the oldest past the cap and
@@ -1345,7 +1738,11 @@ impl Scene {
     /// journal never has a gap (a gap would let a consumer serve stale geometry).
     fn push_geometry_delta(&self, epoch: u64, changes: Vec<(Handle, ChangeKind)>, full: bool) {
         let mut ring = self.geometry_deltas.borrow_mut();
-        ring.push_back(GeometryDelta { epoch, changes, full });
+        ring.push_back(GeometryDelta {
+            epoch,
+            changes,
+            full,
+        });
         while ring.len() > GEOMETRY_JOURNAL_CAP {
             if let Some(ev) = ring.pop_front() {
                 self.geometry_journal_floor.set(ev.epoch);
@@ -1504,7 +1901,7 @@ impl Scene {
     /// is `None` for a freshly added entity. No-op when not recording — the
     /// callers guard with [`Scene::is_recording_undo`] so the clone is skipped
     /// entirely on the common (no-recording) path.
-    pub(crate) fn record_undo_before(&mut self, handle: Handle, before: Option<EntityType>) {
+    pub(crate) fn record_undo_before(&mut self, handle: Handle, before: Option<Arc<EntityType>>) {
         if let Some(rec) = self.undo_recording.as_mut() {
             if !rec.before.contains_key(&handle) {
                 rec.order.push(handle);
@@ -1525,35 +1922,14 @@ impl Scene {
     /// Re-apply one side of an entity delta to the document. For each
     /// `(handle, before, after)`, install the chosen `target` — `before` when
     /// `undo`, `after` on redo: overwrite the entity in place, re-insert it with
-    /// its original handle, or remove it — reseeding the per-handle derived
-    /// caches so fills/meshes follow. Returns the exact per-handle change list
-    /// for the caller to report via [`Scene::bump_entities`]; it does not bump,
-    /// touch the selection, or rebuild any whole-document cache.
-    ///
-    /// `remove_entity` leaves a handle dangling in its owner block record's
-    /// `entity_handles` (harmless — a render/save lookup miss is skipped), so a
-    /// re-insert's `add_entity` push would make it appear twice and emit the
-    /// entity twice on save. Every to-be-re-inserted handle is therefore
-    /// stripped from the block records in one pass first, leaving exactly one
-    /// entry after the re-insert.
+    /// its original handle, or remove it. Returns the exact per-handle change
+    /// list; derived-cache reseeding and the geometry bump are deferred so a
+    /// multi-step undo/redo can process each final handle only once.
     pub(crate) fn apply_entity_delta(
         &mut self,
-        entities: &[(Handle, Option<EntityType>, Option<EntityType>)],
+        entities: &[(Handle, Option<Arc<EntityType>>, Option<Arc<EntityType>>)],
         undo: bool,
     ) -> Vec<(Handle, ChangeKind)> {
-        let reinsert: HashSet<Handle> = entities
-            .iter()
-            .filter_map(|(h, before, after)| {
-                let target = if undo { before } else { after };
-                (target.is_some() && self.document.get_entity(*h).is_none()).then_some(*h)
-            })
-            .collect();
-        if !reinsert.is_empty() {
-            for br in self.document.block_records.iter_mut() {
-                br.entity_handles.retain(|h| !reinsert.contains(h));
-            }
-        }
-
         let mut changes: Vec<(Handle, ChangeKind)> = Vec::with_capacity(entities.len());
         for (h, before, after) in entities {
             let target = if undo { before } else { after };
@@ -1561,50 +1937,27 @@ impl Scene {
             match target {
                 Some(ent) => {
                     if existed {
-                        if let Some(slot) = self.document.get_entity_mut(*h) {
-                            *slot = ent.clone();
-                        }
+                        let _ = self.document.replace_entity_arc(*h, Arc::clone(ent));
                         changes.push((*h, ChangeKind::Modified));
                     } else {
-                        // Re-insert with the original handle: the stored image
-                        // keeps it, and document.add_entity honours a preset,
-                        // non-null handle (routing to its owner block record).
-                        let _ = self.document.add_entity(ent.clone());
+                        // Removal keeps the original block membership in place;
+                        // restoring only the flat storage avoids an O(all block
+                        // members) scan and cannot duplicate the owner link.
+                        let _ = self.document.restore_entity_arc(Arc::clone(ent));
                         changes.push((*h, ChangeKind::Added));
                     }
-                    self.reseed_derived_caches(*h);
                 }
                 None => {
                     if existed {
-                        self.document.remove_entity(*h);
-                        // Drops the now-absent entity's hatch/image/mesh caches.
-                        self.reseed_derived_caches(*h);
+                        self.document.remove_entity_arc(*h);
                         changes.push((*h, ChangeKind::Removed));
                     }
                 }
             }
         }
 
-        // Integrity net: no re-inserted handle may appear more than once across
-        // the block records (a duplicate would emit the entity twice on save).
-        // Debug-only, and skipped entirely when nothing was re-inserted (the
-        // common transform/property-edit case).
-        #[cfg(debug_assertions)]
-        if !reinsert.is_empty() {
-            let mut counts: HashMap<Handle, u32> = HashMap::default();
-            for br in self.document.block_records.iter() {
-                for h in &br.entity_handles {
-                    if reinsert.contains(h) {
-                        *counts.entry(*h).or_default() += 1;
-                    }
-                }
-            }
-            for (h, c) in counts {
-                debug_assert!(
-                    c <= 1,
-                    "delta re-insert duplicated handle {h:?} in block records ({c}×)"
-                );
-            }
+        if !changes.is_empty() {
+            self.invalidate_dependency_index();
         }
 
         changes
@@ -1696,6 +2049,31 @@ impl Scene {
             .map_or(false, |t| t.elapsed().as_millis() < Self::NAV_SETTLE_MS)
     }
 
+    pub(crate) fn record_nav_perf(&self, op: NavPerfOp, started: iced::time::Instant) {
+        if !crate::perf::enabled() {
+            return;
+        }
+        let (space, mode) = if self.current_layout == "Model" {
+            ("Model", "MODEL")
+        } else if self.active_viewport.is_some() {
+            ("Paper", "MSPACE")
+        } else {
+            ("Paper", "PSPACE")
+        };
+        self.nav_perf_pending.set(Some(NavPerfSample {
+            op,
+            space,
+            mode,
+            started,
+            input_ms: started.elapsed().as_secs_f64() * 1000.0,
+            build_ms: 0.0,
+        }));
+    }
+
+    pub(in crate::scene) fn take_nav_perf(&self) -> Option<NavPerfSample> {
+        self.nav_perf_pending.take()
+    }
+
     /// Whether the interaction-LOD hatch suppression is enabled (env
     /// `OCS_HATCH_LOD`), read once. Default OFF: the tessellated hatch pass is
     /// cheap enough that suppression — and its zoom flicker (#258) — is not
@@ -1711,9 +2089,9 @@ impl Scene {
     /// (hatched) frame actually renders after the cursor stops, even when no
     /// input event would otherwise trigger a redraw. Read-only (no side effect).
     pub fn is_settling(&self) -> bool {
-        self.nav_changed_at
-            .get()
-            .map_or(false, |t| t.elapsed().as_millis() < Self::NAV_SETTLE_MS + 130)
+        self.nav_changed_at.get().map_or(false, |t| {
+            t.elapsed().as_millis() < Self::NAV_SETTLE_MS + 130
+        })
     }
 
     /// Re-evaluate every cached mesh's color through `render_style` so a
@@ -1772,6 +2150,41 @@ impl Scene {
         }
     }
 
+    /// Recolour only the named cached solids after a property edit.
+    pub fn recolor_meshes_for_handles(&mut self, handles: &[Handle]) {
+        let bg = self.bg_color;
+        let colors: HashMap<Handle, [f32; 4]> = handles
+            .iter()
+            .filter_map(|&handle| {
+                self.document.get_entity(handle).map(|entity| {
+                    let mut color = self.render_style(entity).0;
+                    if self
+                        .refedit_keep
+                        .as_ref()
+                        .is_some_and(|keep| !keep.contains(&handle))
+                    {
+                        color = crate::scene::cache::block_cache::fade_toward_bg(color, bg);
+                    }
+                    (handle, color)
+                })
+            })
+            .collect();
+        for handle in handles {
+            let Some(color) = colors.get(handle) else {
+                continue;
+            };
+            if let Some(set) = self.meshes.get_mut(handle) {
+                for lod in &mut set.lods {
+                    lod.color = *color;
+                }
+            } else if let Some(set) = self.block_meshes.get_mut(handle) {
+                for lod in &mut set.lods {
+                    lod.color = *color;
+                }
+            }
+        }
+    }
+
     /// Enter / leave the REFEDIT fade. `keep` holds the edited entities (left
     /// bright); everything else renders faded. Re-tessellates wires and
     /// recolours solids so the change shows immediately. (#136)
@@ -1797,17 +2210,20 @@ impl Scene {
         }
     }
 
-    /// Switch the active layout. Bumps `geometry_epoch` so the wire cache
-    /// re-tessellates — `render_style`'s `adapt_to_bg` picks the model or
-    /// paper background depending on `current_layout`, so cached wires
-    /// from the previous layout would be coloured against the wrong bg.
-    /// Also runs `recolor_meshes` so ACIS mesh colour tracks the new bg.
+    /// Switch the active layout without pretending the document geometry
+    /// changed. Resident wire sets already key on block/background, so keeping
+    /// `geometry_epoch` stable lets Model and Paper retain their CPU/GPU data
+    /// across tab switches. Only caches whose contents genuinely depend on the
+    /// active layout or its background are dropped.
     pub fn set_current_layout(&mut self, name: String) {
         if self.current_layout != name {
             self.current_layout = name;
             self.sync_active_space_to_document();
             self.recolor_meshes();
-            self.bump_geometry();
+            *self.wire_cache.borrow_mut() = None;
+            *self.interaction_mesh_cache.borrow_mut() = None;
+            *self.mesh_pick_lookup_cache.borrow_mut() = None;
+            *self.insert_hatch_cache.borrow_mut() = None;
         }
     }
 
@@ -1850,16 +2266,20 @@ impl Scene {
     }
 
     fn current_layout_sheet_viewport_handle(&self) -> Handle {
-        self.document.objects.values().find_map(|obj| {
-            let ObjectType::Layout(layout) = obj else {
-                return None;
-            };
-            if layout.name == self.current_layout {
-                Some(layout.viewport)
-            } else {
-                None
-            }
-        }).unwrap_or(Handle::NULL)
+        self.document
+            .objects
+            .values()
+            .find_map(|obj| {
+                let ObjectType::Layout(layout) = obj else {
+                    return None;
+                };
+                if layout.name == self.current_layout {
+                    Some(layout.viewport)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(Handle::NULL)
     }
 
     /// Guarantee that a paper layout has its full-screen overall (`id == 1`)
@@ -1885,6 +2305,17 @@ impl Scene {
             return;
         };
         if block_record.is_null() {
+            return;
+        }
+
+        // Normal files carry a valid direct Layout→Viewport link. This O(1)
+        // path is hit on every ordinary layout-tab switch.
+        if cur_vp.is_valid()
+            && matches!(
+                self.document.get_entity(cur_vp),
+                Some(EntityType::Viewport(vp)) if vp.common.owner_handle == block_record
+            )
+        {
             return;
         }
 
@@ -1948,9 +2379,9 @@ impl Scene {
         );
         vp.view_center = acadrust::types::Vector3::ZERO;
         vp.view_height = ph * 1.1;
-        if let Ok(handle) =
-            self.document
-                .add_entity_to_layout(EntityType::Viewport(vp), layout_name)
+        if let Ok(handle) = self
+            .document
+            .add_entity_to_layout(EntityType::Viewport(vp), layout_name)
         {
             if let Some(ObjectType::Layout(l)) = self.document.objects.get_mut(&layout_handle) {
                 l.viewport = handle;
@@ -2117,21 +2548,20 @@ impl Scene {
             return None;
         }
         let ((x0, y0), (x1, y1)) = self.paper_limits()?;
-        let (left, bottom, right, top, rot) =
-            self.document.objects.values().find_map(|obj| {
-                if let ObjectType::Layout(l) = obj {
-                    if l.name == self.current_layout {
-                        return Some((
-                            l.plot_margin_left,
-                            l.plot_margin_bottom,
-                            l.plot_margin_right,
-                            l.plot_margin_top,
-                            l.plot_rotation,
-                        ));
-                    }
+        let (left, bottom, right, top, rot) = self.document.objects.values().find_map(|obj| {
+            if let ObjectType::Layout(l) = obj {
+                if l.name == self.current_layout {
+                    return Some((
+                        l.plot_margin_left,
+                        l.plot_margin_bottom,
+                        l.plot_margin_right,
+                        l.plot_margin_top,
+                        l.plot_rotation,
+                    ));
                 }
-                None
-            })?;
+            }
+            None
+        })?;
         // `paper_limits()` already swaps the sheet for a 90°/270° rotation, so the
         // margins must rotate to the same edges: a margin on a physical side moves
         // to the displayed side that side rotates onto.
@@ -2204,7 +2634,9 @@ impl Scene {
             return Some(ps);
         }
         self.document.objects.values().find_map(|o| {
-            let ObjectType::Layout(l) = o else { return None };
+            let ObjectType::Layout(l) = o else {
+                return None;
+            };
             if l.name.as_str() != name {
                 return None;
             }
@@ -2413,7 +2845,9 @@ impl Scene {
             // units, else derive drawing units from the factor (paper = 1).
             let (paper, drawing) = label
                 .split_once(':')
-                .and_then(|(p, d)| Some((p.trim().parse::<f64>().ok()?, d.trim().parse::<f64>().ok()?)))
+                .and_then(|(p, d)| {
+                    Some((p.trim().parse::<f64>().ok()?, d.trim().parse::<f64>().ok()?))
+                })
                 .filter(|&(p, d)| p > 0.0 && d > 0.0)
                 .unwrap_or((1.0, 1.0 / factor));
             self.add_scale(label, paper, drawing);
@@ -2546,9 +2980,7 @@ impl Scene {
                 d.handle = h;
                 d.owner = root_h;
                 self.document.objects.insert(h, ObjectType::Dictionary(d));
-                if let Some(ObjectType::Dictionary(root)) =
-                    self.document.objects.get_mut(&root_h)
-                {
+                if let Some(ObjectType::Dictionary(root)) = self.document.objects.get_mut(&root_h) {
                     root.add_entry("ACAD_SCALELIST", h);
                 }
                 h
@@ -2634,23 +3066,17 @@ impl Scene {
         if self.current_layout == "Model" {
             return vec![];
         }
-        let layout_block = self.current_layout_block_handle();
+        let (layout_block, _, content) = self.paper_viewport_handles();
         if layout_block.is_null() {
             return vec![];
         }
-        let mut result: Vec<(acadrust::Handle, String, Vec<acadrust::Handle>)> = self
-            .document
-            .entities()
-            .filter_map(|e| {
-                if let EntityType::Viewport(vp) = e {
-                    if self.is_content_viewport_in_layout(vp, layout_block) {
-                        Some((vp.common.handle, vp.id, vp.frozen_layers.clone()))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+        let mut result: Vec<(acadrust::Handle, String, Vec<acadrust::Handle>)> = content
+            .iter()
+            .filter_map(|handle| {
+                let Some(EntityType::Viewport(vp)) = self.document.get_entity(*handle) else {
+                    return None;
+                };
+                Some((vp.common.handle, vp.id, vp.frozen_layers.clone()))
             })
             .collect::<Vec<_>>()
             .into_iter()
@@ -2673,20 +3099,11 @@ impl Scene {
         if self.current_layout == "Model" {
             return 0;
         }
-        let layout_block = self.current_layout_block_handle();
+        let (layout_block, _, content) = self.paper_viewport_handles();
         if layout_block.is_null() {
             return 0;
         }
-        self.document
-            .entities()
-            .filter(|e| {
-                if let EntityType::Viewport(vp) = e {
-                    self.is_content_viewport_in_layout(vp, layout_block)
-                } else {
-                    false
-                }
-            })
-            .count()
+        content.len()
     }
 
     /// True when any entities are hidden by Isolate / Hide.
@@ -2958,10 +3375,9 @@ impl Scene {
     /// [`WIRE_CONTENT_GEN`] id per build (relayed via `last_model_wire_gen`)
     /// so the GPU upload gate and `render_signature` skip unchanged content.
     /// Whether the per-viewport annotation scale changes wire output at all
-    /// (PSLTSCALE on, or any annotative entity). Cached per geometry epoch —
-    /// the scan short-circuits on the first annotative entity. When false, a
-    /// viewport's `1/vp_scale` anno override is inert and normalized away so
-    /// all viewports reuse ONE resident tessellation.
+    /// Cached per geometry epoch; the scan short-circuits on the first
+    /// annotative entity. PSLTSCALE no longer participates because dash scaling
+    /// is applied in the wire shader from the viewport uniform.
     fn annotation_affects_wires(&self) -> bool {
         if let Some((epoch, v)) = self.annotation_affects_wires.get() {
             if epoch == self.geometry_epoch {
@@ -2981,11 +3397,10 @@ impl Scene {
                 return v;
             }
         }
-        let v = self.document.header.paper_space_linetype_scaling
-            || self
-                .document
-                .entities()
-                .any(|e| crate::scene::annotative::is_annotative(&self.document, e));
+        let v = self
+            .document
+            .entities()
+            .any(|e| crate::scene::annotative::is_annotative(&self.document, e));
         self.annotation_affects_wires
             .set(Some((self.geometry_epoch, v)));
         v
@@ -3011,34 +3426,13 @@ impl Scene {
         } else {
             self.paper_bg_color
         };
-        let key = {
-            let mut k: u64 = 0xcbf2_9ce4_8422_2325;
-            let mut mix = |x: u64| k = k.rotate_left(17) ^ x.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            mix(block.value());
-            for c in bg {
-                mix(c.to_bits() as u64);
-            }
-            mix(anno_scale_override.map(|a| a.to_bits() as u64).unwrap_or(u64::MAX));
-            match frozen_layers {
-                Some(f) => {
-                    // Order-independent fold of the frozen-layer set.
-                    let mut acc: u64 = 0;
-                    for h in f {
-                        acc ^= h.value().wrapping_mul(0x9E37_79B9_7F4A_7C15);
-                    }
-                    mix(acc);
-                    mix(f.len() as u64);
-                }
-                None => mix(u64::MAX - 1),
-            }
-            k
-        };
+        let key = Self::resident_wire_key(block, bg, anno_scale_override, frozen_layers);
         {
             let sets = self.resident_wire_sets.borrow();
-            if let Some((epoch, gen, arc)) = sets.get(&key) {
-                if *epoch == self.geometry_epoch {
-                    self.last_model_wire_gen.set(*gen);
-                    return Arc::clone(arc);
+            if let Some(set) = sets.get(&key) {
+                if set.epoch == self.geometry_epoch {
+                    self.last_model_wire_gen.set(set.gen);
+                    return Arc::clone(&set.wires);
                 }
             }
         }
@@ -3063,7 +3457,9 @@ impl Scene {
             self.append_scene_markers(&mut wires, bg);
         }
         self.apply_refedit_fade(&mut wires, bg);
-        self.last_tess_ms.set(t_tess.elapsed().as_secs_f32() * 1000.0);
+        let layout = Self::resident_wire_layout(&wires);
+        self.last_tess_ms
+            .set(t_tess.elapsed().as_secs_f32() * 1000.0);
         self.last_tess_wires.set(wires.len());
         let arc = Arc::new(wires);
         let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
@@ -3077,12 +3473,50 @@ impl Scene {
         // Evict stale entries (older epochs / abandoned keys) so switching
         // spaces or re-scaling a viewport can't accumulate dead full sets.
         let cur_epoch = self.geometry_epoch;
-        sets.retain(|_, (e, ..)| *e == cur_epoch);
+        sets.retain(|_, set| set.epoch == cur_epoch);
         if sets.len() > 8 {
             sets.clear();
         }
-        sets.insert(key, (cur_epoch, gen, Arc::clone(&arc)));
+        sets.insert(
+            key,
+            ResidentWireSet {
+                epoch: cur_epoch,
+                gen,
+                wires: Arc::clone(&arc),
+                layout,
+            },
+        );
         arc
+    }
+
+    fn resident_wire_key(
+        block: Handle,
+        bg: [f32; 4],
+        anno_scale_override: Option<f32>,
+        frozen_layers: Option<&HashSet<Handle>>,
+    ) -> u64 {
+        let mut key: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix =
+            |value: u64| key = key.rotate_left(17) ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        mix(block.value());
+        for component in bg {
+            mix(component.to_bits() as u64);
+        }
+        mix(anno_scale_override
+            .map(|scale| scale.to_bits() as u64)
+            .unwrap_or(u64::MAX));
+        match frozen_layers {
+            Some(frozen) => {
+                let mut signature = 0u64;
+                for handle in frozen {
+                    signature ^= handle.value().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                }
+                mix(signature);
+                mix(frozen.len() as u64);
+            }
+            None => mix(u64::MAX - 1),
+        }
+        key
     }
 
     /// The GPU wire-arena handoff for a viewport whose content id is `gen`:
@@ -3093,11 +3527,61 @@ impl Scene {
     pub(crate) fn model_wire_patch_for(
         &self,
         gen: u64,
-    ) -> Option<(u64, Arc<Vec<(Handle, ChangeKind)>>)> {
+    ) -> Option<(u64, Arc<WireGpuPatch>)> {
         match &*self.model_wire_gpu_patch.borrow() {
-            Some((prev, new, changes)) if *new == gen => Some((*prev, Arc::clone(changes))),
+            Some((prev, new, patch)) if *new == gen => Some((*prev, Arc::clone(patch))),
             _ => None,
         }
+    }
+
+    fn resident_wire_layout(wires: &[WireModel]) -> Option<ResidentWireLayout> {
+        let mut order = Vec::new();
+        let mut ranges = HashMap::default();
+        let mut current: Option<(Handle, usize)> = None;
+        let mut marker_start = wires.len();
+
+        for (index, wire) in wires.iter().enumerate() {
+            let Some(handle) = Self::handle_from_wire_name(&wire.name) else {
+                if let Some((handle, start)) = current.take() {
+                    if ranges.insert(handle, (start, index - start)).is_some() {
+                        return None;
+                    }
+                }
+                marker_start = index;
+                if wires[index..]
+                    .iter()
+                    .any(|tail| Self::handle_from_wire_name(&tail.name).is_some())
+                {
+                    return None;
+                }
+                break;
+            };
+            if current.map(|(h, _)| h) != Some(handle) {
+                if let Some((previous, start)) = current.take() {
+                    if ranges.insert(previous, (start, index - start)).is_some() {
+                        return None;
+                    }
+                }
+                if ranges.contains_key(&handle) {
+                    return None;
+                }
+                order.push(handle);
+                current = Some((handle, index));
+            }
+        }
+        if let Some((handle, start)) = current {
+            if ranges
+                .insert(handle, (start, marker_start - start))
+                .is_some()
+            {
+                return None;
+            }
+        }
+        Some(ResidentWireLayout {
+            order,
+            ranges,
+            marker_start,
+        })
     }
 
     /// Bring the resident set for `key` up to the current epoch by replaying only
@@ -3117,62 +3601,41 @@ impl Scene {
         anno_scale_override: Option<f32>,
         frozen_layers: Option<&HashSet<Handle>>,
     ) -> Option<Arc<Vec<WireModel>>> {
+        let perf = crate::perf::enabled();
+        let t_patch = iced::time::Instant::now();
         // The entry must exist, be stale, and be uniquely held so we can move
         // its wires out rather than deep-clone them.
         let cached_epoch = {
             let sets = self.resident_wire_sets.borrow();
             let entry = sets.get(&key)?;
-            if entry.0 == self.geometry_epoch || Arc::strong_count(&entry.2) != 1 {
+            if entry.epoch == self.geometry_epoch || entry.layout.is_none() {
                 return None;
             }
-            entry.0
+            let strong = Arc::strong_count(&entry.wires);
+            if strong != 1 {
+                if perf {
+                    crate::perf_record!("[perf] resident-shared strong={strong}");
+                }
+                return None;
+            }
+            entry.epoch
         };
         let deltas = self.replay_since(cached_epoch)?;
 
         // Take ownership of the cached assembly (guaranteed unique above).
         // `prev_gen` is the content id the GPU currently holds for this set — the
         // base the wire-arena patch replays from.
-        let (prev_gen, owned) = {
+        let (prev_gen, mut owned, mut layout) = {
             let removed = self.resident_wire_sets.borrow_mut().remove(&key)?;
-            (removed.1, Arc::try_unwrap(removed.2).ok()?)
+            (
+                removed.gen,
+                Arc::try_unwrap(removed.wires).ok()?,
+                removed.layout?,
+            )
         };
-
-        // Group into per-entity runs. Bail if any wire isn't named with a handle
-        // or an entity's wires aren't contiguous — the from-scratch sort puts
-        // each entity's wires in one contiguous run, so a violation means our
-        // move-and-reassemble model doesn't hold and we must full-rebuild.
-        let mut old_runs: HashMap<Handle, Vec<WireModel>> = HashMap::default();
-        // The assembled draw order (one entry per entity, in the order they were
-        // laid out). Lets an all-Modified edit — which never reorders — reassemble
-        // by walking just these (~10k) handles instead of the whole document.
-        let mut old_order: Vec<Handle> = Vec::new();
-        {
-            let mut cur: Option<Handle> = None;
-            let mut run: Vec<WireModel> = Vec::new();
-            for w in owned {
-                let h = Self::handle_from_wire_name(&w.name)?;
-                if Some(h) != cur {
-                    if let Some(ph) = cur.take() {
-                        if old_runs.insert(ph, std::mem::take(&mut run)).is_some() {
-                            return None;
-                        }
-                    }
-                    cur = Some(h);
-                    old_order.push(h);
-                }
-                run.push(w);
-            }
-            if let Some(ph) = cur {
-                if old_runs.insert(ph, run).is_some() {
-                    return None;
-                }
-            }
+        if layout.marker_start > owned.len() {
+            return None;
         }
-        // An all-Modified edit keeps the layout (no entity added / removed), so
-        // the draw order is exactly `old_order` — skip the whole-document scan.
-        let structural = deltas
-            .iter()
-            .any(|(_, k)| !matches!(k, ChangeKind::Modified));
 
         // Re-tessellate the changed entities, replicating the full build's exact
         // context (anno derivation, empty selection, no cull / no LOD). Faded
@@ -3189,10 +3652,8 @@ impl Scene {
         let empty_sel: HashSet<Handle> = HashSet::default();
         let mut new_runs: HashMap<Handle, Vec<WireModel>> = HashMap::default();
         let mut memo_updates: Vec<(Handle, Arc<Vec<WireModel>>)> = Vec::new();
+        let mut visible_changed: HashSet<Handle> = HashSet::default();
         for (h, kind) in &deltas {
-            // A changed entity's old run never carries over; unchanged entities
-            // are the only ones left in old_runs after this.
-            old_runs.remove(h);
             if matches!(kind, ChangeKind::Removed) {
                 continue;
             }
@@ -3202,6 +3663,7 @@ impl Scene {
             if !self.resident_entity_visible(e, block, frozen_layers) {
                 continue;
             }
+            visible_changed.insert(*h);
             let raw = tessellate_entity(
                 &self.document,
                 &empty_sel,
@@ -3226,51 +3688,123 @@ impl Scene {
             }
         }
 
-        // Reassemble, then apply the identical draw-order sort
-        // wires_for_block_culled uses. Emission order IS the final order when the
-        // block has no SortEntitiesTable (the sort below no-ops), so it must match
-        // a from-scratch build: document order. An all-Modified edit never reorders
-        // — reuse the recorded `old_order` (~10k handles) instead of walking the
-        // whole document (~800k). Add/Remove change positions, so fall back to the
-        // document scan. Either way a leftover run (a kept handle we couldn't
-        // place) means an inconsistency we don't patch.
-        let mut new_vec: Vec<WireModel> = Vec::new();
-        if structural {
-            for e in self.document.entities() {
-                let h = e.common().handle;
-                if let Some(run) = new_runs.remove(&h) {
-                    new_vec.extend(run);
-                } else if let Some(run) = old_runs.remove(&h) {
-                    new_vec.extend(run);
-                }
-            }
-        } else {
-            for h in old_order {
-                if let Some(run) = new_runs.remove(&h) {
-                    new_vec.extend(run);
-                } else if let Some(run) = old_runs.remove(&h) {
-                    new_vec.extend(run);
-                }
-            }
-        }
-        if !new_runs.is_empty() || !old_runs.is_empty() {
-            return None;
-        }
+        // Keep the submission-order directory current. Adds are inserted by
+        // the same effective SortEntitiesTable key used by the full builder;
+        // hidden Modified entities retain a zero-length placeholder so grip
+        // commit restores them at their original position.
         {
             let cache = self.sort_cache.borrow();
-            if let Some((_, ref idx)) = *cache {
-                if let Some(sort_map) = idx.get(&block) {
-                    new_vec.sort_by_key(|w| {
-                        let key = Self::handle_from_wire_name(&w.name)
-                            .map(|h| h.value())
-                            .unwrap_or(u64::MAX);
-                        sort_map.get(&key).copied().unwrap_or(key)
-                    });
+            let sort_map = cache
+                .as_ref()
+                .and_then(|(_, index)| index.get(&block));
+            let effective = |handle: Handle| {
+                sort_map
+                    .and_then(|map| map.get(&handle.value()))
+                    .copied()
+                    .unwrap_or(handle.value())
+            };
+            for &(handle, kind) in &deltas {
+                if matches!(kind, ChangeKind::Removed) {
+                    layout.order.retain(|&h| h != handle);
+                    continue;
+                }
+                if visible_changed.contains(&handle) && !layout.order.contains(&handle) {
+                    let key = effective(handle);
+                    let position = layout
+                        .order
+                        .partition_point(|&existing| effective(existing) <= key);
+                    layout.order.insert(position, handle);
                 }
             }
         }
 
-        let arc = Arc::new(new_vec);
+        // Splice only changed runs into the uniquely-owned flat Vec. Same-size
+        // edits overwrite in place. Grip hide/show shifts shallow WireModel
+        // structs once, instead of cloning/grouping all nested geometry.
+        let mut gpu_runs: HashMap<Handle, Arc<Vec<WireModel>>> = HashMap::default();
+        let mut index_edits = Vec::new();
+        for &(handle, kind) in &deltas {
+            let new_run = if matches!(kind, ChangeKind::Removed) {
+                Vec::new()
+            } else {
+                new_runs.remove(&handle).unwrap_or_default()
+            };
+            gpu_runs.insert(handle, Arc::new(new_run.clone()));
+            let new_len = new_run.len();
+            let old_range = layout.ranges.remove(&handle);
+            if old_range.is_none() && new_len == 0 {
+                continue;
+            }
+            let (start, old_len) = match old_range {
+                Some(range) => range,
+                None => {
+                    let order_index = layout.order.iter().position(|&h| h == handle)?;
+                    let start = layout.order[order_index + 1..]
+                        .iter()
+                        .find_map(|next| layout.ranges.get(next).map(|range| range.0))
+                        .unwrap_or(layout.marker_start);
+                    (start, 0)
+                }
+            };
+            if start + old_len > layout.marker_start || layout.marker_start > owned.len() {
+                return None;
+            }
+
+            if old_len == new_len {
+                for (slot, wire) in owned[start..start + old_len]
+                    .iter_mut()
+                    .zip(new_run)
+                {
+                    *slot = wire;
+                }
+            } else {
+                index_edits.push(WireIndexEdit {
+                    handle,
+                    start,
+                    old_len,
+                    new_len,
+                });
+                owned.splice(start..start + old_len, new_run);
+                let delta = new_len as isize - old_len as isize;
+                for range in layout.ranges.values_mut() {
+                    if range.0 >= start + old_len {
+                        range.0 = (range.0 as isize + delta) as usize;
+                    }
+                }
+                layout.marker_start = (layout.marker_start as isize + delta) as usize;
+            }
+            if new_len != 0 {
+                layout.ranges.insert(handle, (start, new_len));
+            }
+        }
+        if !new_runs.is_empty() {
+            return None;
+        }
+        let added: HashSet<Handle> = deltas
+            .iter()
+            .filter_map(|&(handle, kind)| {
+                matches!(kind, ChangeKind::Added).then_some(handle)
+            })
+            .collect();
+        let mut saw_added = false;
+        let mut new_handles_are_suffix = true;
+        for handle in &layout.order {
+            if added.contains(handle) {
+                saw_added = true;
+            } else if saw_added && layout.ranges.contains_key(handle) {
+                new_handles_are_suffix = false;
+                break;
+            }
+        }
+        let face_pass_changed = deltas.iter().any(|&(handle, kind)| {
+            matches!(kind, ChangeKind::Removed)
+                || matches!(self.document.get_entity(handle), Some(EntityType::Face3D(_)))
+                || gpu_runs.get(&handle).is_some_and(|run| {
+                    run.iter().any(|wire| !wire.fill_tris.is_empty())
+                })
+        });
+
+        let arc = Arc::new(owned);
         self.last_tess_wires.set(arc.len());
         self.resident_patch_hits
             .set(self.resident_patch_hits.get() + 1);
@@ -3280,13 +3814,38 @@ impl Scene {
         // those entities' slabs. Only for the Model set (the arena is model-only);
         // the render layer verifies prev_gen against what the GPU actually holds.
         if wire_gpu_patch_enabled() && block == self.model_space_block_handle() {
-            *self.model_wire_gpu_patch.borrow_mut() =
-                Some((prev_gen, gen, Arc::new(deltas.clone())));
+            *self.model_wire_gpu_patch.borrow_mut() = Some((
+                prev_gen,
+                gen,
+                Arc::new(WireGpuPatch {
+                    changes: Arc::new(deltas.clone()),
+                    runs: Arc::new(gpu_runs),
+                    index_edits: Arc::new(index_edits),
+                    new_handles_are_suffix,
+                    face_pass_changed,
+                }),
+            ));
         }
         let cur_epoch = self.geometry_epoch;
         let mut sets = self.resident_wire_sets.borrow_mut();
-        sets.retain(|_, (e, ..)| *e == cur_epoch);
-        sets.insert(key, (cur_epoch, gen, Arc::clone(&arc)));
+        sets.retain(|_, set| set.epoch == cur_epoch);
+        sets.insert(
+            key,
+            ResidentWireSet {
+                epoch: cur_epoch,
+                gen,
+                wires: Arc::clone(&arc),
+                layout: Some(layout),
+            },
+        );
+        if perf {
+            crate::perf_record!(
+                "[perf] resident-patch {:>7.1}ms wires={} changes={}",
+                t_patch.elapsed().as_secs_f64() * 1000.0,
+                arc.len(),
+                deltas.len(),
+            );
+        }
         Some(arc)
     }
 
@@ -3298,9 +3857,9 @@ impl Scene {
     fn paper_sheet_wires_arc(&self) -> Arc<Vec<WireModel>> {
         {
             let cache = self.paper_sheet_cache.borrow();
-            if let Some((epoch, gen, ref arc)) = *cache {
-                if epoch == self.geometry_epoch {
-                    self.last_model_wire_gen.set(gen);
+            if let Some((epoch, gen, arc)) = cache.get(&self.current_layout) {
+                if *epoch == self.geometry_epoch {
+                    self.last_model_wire_gen.set(*gen);
                     return Arc::clone(arc);
                 }
             }
@@ -3322,8 +3881,12 @@ impl Scene {
         let arc = Arc::new(wires);
         let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
         self.last_model_wire_gen.set(gen);
-        *self.paper_sheet_cache.borrow_mut() =
-            Some((self.geometry_epoch, gen, Arc::clone(&arc)));
+        let mut cache = self.paper_sheet_cache.borrow_mut();
+        cache.retain(|_, (epoch, _, _)| *epoch == self.geometry_epoch);
+        cache.insert(
+            self.current_layout.clone(),
+            (self.geometry_epoch, gen, Arc::clone(&arc)),
+        );
         arc
     }
 
@@ -3383,33 +3946,105 @@ impl Scene {
     /// entities of different types order correctly against each other.
     pub(super) fn draw_depth_map(&self) -> Arc<HashMap<u64, [f32; 2]>> {
         {
-            // Draw order depends on each block's entity COUNT (the rank
-            // denominator) and the entities' handles / SortEntitiesTable — none of
-            // which a Modify (move / rotate / scale / colour / hide) touches. So an
-            // all-Modified edit keeps the map; only Add / Remove (count change) or
-            // a table change (which arrives as a `full` delta) rebuilds it.
-            let reuse = {
-                let cache = self.draw_depth_cache.borrow();
-                match *cache {
-                    Some((epoch, ref arc))
-                        if epoch == self.geometry_epoch
-                            || matches!(
-                                self.replay_since(epoch),
-                                Some(ref d) if d.iter().all(|&(_, k)| k == ChangeKind::Modified)
-                            ) =>
-                    {
-                        Some(Arc::clone(arc))
-                    }
-                    _ => None,
+            let cache = self.draw_depth_cache.borrow();
+            if let Some(cache) = cache.as_ref() {
+                if cache.epoch == self.geometry_epoch {
+                    return Arc::clone(&cache.depths);
                 }
-            };
-            if let Some(arc) = reuse {
-                if let Some((ref mut e, _)) = *self.draw_depth_cache.borrow_mut() {
-                    *e = self.geometry_epoch;
+            }
+        }
+        let perf = crate::perf::enabled();
+        let t_depth = iced::time::Instant::now();
+
+        // Replay Add/Remove into the retained block order. This avoids rescanning
+        // every document entity and re-sorting every block for one new LINE.
+        let stale_cache = self.draw_depth_cache.borrow_mut().take();
+        if let Some(mut cache) = stale_cache {
+            if let Some(deltas) = self.replay_since(cache.epoch) {
+                if deltas
+                    .iter()
+                    .all(|(_, kind)| matches!(kind, ChangeKind::Modified))
+                {
+                    cache.epoch = self.geometry_epoch;
+                    let arc = Arc::clone(&cache.depths);
+                    *self.draw_depth_cache.borrow_mut() = Some(cache);
+                    return arc;
+                }
+
+                let mut depths = (*cache.depths).clone();
+                let mut affected: HashSet<Handle> = HashSet::default();
+                let ms = self.model_space_block_handle();
+                for &(handle, kind) in &deltas {
+                    match kind {
+                        ChangeKind::Modified => {}
+                        ChangeKind::Removed => {
+                            if let Some(block) = cache.owners.remove(&handle.value()) {
+                                if let Some(order) = cache.blocks.get_mut(&block) {
+                                    order.retain(|(value, _)| *value != handle.value());
+                                }
+                                affected.insert(block);
+                            }
+                            depths.remove(&handle.value());
+                        }
+                        ChangeKind::Added => {
+                            let Some(entity) = self.document.get_entity(handle) else {
+                                continue;
+                            };
+                            if matches!(
+                                entity,
+                                EntityType::Solid3D(_)
+                                    | EntityType::Region(_)
+                                    | EntityType::Body(_)
+                                    | EntityType::Surface(_)
+                            ) {
+                                continue;
+                            }
+                            let common = entity.common();
+                            let block = if common.owner_handle.is_null() {
+                                ms
+                            } else {
+                                common.owner_handle
+                            };
+                            let value = handle.value();
+                            // A newly allocated handle cannot already have a
+                            // SortEntitiesTable override; its effective key is
+                            // therefore its own handle.
+                            let order = cache.blocks.entry(block).or_default();
+                            let position =
+                                order.partition_point(|(_, effective)| *effective <= value);
+                            order.insert(position, (value, value));
+                            cache.owners.insert(value, block);
+                            affected.insert(block);
+                        }
+                    }
+                }
+                for block in affected {
+                    let Some(order) = cache.blocks.get(&block) else {
+                        continue;
+                    };
+                    let denom = order.len() as f32 + 1.0;
+                    let half = 1.0 / denom;
+                    for (rank, (value, _)) in order.iter().enumerate() {
+                        let norm = (rank as f32 + 1.0) / denom;
+                        depths.insert(*value, [(norm - 0.5) * 2.0, half]);
+                    }
+                }
+                let arc = Arc::new(depths);
+                cache.epoch = self.geometry_epoch;
+                cache.depths = Arc::clone(&arc);
+                *self.draw_depth_cache.borrow_mut() = Some(cache);
+                if perf {
+                    crate::perf_record!(
+                        "[perf] draw-depth-patch {:>7.1}ms entries={} changes={}",
+                        t_depth.elapsed().as_secs_f64() * 1000.0,
+                        arc.len(),
+                        deltas.len(),
+                    );
                 }
                 return arc;
             }
         }
+
         use acadrust::objects::ObjectType;
         // Per-block SortEntitiesTable overrides: block -> (entity_val -> sort_val).
         let mut overrides: HashMap<Handle, HashMap<u64, u64>> = HashMap::default();
@@ -3434,7 +4069,10 @@ impl Scene {
             // draw-order biasing so 3D occlusion is never flattened.
             if matches!(
                 e,
-                EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) | EntityType::Surface(_)
+                EntityType::Solid3D(_)
+                    | EntityType::Region(_)
+                    | EntityType::Body(_)
+                    | EntityType::Surface(_)
             ) {
                 continue;
             }
@@ -3451,24 +4089,40 @@ impl Scene {
                 .unwrap_or(hv);
             by_block.entry(block).or_default().push((hv, eff));
         }
+        for order in by_block.values_mut() {
+            order.sort_by_key(|(_, effective)| *effective);
+        }
         let mut depth_map: HashMap<u64, [f32; 2]> = HashMap::default();
-        for (_block, mut v) in by_block {
-            v.sort_by_key(|(_, eff)| *eff);
-            let denom = (v.len() as f32) + 1.0;
+        let mut owners: HashMap<u64, Handle> = HashMap::default();
+        for (&block, order) in &by_block {
+            let denom = (order.len() as f32) + 1.0;
             // Adjacent ranks are 2/denom apart; a child sub-range of
             // ±half = ±1/denom around the parent depth never crosses them.
             let half = 1.0 / denom;
-            for (rank, (hv, _)) in v.into_iter().enumerate() {
+            for (rank, (hv, _)) in order.iter().enumerate() {
                 // Signed (-1,1): back ranks → negative, front → positive,
                 // mid → ~0. The shader applies `z -= draw_depth * BIAS`, so a
                 // default/unranked 0.0 means "no bias" (neutral) — which keeps
                 // 3D mesh faces and transient wires at their real depth.
                 let norm = (rank as f32 + 1.0) / denom; // (0,1)
-                depth_map.insert(hv, [(norm - 0.5) * 2.0, half]);
+                depth_map.insert(*hv, [(norm - 0.5) * 2.0, half]);
+                owners.insert(*hv, block);
             }
         }
         let arc = Arc::new(depth_map);
-        *self.draw_depth_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&arc)));
+        *self.draw_depth_cache.borrow_mut() = Some(DrawDepthCache {
+            epoch: self.geometry_epoch,
+            depths: Arc::clone(&arc),
+            blocks: by_block,
+            owners,
+        });
+        if perf {
+            crate::perf_record!(
+                "[perf] draw-depth     {:>7.1}ms entries={}",
+                t_depth.elapsed().as_secs_f64() * 1000.0,
+                arc.len(),
+            );
+        }
         arc
     }
 
@@ -3480,15 +4134,16 @@ impl Scene {
         // drawings. Key on a signature of `selected` instead, so hover (which
         // never changes `selected`) keeps the cache warm.
         let sel_sig = self.selected_set_sig();
+        let space = self.current_layout.clone();
         {
             let reuse = {
                 let cache = self.hatch_cache.borrow();
-                match *cache {
+                match cache.get(&space) {
                     // Selection tint is baked in, so the selected set must also
                     // match; category = a changed handle that is a hatch/solid fill.
-                    Some((cached_epoch, cached_sel, ref arc))
-                        if cached_sel == sel_sig
-                            && self.category_cache_valid(cached_epoch, |h| {
+                    Some((cached_epoch, cached_sel, arc))
+                        if *cached_sel == sel_sig
+                            && self.category_cache_valid(*cached_epoch, |h| {
                                 self.hatches.contains_key(&h)
                             }) =>
                     {
@@ -3498,14 +4153,17 @@ impl Scene {
                 }
             };
             if let Some(arc) = reuse {
-                if let Some((ref mut e, _, _)) = *self.hatch_cache.borrow_mut() {
+                if let Some((e, _, _)) = self.hatch_cache.borrow_mut().get_mut(&space) {
                     *e = self.geometry_epoch;
                 }
                 return arc;
             }
         }
         let arc = Arc::new(self.synced_hatch_models(None));
-        *self.hatch_cache.borrow_mut() = Some((self.geometry_epoch, sel_sig, Arc::clone(&arc)));
+        self.hatch_cache.borrow_mut().insert(
+            space,
+            (self.geometry_epoch, sel_sig, Arc::clone(&arc)),
+        );
         arc
     }
 
@@ -3521,14 +4179,15 @@ impl Scene {
     }
 
     pub(super) fn wipeout_models_arc(&self) -> Arc<Vec<HatchModel>> {
+        let space = self.current_layout.clone();
         {
             let reuse = {
                 let cache = self.wipeout_cache.borrow();
-                match *cache {
-                    Some((cached_epoch, ref arc))
+                match cache.get(&space) {
+                    Some((cached_epoch, arc))
                         // wipeout_models scans the whole document for Wipeout
                         // entities; relevance = the changed handle is a Wipeout.
-                        if self.category_cache_valid(cached_epoch, |h| {
+                        if self.category_cache_valid(*cached_epoch, |h| {
                             matches!(
                                 self.document.get_entity(h),
                                 Some(EntityType::Wipeout(_))
@@ -3541,14 +4200,16 @@ impl Scene {
                 }
             };
             if let Some(arc) = reuse {
-                if let Some((ref mut e, _)) = *self.wipeout_cache.borrow_mut() {
+                if let Some((e, _)) = self.wipeout_cache.borrow_mut().get_mut(&space) {
                     *e = self.geometry_epoch;
                 }
                 return arc;
             }
         }
         let arc = Arc::new(self.wipeout_models(None));
-        *self.wipeout_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&arc)));
+        self.wipeout_cache
+            .borrow_mut()
+            .insert(space, (self.geometry_epoch, Arc::clone(&arc)));
         arc
     }
 
@@ -3589,7 +4250,10 @@ impl Scene {
             .iter()
             .filter_map(|(handle, model)| {
                 if frozen.is_some() {
-                    let layer = self.document.get_entity(*handle).map(|e| e.common().layer.clone());
+                    let layer = self
+                        .document
+                        .get_entity(*handle)
+                        .map(|e| e.common().layer.clone());
                     if let Some(layer) = layer {
                         if self.layer_frozen_in(&layer, frozen) {
                             return None;
@@ -3629,16 +4293,17 @@ impl Scene {
     }
 
     pub(super) fn meshes_arc(&self) -> Arc<Vec<MeshLodSet>> {
+        let space = self.current_layout.clone();
         {
             let reuse = {
                 let cache = self.mesh_cache.borrow();
-                match *cache {
+                match cache.get(&space) {
                     // Top-level solids seed self.meshes; the instanced_block part
                     // is driven by INSERTs, so an INSERT edit (e.g. a move) must
                     // also invalidate. Block-definition edits route through
                     // bump_geometry (a full delta) and invalidate regardless.
-                    Some((cached_epoch, ref arc))
-                        if self.category_cache_valid(cached_epoch, |h| {
+                    Some((cached_epoch, arc))
+                        if self.category_cache_valid(*cached_epoch, |h| {
                             self.meshes.contains_key(&h)
                                 || matches!(
                                     self.document.get_entity(h),
@@ -3652,15 +4317,144 @@ impl Scene {
                 }
             };
             if let Some(arc) = reuse {
-                if let Some((ref mut e, _)) = *self.mesh_cache.borrow_mut() {
+                if let Some((e, _)) = self.mesh_cache.borrow_mut().get_mut(&space) {
                     *e = self.geometry_epoch;
                 }
                 return arc;
             }
         }
         let arc = Arc::new(self.mesh_models(None));
-        *self.mesh_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&arc)));
+        self.mesh_cache
+            .borrow_mut()
+            .insert(space, (self.geometry_epoch, Arc::clone(&arc)));
         arc
+    }
+
+    fn interaction_block_handle(&self) -> Handle {
+        if self.block_edit_block.is_none() && self.active_viewport.is_some() {
+            self.model_space_block_handle()
+        } else {
+            self.current_layout_block_handle()
+        }
+    }
+
+    fn interaction_viewport_frozen_layers(&self) -> Option<&[Handle]> {
+        if self.block_edit_block.is_some() {
+            return None;
+        }
+        let handle = self.active_viewport?;
+        match self.document.get_entity(handle) {
+            Some(EntityType::Viewport(viewport)) => Some(&viewport.frozen_layers),
+            _ => None,
+        }
+    }
+
+    fn interaction_space_key(&self) -> u64 {
+        let block = self.interaction_block_handle().value();
+        let viewport = self
+            .active_viewport
+            .filter(|_| self.block_edit_block.is_none())
+            .map_or(0, |handle| handle.value());
+        let frozen = self
+            .interaction_viewport_frozen_layers()
+            .map_or(0, |layers| {
+                layers
+                    .iter()
+                    .fold(layers.len() as u64, |signature, handle| {
+                        signature ^ handle.value().wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    })
+            });
+        block ^ viewport.rotate_left(29) ^ frozen.rotate_left(47)
+    }
+
+    fn interaction_layer_frozen(&self, layer: &str) -> bool {
+        let Some(frozen) = self.interaction_viewport_frozen_layers() else {
+            return false;
+        };
+        self.document
+            .layers
+            .get(layer)
+            .is_some_and(|record| frozen.contains(&record.handle))
+    }
+
+    fn interaction_meshes_arc(&self) -> Arc<Vec<MeshLodSet>> {
+        let block = self.interaction_block_handle();
+        if self.block_edit_block.is_none() && block == self.model_space_block_handle() {
+            let Some(frozen) = self.interaction_viewport_frozen_layers() else {
+                return self.meshes_arc();
+            };
+            if frozen.is_empty() {
+                return self.meshes_arc();
+            }
+            let key = self.interaction_space_key();
+            if let Some((epoch, cached_key, meshes)) = self.interaction_mesh_cache.borrow().as_ref()
+            {
+                if *epoch == self.geometry_epoch && *cached_key == key {
+                    return Arc::clone(meshes);
+                }
+            }
+            let frozen: HashSet<Handle> = frozen.iter().copied().collect();
+            let meshes = self.meshes_for_viewport(&frozen);
+            *self.interaction_mesh_cache.borrow_mut() =
+                Some((self.geometry_epoch, key, Arc::clone(&meshes)));
+            return meshes;
+        }
+        let key = self.interaction_space_key();
+        if let Some((epoch, cached_key, meshes)) = self.interaction_mesh_cache.borrow().as_ref() {
+            if *epoch == self.geometry_epoch && *cached_key == key {
+                return Arc::clone(meshes);
+            }
+        }
+        let mut all: Vec<MeshLodSet> = self
+            .meshes
+            .iter()
+            .filter(|(&handle, _)| {
+                self.mesh_entity_visible(handle)
+                    && self.document.get_entity(handle).is_some_and(|entity| {
+                        self.belongs_to_visible_block(handle, entity.common().owner_handle, block)
+                    })
+            })
+            .map(|(_, set)| set.clone())
+            .collect();
+        all.extend(self.instanced_block_meshes(block, None));
+        let meshes = Arc::new(all);
+        *self.interaction_mesh_cache.borrow_mut() =
+            Some((self.geometry_epoch, key, Arc::clone(&meshes)));
+        meshes
+    }
+
+    fn mesh_pick_lookup(&self, meshes: &Arc<Vec<MeshLodSet>>) -> Arc<HashMap<Handle, Vec<u32>>> {
+        let source = Arc::as_ptr(meshes) as usize;
+        {
+            let cache = self.mesh_pick_lookup_cache.borrow();
+            if let Some((ptr, weak, lookup)) = cache.as_ref() {
+                if *ptr == source
+                    && weak
+                        .upgrade()
+                        .is_some_and(|cached| Arc::ptr_eq(&cached, meshes))
+                {
+                    return Arc::clone(lookup);
+                }
+            }
+        }
+        let mut lookup: HashMap<Handle, Vec<u32>> = HashMap::default();
+        for (index, set) in meshes.iter().enumerate() {
+            let Some(value) = set
+                .lods
+                .first()
+                .and_then(|mesh| mesh.name.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            lookup
+                .entry(Handle::new(value))
+                .or_default()
+                .push(index as u32);
+        }
+        let lookup = Arc::new(lookup);
+        *self.mesh_pick_lookup_cache.borrow_mut() =
+            Some((source, Arc::downgrade(meshes), Arc::clone(&lookup)));
+        lookup
     }
 
     /// Solid-mesh set (top-level + block-instanced), optionally dropping those
@@ -3687,11 +4481,13 @@ impl Scene {
         // block so a block placed at an INSERT scale renders at the right size
         // (#123) — model space normally, the edited block in a BEDIT editor so
         // model-space solids don't leak into it (#261).
-        all.extend(self.instanced_block_meshes(
-            self.block_edit_block
-                .unwrap_or_else(|| self.model_space_block_handle()),
-            frozen,
-        ));
+        all.extend(
+            self.instanced_block_meshes(
+                self.block_edit_block
+                    .unwrap_or_else(|| self.model_space_block_handle()),
+                frozen,
+            ),
+        );
         all
     }
 
@@ -3734,13 +4530,17 @@ impl Scene {
     /// Hatch / 2-D-solid fills for a content viewport, with its frozen layers
     /// removed. Cached per frozen-set signature (viewports sharing a frozen set
     /// share the build). No frozen layers → the shared unfiltered set.
-    pub(super) fn hatch_models_for_viewport(&self, frozen: &HashSet<Handle>) -> Arc<Vec<HatchModel>> {
+    pub(super) fn hatch_models_for_viewport(
+        &self,
+        frozen: &HashSet<Handle>,
+    ) -> Arc<Vec<HatchModel>> {
         if frozen.is_empty() {
             return self.hatch_models_arc();
         }
         let sig = Self::frozen_layers_sig(frozen);
+        let key = (self.current_layout.clone(), sig);
         let sel = self.selected_set_sig();
-        if let Some((e, s, arc)) = self.frozen_hatch_cache.borrow().get(&sig) {
+        if let Some((e, s, arc)) = self.frozen_hatch_cache.borrow().get(&key) {
             if *e == self.geometry_epoch && *s == sel {
                 return Arc::clone(arc);
             }
@@ -3748,17 +4548,21 @@ impl Scene {
         let arc = Arc::new(self.synced_hatch_models(Some(frozen)));
         self.frozen_hatch_cache
             .borrow_mut()
-            .insert(sig, (self.geometry_epoch, sel, Arc::clone(&arc)));
+            .insert(key, (self.geometry_epoch, sel, Arc::clone(&arc)));
         arc
     }
 
     /// Wipeout fills for a content viewport, with its frozen layers removed.
-    pub(super) fn wipeout_models_for_viewport(&self, frozen: &HashSet<Handle>) -> Arc<Vec<HatchModel>> {
+    pub(super) fn wipeout_models_for_viewport(
+        &self,
+        frozen: &HashSet<Handle>,
+    ) -> Arc<Vec<HatchModel>> {
         if frozen.is_empty() {
             return self.wipeout_models_arc();
         }
         let sig = Self::frozen_layers_sig(frozen);
-        if let Some((e, arc)) = self.frozen_wipeout_cache.borrow().get(&sig) {
+        let key = (self.current_layout.clone(), sig);
+        if let Some((e, arc)) = self.frozen_wipeout_cache.borrow().get(&key) {
             if *e == self.geometry_epoch {
                 return Arc::clone(arc);
             }
@@ -3766,7 +4570,7 @@ impl Scene {
         let arc = Arc::new(self.wipeout_models(Some(frozen)));
         self.frozen_wipeout_cache
             .borrow_mut()
-            .insert(sig, (self.geometry_epoch, Arc::clone(&arc)));
+            .insert(key, (self.geometry_epoch, Arc::clone(&arc)));
         arc
     }
 
@@ -3794,7 +4598,8 @@ impl Scene {
             return self.meshes_arc();
         }
         let sig = Self::frozen_layers_sig(frozen);
-        if let Some((e, arc)) = self.frozen_mesh_cache.borrow().get(&sig) {
+        let key = (self.current_layout.clone(), sig);
+        if let Some((e, arc)) = self.frozen_mesh_cache.borrow().get(&key) {
             if *e == self.geometry_epoch {
                 return Arc::clone(arc);
             }
@@ -3802,7 +4607,7 @@ impl Scene {
         let arc = Arc::new(self.mesh_models(Some(frozen)));
         self.frozen_mesh_cache
             .borrow_mut()
-            .insert(sig, (self.geometry_epoch, Arc::clone(&arc)));
+            .insert(key, (self.geometry_epoch, Arc::clone(&arc)));
         arc
     }
 
@@ -3819,8 +4624,16 @@ impl Scene {
 
     /// The name of the locked layer `handle` sits on, if any (for messages).
     pub fn locked_layer_name(&self, handle: Handle) -> Option<String> {
-        let name = self.document.get_entity(handle).map(|e| e.common().layer.clone())?;
-        let locked = self.document.layers.get(&name).map(|l| l.is_locked()).unwrap_or(false);
+        let name = self
+            .document
+            .get_entity(handle)
+            .map(|e| e.common().layer.clone())?;
+        let locked = self
+            .document
+            .layers
+            .get(&name)
+            .map(|l| l.is_locked())
+            .unwrap_or(false);
         locked.then_some(name)
     }
 
@@ -3838,6 +4651,18 @@ impl Scene {
             return false;
         }
         !self.layer_hidden(&c.layer)
+    }
+
+    fn mesh_visible_for_interaction(&self, handle: Handle) -> bool {
+        self.mesh_entity_visible(handle)
+            && self.document.get_entity(handle).is_some_and(|entity| {
+                !self.interaction_layer_frozen(&entity.common().layer)
+                    && self.belongs_to_visible_block(
+                        handle,
+                        entity.common().owner_handle,
+                        self.interaction_block_handle(),
+                    )
+            })
     }
 
     /// One transformed mesh per block-definition solid instance reached from an
@@ -3973,9 +4798,10 @@ impl Scene {
     ) -> ([f32; 4], [f32; 4]) {
         use acadrust::types::Color;
         let bg = self.current_bg();
+        let on_l0 = crate::scene::view::render::is_effective_layer_zero(&ins.common.layer);
         let child_ins_color = if ins.common.color == Color::ByBlock {
             parent_ins_color
-        } else if ins.common.layer == "0" && ins.common.color == Color::ByLayer {
+        } else if on_l0 && ins.common.color == Color::ByLayer {
             parent_l0
         } else {
             crate::scene::view::render::adapt_to_bg(
@@ -3987,7 +4813,7 @@ impl Scene {
                 bg,
             )
         };
-        let child_l0 = if ins.common.layer == "0" {
+        let child_l0 = if on_l0 {
             parent_l0
         } else {
             crate::scene::view::render::adapt_to_bg(
@@ -4013,9 +4839,10 @@ impl Scene {
         let (ins_color, l0_color) = inherit?;
         use acadrust::types::Color;
         let common = e.common();
+        let on_l0 = crate::scene::view::render::is_effective_layer_zero(&common.layer);
         let mut c = if common.color == Color::ByBlock {
             ins_color
-        } else if common.layer == "0" && common.color == Color::ByLayer {
+        } else if on_l0 && common.color == Color::ByLayer {
             // Inherit the insert layer's RGB but keep the solid's own alpha,
             // matching the wire/hatch path (render_style_for_block_sub).
             [l0_color[0], l0_color[1], l0_color[2], own_alpha]
@@ -4035,38 +4862,47 @@ impl Scene {
     /// `self.hatches` at block-local coords for the block-defn position,
     /// which doesn't project correctly through the offset-rel view_proj
     /// and was causing the wrong hatch to be selected on click).
-    pub fn visible_hatches_for_click(&self) -> HashMap<Handle, HatchModel> {
-        let layout_block = self.current_layout_block_handle();
-        let model_block = self.model_space_block_handle();
-        let layer_hidden = |layer: &str| {
-            self.document
-                .layers
-                .get(layer)
-                .map(|l| l.flags.off || l.flags.frozen)
-                .unwrap_or(false)
+    pub fn visible_hatches_for_click(
+        &self,
+        candidate_handles: Option<&HashSet<Handle>>,
+    ) -> HashMap<Handle, HatchModel> {
+        let visible = |h: Handle, m: &HatchModel| {
+            self.hatch_visible_for_interaction(h)
+                .then(|| (h, m.clone()))
         };
-        self.hatches
-            .iter()
-            .filter_map(|(&h, m)| {
-                let c = self.document.get_entity(h)?.common();
-                if c.invisible || layer_hidden(&c.layer) {
-                    return None;
-                }
-                // Mirror `synced_hatch_models`' visibility test (which drives
-                // the fill render) so anything drawn is also clickable on its
-                // fill, not just its boundary wire. The model-space fallback
-                // matters when the layout block handle differs from the
-                // entity's owner (issue: hatch fill not selectable).
-                if self.belongs_to_visible_block(h, c.owner_handle, layout_block)
-                    || (self.block_edit_block.is_none()
-                        && self.belongs_to_visible_block(h, c.owner_handle, model_block))
-                {
-                    Some((h, m.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect()
+        if let Some(handles) = candidate_handles {
+            handles
+                .iter()
+                .filter_map(|&handle| {
+                    self.hatches
+                        .get(&handle)
+                        .and_then(|hatch| visible(handle, hatch))
+                })
+                .collect()
+        } else {
+            self.hatches
+                .iter()
+                .filter_map(|(&handle, hatch)| visible(handle, hatch))
+                .collect()
+        }
+    }
+
+    fn hatch_visible_for_interaction(&self, handle: Handle) -> bool {
+        let Some(common) = self
+            .document
+            .get_entity(handle)
+            .map(|entity| entity.common())
+        else {
+            return false;
+        };
+        if common.invisible
+            || (!self.hidden.is_empty() && self.hidden.contains(&handle))
+            || self.layer_hidden(&common.layer)
+            || self.interaction_layer_frozen(&common.layer)
+        {
+            return false;
+        }
+        self.belongs_to_visible_block(handle, common.owner_handle, self.interaction_block_handle())
     }
 
     /// Per-Insert hatch models in the current layout, keyed by the Insert
@@ -4090,19 +4926,23 @@ impl Scene {
             .block_records
             .get(block_name)
             .map(|br| {
-                br.entity_handles.iter().any(|&h| match self.document.get_entity(h) {
-                    Some(EntityType::Hatch(_)) => true,
-                    Some(EntityType::Insert(ins)) => self.block_has_hatch(&ins.block_name, memo),
-                    // A dimension bakes its geometry into a per-instance `*D`
-                    // block; a custom filled arrowhead lives there as a nested
-                    // Insert(hatch). Recurse so the fill explosion knows to
-                    // descend the dimension (see `explode_including_dims`).
-                    Some(EntityType::Dimension(dim)) => {
-                        !dim.base().block_name.trim().is_empty()
-                            && self.block_has_hatch(&dim.base().block_name, memo)
-                    }
-                    _ => false,
-                })
+                br.entity_handles
+                    .iter()
+                    .any(|&h| match self.document.get_entity(h) {
+                        Some(EntityType::Hatch(_)) => true,
+                        Some(EntityType::Insert(ins)) => {
+                            self.block_has_hatch(&ins.block_name, memo)
+                        }
+                        // A dimension bakes its geometry into a per-instance `*D`
+                        // block; a custom filled arrowhead lives there as a nested
+                        // Insert(hatch). Recurse so the fill explosion knows to
+                        // descend the dimension (see `explode_including_dims`).
+                        Some(EntityType::Dimension(dim)) => {
+                            !dim.base().block_name.trim().is_empty()
+                                && self.block_has_hatch(&dim.base().block_name, memo)
+                        }
+                        _ => false,
+                    })
             })
             .unwrap_or(false);
         memo.insert(block_name.to_string(), result);
@@ -4128,64 +4968,66 @@ impl Scene {
             .block_records
             .get(block_name)
             .map(|br| {
-                br.entity_handles.iter().any(|&h| match self.document.get_entity(h) {
-                    Some(EntityType::LwPolyline(p)) => {
-                        p.constant_width > 1e-9
-                            || p.vertices
-                                .iter()
-                                .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
-                    }
-                    Some(EntityType::Polyline2D(p)) => {
-                        p.start_width > 1e-9
-                            || p.end_width > 1e-9
-                            || p.vertices
-                                .iter()
-                                .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
-                    }
-                    Some(EntityType::Insert(ins)) => {
-                        self.block_has_wide_poly(&ins.block_name, memo)
-                    }
-                    _ => false,
-                })
+                br.entity_handles
+                    .iter()
+                    .any(|&h| match self.document.get_entity(h) {
+                        Some(EntityType::LwPolyline(p)) => {
+                            p.constant_width > 1e-9
+                                || p.vertices
+                                    .iter()
+                                    .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
+                        }
+                        Some(EntityType::Polyline2D(p)) => {
+                            p.start_width > 1e-9
+                                || p.end_width > 1e-9
+                                || p.vertices
+                                    .iter()
+                                    .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
+                        }
+                        Some(EntityType::Insert(ins)) => {
+                            self.block_has_wide_poly(&ins.block_name, memo)
+                        }
+                        _ => false,
+                    })
             })
             .unwrap_or(false);
         memo.insert(block_name.to_string(), result);
         result
     }
 
-    pub fn insert_hatches_for_click(&self) -> Arc<Vec<(Handle, HatchModel)>> {
+    pub fn insert_hatches_for_click(&self) -> Arc<HashMap<Handle, Vec<HatchModel>>> {
+        let interaction_block = self.interaction_block_handle();
+        let space_key = self.interaction_space_key();
         {
             let c = self.insert_hatch_cache.borrow();
-            if let Some((epoch, ref arc)) = *c {
-                if epoch == self.geometry_epoch {
+            if let Some((epoch, cached_space, ref arc)) = *c {
+                if epoch == self.geometry_epoch && cached_space == space_key {
                     return Arc::clone(arc);
                 }
             }
         }
-        let layout_block = self.current_layout_block_handle();
-        let layer_hidden = |layer: &str| {
-            self.document
-                .layers
-                .get(layer)
-                .map(|l| l.flags.off || l.flags.frozen)
-                .unwrap_or(false)
-        };
-        let mut out: Vec<(Handle, HatchModel)> = Vec::new();
+        let layer_hidden =
+            |layer: &str| self.layer_hidden(layer) || self.interaction_layer_frozen(layer);
+        let mut out: HashMap<Handle, Vec<HatchModel>> = HashMap::default();
         // Exploding an INSERT to find block-internal hatches is expensive, so
         // skip blocks that contain no hatch at all (the common case for solid-
         // only blocks). The hatch-presence test is memoised across inserts.
-        let mut hatch_memo: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        let mut hatch_memo: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
         for entity in self.document.entities() {
             let EntityType::Insert(ins) = entity else {
                 continue;
             };
-            if ins.common.invisible || layer_hidden(&ins.common.layer) {
+            if ins.common.invisible
+                || (!self.hidden.is_empty() && self.hidden.contains(&ins.common.handle))
+                || layer_hidden(&ins.common.layer)
+            {
                 continue;
             }
             if !self.belongs_to_visible_block(
                 ins.common.handle,
                 ins.common.owner_handle,
-                layout_block,
+                interaction_block,
             ) {
                 continue;
             }
@@ -4205,12 +5047,13 @@ impl Scene {
                 }
                 let color = self.render_style(&EntityType::Hatch(dxf.clone())).0;
                 if let Some(model) = Self::hatch_model_from_dxf(&dxf, color) {
-                    out.push((ins.common.handle, model));
+                    out.entry(ins.common.handle).or_default().push(model);
                 }
             }
         }
         let arc = Arc::new(out);
-        *self.insert_hatch_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&arc)));
+        *self.insert_hatch_cache.borrow_mut() =
+            Some((self.geometry_epoch, space_key, Arc::clone(&arc)));
         arc
     }
 
@@ -4223,93 +5066,730 @@ impl Scene {
     ///   only — paper-space entities are NOT interactive.
     pub fn hit_test_wires(&self) -> Arc<Vec<WireModel>> {
         if self.current_layout == "Model" {
-            // entity_wires_arc is culled to the current view and keyed on the
-            // camera, so it re-culls when the view changes — picking must reach
-            // entities that scroll into view after a pan/zoom.
+            // Model uses the resident, camera-independent full wire set, so the
+            // interaction index survives pan/zoom and reaches every entity.
             return self.entity_wires_arc();
         }
-        let layout_block = self.current_layout_block_handle();
         match self.active_viewport {
-            None => Arc::new(self.wires_for_block(layout_block)),
-            Some(vp_handle) => {
-                Arc::new(self.viewport_content_wires(layout_block, Some(vp_handle), None))
-            }
+            None => self.paper_sheet_wires_arc(),
+            // MSPACE editing already uses the viewport's model camera, so its
+            // interaction source must stay in model coordinates too. The old
+            // projected-Paper copy rebuilt a large Vec/Arc and interaction
+            // index on entry even though the resident model set already exists.
+            Some(vp_handle) => self.model_wires_for_viewport_arc(vp_handle, 0.0),
         }
     }
 
-    /// Minimum wire count before the spatial grid is worth building; below it a
-    /// full linear scan is already fast and the grid's build/query overhead
-    /// would just add latency.
-    const WIRE_GRID_MIN: usize = 40_000;
+    /// Small simple sets are cheaper to scan. Either many wires or substantial
+    /// sub-geometry (one giant polyline/text batch/mesh) enables the index.
+    const INTERACTION_INDEX_MIN_WIRES: usize = 4_000;
+    const INTERACTION_INDEX_MIN_WORK: usize = 20_000;
 
-    /// Spatial grid over `wires`, cached on `geometry_epoch`. `wires` must be
-    /// the same `geometry_epoch`-keyed set the indices will index into.
-    fn wire_hit_grid(
+    fn interaction_index_worthwhile(&self, wires: &[WireModel]) -> bool {
+        wires.len() >= Self::INTERACTION_INDEX_MIN_WIRES
+            || crate::scene::pick::interaction_index::InteractionIndex::estimated_work(wires)
+                >= Self::INTERACTION_INDEX_MIN_WORK
+            || self.hatches.len() >= Self::INTERACTION_INDEX_MIN_WIRES
+            || self.meshes.len().saturating_add(self.block_meshes.len())
+                >= Self::INTERACTION_INDEX_MIN_WIRES
+            || self
+                .hatches
+                .values()
+                .any(|hatch| hatch.boundary.len() >= Self::INTERACTION_INDEX_MIN_WORK)
+            || self
+                .meshes
+                .values()
+                .chain(self.block_meshes.values())
+                .any(|set| {
+                    set.lods
+                        .first()
+                        .is_some_and(|mesh| mesh.verts.len() >= Self::INTERACTION_INDEX_MIN_WORK)
+                })
+    }
+
+    fn cached_interaction_index(
         &self,
         wires: &Arc<Vec<WireModel>>,
-    ) -> Arc<crate::scene::pick::wire_grid::WireGrid> {
+    ) -> Option<Arc<crate::scene::pick::interaction_index::InteractionIndex>> {
+        let source = Arc::as_ptr(wires) as usize;
+        let mut cache = self.interaction_index_cache.borrow_mut();
+        cache.retain(|(epoch, _, weak, _)| {
+            *epoch == self.geometry_epoch && weak.strong_count() > 0
+        });
+        if let Some(position) = cache.iter().position(|(_, ptr, weak, _)| {
+            *ptr == source
+                && weak
+                    .upgrade()
+                    .is_some_and(|cached| Arc::ptr_eq(&cached, wires))
+        }) {
+            let entry = cache.remove(position);
+            let index = Arc::clone(&entry.3);
+            cache.push(entry);
+            if self.current_layout == "Model" {
+                *self.interaction_base_index_cache.borrow_mut() = Some((
+                    self.geometry_epoch,
+                    self.interaction_space_key(),
+                    Arc::clone(&index),
+                ));
+            }
+            return Some(index);
+        }
+        None
+    }
+
+    fn cache_interaction_index(
+        &self,
+        epoch: u64,
+        wires: Arc<Vec<WireModel>>,
+        index: Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+    ) {
+        const MAX_CACHED_SOURCES: usize = 4;
+        let source = Arc::as_ptr(&wires) as usize;
+        let mut cache = self.interaction_index_cache.borrow_mut();
+        cache.retain(|(cached_epoch, ptr, weak, _)| {
+            *cached_epoch == self.geometry_epoch
+                && weak.strong_count() > 0
+                && !(*cached_epoch == epoch && *ptr == source)
+        });
+        cache.push((
+            epoch,
+            source,
+            Arc::downgrade(&wires),
+            Arc::clone(&index),
+        ));
+        if cache.len() > MAX_CACHED_SOURCES {
+            cache.remove(0);
+        }
+        if epoch == self.geometry_epoch && self.current_layout == "Model" {
+            *self.interaction_base_index_cache.borrow_mut() = Some((
+                epoch,
+                self.interaction_space_key(),
+                index,
+            ));
+        }
+    }
+
+    /// Return a stable build key when this source needs its large
+    /// interaction index. The app uses it to deduplicate background builds.
+    pub fn interaction_index_build_key(
+        &self,
+        wires: &Arc<Vec<WireModel>>,
+        screen_height_px: f32,
+    ) -> Option<(u64, usize)> {
+        let key = (self.geometry_epoch, Arc::as_ptr(wires) as usize);
+        if !self.interaction_source_is_resident(wires, screen_height_px.max(1.0))
+            || !self.interaction_index_worthwhile(wires)
+            || self.interaction_overlay_base().is_some()
         {
-            let cache = self.wire_grid_cache.borrow();
-            if let Some((epoch, ref arc)) = *cache {
-                if epoch == self.geometry_epoch {
-                    return Arc::clone(arc);
+            return None;
+        }
+        if self.cached_interaction_index(wires).is_some() {
+            if self.interaction_index_pending_key.get() == Some(key) {
+                self.interaction_index_pending_key.set(None);
+            }
+            return None;
+        }
+        Some(key)
+    }
+
+    pub fn mark_interaction_index_pending(&self, epoch: u64, source: usize) {
+        self.interaction_index_pending_key
+            .set(Some((epoch, source)));
+    }
+
+    /// Install a fully prepared background index only if its geometry/source
+    /// still belongs to this scene.
+    pub fn install_prepared_interaction_index(
+        &self,
+        epoch: u64,
+        source: usize,
+        wires: std::sync::Weak<Vec<WireModel>>,
+        index: Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+    ) -> bool {
+        if self.interaction_index_pending_key.get() == Some((epoch, source)) {
+            self.interaction_index_pending_key.set(None);
+        }
+        let Some(wires) = wires.upgrade() else {
+            return false;
+        };
+        if epoch != self.geometry_epoch || Arc::as_ptr(&wires) as usize != source {
+            return false;
+        }
+        self.cache_interaction_index(epoch, wires, index);
+        true
+    }
+
+    const INTERACTION_OVERLAY_MAX_HANDLES: usize = 2_048;
+
+    fn interaction_overlay_base(
+        &self,
+    ) -> Option<(
+        u64,
+        Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+        Vec<(Handle, ChangeKind)>,
+    )> {
+        let space_key = self.interaction_space_key();
+        let (epoch, index) = {
+            let cache = self.interaction_base_index_cache.borrow();
+            let (epoch, cached_space, index) = cache.as_ref()?;
+            if *epoch == self.geometry_epoch || *cached_space != space_key {
+                return None;
+            }
+            (*epoch, Arc::clone(index))
+        };
+        let changes = self.replay_since(epoch)?;
+        (changes.len() <= Self::INTERACTION_OVERLAY_MAX_HANDLES)
+            .then_some((epoch, index, changes))
+    }
+
+    fn interaction_overlay_changed_index(
+        &self,
+        base_epoch: u64,
+        changes: &[(Handle, ChangeKind)],
+    ) -> (
+        Arc<Vec<WireModel>>,
+        Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+    ) {
+        let space_key = self.interaction_space_key();
+        {
+            let cache = self.interaction_overlay_index_cache.borrow();
+            if let Some((epoch, cached_base, cached_space, wires, index)) = cache.as_ref() {
+                if *epoch == self.geometry_epoch
+                    && *cached_base == base_epoch
+                    && *cached_space == space_key
+                {
+                    return (Arc::clone(wires), Arc::clone(index));
                 }
             }
         }
-        let grid = Arc::new(crate::scene::pick::wire_grid::WireGrid::build(wires));
-        *self.wire_grid_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&grid)));
-        grid
+        let changed_live: Vec<Handle> = changes
+            .iter()
+            .filter_map(|(handle, kind)| {
+                (!matches!(kind, ChangeKind::Removed)).then_some(*handle)
+            })
+            .collect();
+        let wires = Arc::new(self.wire_models_for(&changed_live));
+        let index = Arc::new(
+            crate::scene::pick::interaction_index::InteractionIndex::build(&wires),
+        );
+        *self.interaction_overlay_index_cache.borrow_mut() = Some((
+            self.geometry_epoch,
+            base_epoch,
+            space_key,
+            Arc::clone(&wires),
+            Arc::clone(&index),
+        ));
+        (wires, index)
     }
 
-    /// Hit-test wires near the cursor. For large model sets in a flat top-down
-    /// view this queries a cached spatial grid so snap / hover touch only the
-    /// cursor neighbourhood instead of the whole (block-exploded) wire set;
-    /// small sets, paper space and tilted views fall back to the full set
-    /// (where the grid's flat-XY assumption or build/query overhead would not
-    /// pay off). Drop-in for `hit_test_wires()` at per-move snap / hover sites.
-    pub fn hit_test_wires_near(
+    fn interaction_overlay_wires(
         &self,
-        cursor: glam::DVec3,
-        view_rot: glam::Mat4,
-        bounds: iced::Rectangle,
-    ) -> Arc<Vec<WireModel>> {
-        let full = self.hit_test_wires();
-        if self.current_layout != "Model" || full.len() < Self::WIRE_GRID_MIN {
-            return full;
+        base_keys: impl IntoIterator<Item = (u64, u32)>,
+        changes: &[(Handle, ChangeKind)],
+        changed_wires: &[WireModel],
+    ) -> (
+        Arc<Vec<WireModel>>,
+        HashMap<(u64, u32), u32>,
+        HashMap<(u64, u32), u32>,
+    ) {
+        let changed: HashSet<Handle> = changes.iter().map(|(handle, _)| *handle).collect();
+        let memo = self.resident_tess_memo.borrow();
+        let mut wires = Vec::new();
+        let mut base_slots = HashMap::default();
+        let mut misses: HashMap<Handle, Vec<u32>> = HashMap::default();
+        for (handle_value, ordinal) in base_keys {
+            let handle = Handle::new(handle_value);
+            if changed.contains(&handle) || self.document.get_entity(handle).is_none() {
+                continue;
+            }
+            if let Some(wire) = memo
+                .get(&handle)
+                .and_then(|entity_wires| entity_wires.get(ordinal as usize))
+            {
+                base_slots.insert((handle_value, ordinal), wires.len() as u32);
+                wires.push(wire.clone());
+            } else {
+                misses.entry(handle).or_default().push(ordinal);
+            }
         }
-        // The grid indexes world XY; only a flat top-down view maps world x/y
-        // straight to screen, so restrict to it (matches the hit-test cull).
-        let flat = view_rot.z_axis.x.abs() < 1e-9 && view_rot.z_axis.y.abs() < 1e-9;
-        if !flat {
-            return full;
+        drop(memo);
+        // A memo miss is uncommon (guard change / legacy source). Preserve
+        // correctness without expanding every nearby entity: regenerate that
+        // handle, then retain only the exact wire ordinals the base index
+        // reported.
+        for (handle, ordinals) in misses {
+            let entity_wires = self.wire_models_for(&[handle]);
+            for ordinal in ordinals {
+                if let Some(wire) = entity_wires.get(ordinal as usize) {
+                    base_slots.insert((handle.value(), ordinal), wires.len() as u32);
+                    wires.push(wire.clone());
+                }
+            }
         }
-        // World radius covering the snap aperture + click threshold + margin.
-        // `view_rot.col(0).x * width/2` = pixels per world unit (ortho).
-        let s = view_rot.col(0).x.abs() * bounds.width * 0.5;
-        if s <= 1e-6 {
-            return full;
+        let mut changed_slots = HashMap::default();
+        let mut next_ordinal: HashMap<u64, u32> = HashMap::default();
+        for wire in changed_wires {
+            if let Ok(handle) = wire.name.parse::<u64>() {
+                let ordinal = next_ordinal.entry(handle).or_default();
+                changed_slots.insert((handle, *ordinal), wires.len() as u32);
+                *ordinal += 1;
+            }
+            wires.push(wire.clone());
         }
-        let radius = 64.0 / s as f64;
-        let grid = self.wire_hit_grid(&full);
-        let idxs = grid.query(cursor.x, cursor.y, radius);
-        Arc::new(idxs.iter().map(|&i| full[i as usize].clone()).collect())
+        (Arc::new(wires), base_slots, changed_slots)
     }
 
-    /// Pick a meshed 3D solid by clicking on its shaded body (face), not just
-    /// its thin projected edges. Returns the front-most mesh under `cursor`.
-    #[allow(dead_code)]
-    pub fn mesh_click_hit(
+    fn indexed_interaction_candidates_xy(
         &self,
-        cursor: iced::Point,
+        wires: Arc<Vec<WireModel>>,
+        aabb: [f64; 4],
+        allow_pending_empty: bool,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        if let Some((base_epoch, base, changes)) = self.interaction_overlay_base() {
+            let perf = crate::perf::enabled();
+            let t0 = iced::time::Instant::now();
+            let keys = base.query_wire_keys_xy(aabb);
+            let key_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let t_changed = iced::time::Instant::now();
+            let (changed_wires, changed_index) =
+                self.interaction_overlay_changed_index(base_epoch, &changes);
+            let changed_ms = t_changed.elapsed().as_secs_f64() * 1000.0;
+            let t_local = iced::time::Instant::now();
+            let (local, base_slots, changed_slots) = self.interaction_overlay_wires(
+                keys.iter().copied(),
+                &changes,
+                &changed_wires,
+            );
+            let local_ms = t_local.elapsed().as_secs_f64() * 1000.0;
+            let t_remap = iced::time::Instant::now();
+            let mut result =
+                base.query_remapped_xy(Arc::clone(&local), &base_slots, aabb);
+            result.extend_indexed(
+                changed_index.query_remapped_xy(local, &changed_slots, aabb),
+            );
+            let remap_ms = t_remap.elapsed().as_secs_f64() * 1000.0;
+            let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            if perf && total_ms >= 50.0 {
+                crate::perf_record!(
+                    "[perf] interaction-overlay {:>7.1}ms keys={} wires={} query={:.1} changed={:.1} gather={:.1} remap={:.1}",
+                    total_ms,
+                    keys.len(),
+                    result.len(),
+                    key_ms,
+                    changed_ms,
+                    local_ms,
+                    remap_ms,
+                );
+            }
+            return result;
+        }
+        if let Some(index) = self.cached_interaction_index(&wires) {
+            index.query_xy(wires, aabb)
+        } else if allow_pending_empty
+            && self.interaction_index_pending_key.get()
+            == Some((self.geometry_epoch, Arc::as_ptr(&wires) as usize))
+        {
+            crate::scene::pick::interaction_index::InteractionCandidates::pending(wires)
+        } else {
+            crate::scene::pick::interaction_index::InteractionCandidates::all(wires)
+        }
+    }
+
+    fn indexed_interaction_candidates_screen(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        screen_rect: [f32; 4],
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
-    ) -> Option<Handle> {
-        let iter = self
-            .meshes
+        allow_pending_empty: bool,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        if let Some((base_epoch, base, changes)) = self.interaction_overlay_base() {
+            let perf = crate::perf::enabled();
+            let t0 = iced::time::Instant::now();
+            let keys = base.query_wire_keys_screen(screen_rect, view_rot, eye, bounds);
+            let key_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            let t_changed = iced::time::Instant::now();
+            let (changed_wires, changed_index) =
+                self.interaction_overlay_changed_index(base_epoch, &changes);
+            let changed_ms = t_changed.elapsed().as_secs_f64() * 1000.0;
+            let t_local = iced::time::Instant::now();
+            let (local, base_slots, changed_slots) = self.interaction_overlay_wires(
+                keys.iter().copied(),
+                &changes,
+                &changed_wires,
+            );
+            let local_ms = t_local.elapsed().as_secs_f64() * 1000.0;
+            let t_remap = iced::time::Instant::now();
+            let mut result = base.query_remapped_screen(
+                Arc::clone(&local),
+                &base_slots,
+                screen_rect,
+                view_rot,
+                eye,
+                bounds,
+            );
+            result.extend_indexed(changed_index.query_remapped_screen(
+                local,
+                &changed_slots,
+                screen_rect,
+                view_rot,
+                eye,
+                bounds,
+            ));
+            let remap_ms = t_remap.elapsed().as_secs_f64() * 1000.0;
+            let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            if perf && total_ms >= 50.0 {
+                crate::perf_record!(
+                    "[perf] interaction-overlay {:>7.1}ms keys={} wires={} query={:.1} changed={:.1} gather={:.1} remap={:.1}",
+                    total_ms,
+                    keys.len(),
+                    result.len(),
+                    key_ms,
+                    changed_ms,
+                    local_ms,
+                    remap_ms,
+                );
+            }
+            return result;
+        }
+        if let Some(index) = self.cached_interaction_index(&wires) {
+            index.query_screen(wires, screen_rect, view_rot, eye, bounds)
+        } else if allow_pending_empty
+            && self.interaction_index_pending_key.get()
+            == Some((self.geometry_epoch, Arc::as_ptr(&wires) as usize))
+        {
+            crate::scene::pick::interaction_index::InteractionCandidates::pending(wires)
+        } else {
+            crate::scene::pick::interaction_index::InteractionCandidates::all(wires)
+        }
+    }
+
+    fn indexed_interaction_pick_radius(
+        &self,
+        wires: &Arc<Vec<WireModel>>,
+        base_radius_px: f32,
+    ) -> f32 {
+        if let Some((base_epoch, base, changes)) = self.interaction_overlay_base() {
+            let (_, changed) =
+                self.interaction_overlay_changed_index(base_epoch, &changes);
+            base.pick_radius_px(changed.pick_radius_px(base_radius_px))
+        } else {
+            self.cached_interaction_index(wires)
+                .map_or(base_radius_px, |index| index.pick_radius_px(base_radius_px))
+        }
+    }
+
+    fn interaction_source_is_resident(
+        &self,
+        wires: &Arc<Vec<WireModel>>,
+        screen_height_px: f32,
+    ) -> bool {
+        if self.current_layout == "Model" {
+            return Arc::ptr_eq(&self.entity_wires_arc(), wires);
+        }
+        match self.active_viewport {
+            Some(viewport) => {
+                let resident = self.model_wires_for_viewport_arc(viewport, screen_height_px);
+                Arc::ptr_eq(&resident, wires)
+            }
+            None => Arc::ptr_eq(&self.paper_sheet_wires_arc(), wires),
+        }
+    }
+
+    fn interaction_handle_index(
+        &self,
+    ) -> Arc<crate::scene::pick::interaction_index::InteractionHandleIndex> {
+        let space_key = self.interaction_space_key();
+        {
+            let reuse = {
+                let cache = self.interaction_handle_index_cache.borrow();
+                match cache.as_ref() {
+                    Some((epoch, cached_space, index))
+                        if *cached_space == space_key
+                            && self.category_cache_valid(*epoch, |handle| {
+                                self.hatches.contains_key(&handle)
+                                    || self.meshes.contains_key(&handle)
+                                    || self.block_meshes.contains_key(&handle)
+                                    || matches!(
+                                        self.document.get_entity(handle),
+                                        Some(EntityType::Insert(_))
+                                    )
+                            }) =>
+                    {
+                        Some(Arc::clone(index))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(index) = reuse {
+                if let Some((epoch, _, _)) =
+                    self.interaction_handle_index_cache.borrow_mut().as_mut()
+                {
+                    *epoch = self.geometry_epoch;
+                }
+                return index;
+            }
+        }
+        let mut entries: Vec<(u64, [f64; 6])> = Vec::new();
+        for (&handle, hatch) in &self.hatches {
+            if !self.hatch_visible_for_interaction(handle) {
+                continue;
+            }
+            if let Some([min_x, min_y, max_x, max_y]) = hatch_interaction_aabb(hatch) {
+                entries.push((handle.value(), [min_x, min_y, 0.0, max_x, max_y, 0.0]));
+            }
+        }
+        for (&handle, hatches) in self.insert_hatches_for_click().iter() {
+            for hatch in hatches {
+                if let Some([min_x, min_y, max_x, max_y]) = hatch_interaction_aabb(hatch) {
+                    entries.push((handle.value(), [min_x, min_y, 0.0, max_x, max_y, 0.0]));
+                }
+            }
+        }
+        for set in self.interaction_meshes_arc().iter() {
+            let Some(mesh) = set.lods.first() else {
+                continue;
+            };
+            let Ok(handle) = mesh.name.parse::<u64>() else {
+                continue;
+            };
+            if !self.mesh_visible_for_interaction(Handle::new(handle)) {
+                continue;
+            }
+            if let Some(aabb) = mesh_interaction_aabb(set) {
+                entries.push((handle, aabb));
+            }
+        }
+        let index =
+            Arc::new(crate::scene::pick::interaction_index::InteractionHandleIndex::build(entries));
+        *self.interaction_handle_index_cache.borrow_mut() =
+            Some((self.geometry_epoch, space_key, Arc::clone(&index)));
+        index
+    }
+
+    /// Cursor-local interaction candidates. `radius_px` is supplied by the
+    /// consumer (OSNAP aperture or click tolerance), avoiding the old fixed
+    /// 64-pixel neighbourhood. Returned wires stay borrowed from `wires`;
+    /// no heavyweight `WireModel` clone occurs.
+    pub fn interaction_candidates_near(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        cursor: glam::DVec3,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        radius_px: f32,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        self.interaction_candidates_near_impl(
+            wires, cursor, view_rot, eye, bounds, radius_px, false, false,
+        )
+    }
+
+    pub fn interaction_pick_candidates_near(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        cursor: glam::DVec3,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        radius_px: f32,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        self.interaction_candidates_near_impl(
+            wires,
+            cursor,
+            view_rot,
+            eye,
+            bounds,
+            radius_px,
+            self.document.header.lineweight_display,
+            false,
+        )
+    }
+
+    pub fn interaction_hover_candidates_near(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        cursor: glam::DVec3,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        radius_px: f32,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        self.interaction_candidates_near_impl(
+            wires,
+            cursor,
+            view_rot,
+            eye,
+            bounds,
+            radius_px,
+            self.document.header.lineweight_display,
+            true,
+        )
+    }
+
+    fn interaction_candidates_near_impl(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        cursor: glam::DVec3,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        radius_px: f32,
+        include_line_weight: bool,
+        allow_pending_empty: bool,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        if !self.interaction_source_is_resident(&wires, bounds.height)
+            || !self.interaction_index_worthwhile(&wires)
+        {
+            return crate::scene::pick::interaction_index::InteractionCandidates::all(wires);
+        }
+        let radius_px = if include_line_weight {
+            self.indexed_interaction_pick_radius(&wires, radius_px)
+        } else {
+            radius_px
+        };
+        let flat_ortho = view_rot.z_axis.x.abs() < 1e-9
+            && view_rot.z_axis.y.abs() < 1e-9
+            && (view_rot.w_axis.w - 1.0).abs() < 1e-6;
+        if !flat_ortho {
+            let clip = view_rot * (cursor - eye).as_vec3().extend(1.0);
+            if !clip.is_finite() || clip.w <= 1e-6 {
+                return crate::scene::pick::interaction_index::InteractionCandidates::all(wires);
+            }
+            let ndc = clip.truncate() / clip.w;
+            let screen = iced::Point::new(
+                (ndc.x + 1.0) * 0.5 * bounds.width,
+                (1.0 - ndc.y) * 0.5 * bounds.height,
+            );
+            let radius = radius_px.max(0.0);
+            return self.indexed_interaction_candidates_screen(
+                wires,
+                [
+                    screen.x - radius,
+                    screen.y - radius,
+                    screen.x + radius,
+                    screen.y + radius,
+                ],
+                view_rot,
+                eye,
+                bounds,
+                allow_pending_empty,
+            );
+        }
+        let world_x_px = ((view_rot.x_axis.x * bounds.width * 0.5).powi(2)
+            + (view_rot.x_axis.y * bounds.height * 0.5).powi(2))
+        .sqrt();
+        let world_y_px = ((view_rot.y_axis.x * bounds.width * 0.5).powi(2)
+            + (view_rot.y_axis.y * bounds.height * 0.5).powi(2))
+        .sqrt();
+        let s = world_x_px.min(world_y_px);
+        if s <= 1e-6 {
+            return crate::scene::pick::interaction_index::InteractionCandidates::all(wires);
+        }
+        let radius = radius_px.max(0.0) as f64 / s as f64;
+        let query = [
+            cursor.x - radius,
+            cursor.y - radius,
+            cursor.x + radius,
+            cursor.y + radius,
+        ];
+        self.indexed_interaction_candidates_xy(wires, query, allow_pending_empty)
+    }
+
+    /// Shared rectangular broad phase for box/lasso/fence and command windows.
+    /// Flat orthographic views query world XY; tilted/perspective views query
+    /// projected 3D bounds using the supplied screen rectangle.
+    pub fn interaction_candidates_in_aabb(
+        &self,
+        wires: Arc<Vec<WireModel>>,
+        aabb: [f64; 4],
+        screen_rect: [f32; 4],
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+    ) -> crate::scene::pick::interaction_index::InteractionCandidates {
+        let flat_ortho = view_rot.z_axis.x.abs() < 1e-9
+            && view_rot.z_axis.y.abs() < 1e-9
+            && (view_rot.w_axis.w - 1.0).abs() < 1e-6;
+        if !self.interaction_source_is_resident(&wires, bounds.height)
+            || !self.interaction_index_worthwhile(&wires)
+        {
+            return crate::scene::pick::interaction_index::InteractionCandidates::all(wires);
+        }
+        if flat_ortho {
+            self.indexed_interaction_candidates_xy(wires, aabb, false)
+        } else {
+            self.indexed_interaction_candidates_screen(
+                wires,
+                screen_rect,
+                view_rot,
+                eye,
+                bounds,
+                false,
+            )
+        }
+    }
+
+    pub fn interaction_candidate_handles(
+        &self,
+        candidates: &crate::scene::pick::interaction_index::InteractionCandidates,
+    ) -> Option<HashSet<Handle>> {
+        let mut handles: HashSet<Handle> = candidates
             .iter()
-            .filter_map(|(h, set)| set.lods.first().map(|m| (*h, m)));
-        pick::hit_test::mesh_click_hit(cursor, iter, view_rot, eye, bounds)
+            .filter_map(|wire| Self::handle_from_wire_name(&wire.name))
+            .collect();
+        if candidates.is_indexed()
+            && candidates.query_aabb().is_none()
+            && candidates.screen_query().is_none()
+        {
+            return Some(handles);
+        }
+        if let Some(aabb) = candidates.query_aabb() {
+            let index = self.entity_index();
+            handles.extend(index.tree.query_rect(aabb));
+            handles.extend(
+                self.interaction_handle_index()
+                    .query_xy(aabb)
+                    .into_iter()
+                    .map(Handle::new),
+            );
+            return Some(handles);
+        }
+        let (screen_rect, view_rot, eye, bounds) = candidates.screen_query()?;
+        handles.extend(
+            self.interaction_handle_index()
+                .query_screen(screen_rect, view_rot, eye, bounds)
+                .into_iter()
+                .map(Handle::new),
+        );
+        Some(handles)
+    }
+
+    pub fn interaction_handles_in_world_aabb(&self, aabb: [f64; 4]) -> HashSet<Handle> {
+        let wires = self.hit_test_wires();
+        let candidates = self.indexed_interaction_candidates_xy(wires, aabb, false);
+        let mut handles: HashSet<Handle> = candidates
+            .iter()
+            .filter_map(|wire| Self::handle_from_wire_name(&wire.name))
+            .collect();
+        let insert_hatches = self.insert_hatches_for_click();
+        let meshes = self.interaction_meshes_arc();
+        let mesh_lookup = self.mesh_pick_lookup(&meshes);
+        handles.extend(
+            self.interaction_handle_index()
+                .query_xy(aabb)
+                .into_iter()
+                .filter_map(|value| {
+                    let handle = Handle::new(value);
+                    (self.hatch_visible_for_interaction(handle)
+                        || insert_hatches.contains_key(&handle)
+                        || (mesh_lookup.contains_key(&handle)
+                            && self.mesh_visible_for_interaction(handle)))
+                    .then_some(handle)
+                }),
+        );
+        handles
     }
 
     /// True when any handle resolves to an ACIS volume entity (3D solid /
@@ -4336,12 +5816,49 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
+        candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
-        let iter = self
-            .meshes
-            .iter()
-            .filter_map(|(h, set)| set.lods.first().map(|m| (*h, m)));
-        pick::hit_test::mesh_box_hit(a, b, crossing, iter, view_rot, eye, bounds)
+        let meshes = self.interaction_meshes_arc();
+        let lookup = self.mesh_pick_lookup(&meshes);
+        let handles: Vec<Handle> = candidate_handles.map_or_else(
+            || lookup.keys().copied().collect(),
+            |candidates| candidates.iter().copied().collect(),
+        );
+        let mut out = Vec::new();
+        for handle in handles {
+            if !self.mesh_visible_for_interaction(handle)
+                || matches!(
+                    self.document.get_entity(handle),
+                    Some(EntityType::Insert(_))
+                )
+            {
+                continue;
+            }
+            let Some(indices) = lookup.get(&handle) else {
+                continue;
+            };
+            if indices
+                .iter()
+                .filter_map(|&index| meshes.get(index as usize))
+                .any(|set| {
+                    set.lods.first().is_some_and(|mesh| {
+                        !pick::hit_test::mesh_box_hit(
+                            a,
+                            b,
+                            crossing,
+                            std::iter::once((handle, mesh)),
+                            view_rot,
+                            eye,
+                            bounds,
+                        )
+                        .is_empty()
+                    })
+                })
+            {
+                out.push(handle);
+            }
+        }
+        out
     }
 
     /// Top-level solid handles caught by a lasso polygon.
@@ -4352,12 +5869,48 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
+        candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
-        let iter = self
-            .meshes
-            .iter()
-            .filter_map(|(h, set)| set.lods.first().map(|m| (*h, m)));
-        pick::hit_test::mesh_poly_hit(poly, crossing, iter, view_rot, eye, bounds)
+        let meshes = self.interaction_meshes_arc();
+        let lookup = self.mesh_pick_lookup(&meshes);
+        let handles: Vec<Handle> = candidate_handles.map_or_else(
+            || lookup.keys().copied().collect(),
+            |candidates| candidates.iter().copied().collect(),
+        );
+        let mut out = Vec::new();
+        for handle in handles {
+            if !self.mesh_visible_for_interaction(handle)
+                || matches!(
+                    self.document.get_entity(handle),
+                    Some(EntityType::Insert(_))
+                )
+            {
+                continue;
+            }
+            let Some(indices) = lookup.get(&handle) else {
+                continue;
+            };
+            if indices
+                .iter()
+                .filter_map(|&index| meshes.get(index as usize))
+                .any(|set| {
+                    set.lods.first().is_some_and(|mesh| {
+                        !pick::hit_test::mesh_poly_hit(
+                            poly,
+                            crossing,
+                            std::iter::once((handle, mesh)),
+                            view_rot,
+                            eye,
+                            bounds,
+                        )
+                        .is_empty()
+                    })
+                })
+            {
+                out.push(handle);
+            }
+        }
+        out
     }
 
     /// Front-most solid under the cursor across BOTH top-level solid meshes
@@ -4371,31 +5924,103 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
+        candidate_handles: Option<&HashSet<Handle>>,
+    ) -> Option<Handle> {
+        self.solid_hit(
+            cursor,
+            view_rot,
+            eye,
+            bounds,
+            candidate_handles,
+            false,
+        )
+    }
+
+    /// Hover may use the coarsest cached solid LOD. Click selection keeps the
+    /// full-resolution mesh, while rollover only needs a stable parent handle
+    /// and must stay within an interactive frame budget.
+    pub fn solid_hover_hit(
+        &self,
+        cursor: iced::Point,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        candidate_handles: Option<&HashSet<Handle>>,
+    ) -> Option<Handle> {
+        self.solid_hit(
+            cursor,
+            view_rot,
+            eye,
+            bounds,
+            candidate_handles,
+            true,
+        )
+    }
+
+    fn solid_hit(
+        &self,
+        cursor: iced::Point,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        bounds: iced::Rectangle,
+        candidate_handles: Option<&HashSet<Handle>>,
+        coarse_lod: bool,
     ) -> Option<Handle> {
         // Reuse the renderer's expanded mesh set (top-level solids + per-INSERT
         // block instances), cached per geometry epoch — so hover no longer
         // re-expands every block instance on each move. Every `MeshLodSet`
         // carries its handle (in `mesh.name`) and a 3D AABB.
-        let meshes = self.meshes_arc();
-        // Broad-phase: project each solid's 3D AABB and skip the per-triangle
-        // ray test for those whose footprint isn't under the cursor — O(solids)
-        // cheap projections instead of O(total triangles) on every hover.
-        let candidates = meshes.iter().filter_map(|set| {
-            let m = set.lods.first()?;
-            if !pick::hit_test::aabb_under_cursor(
-                set.world_aabb,
-                set.z_aabb,
+        let meshes = self.interaction_meshes_arc();
+        let lookup = candidate_handles.map(|_| self.mesh_pick_lookup(&meshes));
+        // Candidate handles already came from the precise f64 interaction BVH.
+        // When no index is active the source is small/non-resident, so exact
+        // triangles are safer than reintroducing the old f32 AABB precision loss.
+        let mut sets: Vec<(Handle, &MeshLodSet)> = Vec::new();
+        if let (Some(handles), Some(lookup)) = (candidate_handles, lookup.as_ref()) {
+            for handle in handles {
+                if !self.mesh_visible_for_interaction(*handle) {
+                    continue;
+                }
+                let Some(indices) = lookup.get(handle) else {
+                    continue;
+                };
+                sets.extend(
+                    indices
+                        .iter()
+                        .filter_map(|&index| meshes.get(index as usize).map(|set| (*handle, set))),
+                );
+            }
+        } else {
+            sets.extend(meshes.iter().filter_map(|set| {
+                let handle = set
+                    .lods
+                    .first()?
+                    .name
+                    .parse::<u64>()
+                    .ok()
+                    .map(Handle::new)?;
+                self.mesh_visible_for_interaction(handle)
+                    .then_some((handle, set))
+            }));
+        }
+        if coarse_lod {
+            return pick::hit_test::mesh_click_hit(
                 cursor,
+                sets.iter()
+                    .filter_map(|(handle, set)| set.lods.last().map(|mesh| (*handle, mesh))),
                 view_rot,
                 eye,
                 bounds,
-            ) {
-                return None;
-            }
-            let handle = Handle::new(m.name.parse::<u64>().ok()?);
-            Some((handle, m))
-        });
-        pick::hit_test::mesh_click_hit(cursor, candidates, view_rot, eye, bounds)
+            );
+        }
+        pick::hit_test::mesh_click_hit(
+            cursor,
+            sets.iter()
+                .filter_map(|(handle, set)| set.lods.first().map(|mesh| (*handle, mesh))),
+            view_rot,
+            eye,
+            bounds,
+        )
     }
 
     /// Parent INSERT handles whose block-internal solid meshes fall in a
@@ -4410,38 +6035,48 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
+        candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
         if self.block_meshes.is_empty() {
             return Vec::new();
         }
-        let layout_block = self.current_layout_block_handle();
+        let meshes = self.interaction_meshes_arc();
+        let lookup = self.mesh_pick_lookup(&meshes);
+        let handles: Vec<Handle> = candidate_handles.map_or_else(
+            || lookup.keys().copied().collect(),
+            |candidates| candidates.iter().copied().collect(),
+        );
         let mut out = Vec::new();
-        for e in self.document.entities() {
-            if e.common().owner_handle != layout_block {
+        for handle in handles {
+            if !matches!(
+                self.document.get_entity(handle),
+                Some(EntityType::Insert(_))
+            ) || !self.mesh_visible_for_interaction(handle)
+            {
                 continue;
             }
-            let EntityType::Insert(ins) = e else { continue };
-            if !self.mesh_entity_visible(ins.common.handle) {
+            let Some(indices) = lookup.get(&handle) else {
                 continue;
-            }
-            let mut sets = Vec::new();
-            self.expand_block_meshes(&ins.block_name, &ins.get_transform(), 0, None, &mut sets);
-            let hit = sets.iter().any(|set| {
-                set.lods.first().map_or(false, |m| {
-                    !pick::hit_test::mesh_box_hit(
-                        a,
-                        b,
-                        crossing,
-                        std::iter::once((ins.common.handle, m)),
-                        view_rot,
-                        eye,
-                        bounds,
-                    )
-                    .is_empty()
-                })
-            });
+            };
+            let hit = indices
+                .iter()
+                .filter_map(|&index| meshes.get(index as usize))
+                .any(|set| {
+                    set.lods.first().map_or(false, |m| {
+                        !pick::hit_test::mesh_box_hit(
+                            a,
+                            b,
+                            crossing,
+                            std::iter::once((handle, m)),
+                            view_rot,
+                            eye,
+                            bounds,
+                        )
+                        .is_empty()
+                    })
+                });
             if hit {
-                out.push(ins.common.handle);
+                out.push(handle);
             }
         }
         out
@@ -4455,55 +6090,50 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
+        candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
         if self.block_meshes.is_empty() {
             return Vec::new();
         }
-        let layout_block = self.current_layout_block_handle();
+        let meshes = self.interaction_meshes_arc();
+        let lookup = self.mesh_pick_lookup(&meshes);
+        let handles: Vec<Handle> = candidate_handles.map_or_else(
+            || lookup.keys().copied().collect(),
+            |candidates| candidates.iter().copied().collect(),
+        );
         let mut out = Vec::new();
-        for e in self.document.entities() {
-            if e.common().owner_handle != layout_block {
+        for handle in handles {
+            if !matches!(
+                self.document.get_entity(handle),
+                Some(EntityType::Insert(_))
+            ) || !self.mesh_visible_for_interaction(handle)
+            {
                 continue;
             }
-            let EntityType::Insert(ins) = e else { continue };
-            if !self.mesh_entity_visible(ins.common.handle) {
+            let Some(indices) = lookup.get(&handle) else {
                 continue;
-            }
-            let mut sets = Vec::new();
-            self.expand_block_meshes(&ins.block_name, &ins.get_transform(), 0, None, &mut sets);
-            let hit = sets.iter().any(|set| {
-                set.lods.first().map_or(false, |m| {
-                    !pick::hit_test::mesh_poly_hit(
-                        poly,
-                        crossing,
-                        std::iter::once((ins.common.handle, m)),
-                        view_rot,
-                        eye,
-                        bounds,
-                    )
-                    .is_empty()
-                })
-            });
+            };
+            let hit = indices
+                .iter()
+                .filter_map(|&index| meshes.get(index as usize))
+                .any(|set| {
+                    set.lods.first().map_or(false, |m| {
+                        !pick::hit_test::mesh_poly_hit(
+                            poly,
+                            crossing,
+                            std::iter::once((handle, m)),
+                            view_rot,
+                            eye,
+                            bounds,
+                        )
+                        .is_empty()
+                    })
+                });
             if hit {
-                out.push(ins.common.handle);
+                out.push(handle);
             }
         }
         out
-    }
-
-    /// Tessellate all non-invisible entities owned by `block_handle`.
-    fn wires_for_block(&self, block_handle: Handle) -> Vec<WireModel> {
-        // Default culling is driven by the live `Scene::camera`. Multi-tile
-        // Model layouts and paper-space content viewports call
-        // `wires_for_block_culled` directly with their own per-view cull
-        // parameters so each pane culls independently.
-        self.wires_for_block_culled(
-            block_handle,
-            self.view_world_aabb(),
-            self.world_per_pixel(),
-            None,
-            None,
-        )
     }
 
     /// Whether entity `e` renders as direct content of `block_handle` right now:
@@ -4530,7 +6160,10 @@ impl Scene {
             return false;
         }
         let layer = self.document.layers.get(&c.layer);
-        if layer.map(|l| l.flags.off || l.flags.frozen).unwrap_or(false) {
+        if layer
+            .map(|l| l.flags.off || l.flags.frozen)
+            .unwrap_or(false)
+        {
             return false;
         }
         if let Some(frozen) = frozen_layers {
@@ -4730,8 +6363,7 @@ impl Scene {
             static EN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *EN.get_or_init(|| std::env::var("OCS_NO_RESIDENT_MEMO").is_err())
         }
-        let resident =
-            base_ok && view_aabb.is_none() && wpp.is_none() && resident_memo_enabled();
+        let resident = base_ok && view_aabb.is_none() && wpp.is_none() && resident_memo_enabled();
         let memo_active = base_ok && (view_aabb.is_some() || resident);
         let mut wires: Vec<WireModel> = if memo_active {
             // Guard hash of everything tessellate_entity output depends on
@@ -4782,14 +6414,24 @@ impl Scene {
                 }
             }
             // Materialize hits + tessellate misses, both in parallel.
-            let hit_wires: Vec<WireModel> =
-                hit_arcs.par_iter().flat_map_iter(|a| a.iter().cloned()).collect();
+            let hit_wires: Vec<WireModel> = hit_arcs
+                .par_iter()
+                .flat_map_iter(|a| a.iter().cloned())
+                .collect();
             let miss_pairs: Vec<(Handle, Arc<Vec<WireModel>>)> = misses
                 .par_iter()
                 .map(|e| {
                     let e: &EntityType = e;
                     let w = tessellate_entity(
-                        doc, sel, avp, bg, anno, e, Some(blk_ref), view_aabb, wpp,
+                        doc,
+                        sel,
+                        avp,
+                        bg,
+                        anno,
+                        e,
+                        Some(blk_ref),
+                        view_aabb,
+                        wpp,
                         paper,
                     );
                     (e.common().handle, Arc::new(w))
@@ -4809,7 +6451,15 @@ impl Scene {
                 .into_par_iter()
                 .flat_map(|e| {
                     tessellate_entity(
-                        doc, sel, avp, bg, anno, e, Some(blk_ref), view_aabb, wpp,
+                        doc,
+                        sel,
+                        avp,
+                        bg,
+                        anno,
+                        e,
+                        Some(blk_ref),
+                        view_aabb,
+                        wpp,
                         paper,
                     )
                 })
@@ -4913,6 +6563,238 @@ impl Scene {
         })
     }
 
+    fn rebuild_dependency_index(&self) -> SceneDependencyIndex {
+        let layout_blocks: HashSet<Handle> = self
+            .document
+            .objects
+            .values()
+            .filter_map(|object| match object {
+                acadrust::objects::ObjectType::Layout(layout) if !layout.block_record.is_null() => {
+                    Some(layout.block_record)
+                }
+                _ => None,
+            })
+            .collect();
+        let block_names: HashMap<Handle, String> = self
+            .document
+            .block_records
+            .iter()
+            .map(|record| (record.handle, record.name.to_ascii_uppercase()))
+            .collect();
+        let membership: HashMap<Handle, Handle> = self
+            .document
+            .block_records
+            .iter()
+            .flat_map(|record| {
+                record
+                    .entity_handles
+                    .iter()
+                    .copied()
+                    .map(move |handle| (handle, record.handle))
+            })
+            .collect();
+
+        let mut roots: HashMap<String, HashSet<Handle>> = HashMap::default();
+        let mut parents: HashMap<String, HashSet<String>> = HashMap::default();
+        for entity in self.document.entities() {
+            let EntityType::Insert(insert) = entity else {
+                continue;
+            };
+            let target = insert.block_name.to_ascii_uppercase();
+            let common = &insert.common;
+            let owner = if common.owner_handle.is_null() {
+                membership
+                    .get(&common.handle)
+                    .copied()
+                    .unwrap_or(Handle::NULL)
+            } else {
+                common.owner_handle
+            };
+            if owner.is_null() || layout_blocks.contains(&owner) {
+                roots.entry(target).or_default().insert(common.handle);
+            } else if let Some(parent) = block_names.get(&owner) {
+                parents.entry(target).or_default().insert(parent.clone());
+            }
+        }
+        // Propagate top-level INSERT users through nested block references.
+        // Fixed-point form is cycle-safe and block graphs are normally shallow.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (child, parent_names) in &parents {
+                let inherited: Vec<Handle> = parent_names
+                    .iter()
+                    .flat_map(|parent| roots.get(parent).into_iter().flatten().copied())
+                    .collect();
+                let entry = roots.entry(child.clone()).or_default();
+                let before = entry.len();
+                entry.extend(inherited);
+                changed |= entry.len() != before;
+            }
+        }
+
+        let mut index = SceneDependencyIndex::default();
+        for entity in self.document.entities() {
+            let common = entity.common();
+            let owner = if common.owner_handle.is_null() {
+                membership
+                    .get(&common.handle)
+                    .copied()
+                    .unwrap_or(Handle::NULL)
+            } else {
+                common.owner_handle
+            };
+            let inside_block = !owner.is_null() && !layout_blocks.contains(&owner);
+            let render_handles: HashSet<Handle> = if inside_block {
+                block_names
+                    .get(&owner)
+                    .and_then(|name| roots.get(name))
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                std::iter::once(common.handle).collect()
+            };
+            let add = |map: &mut HashMap<String, DependencyTargets>, name: &str| {
+                let target = map.entry(name.to_ascii_uppercase()).or_default();
+                target.render_handles.extend(render_handles.iter().copied());
+                target.source_handles.insert(common.handle);
+                target.touches_block_definition |= inside_block;
+            };
+            let add_handle = |map: &mut HashMap<Handle, DependencyTargets>,
+                              handle: Option<Handle>| {
+                let Some(handle) = handle.filter(|handle| !handle.is_null()) else {
+                    return;
+                };
+                let target = map.entry(handle).or_default();
+                target.render_handles.extend(render_handles.iter().copied());
+                target.source_handles.insert(common.handle);
+                target.touches_block_definition |= inside_block;
+            };
+            add(&mut index.layers, &common.layer);
+            match entity {
+                EntityType::Text(text) => add(&mut index.text_styles, &text.style),
+                EntityType::MText(text) => add(&mut index.text_styles, &text.style),
+                EntityType::AttributeDefinition(attribute) => {
+                    add(&mut index.text_styles, &attribute.text_style)
+                }
+                EntityType::AttributeEntity(attribute) => {
+                    add(&mut index.text_styles, &attribute.text_style)
+                }
+                EntityType::Insert(insert) => {
+                    for attribute in &insert.attributes {
+                        add(&mut index.text_styles, &attribute.text_style);
+                    }
+                }
+                EntityType::Dimension(dimension) => {
+                    add(&mut index.dim_styles, &dimension.base().style_name)
+                }
+                EntityType::Table(table) => {
+                    add_handle(&mut index.object_styles, table.table_style_handle)
+                }
+                EntityType::MultiLeader(leader) => {
+                    add_handle(&mut index.object_styles, leader.style_handle)
+                }
+                EntityType::MLine(line) => add_handle(&mut index.object_styles, line.style_handle),
+                _ => {}
+            }
+        }
+        index
+    }
+
+    fn dependency_targets(&self, kind: &str, names: &[String]) -> DependencyTargets {
+        if self.dependency_index_cache.borrow().is_none() {
+            *self.dependency_index_cache.borrow_mut() = Some(self.rebuild_dependency_index());
+        }
+        let cache = self.dependency_index_cache.borrow();
+        let index = cache.as_ref().unwrap();
+        let map = match kind {
+            "layer" => &index.layers,
+            "text" => &index.text_styles,
+            "dim" => &index.dim_styles,
+            _ => unreachable!(),
+        };
+        let mut combined = DependencyTargets::default();
+        for name in names {
+            let Some(target) = map.get(&name.to_ascii_uppercase()) else {
+                continue;
+            };
+            combined
+                .render_handles
+                .extend(target.render_handles.iter().copied());
+            combined
+                .source_handles
+                .extend(target.source_handles.iter().copied());
+            combined.touches_block_definition |= target.touches_block_definition;
+        }
+        combined
+    }
+
+    fn invalidate_dependency_targets(&mut self, targets: DependencyTargets) {
+        if targets.render_handles.is_empty() {
+            return;
+        }
+        if targets.touches_block_definition {
+            self.block_epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
+        }
+        let sources: Vec<Handle> = targets.source_handles.iter().copied().collect();
+        self.recolor_meshes_for_handles(&sources);
+        let changes: Vec<(Handle, ChangeKind)> = targets
+            .render_handles
+            .into_iter()
+            .map(|handle| (handle, ChangeKind::Modified))
+            .collect();
+        self.bump_entities(&changes);
+    }
+
+    pub fn invalidate_layer_dependencies(&mut self, names: &[String]) {
+        let targets = self.dependency_targets("layer", names);
+        self.invalidate_dependency_targets(targets);
+    }
+
+    pub fn invalidate_text_style_dependencies(&mut self, name: &str) {
+        self.invalidate_text_style_dependencies_many(&[name.to_string()]);
+    }
+
+    pub fn invalidate_text_style_dependencies_many(&mut self, names: &[String]) {
+        let targets = self.dependency_targets("text", names);
+        self.invalidate_dependency_targets(targets);
+    }
+
+    pub fn invalidate_dim_style_dependencies(&mut self, name: &str) {
+        self.invalidate_dim_style_dependencies_many(&[name.to_string()]);
+    }
+
+    pub fn invalidate_dim_style_dependencies_many(&mut self, names: &[String]) {
+        let targets = self.dependency_targets("dim", names);
+        self.invalidate_dependency_targets(targets);
+    }
+
+    pub fn invalidate_object_style_dependencies(&mut self, handles: &[Handle]) {
+        if self.dependency_index_cache.borrow().is_none() {
+            *self.dependency_index_cache.borrow_mut() = Some(self.rebuild_dependency_index());
+        }
+        let mut combined = DependencyTargets::default();
+        if let Some(index) = self.dependency_index_cache.borrow().as_ref() {
+            for handle in handles {
+                let Some(target) = index.object_styles.get(handle) else {
+                    continue;
+                };
+                combined
+                    .render_handles
+                    .extend(target.render_handles.iter().copied());
+                combined
+                    .source_handles
+                    .extend(target.source_handles.iter().copied());
+                combined.touches_block_definition |= target.touches_block_definition;
+            }
+        }
+        self.invalidate_dependency_targets(combined);
+    }
+
+    pub(crate) fn invalidate_dependency_index(&self) {
+        self.dependency_index_cache.borrow_mut().take();
+    }
+
     /// Spatial index + always-emit list for top-level entities. Lazily
     /// rebuilt on `geometry_epoch` change.
     ///
@@ -4957,9 +6839,7 @@ impl Scene {
                         ChangeKind::Added | ChangeKind::Modified => {
                             match self.document.get_entity(*h) {
                                 None => ops.push(IdxOp::Remove(*h)),
-                                Some(e) if is_unindexable_entity(e) => {
-                                    ops.push(IdxOp::Remove(*h))
-                                }
+                                Some(e) if is_unindexable_entity(e) => ops.push(IdxOp::Remove(*h)),
                                 Some(e) => match entity_world_aabb_f64(e) {
                                     Some(ab) => ops.push(IdxOp::SetBounded(*h, ab)),
                                     None => ops.push(IdxOp::SetUnbounded(*h)),
@@ -5041,9 +6921,7 @@ impl Scene {
                 unbounded_handles: unbounded,
             },
         ));
-        std::cell::Ref::map(self.entity_index_cache.borrow(), |c| {
-            &c.as_ref().unwrap().1
-        })
+        std::cell::Ref::map(self.entity_index_cache.borrow(), |c| &c.as_ref().unwrap().1)
     }
 
     /// Full tessellation pipeline for one entity.
@@ -5333,7 +7211,10 @@ mod journal_tests {
         s.bump_entities(&[(h(20), ChangeKind::Added)]);
         s.bump_entities(&[(h(20), ChangeKind::Removed)]);
         let m = as_map(s.replay_since(e0)).unwrap();
-        assert!(!m.contains_key(&h(20)), "add+remove in one window must cancel");
+        assert!(
+            !m.contains_key(&h(20)),
+            "add+remove in one window must cancel"
+        );
     }
 
     #[test]
@@ -5391,8 +7272,11 @@ mod journal_tests {
         // quadtree + always-surfaced unbounded).
         fn indexed(s: &Scene) -> HashSet<Handle> {
             let idx = s.entity_index();
-            let mut set: HashSet<Handle> =
-                idx.tree.query_rect([-1e9, -1e9, 1e9, 1e9]).into_iter().collect();
+            let mut set: HashSet<Handle> = idx
+                .tree
+                .query_rect([-1e9, -1e9, 1e9, 1e9])
+                .into_iter()
+                .collect();
             set.extend(idx.unbounded_handles.iter().copied());
             set
         }
@@ -5469,7 +7353,11 @@ mod journal_tests {
             e.common_mut().handle = h3;
             s.update_entity(e);
         }
-        assert_eq!(resident_names(&s), from_scratch(&s), "resident after modify");
+        assert_eq!(
+            resident_names(&s),
+            from_scratch(&s),
+            "resident after modify"
+        );
 
         s.erase_entities(&[h2]);
         assert_eq!(resident_names(&s), from_scratch(&s), "resident after erase");
@@ -5525,11 +7413,11 @@ mod delta_undo_tests {
     fn build_delta(
         scene: &Scene,
         rec: UndoRecording,
-    ) -> Vec<(Handle, Option<EntityType>, Option<EntityType>)> {
+    ) -> Vec<(Handle, Option<Arc<EntityType>>, Option<Arc<EntityType>>)> {
         rec.into_before_images()
             .into_iter()
             .map(|(h, before)| {
-                let after = scene.document.get_entity(h).cloned();
+                let after = scene.document.get_entity_arc(h);
                 (h, before, after)
             })
             .collect()
@@ -5582,7 +7470,10 @@ mod delta_undo_tests {
         scene.begin_undo_recording();
         scene.erase_entities(&[h2]);
         let rec = scene.take_undo_recording().unwrap();
-        assert!(!rec.is_poisoned(), "erasing an ungrouped entity must not poison");
+        assert!(
+            !rec.is_poisoned(),
+            "erasing an ungrouped entity must not poison"
+        );
         let delta = build_delta(&scene, rec);
         assert!(scene.document.get_entity(h2).is_none(), "h2 must be erased");
 
@@ -5593,7 +7484,11 @@ mod delta_undo_tests {
         assert_eq!(scene.document.get_entity(h2).cloned().unwrap(), orig2);
         assert_eq!(scene.document.get_entity(h1).cloned().unwrap(), orig1);
         assert_eq!(scene.document.entities().count(), count);
-        assert_eq!(ms_occurrences(&scene, h2), 1, "h2 must appear once, not duplicated");
+        assert_eq!(
+            ms_occurrences(&scene, h2),
+            1,
+            "h2 must appear once, not duplicated"
+        );
 
         // Redo erases h2 again. (remove_entity leaves the handle dangling in
         // the block record — harmless, a lookup miss is skipped on render/save
@@ -5608,7 +7503,10 @@ mod delta_undo_tests {
         scene.begin_undo_recording();
         let h = scene.add_entity(line(0.0, 0.0, 4.0, 4.0));
         let rec = scene.take_undo_recording().unwrap();
-        assert!(!rec.is_poisoned(), "a plain add on an existing layer must not poison");
+        assert!(
+            !rec.is_poisoned(),
+            "a plain add on an existing layer must not poison"
+        );
         let added = scene.document.get_entity(h).cloned().unwrap();
         let delta = build_delta(&scene, rec);
 
@@ -5630,8 +7528,10 @@ mod delta_undo_tests {
         let src = scene.add_entity(line(0.0, 0.0, 1.0, 0.0));
 
         scene.begin_undo_recording();
-        let new_handles =
-            scene.copy_entities(&[src], &EntityTransform::Translate(DVec3::new(10.0, 0.0, 0.0)));
+        let new_handles = scene.copy_entities(
+            &[src],
+            &EntityTransform::Translate(DVec3::new(10.0, 0.0, 0.0)),
+        );
         let rec = scene.take_undo_recording().unwrap();
         assert!(!rec.is_poisoned(), "copying a plain entity must not poison");
         assert_eq!(new_handles.len(), 1);
@@ -5646,8 +7546,10 @@ mod delta_undo_tests {
 
         // Redo restores the copy with its handle, once.
         scene.apply_entity_delta(&delta, false);
-        assert_eq!(scene.document.get_entity(copy_h).cloned().unwrap(), copy_img);
+        assert_eq!(
+            scene.document.get_entity(copy_h).cloned().unwrap(),
+            copy_img
+        );
         assert_eq!(ms_occurrences(&scene, copy_h), 1);
     }
 }
-

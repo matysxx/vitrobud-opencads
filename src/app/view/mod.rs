@@ -9,8 +9,8 @@ use crate::scene::{VIEWCUBE_PAD, VIEWCUBE_REGION_PX};
 use crate::ui::wrap_bar::DensitySwap;
 use crate::ui::wrap_bar::WrapFlow;
 use iced::widget::{
-    button, canvas, column, container, mouse_area, pane_grid, responsive, row, shader, stack, text,
-    Row, Space,
+    button, canvas, column, container, mouse_area, pane_grid, responsive, row, scrollable, shader,
+    stack, text, Row, Space,
 };
 use iced::window;
 use iced::{keyboard, Background, Border, Color, Element, Fill, Subscription, Task, Theme};
@@ -115,18 +115,21 @@ impl OpenCADStudio {
         // viewport draws the layout's own geometry (white sheet + entities +
         // borders) and the floating content viewports blit on top.
         let viewport_3d: Element<'_, Message> = if tab.is_start {
-            start_page_view(
-                &self.patrons,
-                &self.videos,
-                self.videos_loading,
-                &self.video_thumbs,
-                &self.recent_files,
-                &self.recent_thumbs,
-                self.recent_limit,
-                &self.recent_limit_input,
-                self.win_size.0,
-                self.start_section,
-            )
+            responsive(|size| {
+                start_page_view(
+                    &self.patrons,
+                    &self.videos,
+                    self.videos_loading,
+                    &self.video_thumbs,
+                    &self.recent_files,
+                    &self.recent_thumbs,
+                    self.recent_limit,
+                    &self.recent_limit_input,
+                    size.width,
+                    self.start_section,
+                )
+            })
+            .into()
         } else if is_paper {
             shader(ViewportPane::model(
                 &tab.scene,
@@ -415,8 +418,8 @@ impl OpenCADStudio {
                     None
                 };
             let ost_project =
-                |w: glam::Vec3, view_rot: glam::Mat4, eye: glam::DVec3, ob: iced::Rectangle| {
-                    let ndc = view_rot.project_point3((w.as_dvec3() - eye).as_vec3());
+                |w: glam::DVec3, view_rot: glam::Mat4, eye: glam::DVec3, ob: iced::Rectangle| {
+                    let ndc = view_rot.project_point3((w - eye).as_vec3());
                     iced::Point::new(
                         ob.x + (ndc.x + 1.0) * 0.5 * ob.width,
                         ob.y + (1.0 - ndc.y) * 0.5 * ob.height,
@@ -443,7 +446,7 @@ impl OpenCADStudio {
                 match (otrack_proj, self.otrack_active) {
                     (Some((view_rot, eye, ob)), Some((base, _dir))) => {
                         let b = ost_project(base, view_rot, eye, ob);
-                        let a = ost_project(tab.last_cursor_world.as_vec3(), view_rot, eye, ob);
+                        let a = ost_project(tab.last_cursor_world, view_rot, eye, ob);
                         (b.x.is_finite() && a.x.is_finite()).then_some((b, a))
                     }
                     _ => None,
@@ -452,7 +455,7 @@ impl OpenCADStudio {
             let parallel_ref_marker: Option<iced::Point> =
                 match (otrack_proj, self.snapper.parallel_ref) {
                     (Some((view_rot, eye, ob)), Some((_, pt))) => {
-                        let s = ost_project(pt, view_rot, eye, ob);
+                        let s = ost_project(pt.as_dvec3(), view_rot, eye, ob);
                         (s.x.is_finite() && s.y.is_finite()).then_some(s)
                     }
                     _ => None,
@@ -1118,32 +1121,44 @@ impl OpenCADStudio {
             }
         }
 
-        // Frame-budget HUD (Phase 5.3): toggle with the PERF command. Shows
-        // the cost of the most recent wire re-tessellation — the work avoided
-        // by a warm wire cache — so render-path changes can be compared
-        // PR-to-PR. Reads ~0 ms while panning/zooming on a hit cache.
-        if self.perf_hud && !tab.is_start {
+        // Shared performance panel: terminal PERF lines plus the current
+        // tessellation summary. Copy / Clear mirror the command-history panel.
+        if self.perf_hud {
             let s = &tab.scene;
-            let label = format!(
+            let perf_w = if render_bar_w.is_finite() && render_bar_w > 1.0 {
+                render_bar_w
+            } else {
+                320.0
+            };
+            let summary = format!(
                 "tess {:.1} ms · {} wires · epoch {}",
                 s.last_tess_ms.get(),
                 s.last_tess_wires.get(),
                 s.geometry_epoch,
             );
-            let panel = container(text(label).size(12).color(Color {
-                r: 0.6,
-                g: 1.0,
-                b: 0.6,
-                a: 1.0,
-            }))
-            .padding(6)
-            .style(|_: &Theme| container::Style {
-                background: Some(Background::Color(Color {
-                    r: 0.08,
-                    g: 0.08,
-                    b: 0.08,
-                    a: 0.85,
+            let trace = crate::perf::snapshot_text();
+            let trace = if trace.is_empty() {
+                "No samples yet".to_string()
+            } else {
+                trace
+            };
+            let perf_button_style = |_: &Theme, status: button::Status| button::Style {
+                background: Some(Background::Color(if matches!(status, button::Status::Hovered) {
+                    Color {
+                        r: 0.24,
+                        g: 0.24,
+                        b: 0.24,
+                        a: 1.0,
+                    }
+                } else {
+                    Color {
+                        r: 0.14,
+                        g: 0.14,
+                        b: 0.14,
+                        a: 1.0,
+                    }
                 })),
+                text_color: Color::WHITE,
                 border: Border {
                     color: Color {
                         r: 0.35,
@@ -1154,6 +1169,62 @@ impl OpenCADStudio {
                     width: 1.0,
                     radius: 3.0.into(),
                 },
+                ..Default::default()
+            };
+            let copy_btn = button(
+                row![
+                    crate::ui::icons::tinted(
+                        crate::ui::icons::COPY,
+                        11.0,
+                        Color::from_rgb(0.7, 0.85, 1.0),
+                    ),
+                    text("Copy").size(11),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::PerfCopy)
+            .style(perf_button_style)
+            .padding([2, 6]);
+            let clear_btn = button(
+                row![
+                    crate::ui::icons::tinted(
+                        crate::ui::icons::TRASH,
+                        11.0,
+                        Color::from_rgb(1.0, 0.55, 0.55),
+                    ),
+                    text("Clear").size(11),
+                ]
+                .spacing(4)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::PerfClear)
+            .style(perf_button_style)
+            .padding([2, 6]);
+            let header = row![
+                text("PERF").size(12).color(Color::from_rgb(0.6, 1.0, 0.6)),
+                Space::new().width(iced::Length::Fill),
+                copy_btn,
+                clear_btn,
+            ]
+            .spacing(6)
+            .align_y(iced::Center);
+            let log = scrollable(text(trace).size(11).color(Color::from_rgb(0.8, 0.9, 0.8)))
+                .height(iced::Length::Fixed(220.0))
+                .width(iced::Length::Fill);
+            let panel = container(
+                column![
+                    header,
+                    text(summary).size(11).color(Color::from_rgb(0.6, 1.0, 0.6)),
+                    log,
+                ]
+                .spacing(5),
+            )
+            .width(iced::Length::Fixed(perf_w))
+            .padding(6)
+            .style(|_: &Theme| container::Style {
+                background: None,
+                border: Border::default(),
                 ..Default::default()
             });
             viewport_stack = viewport_stack.push(position_canvas_overlay(
@@ -2504,7 +2575,17 @@ pub(super) fn start_page_view<'a>(
     let fits_all = avail
         >= recent_w + sup_w + 2.0 * 16.0 + welcome_min + 2.0 * (videos_w + 16.0);
 
-    let recent = recent_files_panel(recents, thumbs, recent_limit, recent_limit_input);
+    let recent = recent_files_panel(
+        recents,
+        thumbs,
+        recent_limit,
+        recent_limit_input,
+        if fits_all {
+            iced::Length::Fixed(recent_w)
+        } else {
+            iced::Length::Fill
+        },
+    );
     let welcome = container(content).width(Fill).height(Fill);
 
     // Tutorial-videos rail: the official playlist, fetched at boot (cached on
@@ -2593,7 +2674,11 @@ pub(super) fn start_page_view<'a>(
             Space::new().height(iced::Length::Fixed(12.0)),
             playlist_btn,
         ])
-        .width(iced::Length::Fixed(videos_w))
+        .width(if fits_all {
+            iced::Length::Fixed(videos_w)
+        } else {
+            iced::Length::Fill
+        })
         .height(Fill)
         .padding(16)
         .style(|_: &Theme| container::Style {
@@ -2672,7 +2757,11 @@ pub(super) fn start_page_view<'a>(
             Space::new().height(iced::Length::Fixed(12.0)),
             support_btn,
         ])
-        .width(iced::Length::Fixed(240.0))
+        .width(if fits_all {
+            iced::Length::Fixed(sup_w)
+        } else {
+            iced::Length::Fill
+        })
         .height(Fill)
         .padding(20)
         .style(|_: &Theme| container::Style {
@@ -2804,6 +2893,7 @@ pub(super) fn recent_files_panel<'a>(
     >,
     limit: usize,
     limit_input: &'a str,
+    width: iced::Length,
 ) -> Element<'a, Message> {
     // Card chrome matches the Supporters rail (the canonical start-page card).
     const PANEL_BG: Color = Color {
@@ -2993,7 +3083,7 @@ pub(super) fn recent_files_panel<'a>(
         ]
         .width(Fill),
     )
-    .width(iced::Length::Fixed(280.0))
+    .width(width)
     .height(Fill)
     .padding(20)
     .style(|_: &Theme| container::Style {
@@ -3007,4 +3097,3 @@ pub(super) fn recent_files_panel<'a>(
     })
     .into()
 }
-

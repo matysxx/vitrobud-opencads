@@ -168,10 +168,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     }
                     // A typed grip-menu value reshapes dimensions too — drop a
                     // stale baked *D block (no-op for non-dims). (#398)
-                    crate::modules::draw::modify::explode::invalidate_dim_block(
-                        &mut self.tabs[i].scene.document,
-                        pending.handle,
-                    );
+                    self.tabs[i]
+                        .scene
+                        .invalidate_dim_block_recorded(pending.handle);
                     self.tabs[i].scene.bump_geometry();
                     self.tabs[i].dirty = true;
                     self.refresh_selected_grips();
@@ -295,10 +294,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     // (issue #69).
                     if let Some((base, dir)) = self.otrack_active {
                         if let Some(dist) = crate::app::expr_eval::eval_number(text.trim()) {
-                            // Typed distance along the tracking ray: keep the
-                            // magnitude exact in f64 (ray origin/dir are the
-                            // screen-space snapper's f32).
-                            let pt = base.as_dvec3() + dir.as_dvec3() * dist;
+                            let pt = base + dir * dist;
                             self.last_point = Some(pt);
                             self.dyn_user_reshaped = false;
                             self.sync_dyn_fields();
@@ -522,8 +518,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         self.tabs[i].scene.hidden.remove(&h);
                         self.tabs[i].scene.clear_preview_wire();
                         // Geometry restored to the backup — re-tessellate just it.
-                        self.tabs[i].scene.mark_entity_dirty(h);
-                        self.tabs[i].scene.bump_geometry_no_blocks();
+                        self.tabs[i]
+                            .scene
+                            .bump_entities(&[(h, crate::scene::ChangeKind::Modified)]);
                         self.refresh_selected_grips();
                     }
                     self.tabs[self.active_tab].snap_result = None;
@@ -990,10 +987,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 }
                 // Menu actions reshape dimensions too — drop a stale baked *D
                 // block so the edit is visible (no-op for non-dims). (#398)
-                crate::modules::draw::modify::explode::invalidate_dim_block(
-                    &mut self.tabs[i].scene.document,
-                    popup.handle,
-                );
+                self.tabs[i]
+                    .scene
+                    .invalidate_dim_block_recorded(popup.handle);
                 self.tabs[i].scene.bump_geometry();
                 self.tabs[i].dirty = true;
                 self.refresh_selected_grips();
@@ -1921,7 +1917,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
             self.tabs[i].dirty = true;
         } else {
             // Nothing changed — drop the snapshot pushed a moment ago.
-            let _ = self.tabs[i].history.undo_stack.pop();
+            self.discard_last_undo_entry(i);
         }
         self.refresh_properties();
         Task::none()

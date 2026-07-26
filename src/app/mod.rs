@@ -67,7 +67,10 @@ pub struct HoverDwell {
 }
 
 /// How long the cursor must sit still before the idle rollover pick runs.
-pub const HOVER_DWELL_MS: u128 = 120;
+pub const HOVER_DWELL_MS: u128 = 500;
+/// Dense resident sets also retain the previous rollover while moving; this
+/// threshold gates that extra redraw-avoidance behavior.
+pub const HOVER_DWELL_DENSE_WIRES: usize = 50_000;
 
 /// Open multi-functional-grip popup state.
 #[derive(Clone, Debug)]
@@ -165,7 +168,6 @@ use acadrust::CadDocument;
 use iced::time::Instant;
 use iced::window;
 use iced::{mouse, Point, Task, Theme};
-use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 
 pub(super) const POLY_START_DELAY_MS: u128 = 150;
@@ -176,14 +178,15 @@ pub(super) const VARIES_LABEL: &str = "*VARIES*";
 // loader thread, read by the UI overlay on every frame.
 pub const OPEN_PHASE_READING: u8 = 0;
 pub const OPEN_PHASE_PARSING: u8 = 1;
-pub const OPEN_PHASE_CACHING: u8 = 2;
-pub const OPEN_PHASE_FINALIZING: u8 = 3;
+pub const OPEN_PHASE_XREF: u8 = 2;
+pub const OPEN_PHASE_CACHING: u8 = 3;
+pub const OPEN_PHASE_FINALIZING: u8 = 4;
 
 #[derive(Debug, Clone)]
 pub struct OpenProgress {
     pub name: String,
     pub size_bytes: u64,
-    pub phase: Arc<AtomicU8>,
+    pub state: Arc<crate::io::OpenProgressState>,
     pub started: Instant,
 }
 
@@ -211,7 +214,9 @@ struct AddSelectedRestore {
 }
 
 /// Which Start-page section a narrow (tabbed) Start page is showing.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize,
+)]
 pub enum StartSection {
     Recent,
     Videos,
@@ -300,7 +305,8 @@ pub(super) struct OpenCADStudio {
     /// press-drag draws a rectangle marquee.
     pick_drag_rect: bool,
     /// Frame-budget HUD (Phase 5.3): overlays the last wire re-tessellation
-    /// cost on the active viewport. Toggled by the `PERF` command.
+    /// cost and the shared performance trace on the active viewport. Toggled
+    /// by the `PERF` command.
     perf_hud: bool,
     /// When set, the cycling list box is open: (canvas point, candidates).
     cycle_candidates: Option<(iced::Point, Vec<acadrust::Handle>)>,
@@ -312,7 +318,7 @@ pub(super) struct OpenCADStudio {
     /// Active OTRACK alignment `(tracking_point, unit_direction)` when the
     /// cursor is on a tracking ray. Lets a typed distance place a point along
     /// the ray from the tracking point (issue #69). `None` when not aligned.
-    otrack_active: Option<(glam::Vec3, glam::Vec3)>,
+    otrack_active: Option<(glam::DVec3, glam::DVec3)>,
     /// Whether Tangent snap was enabled before a tangent-pick command started.
     pre_cmd_tangent: Option<bool>,
     /// Drawing defaults captured by ADDSELECTED before it adopts the template
@@ -539,7 +545,7 @@ pub(super) struct OpenCADStudio {
     /// In-memory clipboard: cloned entities waiting to be pasted.
     clipboard: Vec<acadrust::EntityType>,
     /// Entities removed by the most recent ERASE, kept so OOPS can restore them.
-    oops_cache: Vec<acadrust::EntityType>,
+    oops_cache: Vec<Arc<acadrust::EntityType>>,
     /// Paste anchor: lower-left corner of the clipboard entities' bounding box
     /// (or the point picked by COPYBASE). This point lands under the cursor at
     /// paste time.
@@ -730,10 +736,29 @@ pub(super) struct OpenCADStudio {
     /// drawings in a file manager produces exactly that (one process per file,
     /// all arriving at once), which makes this queue load-bearing, not polish.
     pub(super) pending_opens: std::collections::VecDeque<PathBuf>,
+    /// One global interaction-index build at a time. Large drawings can each
+    /// hold millions of entries, so file-open bursts must not multiply peak
+    /// CPU and memory by the number of tabs.
+    active_interaction_index: Option<(u64, u64, usize)>,
+    /// Latest resident source requested by each waiting tab. Jobs run
+    /// serially behind `active_interaction_index`.
+    queued_interaction_indices: std::collections::VecDeque<(
+        u64,
+        u64,
+        usize,
+        std::sync::Arc<Vec<crate::scene::WireModel>>,
+        f32,
+    )>,
 
     // ── Unsaved-changes dialog ────────────────────────────────────────────
     /// Set when the user tries to close a tab or quit while there are unsaved changes.
     pending_close: Option<PendingClose>,
+    /// Latest save job per stable tab id. Older completions may finish, but
+    /// cannot mark a newer document state clean or redirect its path.
+    #[cfg(not(target_arch = "wasm32"))]
+    active_save_jobs: std::collections::HashMap<u64, u64>,
+    #[cfg(not(target_arch = "wasm32"))]
+    save_job_serial: u64,
     /// OS window for the unsaved-changes confirmation dialog.
 
     // ── Custom Save-As dialog ─────────────────────────────────────────────
@@ -840,6 +865,50 @@ pub(super) enum PendingClose {
     Tab(usize),
     /// User tried to quit the application.
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) enum SavePurpose {
+    Manual,
+    SaveAs,
+    Autosave,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) enum SaveContinuation {
+    None,
+    CloseTab,
+    Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct ThumbnailCacheKey {
+    epoch: u64,
+    camera_generation: u64,
+    bg_color: [u32; 4],
+    png: bool,
+    viewport: [u32; 2],
+}
+
+#[derive(Debug, Clone)]
+#[cfg(not(target_arch = "wasm32"))]
+pub struct SaveOutcome {
+    job_id: u64,
+    tab_id: u64,
+    epoch: u64,
+    revision: u64,
+    camera_generation: u64,
+    path: PathBuf,
+    previous_autosave: Option<PathBuf>,
+    set_current_path: bool,
+    purpose: SavePurpose,
+    continuation: SaveContinuation,
+    thumbnail_key: Option<ThumbnailCacheKey>,
+    refreshed_preview: Option<Option<acadrust::Preview>>,
+    result: Result<(), String>,
 }
 
 /// Where a colour chosen in the standalone palette window should be applied.
@@ -1399,8 +1468,9 @@ pub enum Message {
     AecDropBack,
     /// Periodic autosave tick — write `.sv$` recovery files for dirty tabs.
     AutoSave,
-    /// Save-as path picked for the unsaved-changes → save → close flow.
-    UnsavedPickedSavePath(Option<std::path::PathBuf>),
+    /// Native background save/autosave completed.
+    #[cfg(not(target_arch = "wasm32"))]
+    SaveFinished(SaveOutcome),
     // ─────────────────────────────────────────────────────────────────────
     CommandInput(String),
     CommandSubmit,
@@ -1439,6 +1509,10 @@ pub enum Message {
     CommandHistoryCopy,
     /// Clear every line from the command-line history.
     CommandHistoryClear,
+    /// Copy every line currently retained by the PERF panel.
+    PerfCopy,
+    /// Clear the PERF panel's retained trace.
+    PerfClear,
     /// Text-editor action from the read-only history dropdown. Only
     /// non-editing actions (cursor moves, selection, scroll) are applied so
     /// the log stays read-only while remaining drag-selectable and copyable.
@@ -1527,6 +1601,17 @@ pub enum Message {
     /// Timer pulse while a rollover hit-test is queued; fires when the
     /// cursor has been still long enough to safely run the pick.
     HoverDwellTick,
+    /// Large projected interaction index finished preparing off the UI thread.
+    InteractionIndexReady {
+        tab_id: u64,
+        epoch: u64,
+        source: usize,
+        wires: std::sync::Weak<Vec<crate::scene::WireModel>>,
+        index: std::sync::Arc<
+            crate::scene::pick::interaction_index::InteractionIndex,
+        >,
+        build_ms: f64,
+    },
     WindowResized(f32, f32),
     /// Enter pressed globally — finalises the active command (no text-input involvement).
     CommandFinalize,
@@ -2020,6 +2105,9 @@ pub enum Message {
     PlotWindowExport,
     /// Callback after the user picks (or cancels) the window-export path.
     PlotWindowExportPath(Option<std::path::PathBuf>),
+    /// Completion of a PDF/preview/print job performed outside the UI thread.
+    /// The boolean restores the Plot dialog after a preview.
+    BackgroundIoFinished(Result<String, String>, bool),
     /// Send current layout to the system printer (via lp / lpr).
     PrintToPrinter,
     /// Callback from the async printer job.
@@ -2221,6 +2309,8 @@ pub enum Message {
     WblockSave(String),
     /// Result of the WBLOCK save path dialog.
     WblockSaveResult(String, Option<std::path::PathBuf>),
+    /// Background extraction/write completion.
+    WblockWriteFinished(String, std::path::PathBuf, Result<(), String>),
     // ── DATAEXTRACTION ────────────────────────────────────────────────────
     /// Save the pre-built CSV string to a file chosen by the user.
     DataExtractionSave(String),
@@ -2231,16 +2321,23 @@ pub enum Message {
     StlExport,
     /// Callback after the user picks (or cancels) the STL save path.
     StlExportPath(Option<std::path::PathBuf>),
+    StlExportFinished(std::path::PathBuf, Result<(), String>),
     // ── STEP export ───────────────────────────────────────────────────────
     /// Trigger STEP AP203 export: show save dialog.
     StepExport,
     /// Callback after the user picks (or cancels) the STEP save path.
     StepExportPath(Option<std::path::PathBuf>),
+    StepExportFinished(std::path::PathBuf, Result<(), String>),
     // ── OBJ import ────────────────────────────────────────────────────────
     /// Trigger OBJ import: show open-file dialog.
     ObjImport,
     /// Callback after the user picks (or cancels) the OBJ file path.
     ObjImportPath(Option<std::path::PathBuf>),
+    ObjImportFinished(
+        u64,
+        std::path::PathBuf,
+        Result<crate::scene::model::mesh_model::MeshModel, String>,
+    ),
 }
 
 impl OpenCADStudio {
@@ -2412,7 +2509,13 @@ impl OpenCADStudio {
             plot_prev: None,
             opening: None,
             pending_opens: std::collections::VecDeque::new(),
+            active_interaction_index: None,
+            queued_interaction_indices: std::collections::VecDeque::new(),
             pending_close: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            active_save_jobs: std::collections::HashMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            save_job_serial: 0,
             save_dialog_format: "DWG 2018".to_string(),
             save_dialog_filename: "drawing.dwg".to_string(),
             save_dialog_for_unsaved: false,

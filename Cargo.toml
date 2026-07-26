@@ -11,6 +11,7 @@ build = "build.rs"
 # verifies it.
 members = [
     "crates/ocs_plugin_api",
+    "crates/ocs_web_worker",
     "crates/dwg-thumbnailer",
     "crates/dwg-thumbnailer-win",
 ]
@@ -57,7 +58,7 @@ rfd = "0.17"
 clap = { version = "4", features = ["derive"] }
 # Opt-in logging via --log / RUST_LOG (surfaces wgpu / iced / winit diagnostics).
 env_logger = "0.11"
-acadrust = "0.4"
+acadrust = { version = "0.4", features = ["serde"] }
 # Shared DWG embedded-preview extraction (Start-page + file-manager thumbnails).
 dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 flate2 = "1"
@@ -86,14 +87,11 @@ lyon_tessellation = "1.0.20"
 #                       (IApplicationAssociationRegistrationUI dialog).
 # Win32_System_Registry — HKCU registration that lists the app under
 #                       "Open with" for the portable .exe.
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_Registry", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_Registry", "Win32_Storage_FileSystem", "Win32_Foundation"] }
 
 [patch.crates-io]
-# The `acadrust` crate now tracks the OpenAEC-Foundation/acadifc fork's main
-# (still the `acadrust` package): the in-flight DWG reader work plus the Arc
-# copy-on-write entity storage that makes the undo document clone cheap. Drop the
-# patch once these land in a published 0.4 crate.
-acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc", branch = "main" }
+# Track the verified DWG round-trip, I/O, and unified PERF fixes.
+acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "8cc4793" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native enables the plugin host runtime (out-of-process plugins).
@@ -122,6 +120,7 @@ wasm-bindgen = "0.2"
 # web font loader (#141).
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+bincode = "1.3"
 # window.open (external URLs) + Blob/anchor file downloads (Save) + fetch()
 # (Response) for the lazy per-script web font loader (#141).
 web-sys = { version = "0.3", features = [
@@ -133,6 +132,11 @@ web-sys = { version = "0.3", features = [
     "Blob",
     "Url",
     "Response",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
+    "MessageEvent",
+    "ErrorEvent",
     # Async clipboard read for paste into the text/MText editors (iced's own
     # clipboard read is a no-op on the web).
     "Clipboard",

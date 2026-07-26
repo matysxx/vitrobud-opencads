@@ -14,7 +14,10 @@ use std::sync::Arc;
 use crate::scene::pipeline::viewcube::{hover_id, VIEWCUBE_PX};
 use crate::scene::pipeline::MultiPipeline;
 use crate::scene::convert::tess_util;
-use crate::scene::{HatchModel, ImageModel, MeshLodSet, Scene, Uniforms, ViewportInstance, WireModel};
+use crate::scene::{
+    vp_effective_scale, HatchModel, ImageModel, MeshLodSet, NavPerfSample, Scene, Uniforms,
+    ViewportInstance, WireModel,
+};
 
 // ── Camera hover state (shader::Program::State) ───────────────────────────
 
@@ -36,7 +39,10 @@ pub struct ViewportData {
     /// drops off-canvas viewports, so this lets the slot detect when it has been
     /// reused by a different viewport and reset its (index-addressed) caches.
     pub(in crate::scene) instance_id: u64,
-    pub(in crate::scene) wires: Arc<Vec<WireModel>>,
+    /// Weak resident source. Scene owns the strong Arc; retaining another one
+    /// in the previous shader Primitive prevented the next UI event from
+    /// splicing a changed entity in place and forced a full rebuild.
+    pub(in crate::scene) wires: std::sync::Weak<Vec<WireModel>>,
     /// This content viewport's non-rectangular clip boundary (paper layouts
     /// only), as a polygon already projected into the viewport's render-target
     /// NDC. The GPU stamps it into the stencil so content is clipped to the
@@ -120,8 +126,7 @@ pub struct ViewportData {
     /// GPU wire-arena handoff (`OCS_WIRE_GPU_PATCH`): `(prev_gen, changed)` when
     /// this Model set reached `wire_content_id` by an incremental resident patch,
     /// so `prepare` can patch just those entities' slabs. `None` ⇒ full build.
-    pub(in crate::scene) wire_patch:
-        Option<(u64, Arc<Vec<(acadrust::Handle, crate::scene::ChangeKind)>>)>,
+    pub(in crate::scene) wire_patch: Option<(u64, Arc<crate::scene::WireGpuPatch>)>,
     /// Selected handles only (no hover) — solid meshes tint these blue.
     pub(in crate::scene) selected_handles: Arc<rustc_hash::FxHashSet<acadrust::Handle>>,
     /// Currently hovered handle — solid meshes tint it orange.
@@ -147,13 +152,8 @@ pub struct Primitive {
     pub(in crate::scene) viewports: Vec<ViewportData>,
     /// Background color used to clear each viewport's MSAA buffer.
     pub(in crate::scene) bg_color: [f32; 4],
-    /// First `MultiPipeline` inner slot this primitive owns. Paper space (one
-    /// shader widget, many viewports) uses 0. Per-pane Model widgets each own a
-    /// distinct slot (= their tile index) so several shader widgets can share
-    /// the type-keyed pipeline storage without clobbering one another — all
-    /// `prepare` calls run before all `render` calls, so disjoint slots are
-    /// safe.
-    pub(in crate::scene) base_slot: usize,
+    /// One input-to-render sample, carried only when PERF tracing is enabled.
+    pub(in crate::scene) nav_perf: Option<NavPerfSample>,
 }
 
 /// Flags the render pipeline consumes, derived from
@@ -239,13 +239,15 @@ impl shader::Primitive for Primitive {
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
+        let nav_prepare_started = iced::time::Instant::now();
         let phys = viewport.physical_size();
         let full_size = Size::new(phys.width, phys.height);
         let scale = viewport.scale_factor() as f32;
-        pipeline.ensure_len(device, queue, self.base_slot + self.viewports.len());
+        let instance_ids: Vec<u64> = self.viewports.iter().map(|vp| vp.instance_id).collect();
+        let slots = pipeline.resolve_slots(device, queue, &instance_ids);
 
         for (i, vp) in self.viewports.iter().enumerate() {
-            let inner = &mut pipeline.inners[self.base_slot + i];
+            let inner = &mut pipeline.inners[slots[i]];
             // Pipeline slots are addressed by list index, but off-canvas
             // viewports are dropped from the list — so a slot can be reused by a
             // DIFFERENT viewport across frames (e.g. the first viewport scrolls
@@ -262,6 +264,17 @@ impl shader::Primitive for Primitive {
                 inner.cached_selection = (u64::MAX, u64::MAX);
                 inner.cached_mesh_key = (u64::MAX, u64::MAX);
                 inner.cached_face3d_key = (u64::MAX, false);
+                inner.cached_hatch_source = None;
+                inner.cached_wipeout_source = None;
+                inner.cached_image_source = None;
+                inner.cached_text_source = None;
+                inner.cached_mesh_source = None;
+                inner.cached_face3d_source = None;
+                inner.cached_face3d_depth_source = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    inner.wire_cull_key = (u64::MAX, u64::MAX, 0, 0);
+                }
                 inner.render_sig = u64::MAX;
             }
             // The MSAA / depth / resolve textures are always sized to the
@@ -318,6 +331,9 @@ impl shader::Primitive for Primitive {
                 }
                 continue;
             }
+            let Some(vp_wires) = vp.wires.upgrade() else {
+                continue;
+            };
             // Third component is the *selected-set* signature (not
             // selection_generation, which also bumps on hover) so a rollover
             // doesn't re-upload the static hatch / face3d buffers.
@@ -328,44 +344,85 @@ impl shader::Primitive for Primitive {
             // the view toggle so 2D fills stay on even when the user picks
             // the Wireframe overlay style.
             let face3d_fill_active = fill_mode && !vp.view_wireframe;
-            if cur_key != inner.cached_epoch {
-                // Hatches carry a selected-tint, so re-upload on a geometry OR
-                // a selection change (issue #71); images / meshes only need a
-                // geometry change.
-                let geo_changed = vp.geometry_epoch != inner.cached_epoch.0;
-                let sel_changed = vp.selected_sig != inner.cached_epoch.2;
-                if geo_changed || sel_changed {
-                    if fill_mode {
-                        inner.upload_hatches(device, queue, &vp.hatches[..]);
-                        inner.upload_wipeouts(device, &vp.wipeout_hatches[..]);
-                    } else {
-                        inner.upload_hatches(device, queue, &[]);
-                        inner.upload_wipeouts(device, &[]);
-                    }
-                }
-                if geo_changed {
-                    inner.upload_images(device, queue, &vp.images[..]);
-                    inner.upload_text(device, queue, &vp.text_verts[..]);
-                }
-                inner.cached_epoch = cur_key;
+            let fill_changed = inner.cached_fill_mode != fill_mode;
+            let hatch_changed = inner
+                .cached_hatch_source
+                .as_ref()
+                .map_or(true, |source| !Arc::ptr_eq(source, &vp.hatches));
+            let wipeout_changed = inner
+                .cached_wipeout_source
+                .as_ref()
+                .map_or(true, |source| !Arc::ptr_eq(source, &vp.wipeout_hatches));
+            if hatch_changed || fill_changed {
+                inner.upload_hatches(
+                    device,
+                    queue,
+                    if fill_mode { &vp.hatches[..] } else { &[] },
+                );
+                inner.cached_hatch_source = Some(Arc::clone(&vp.hatches));
             }
+            if wipeout_changed || fill_changed {
+                inner.upload_wipeouts(
+                    device,
+                    if fill_mode {
+                        &vp.wipeout_hatches[..]
+                    } else {
+                        &[]
+                    },
+                );
+                inner.cached_wipeout_source = Some(Arc::clone(&vp.wipeout_hatches));
+            }
+            if inner
+                .cached_image_source
+                .as_ref()
+                .map_or(true, |source| !Arc::ptr_eq(source, &vp.images))
+            {
+                inner.upload_images(device, queue, &vp.images[..]);
+                inner.cached_image_source = Some(Arc::clone(&vp.images));
+            }
+            if inner
+                .cached_text_source
+                .as_ref()
+                .map_or(true, |source| !Arc::ptr_eq(source, &vp.text_verts))
+            {
+                inner.upload_text(device, queue, &vp.text_verts[..]);
+                inner.cached_text_source = Some(Arc::clone(&vp.text_verts));
+            }
+            inner.cached_fill_mode = fill_mode;
+            inner.cached_epoch = cur_key;
             // Face3D edge/fill buffers are world-space and selection-independent
             // (upload_face3d takes no selection input), so they only change with
             // the geometry or the 3D-fill toggle — never on a pan/orbit. Gating
-            // here on `(geometry_epoch, face3d_fill_active)` instead of inside the
-            // `cur_key` block (which carries `camera_generation`) stops a camera
-            // move from re-walking every wire to rebuild the Face3D fill buffer.
-            let face3d_key = (vp.geometry_epoch, face3d_fill_active);
-            if face3d_key != inner.cached_face3d_key {
+            // on its category sources plus the stable wire content id avoids
+            // rebuilding it when another entity category alone changes. Never
+            // retain `vp.wires` here: Scene needs unique ownership to splice a
+            // one-entity edit into the resident set.
+            let face_pass_unchanged = vp
+                .wire_patch
+                .as_ref()
+                .is_some_and(|(_, patch)| !patch.face_pass_changed);
+            let face3d_changed = inner
+                .cached_face3d_source
+                .as_ref()
+                .map_or(true, |source| !Arc::ptr_eq(source, &vp.face3d_wires))
+                || inner
+                    .cached_face3d_depth_source
+                    .as_ref()
+                    .map_or(true, |source| !Arc::ptr_eq(source, &vp.draw_depths))
+                || (inner.cached_face3d_key.0 != vp.wire_content_id
+                    && !face_pass_unchanged);
+            if face3d_changed || face3d_fill_active != inner.cached_face3d_key.1 {
                 inner.upload_face3d(
                     device,
                     &vp.face3d_wires[..],
-                    &vp.wires[..],
+                    &vp_wires[..],
                     !face3d_fill_active,
                     &vp.draw_depths,
                 );
-                inner.cached_face3d_key = face3d_key;
+                inner.cached_face3d_source = Some(Arc::clone(&vp.face3d_wires));
+                inner.cached_face3d_depth_source = Some(Arc::clone(&vp.draw_depths));
             }
+            inner.cached_face3d_key = (vp.wire_content_id, face3d_fill_active);
             // Wire buffers are world-space, so a camera move alone doesn't
             // change them — only the view_proj uniform (uploaded every frame).
             // Gate the upload on the wire content id instead of the camera tick:
@@ -379,80 +436,248 @@ impl shader::Primitive for Primitive {
                 // the whole wire buffer. Only for the scissor-free, mesh-free
                 // (single-batch) Model set; scissored paper viewports and mixed
                 // 2D/3D sets fall through to the shared batched path below.
+                #[cfg(not(target_arch = "wasm32"))]
                 let mut arena_served = false;
+                #[cfg(target_arch = "wasm32")]
+                let arena_served = false;
                 #[cfg(not(target_arch = "wasm32"))]
-                let _perf = std::env::var_os("OCS_PERF").is_some();
+                let _perf = crate::perf::enabled();
                 #[cfg(not(target_arch = "wasm32"))]
-                let _t0 = std::time::Instant::now();
+                let _t0 = iced::time::Instant::now();
                 #[cfg(not(target_arch = "wasm32"))]
                 let mut _patched = false;
                 #[cfg(not(target_arch = "wasm32"))]
                 if crate::scene::wire_gpu_patch_enabled() && inner.wire_const_bgl.is_some() {
                     use crate::scene::pipeline::wire_arena::{self, WireArena};
-                    // Split the resident set into the regular 2D wires and the
-                    // mesh/solid EDGE wires (which need the mesh-edge draw
-                    // treatment), one arena each, so both patch incrementally.
-                    // Fill-only wires (no segments) are drawn in the face3d pass,
-                    // not here, so they go in neither.
-                    let mesh_names: rustc_hash::FxHashSet<u64> = vp
-                        .wires
-                        .iter()
-                        .filter(|w| !w.fill_tris.is_empty() && !w.fill_tris_low.is_empty())
-                        .filter_map(|w| w.name.parse::<u64>().ok())
-                        .collect();
-                    let regular: Vec<&crate::scene::WireModel> = vp
-                        .wires
-                        .iter()
-                        .filter(|w| {
-                            !w.points.is_empty() && !wire_arena::is_mesh_edge(w, &mesh_names)
-                        })
-                        .collect();
-                    let mesh: Vec<&crate::scene::WireModel> = vp
-                        .wires
-                        .iter()
-                        .filter(|w| wire_arena::is_mesh_edge(w, &mesh_names))
-                        .collect();
                     let bgl = inner.wire_const_bgl.as_ref().unwrap();
                     let base_ok = vp
                         .wire_patch
                         .as_ref()
-                        .map_or(false, |(base, changes)| {
-                            inner.wire_arena_id == *base && !changes.is_empty()
+                        .map_or(false, |(base, patch)| {
+                            inner.wire_arena_id == *base && !patch.changes.is_empty()
                         });
-                    let changes = vp.wire_patch.as_ref().map(|(_, c)| c);
-
-                    // Each batch: patch from the shared base if possible, else
-                    // rebuild just that batch. They advance together.
-                    let reg_ok = base_ok
-                        && inner.wire_arena.as_mut().map_or(false, |a| {
-                            a.patch(queue, changes.unwrap(), &regular, &vp.draw_depths)
-                        });
-                    if !reg_ok {
-                        inner.wire_arena =
-                            WireArena::build(device, queue, &regular, &vp.draw_depths, bgl, false);
+                    let patch = vp.wire_patch.as_ref().map(|(_, patch)| patch);
+                    if _perf {
+                        crate::perf_record!(
+                            "[perf] arena-base ok={} held={} patch={:?} changes={}",
+                            base_ok,
+                            inner.wire_arena_id,
+                            vp.wire_patch.as_ref().map(|(base, _)| *base),
+                            patch.map_or(0, |p| p.changes.len()),
+                        );
                     }
+
+                    // Split only changed runs on a patch. The previous path
+                    // scanned/parses all resident wires repeatedly here even
+                    // though WireArena emits just one changed entity.
+                    let mut regular_changed: rustc_hash::FxHashMap<
+                        acadrust::Handle,
+                        Vec<&crate::scene::WireModel>,
+                    > = rustc_hash::FxHashMap::default();
+                    let mut mesh_changed: rustc_hash::FxHashMap<
+                        acadrust::Handle,
+                        Vec<&crate::scene::WireModel>,
+                    > = rustc_hash::FxHashMap::default();
+                    if let Some(patch) = patch {
+                        for &(handle, _) in patch.changes.iter() {
+                            let run = patch
+                                .runs
+                                .get(&handle)
+                                .map(|wires| wires.as_slice())
+                                .unwrap_or(&[]);
+                            let mesh_entity = run
+                                .iter()
+                                .any(|w| !w.fill_tris.is_empty() && !w.fill_tris_low.is_empty());
+                            regular_changed.insert(
+                                handle,
+                                run.iter()
+                                    .filter(|w| !w.points.is_empty() && !mesh_entity)
+                                    .collect(),
+                            );
+                            mesh_changed.insert(
+                                handle,
+                                run.iter()
+                                    .filter(|w| !w.points.is_empty() && mesh_entity)
+                                    .collect(),
+                            );
+                        }
+                    }
+                    let fallback_touched = |mesh_edge: bool| {
+                        patch.map_or(true, |patch| {
+                            patch.changes.iter().any(|(handle, _)| {
+                                inner.wire_arena_fallback_handles.contains(handle)
+                                    || if mesh_edge {
+                                        mesh_changed.get(handle).is_some_and(|run| !run.is_empty())
+                                    } else {
+                                        regular_changed
+                                            .get(handle)
+                                            .is_some_and(|run| !run.is_empty())
+                                    }
+                            })
+                        })
+                    };
+                    let reg_ok = base_ok
+                        && if let Some(arena) = inner.wire_arena.as_mut() {
+                            let patch = patch.unwrap();
+                            arena.patch(
+                                queue,
+                                &patch.changes,
+                                &regular_changed,
+                                patch.new_handles_are_suffix,
+                                &vp.draw_depths,
+                            )
+                        } else {
+                            inner.wire_arena_fallback_kind == Some(false)
+                                && !fallback_touched(false)
+                        };
                     let mesh_ok = base_ok
-                        && inner.wire_arena_mesh.as_mut().map_or(false, |a| {
-                            a.patch(queue, changes.unwrap(), &mesh, &vp.draw_depths)
-                        });
-                    if !mesh_ok {
-                        inner.wire_arena_mesh =
-                            WireArena::build(device, queue, &mesh, &vp.draw_depths, bgl, true);
+                        && if let Some(arena) = inner.wire_arena_mesh.as_mut() {
+                            let patch = patch.unwrap();
+                            arena.patch(
+                                queue,
+                                &patch.changes,
+                                &mesh_changed,
+                                patch.new_handles_are_suffix,
+                                &vp.draw_depths,
+                            )
+                        } else {
+                            inner.wire_arena_fallback_kind == Some(true)
+                                && !fallback_touched(true)
+                        };
+                    if !reg_ok || !mesh_ok {
+                        // Initial upload or a patch that outgrew arena capacity:
+                        // only then pay the full regular/mesh split.
+                        let mesh_names: rustc_hash::FxHashSet<u64> = vp_wires
+                            .iter()
+                            .filter(|w| !w.fill_tris.is_empty() && !w.fill_tris_low.is_empty())
+                            .filter_map(|w| w.name.parse::<u64>().ok())
+                            .collect();
+                        let regular: Vec<&crate::scene::WireModel> = vp_wires
+                            .iter()
+                            .filter(|w| {
+                                !w.points.is_empty()
+                                    && !wire_arena::is_mesh_edge(w, &mesh_names)
+                            })
+                            .collect();
+                        let mesh: Vec<&crate::scene::WireModel> = vp_wires
+                            .iter()
+                            .filter(|w| wire_arena::is_mesh_edge(w, &mesh_names))
+                            .collect();
+                        if !reg_ok {
+                            inner.wire_arena = WireArena::build(
+                                device,
+                                queue,
+                                &regular,
+                                &vp.draw_depths,
+                                bgl,
+                                false,
+                            );
+                            if inner.wire_arena.is_none() && !regular.is_empty() {
+                                inner.wire_arena_fallback = std::sync::Arc::new(
+                                    crate::scene::pipeline::WireGpu::from_run_refs(
+                                        device,
+                                        &regular,
+                                        &vp.draw_depths,
+                                        false,
+                                        bgl,
+                                    ),
+                                );
+                                inner.wire_arena_fallback_kind = Some(false);
+                                inner.wire_arena_fallback_handles = regular
+                                    .iter()
+                                    .filter_map(|wire| {
+                                        wire.name
+                                            .parse::<u64>()
+                                            .ok()
+                                            .map(acadrust::Handle::new)
+                                    })
+                                    .collect();
+                            } else if inner.wire_arena_fallback_kind == Some(false) {
+                                inner.wire_arena_fallback =
+                                    std::sync::Arc::new(Vec::new());
+                                inner.wire_arena_fallback_kind = None;
+                                inner.wire_arena_fallback_handles.clear();
+                            }
+                        }
+                        if !mesh_ok {
+                            inner.wire_arena_mesh = WireArena::build(
+                                device,
+                                queue,
+                                &mesh,
+                                &vp.draw_depths,
+                                bgl,
+                                true,
+                            );
+                            if inner.wire_arena_mesh.is_none() && !mesh.is_empty() {
+                                inner.wire_arena_fallback = std::sync::Arc::new(
+                                    crate::scene::pipeline::WireGpu::from_run_refs(
+                                        device,
+                                        &mesh,
+                                        &vp.draw_depths,
+                                        true,
+                                        bgl,
+                                    ),
+                                );
+                                inner.wire_arena_fallback_kind = Some(true);
+                                inner.wire_arena_fallback_handles = mesh
+                                    .iter()
+                                    .filter_map(|wire| {
+                                        wire.name
+                                            .parse::<u64>()
+                                            .ok()
+                                            .map(acadrust::Handle::new)
+                                    })
+                                    .collect();
+                            } else if inner.wire_arena_fallback_kind == Some(true) {
+                                inner.wire_arena_fallback =
+                                    std::sync::Arc::new(Vec::new());
+                                inner.wire_arena_fallback_kind = None;
+                                inner.wire_arena_fallback_handles.clear();
+                            }
+                        }
                     }
                     _patched = reg_ok && mesh_ok;
 
-                    if let (Some(reg), Some(me)) =
-                        (inner.wire_arena.as_ref(), inner.wire_arena_mesh.as_ref())
+                    let regular_ready = inner.wire_arena.is_some()
+                        || inner.wire_arena_fallback_kind == Some(false);
+                    let mesh_ready = inner.wire_arena_mesh.is_some()
+                        || inner.wire_arena_fallback_kind == Some(true);
+                    if regular_ready
+                        && mesh_ready
+                        && (inner.wire_arena.is_some() || inner.wire_arena_mesh.is_some())
                     {
-                        let mut gpus = reg.wire_gpus();
-                        gpus.extend(me.wire_gpus());
+                        let mut gpus = if inner.wire_arena_fallback_kind == Some(false) {
+                            inner.wire_arena_fallback.as_ref().clone()
+                        } else {
+                            inner
+                                .wire_arena
+                                .as_ref()
+                                .map(WireArena::wire_gpus)
+                                .unwrap_or_default()
+                        };
+                        if inner.wire_arena_fallback_kind == Some(true) {
+                            gpus.extend(inner.wire_arena_fallback.iter().cloned());
+                        } else if let Some(arena) = inner.wire_arena_mesh.as_ref() {
+                            gpus.extend(arena.wire_gpus());
+                        }
                         inner.gpu_wires = std::sync::Arc::new(gpus);
-                        inner.wire_handle_index = wire_arena::build_handle_index(&vp.wires[..]);
+                        if _patched {
+                            wire_arena::patch_handle_index(
+                                &mut inner.wire_handle_index,
+                                &patch.unwrap().index_edits,
+                            );
+                        } else {
+                            inner.wire_handle_index =
+                                wire_arena::build_handle_index(&vp_wires[..]);
+                        }
                         inner.wire_arena_id = vp.wire_content_id;
                         arena_served = true;
                     } else {
                         inner.wire_arena = None;
                         inner.wire_arena_mesh = None;
+                        inner.wire_arena_fallback = std::sync::Arc::new(Vec::new());
+                        inner.wire_arena_fallback_kind = None;
+                        inner.wire_arena_fallback_handles.clear();
                         inner.wire_arena_id = u64::MAX;
                     }
                 }
@@ -464,28 +689,31 @@ impl shader::Primitive for Primitive {
                 // `.cloned()` releases the immutable cache borrow before the
                 // miss branch takes a mutable one.
                 if !arena_served {
-                let cached = pipeline.wire_buffer_cache.get(&vp.wire_content_id).cloned();
-                let built = match cached {
-                    Some(entry) => entry,
-                    None => {
-                        let entry =
-                            inner.build_wire_buffers(device, &vp.wires[..], &vp.draw_depths);
-                        pipeline
-                            .wire_buffer_cache
-                            .insert(vp.wire_content_id, entry.clone());
-                        // Evict entries no slot still holds (only the cache
-                        // references them). An entry drawn by any pane keeps a
-                        // strong count ≥ 2, so this never drops live geometry.
-                        if pipeline.wire_buffer_cache.len() > 16 {
+                    let cached = pipeline
+                        .wire_buffer_cache
+                        .get(&vp.wire_content_id)
+                        .cloned();
+                    let built = match cached {
+                        Some(entry) => entry,
+                        None => {
+                            let entry =
+                                inner.build_wire_buffers(device, &vp_wires[..], &vp.draw_depths);
                             pipeline
                                 .wire_buffer_cache
-                                .retain(|_, (w, _)| std::sync::Arc::strong_count(w) > 1);
+                                .insert(vp.wire_content_id, entry.clone());
+                            // Evict entries no slot still holds (only the cache
+                            // references them). An entry drawn by any pane keeps a
+                            // strong count ≥ 2, so this never drops live geometry.
+                            if pipeline.wire_buffer_cache.len() > 16 {
+                                pipeline
+                                    .wire_buffer_cache
+                                    .retain(|_, (w, _)| std::sync::Arc::strong_count(w) > 1);
+                            }
+                            entry
                         }
-                        entry
-                    }
-                };
-                inner.gpu_wires = built.0;
-                inner.wire_handle_index = built.1;
+                    };
+                    inner.gpu_wires = built.0;
+                    inner.wire_handle_index = built.1;
                 } // end !arena_served
                 inner.cached_wire_id = vp.wire_content_id;
                 #[cfg(not(target_arch = "wasm32"))]
@@ -495,14 +723,16 @@ impl shader::Primitive for Primitive {
                         "shared-fullupload"
                     } else if _patched {
                         "arena-patch"
+                    } else if inner.wire_arena_fallback_kind.is_some() {
+                        "arena-hybrid"
                     } else {
                         "arena-build"
                     };
-                    eprintln!(
+                    crate::perf_record!(
                         "[perf] wire {:>7.1}ms  {:<18} wires={} gpu_instances={}",
                         _t0.elapsed().as_secs_f64() * 1000.0,
                         outcome,
-                        vp.wires.len(),
+                        vp_wires.len(),
                         gi,
                     );
                 }
@@ -515,7 +745,7 @@ impl shader::Primitive for Primitive {
             if sel_key != inner.cached_selection {
                 inner.upload_selected_wires(
                     device,
-                    &vp.wires[..],
+                    &vp_wires[..],
                     &vp.selected_handles,
                     vp.hover_handle,
                     &vp.draw_depths,
@@ -525,23 +755,30 @@ impl shader::Primitive for Primitive {
                 // base text buffer.
                 inner.upload_text_highlight(
                     device,
-                    &vp.wires[..],
+                    &vp_wires[..],
                     &vp.selected_handles,
                     vp.hover_handle,
                 );
                 inner.cached_selection = sel_key;
             }
-            // Batched solid meshes — geometry-only, so they ride the geometry
-            // epoch alone and stay resident across camera moves and selection /
-            // hover changes (no per-pick rebuild of the whole solid set).
-            if vp.geometry_epoch != inner.cached_mesh_batch_epoch {
+            // Batched solid meshes stay resident while unrelated entity
+            // categories change.
+            if inner
+                .cached_mesh_source
+                .as_ref()
+                .map_or(true, |source| !Arc::ptr_eq(source, &vp.meshes))
+            {
                 inner.upload_mesh_batch(device, &vp.meshes[..]);
+                inner.cached_mesh_source = Some(Arc::clone(&vp.meshes));
                 inner.cached_mesh_batch_epoch = vp.geometry_epoch;
             }
             // Selection / hover highlight overlay — tinted copies of just the
             // picked solids, rebuilt only when the highlight set (or geometry)
             // changes. Drawn over the static batch so the base never re-packs.
-            let hl_key = (vp.geometry_epoch, vp.selection_generation);
+            let hl_key = (
+                Arc::as_ptr(&vp.meshes) as usize as u64,
+                vp.selection_generation,
+            );
             if hl_key != inner.cached_highlight_key {
                 inner.upload_mesh_highlight(
                     device,
@@ -576,6 +813,47 @@ impl shader::Primitive for Primitive {
             inner.compute_hatch_lod(queue, view_rot, eye, clip_size.width, clip_size.height);
             inner.compute_wipeout_lod(view_rot, eye, clip_size.width, clip_size.height);
             inner.compute_mesh_lod(view_rot, eye, clip_size.width, clip_size.height);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let cull_key = (
+                    vp.wire_content_id,
+                    vp.camera_generation,
+                    clip_size.width,
+                    clip_size.height,
+                );
+                if inner.wire_arena_id == vp.wire_content_id
+                    && inner.wire_cull_key != cull_key
+                {
+                    let mut visible = if inner.wire_arena_fallback_kind == Some(false) {
+                        inner.wire_arena_fallback.as_ref().clone()
+                    } else {
+                        inner
+                            .wire_arena
+                            .as_ref()
+                            .map(|arena| {
+                                arena.wire_gpus_visible(
+                                    view_rot,
+                                    eye,
+                                    clip_size.width,
+                                    clip_size.height,
+                                )
+                            })
+                            .unwrap_or_default()
+                    };
+                    if inner.wire_arena_fallback_kind == Some(true) {
+                        visible.extend(inner.wire_arena_fallback.iter().cloned());
+                    } else if let Some(arena) = inner.wire_arena_mesh.as_ref() {
+                        visible.extend(arena.wire_gpus_visible(
+                            view_rot,
+                            eye,
+                            clip_size.width,
+                            clip_size.height,
+                        ));
+                    }
+                    inner.gpu_wires = std::sync::Arc::new(visible);
+                    inner.wire_cull_key = cull_key;
+                }
+            }
             if vp.show_viewcube {
                 inner.viewcube.upload(
                     queue,
@@ -587,6 +865,19 @@ impl shader::Primitive for Primitive {
                 );
             }
         }
+        if let Some(sample) = self.nav_perf {
+            crate::perf::record(format_args!(
+                "[perf] nav-prepare op={} space={} mode={} input={:.2}ms build={:.2}ms prepare={:.2}ms elapsed={:.2}ms viewports={}",
+                sample.op.label(),
+                sample.space,
+                sample.mode,
+                sample.input_ms,
+                sample.build_ms,
+                nav_prepare_started.elapsed().as_secs_f64() * 1000.0,
+                sample.started.elapsed().as_secs_f64() * 1000.0,
+                self.viewports.len(),
+            ));
+        }
     }
 
     fn render(
@@ -596,13 +887,17 @@ impl shader::Primitive for Primitive {
         target: &iced::wgpu::TextureView,
         clip: &Rectangle<u32>,
     ) {
+        let nav_render_started = iced::time::Instant::now();
         let cw = clip.width as f32;
         let ch = clip.height as f32;
         let clip_right = clip.x + clip.width;
         let clip_bottom = clip.y + clip.height;
-        for (i, vp) in self.viewports.iter().enumerate() {
-            let Some(inner) = pipeline.inners.get(self.base_slot + i) else {
-                break;
+        for vp in &self.viewports {
+            let Some(slot) = pipeline.slot_by_instance.get(&vp.instance_id) else {
+                continue;
+            };
+            let Some(inner) = pipeline.inners.get(*slot) else {
+                continue;
             };
             // Where the viewport would land on the surface in absolute
             // pixels (i32 because either edge may stick off the canvas).
@@ -658,6 +953,17 @@ impl shader::Primitive for Primitive {
                 };
                 inner.viewcube.render(encoder, target, vp_clip);
             }
+        }
+        if let Some(sample) = self.nav_perf {
+            crate::perf::record(format_args!(
+                "[perf] nav-render op={} space={} mode={} encode={:.2}ms elapsed={:.2}ms viewports={}",
+                sample.op.label(),
+                sample.space,
+                sample.mode,
+                nav_render_started.elapsed().as_secs_f64() * 1000.0,
+                sample.started.elapsed().as_secs_f64() * 1000.0,
+                self.viewports.len(),
+            ));
         }
     }
 }
@@ -918,6 +1224,18 @@ pub(crate) fn layer_render_style(document: &CadDocument, layer_name: &str) -> In
     }
 }
 
+/// Whether a block child uses layer-0 inheritance semantics.
+///
+/// XREF merge keeps dependent layers distinct by namespacing them as
+/// `xref|layer`; its source layer `0` therefore becomes `xref|0` but must still
+/// inherit through the containing INSERT exactly like an unprefixed layer 0.
+pub(crate) fn is_effective_layer_zero(layer_name: &str) -> bool {
+    layer_name.eq_ignore_ascii_case("0")
+        || layer_name
+            .rsplit_once('|')
+            .is_some_and(|(_, dependent)| dependent.eq_ignore_ascii_case("0"))
+}
+
 /// Like `render_style_for` but resolves a block sub-entity's inherited
 /// properties: ByBlock inherits the INSERT's style, and (the layer-0 rule) a
 /// sub-entity on layer "0" with ByLayer properties inherits the INSERT's
@@ -934,7 +1252,7 @@ pub(crate) fn render_style_for_block_sub(
 ) -> ([f32; 4], f32, [f32; 8], f32, u8) {
     let (color, pat_len, pat, lw_px, aci) = render_style_for(document, e);
     let common = e.common();
-    let on_l0 = common.layer == "0";
+    let on_l0 = is_effective_layer_zero(&common.layer);
 
     let final_color = if common.color == AcadColor::ByBlock {
         insert_color
@@ -1088,6 +1406,8 @@ impl Scene {
         _hover_region: Option<usize>,
         show_viewcube: bool,
     ) -> Primitive {
+        let nav_build_started = iced::time::Instant::now();
+        let perf_nav = self.take_nav_perf();
         // Hover comes from the scene cell driven by the app-level
         // `CursorMoved` handler — the cube overlay sits above the shader
         // and would otherwise mask the move event from `Program::update`.
@@ -1109,10 +1429,14 @@ impl Scene {
             .collect();
         // Empty viewports → blit nothing; the container background (model bg
         // or the paper desk colour) stays visible.
+        let perf_nav = perf_nav.map(|mut sample| {
+            sample.build_ms = nav_build_started.elapsed().as_secs_f64() * 1000.0;
+            sample
+        });
         Primitive {
             viewports,
             bg_color,
-            base_slot: 0,
+            nav_perf: perf_nav,
         }
     }
 
@@ -1137,11 +1461,17 @@ impl Scene {
             return Primitive {
                 viewports: vec![],
                 bg_color,
-                base_slot: tile_idx,
+                nav_perf: None,
             };
         };
         let active = self.active_model_tile.get();
         let is_active = tile_idx == active;
+        let nav_build_started = iced::time::Instant::now();
+        let perf_nav = if is_active {
+            self.take_nav_perf()
+        } else {
+            None
+        };
         let camera = if is_active {
             self.camera.borrow().clone()
         } else {
@@ -1171,10 +1501,14 @@ impl Scene {
             .viewport_data_for(&inst, canvas, hover_region, show_viewcube)
             .into_iter()
             .collect();
+        let perf_nav = perf_nav.map(|mut sample| {
+            sample.build_ms = nav_build_started.elapsed().as_secs_f64() * 1000.0;
+            sample
+        });
         Primitive {
             viewports,
             bg_color,
-            base_slot: tile_idx,
+            nav_perf: perf_nav,
         }
     }
 
@@ -1245,13 +1579,27 @@ impl Scene {
         // overlay buffer below), so the base id is the source's stable content
         // gen — a drag or camera move never re-uploads the base wire set.
         let wire_content_id = self.last_model_wire_gen.get();
+        let wire_patch = self.model_wire_patch_for(wire_content_id);
         // Split Face3D wires from the rest. The split is content-only (keyed
         // by the wire-set content id), so while the geometry is unchanged it's
         // memoized rather than re-walking every wire (handle lookup + clone)
         // each frame — for every source, since all ids are stable now.
         let (face3d_wires, other_arc) = {
             let cached = { self.split_cache.borrow().get(&wire_content_id).cloned() };
-            let (fa, oa) = cached.unwrap_or_else(|| {
+            let inherited_empty = if let Some((base, patch)) = wire_patch.as_ref() {
+                if patch.face_pass_changed {
+                    None
+                } else {
+                    self.split_cache
+                        .borrow()
+                        .get(base)
+                        .filter(|(_, others)| others.is_none())
+                        .cloned()
+                }
+            } else {
+                None
+            };
+            let (fa, oa) = cached.or(inherited_empty).unwrap_or_else(|| {
                 // No Face3D wire at all (pure 2-D drawings, mesh imports):
                 // "others" would be a wire-for-wire copy of the base set —
                 // mark it `None` and use the base set directly instead of
@@ -1272,6 +1620,10 @@ impl Scene {
                 c.insert(wire_content_id, (fa.clone(), oa.clone()));
                 (fa, oa)
             });
+            self.split_cache
+                .borrow_mut()
+                .entry(wire_content_id)
+                .or_insert_with(|| (fa.clone(), oa.clone()));
             (fa, oa.unwrap_or_else(|| Arc::clone(&base_arc)))
         };
         // Base wire set — the cached `other` Arc directly, never cloned to
@@ -1307,6 +1659,19 @@ impl Scene {
         };
         let mut uniforms =
             Uniforms::new(&inst.camera, full_bounds, self.document.header.lineweight_display);
+        if self.document.header.paper_space_linetype_scaling
+            && !inst.paper_sheet
+            && inst.tile_idx.is_none()
+            && inst.handle != Handle::NULL
+        {
+            if let Some(EntityType::Viewport(vp)) = self.document.get_entity(inst.handle) {
+                let viewport_scale =
+                    vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
+                if viewport_scale.is_finite() && viewport_scale > 1e-9 {
+                    uniforms.linetype_scale = (1.0 / viewport_scale) as f32;
+                }
+            }
+        }
         // Crop the rotation-only RTE view-projection to the visible sub-rect.
         uniforms.view_rot = crop_view_proj(uniforms.view_rot, uo, vo, us, vs);
         uniforms.viewport_size = [visible_w, visible_h];
@@ -1350,21 +1715,18 @@ impl Scene {
             rustc_hash::FxHashSet::default()
         };
 
-        let (hatches, wipeout_hatches) = if inst.paper_sheet {
-            let mut v: Vec<HatchModel> = Vec::new();
-            if let Some(sheet) = self.paper_sheet_fill() {
-                v.push(sheet);
-            }
-            v.extend(self.paper_canvas_hatches().iter().cloned());
-            (Arc::new(v), self.paper_canvas_wipeouts())
+        let (hatches, wipeout_hatches, paper_images) = if inst.paper_sheet {
+            let (hatches, wipeouts, images) = self.paper_sheet_render_models();
+            (hatches, wipeouts, Some(images))
         } else {
             (
                 self.hatch_models_for_viewport(&vp_frozen),
                 self.wipeout_models_for_viewport(&vp_frozen),
+                None,
             )
         };
-        let images = if inst.paper_sheet {
-            self.paper_sheet_images()
+        let images = if let Some(images) = paper_images {
+            images
         } else {
             self.images_for_viewport(&vp_frozen)
         };
@@ -1390,14 +1752,17 @@ impl Scene {
         // id so an unchanged wire set is not re-walked every frame.
         // The reuse fallback inside the gather is keyed per wire SOURCE — the
         // sheet, a Model tile, a content viewport and the implicit view carry
-        // different glyph sets even at the same geometry epoch (#403). Tiles
+        // different glyph sets even at the same geometry epoch (#403). Paper
+        // sheets must also include their layout block: switching layouts does
+        // not change the geometry epoch, and a role-only key reused the prior
+        // sheet's glyph coordinates while its wires moved correctly. Tiles
         // share the resident Model set, so they share one key; the implicit
         // view mixes in the current layout block (BEDIT swaps sets without a
         // geometry delta).
         let text_source_key: u64 = if inst.tile_idx.is_some() {
             0x1000_0000_0000_0000
         } else if inst.paper_sheet {
-            0x2000_0000_0000_0000
+            0x2000_0000_0000_0000 | self.current_layout_block_handle().value()
         } else if inst.handle == acadrust::Handle::NULL {
             0x4000_0000_0000_0000 | self.current_layout_block_handle().value()
         } else {
@@ -1452,7 +1817,7 @@ impl Scene {
         };
         Some(ViewportData {
             instance_id,
-            wires: all_wires,
+            wires: Arc::downgrade(&all_wires),
             clip_boundary_ndc,
             preview_wires,
             face3d_wires,
@@ -1487,7 +1852,7 @@ impl Scene {
             geometry_epoch: self.geometry_epoch,
             camera_generation: self.camera_generation,
             wire_content_id,
-            wire_patch: self.model_wire_patch_for(wire_content_id),
+            wire_patch,
             selected_handles: Arc::new(self.selected.iter().copied().collect()),
             hover_handle: self.hover_highlight,
             selection_generation: self.selection_generation,

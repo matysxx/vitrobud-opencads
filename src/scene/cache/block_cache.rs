@@ -15,7 +15,7 @@
 // a visited set so a self-referential block produces a marker rather than
 // recursing forever.
 
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
 use acadrust::types::{Color as AcadColor, LineWeight, Transform, Vector3};
@@ -153,6 +153,29 @@ pub struct BlockDefn {
 #[derive(Default, Debug)]
 pub struct BlockCache {
     defns: HashMap<String, Arc<BlockDefn>>,
+    prototype_blocks: HashSet<String>,
+    /// Fully expanded prototype for repeated, non-array inserts. The key omits
+    /// translation but includes the linear transform and every inherited style
+    /// input. A matching insert therefore reuses all nested expansion/style
+    /// work and only applies its translation to the immutable prototype.
+    expansion_prototypes: std::sync::Mutex<
+        HashMap<ExpansionPrototypeKey, Arc<std::sync::Mutex<Option<Arc<CachedExpansion>>>>>,
+    >,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ExpansionPrototypeKey {
+    block_name: String,
+    linear: [u64; 9],
+    insert_style: Vec<u32>,
+    selected: bool,
+    is_xref: bool,
+}
+
+#[derive(Debug)]
+struct CachedExpansion {
+    translation: [f64; 3],
+    wires: Arc<Vec<WireModel>>,
 }
 
 impl BlockCache {
@@ -181,6 +204,18 @@ impl BlockCache {
         use crate::par::prelude::*;
         let mut cache = Self::new();
         let referenced = collect_referenced_blocks(doc);
+        let mut reference_counts: HashMap<String, usize> = HashMap::default();
+        for entity in doc.entities() {
+            if let EntityType::Insert(insert) = entity {
+                *reference_counts
+                    .entry(insert.block_name.clone())
+                    .or_default() += insert.instance_count();
+            }
+        }
+        cache.prototype_blocks = reference_counts
+            .into_iter()
+            .filter_map(|(name, count)| (count > 1).then_some(name))
+            .collect();
         // Each defn is built independently: nested INSERTs are stored as
         // by-name references (`LocalSub::Nested`), never expanded here, so a
         // block's build never depends on another block's defn. That makes the
@@ -269,7 +304,6 @@ impl BlockCache {
 /// Walk all entities + all block_record contents collecting every distinct
 /// `block_name` that appears in an Insert (transitively).
 fn collect_referenced_blocks(doc: &CadDocument) -> Vec<String> {
-    use rustc_hash::FxHashSet as HashSet;
     let mut seen: HashSet<String> = HashSet::default();
     let mut queue: Vec<String> = Vec::new();
 
@@ -531,7 +565,9 @@ fn build_nested_ref(
             nested_ins.common.line_weight,
             LineWeight::ByLayer | LineWeight::Default
         ),
-        layer_is_zero: nested_ins.common.layer == "0",
+        layer_is_zero: crate::scene::view::render::is_effective_layer_zero(
+            &nested_ins.common.layer,
+        ),
         l0,
         instance_offsets: array_offsets(nested_ins),
         clip_poly,
@@ -572,7 +608,7 @@ fn tessellate_sub_local(
     // Layer-0 rule: a child on layer "0" with ByLayer properties inherits the
     // INSERT's layer at expand time. Flag each ByLayer property so emit_wire
     // can override the cached (layer-0-resolved) value with the insert layer's.
-    let on_l0 = sub.common().layer == "0";
+    let on_l0 = crate::scene::view::render::is_effective_layer_zero(&sub.common().layer);
     let color_l0 = on_l0 && sub.common().color == AcadColor::ByLayer;
     let lt_l0 = on_l0 && {
         let lt = &sub.common().linetype;
@@ -793,6 +829,61 @@ pub fn expand_insert(
         xform = xform.then(&scale_about_p);
     }
     let name = ins_handle.value().to_string();
+    let prototype_key = if view_aabb.is_none()
+        && world_per_pixel.is_none()
+        && !ins.is_array()
+        && cache.prototype_blocks.contains(&ins.block_name)
+    {
+        Some(expansion_prototype_key(
+            ins,
+            &xform,
+            ins_resolved_color,
+            ins_pat_len,
+            ins_pat,
+            ins_lw_px,
+            ins_layer,
+            selected,
+            pslt_factor,
+            is_xref,
+            bg_color,
+            anno_scale,
+        ))
+    } else {
+        None
+    };
+    let prototype_slot = prototype_key.as_ref().map(|key| {
+        let mut prototypes = cache
+            .expansion_prototypes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(
+            prototypes
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(std::sync::Mutex::new(None))),
+        )
+    });
+    let mut prototype_guard = prototype_slot
+        .as_ref()
+        .map(|slot| slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    if let Some(cached) = prototype_guard
+        .as_ref()
+        .and_then(|guard| guard.as_ref())
+        .cloned()
+    {
+        let translation = transform_translation(&xform);
+        let delta = [
+            translation[0] - cached.translation[0],
+            translation[1] - cached.translation[1],
+            translation[2] - cached.translation[2],
+        ];
+        return Some(
+            cached
+                .wires
+                .iter()
+                .map(|wire| translated_prototype_wire(wire, &name, delta))
+                .collect(),
+        );
+    }
     let mut batches = Batches::default();
     let mut visited: Vec<String> = Vec::with_capacity(8);
 
@@ -846,7 +937,135 @@ pub fn expand_insert(
         };
         expand_defn(defn, &base_xform, &ctx, &mut batches, &mut visited, 0, (0.0, 1.0));
     }
-    Some(batches.finalize(&name, selected, bg_color))
+    let wires = batches.finalize(&name, selected, bg_color);
+    if let Some(guard) = prototype_guard.as_mut() {
+        let cached = Arc::new(CachedExpansion {
+            translation: transform_translation(&xform),
+            wires: Arc::new(wires.clone()),
+        });
+        **guard = Some(cached);
+    }
+    Some(wires)
+}
+
+fn transform_translation(transform: &Transform) -> [f64; 3] {
+    [
+        transform.matrix.m[0][3],
+        transform.matrix.m[1][3],
+        transform.matrix.m[2][3],
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expansion_prototype_key(
+    ins: &acadrust::entities::Insert,
+    transform: &Transform,
+    ins_color: [f32; 4],
+    ins_pat_len: f32,
+    ins_pat: [f32; 8],
+    ins_lw_px: f32,
+    ins_layer: crate::scene::view::render::InheritStyle,
+    selected: bool,
+    pslt_factor: f32,
+    is_xref: bool,
+    bg_color: [f32; 4],
+    anno_scale: f32,
+) -> ExpansionPrototypeKey {
+    let matrix = &transform.matrix.m;
+    let linear = [
+        matrix[0][0].to_bits(),
+        matrix[0][1].to_bits(),
+        matrix[0][2].to_bits(),
+        matrix[1][0].to_bits(),
+        matrix[1][1].to_bits(),
+        matrix[1][2].to_bits(),
+        matrix[2][0].to_bits(),
+        matrix[2][1].to_bits(),
+        matrix[2][2].to_bits(),
+    ];
+    let mut insert_style = Vec::with_capacity(32);
+    insert_style.extend(ins_color.map(f32::to_bits));
+    insert_style.push(ins_pat_len.to_bits());
+    insert_style.extend(ins_pat.map(f32::to_bits));
+    insert_style.push(ins_lw_px.to_bits());
+    insert_style.extend(ins_layer.color.map(f32::to_bits));
+    insert_style.push(ins_layer.pat_len.to_bits());
+    insert_style.extend(ins_layer.pat.map(f32::to_bits));
+    insert_style.push(ins_layer.lw_px.to_bits());
+    insert_style.push(pslt_factor.to_bits());
+    insert_style.extend(bg_color.map(f32::to_bits));
+    insert_style.push(anno_scale.to_bits());
+    ExpansionPrototypeKey {
+        block_name: ins.block_name.clone(),
+        linear,
+        insert_style,
+        selected,
+        is_xref,
+    }
+}
+
+fn translated_prototype_wire(source: &WireModel, name: &str, delta: [f64; 3]) -> WireModel {
+    let mut wire = source.clone();
+    wire.name = name.to_string();
+    translate_double_single(&mut wire.points, &mut wire.points_low, delta);
+    translate_double_single(&mut wire.fill_tris, &mut wire.fill_tris_low, delta);
+    translate_double_single(&mut wire.pick_tris, &mut wire.pick_tris_low, delta);
+    for (point, _) in &mut wire.snap_pts {
+        point.x += delta[0];
+        point.y += delta[1];
+        point.z += delta[2];
+    }
+    for point in &mut wire.key_vertices {
+        point[0] += delta[0];
+        point[1] += delta[1];
+        point[2] += delta[2];
+    }
+    let delta_f32 = [delta[0] as f32, delta[1] as f32, delta[2] as f32];
+    for tangent in &mut wire.tangent_geoms {
+        match tangent {
+            TangentGeom::Line { p1, p2 } => {
+                for axis in 0..3 {
+                    p1[axis] += delta_f32[axis];
+                    p2[axis] += delta_f32[axis];
+                }
+            }
+            TangentGeom::Circle { center, .. } => {
+                for axis in 0..3 {
+                    center[axis] += delta_f32[axis];
+                }
+            }
+        }
+    }
+    if !wire.text_verts.is_empty() {
+        wire.text_verts =
+            crate::scene::model::wire_model::map_text_verts(&wire.text_verts, |x, y, z| {
+                (x + delta[0], y + delta[1], z + delta[2])
+            });
+    }
+    if wire.aabb != WireModel::UNBOUNDED_AABB {
+        wire.aabb[0] += delta_f32[0];
+        wire.aabb[1] += delta_f32[1];
+        wire.aabb[2] += delta_f32[0];
+        wire.aabb[3] += delta_f32[1];
+    }
+    wire
+}
+
+fn translate_double_single(points: &mut [[f32; 3]], lows: &mut Vec<[f32; 3]>, delta: [f64; 3]) {
+    if points.is_empty() {
+        return;
+    }
+    if lows.len() != points.len() {
+        lows.resize(points.len(), [0.0; 3]);
+    }
+    for (point, low) in points.iter_mut().zip(lows.iter_mut()) {
+        for axis in 0..3 {
+            let value = point[axis] as f64 + low[axis] as f64 + delta[axis];
+            let high = value as f32;
+            point[axis] = high;
+            low[axis] = (value - high as f64) as f32;
+        }
+    }
 }
 
 fn aabb_pixel_size(local_aabb: [f32; 4], world_per_pixel: f32) -> f32 {
@@ -1304,6 +1523,49 @@ fn resolve_wire_color(lw: &LocalWire, ctx: &ExpandCtx) -> [f32; 4] {
     }
 }
 
+/// Effective linetype scale along this wire after an INSERT transform.
+///
+/// A non-uniform INSERT has no single global scale. Weight each segment by its
+/// local length, producing the exact factor for a line and a stable
+/// path-weighted approximation for a polyline or tessellated curve.
+fn transformed_wire_length_scale(lw: &LocalWire, xform: &Transform) -> f32 {
+    let mut local_length = 0.0_f64;
+    let mut transformed_length = 0.0_f64;
+    let mut previous: Option<Vector3> = None;
+
+    for (index, point) in lw.points.iter().enumerate() {
+        if !point.iter().all(|v| v.is_finite()) {
+            previous = None;
+            continue;
+        }
+        let low = lw.points_low.get(index).copied().unwrap_or([0.0; 3]);
+        let current = Vector3::new(
+            point[0] as f64 + low[0] as f64,
+            point[1] as f64 + low[1] as f64,
+            point[2] as f64 + low[2] as f64,
+        );
+        if let Some(prev) = previous {
+            let delta = current - prev;
+            let segment_length = (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
+            if segment_length > 1e-12 {
+                let transformed = xform.matrix.transform_direction(delta);
+                local_length += segment_length;
+                transformed_length += (transformed.x * transformed.x
+                    + transformed.y * transformed.y
+                    + transformed.z * transformed.z)
+                    .sqrt();
+            }
+        }
+        previous = Some(current);
+    }
+
+    if local_length > 1e-12 && transformed_length.is_finite() {
+        (transformed_length / local_length) as f32
+    } else {
+        1.0
+    }
+}
+
 fn emit_wire(
     lw: &LocalWire,
     accum_xform: &Transform,
@@ -1336,8 +1598,17 @@ fn emit_wire(
     } else {
         lw.line_weight_px
     };
-    let final_pat_len = final_pat_len * ctx.pslt_factor;
-    let final_pat = final_pat.map(|v| v * ctx.pslt_factor);
+
+    // Pattern distances are stored in block-local units. Scale them by the
+    // wire's actual path-length ratio so uniform and non-uniform INSERTs both
+    // stay dimensionally consistent with their transformed geometry.
+    let pattern_scale = if final_pat_len > 0.0 {
+        transformed_wire_length_scale(lw, accum_xform)
+    } else {
+        1.0
+    };
+    let final_pat_len = final_pat_len * ctx.pslt_factor * pattern_scale;
+    let final_pat = final_pat.map(|v| v * ctx.pslt_factor * pattern_scale);
 
     // A wide polyline's band width is baked in block-local units; scale it by
     // the insert transform so the shader band matches the scaled geometry.
@@ -1649,4 +1920,3 @@ fn array_offsets(ins: &acadrust::entities::Insert) -> Vec<[f64; 3]> {
     }
     offsets
 }
-

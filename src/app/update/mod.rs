@@ -134,6 +134,9 @@ impl OpenCADStudio {
             }
         }
         let task = self.update_inner(msg);
+        // Close the document-level first-touch transaction started by
+        // push_undo_snapshot at this message boundary.
+        self.finish_all_pending_history();
         // After every message, mirror the active command step's prompt so
         // its history line stays pinned (non-fading) until the step changes.
         let prompt = self.tabs[self.active_tab]
@@ -224,6 +227,7 @@ impl OpenCADStudio {
 
             Message::StartSectionSelect(section) => {
                 self.start_section = section;
+                self.save_config();
                 Task::none()
             }
 
@@ -445,20 +449,26 @@ impl OpenCADStudio {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".into());
-                let phase = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                let progress = std::sync::Arc::new(crate::io::OpenProgressState::new(
                     super::OPEN_PHASE_READING,
                 ));
                 self.opening = Some(super::OpenProgress {
                     name: name.clone(),
                     size_bytes,
-                    phase: phase.clone(),
+                    state: progress.clone(),
                     started: Instant::now(),
                 });
                 let size_label = format_size(size_bytes);
                 self.command_line
                     .push_info(&format!("Opening \"{name}\" ({size_label})…"));
+                let model_bg = self.default_bg_color.unwrap_or([
+                    33.0 / 255.0,
+                    40.0 / 255.0,
+                    48.0 / 255.0,
+                    1.0,
+                ]);
                 Task::perform(
-                    crate::io::open_path_with_phase(path, phase),
+                    crate::io::open_path_with_phase(path, progress, model_bg),
                     Message::FileOpened,
                 )
             }
@@ -575,6 +585,19 @@ impl OpenCADStudio {
 
             Message::WblockSaveResult(_, None) => Task::none(),
 
+            Message::WblockWriteFinished(block_name, path, result) => {
+                match result {
+                    Ok(()) => self.command_line.push_output(&format!(
+                        "WBLOCK  Saved \"{block_name}\" → \"{}\"",
+                        path.display()
+                    )),
+                    Err(error) => self
+                        .command_line
+                        .push_error(&format!("WBLOCK save failed: {error}")),
+                }
+                Task::none()
+            }
+
             Message::DataExtractionSave(csv) => {
                 let csv_clone = csv.clone();
                 Task::perform(
@@ -639,6 +662,16 @@ impl OpenCADStudio {
 
             Message::StlExportPath(None) => Task::none(),
 
+            Message::StlExportFinished(path, result) => {
+                match result {
+                    Ok(()) => self
+                        .command_line
+                        .push_output(&format!("STLOUT: exported to \"{}\"", path.display())),
+                    Err(error) => self.command_line.push_error(&format!("STLOUT: {error}")),
+                }
+                Task::none()
+            }
+
             // ── STEP AP203 export ─────────────────────────────────────────
             Message::StepExport => {
                 let i = self.active_tab;
@@ -666,6 +699,16 @@ impl OpenCADStudio {
 
             Message::StepExportPath(None) => Task::none(),
 
+            Message::StepExportFinished(path, result) => {
+                match result {
+                    Ok(()) => self
+                        .command_line
+                        .push_output(&format!("STEPOUT: exported to \"{}\"", path.display())),
+                    Err(error) => self.command_line.push_error(&format!("STEPOUT: {error}")),
+                }
+                Task::none()
+            }
+
             // ── OBJ import ────────────────────────────────────────────────
             Message::ObjImport => Task::perform(
                 async {
@@ -683,6 +726,38 @@ impl OpenCADStudio {
             Message::ObjImportPath(Some(path)) => self.on_obj_import_path_some(path),
 
             Message::ObjImportPath(None) => Task::none(),
+
+            Message::ObjImportFinished(tab_id, path, result) => {
+                match result {
+                    Err(error) => self.command_line.push_error(&format!("IMPORTOBJ: {error}")),
+                    Ok(mut mesh) => {
+                        let Some(i) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+                            self.command_line
+                                .push_info("IMPORTOBJ: target drawing was closed.");
+                            return Task::none();
+                        };
+                        let file_stem = path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "obj_mesh".into());
+                        mesh.name = file_stem.clone();
+                        self.push_undo_snapshot(i, "IMPORTOBJ");
+                        let entity = crate::modules::insert::solid3d_cmds::empty_solid3d();
+                        let handle = self.tabs[i].scene.add_entity(entity);
+                        if !handle.is_null() {
+                            self.tabs[i]
+                                .scene
+                                .meshes
+                                .insert(handle, crate::scene::MeshLodSet::from_single(mesh));
+                            self.tabs[i].dirty = true;
+                            self.command_line.push_output(&format!(
+                                "IMPORTOBJ: imported \"{file_stem}\" as mesh."
+                            ));
+                        }
+                    }
+                }
+                Task::none()
+            }
 
             Message::SaveFile => self.on_save_file(),
 
@@ -1006,6 +1081,20 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::PerfCopy => {
+                let text = crate::perf::snapshot_text();
+                if text.is_empty() {
+                    Task::none()
+                } else {
+                    iced::clipboard::write(text)
+                }
+            }
+
+            Message::PerfClear => {
+                crate::perf::clear();
+                Task::none()
+            }
+
             Message::CommandHistoryEdit(action) => {
                 // Read-only: drop edits, keep selection / cursor / scroll so
                 // the user can still highlight and Ctrl+C the log.
@@ -1114,7 +1203,7 @@ impl OpenCADStudio {
                 let targets = self.layer_row_action_targets(i, idx);
                 if let Some(on) = on {
                     if !targets.is_empty() {
-                        self.push_undo_snapshot(i, "LAYER OFF/ON");
+                        let undo = self.begin_layer_undo(i, "LAYER OFF/ON", &targets);
                         for name in &targets {
                             if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                                 dl.flags.off = !on;
@@ -1125,8 +1214,9 @@ impl OpenCADStudio {
                                 pl.visible = on;
                             }
                         }
-                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].scene.invalidate_layer_dependencies(&targets);
                         self.tabs[i].dirty = true;
+                        self.commit_layer_undo(i, undo);
                         self.command_line.push_output(&format!(
                             "{} layer(s) turned {}",
                             targets.len(),
@@ -1153,7 +1243,7 @@ impl OpenCADStudio {
                 let targets = self.layer_row_action_targets(i, idx);
                 if let Some(locked) = locked {
                     if !targets.is_empty() {
-                        self.push_undo_snapshot(i, "LAYER LOCK/UNLOCK");
+                        let undo = self.begin_layer_undo(i, "LAYER LOCK/UNLOCK", &targets);
                         for name in &targets {
                             if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                                 dl.flags.locked = locked;
@@ -1164,8 +1254,9 @@ impl OpenCADStudio {
                                 pl.locked = locked;
                             }
                         }
-                        self.tabs[i].scene.bump_geometry();
+                        // Lock state affects editability, not rendered geometry.
                         self.tabs[i].dirty = true;
+                        self.commit_layer_undo(i, undo);
                         self.command_line.push_output(&format!(
                             "{} layer(s) {}",
                             targets.len(),
@@ -1183,7 +1274,7 @@ impl OpenCADStudio {
                 let targets = self.layer_row_action_targets(i, idx);
                 if let Some(frozen) = frozen {
                     if !targets.is_empty() {
-                        self.push_undo_snapshot(i, "LAYER FREEZE");
+                        let undo = self.begin_layer_undo(i, "LAYER FREEZE", &targets);
                         for name in &targets {
                             if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                                 if frozen {
@@ -1198,8 +1289,9 @@ impl OpenCADStudio {
                                 pl.frozen = frozen;
                             }
                         }
-                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].scene.invalidate_layer_dependencies(&targets);
                         self.tabs[i].dirty = true;
+                        self.commit_layer_undo(i, undo);
                         self.command_line.push_output(&format!(
                             "{} layer(s) {}",
                             targets.len(),
@@ -1303,6 +1395,7 @@ impl OpenCADStudio {
                 // Apply to every selected layer (multi-select), not just one.
                 let names = self.selected_layer_names(i);
                 if !names.is_empty() {
+                    let undo = self.begin_layer_undo(i, "LAYER COLOR", &names);
                     use crate::ui::window::layers::iced_color_from_acad;
                     let new_color = iced_color_from_acad(&AcadColor::Index(aci));
                     for name in &names {
@@ -1316,10 +1409,11 @@ impl OpenCADStudio {
                         }
                     }
                     self.tabs[i].dirty = true;
+                    self.commit_layer_undo(i, undo);
                     // ByLayer color is baked into the cached wires at
                     // tessellation time, so bump the geometry epoch to
                     // invalidate the wire cache and repaint with the new color.
-                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].scene.invalidate_layer_dependencies(&names);
                     self.tabs[i].layers.color_picker_row = None;
                     self.tabs[i].layers.color_full_palette = false;
                     self.sync_ribbon_layers();
@@ -1331,6 +1425,7 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let names = self.selected_layer_names(i);
                 if !names.is_empty() {
+                    let undo = self.begin_layer_undo(i, "LAYER LINETYPE", &names);
                     for name in &names {
                         if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                             dl.line_type = lt.clone();
@@ -1342,8 +1437,9 @@ impl OpenCADStudio {
                         }
                     }
                     self.tabs[i].dirty = true;
+                    self.commit_layer_undo(i, undo);
                     // Linetype is baked into the cached wires; repaint.
-                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].scene.invalidate_layer_dependencies(&names);
                 }
                 Task::none()
             }
@@ -1352,6 +1448,7 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let names = self.selected_layer_names(i);
                 if !names.is_empty() {
+                    let undo = self.begin_layer_undo(i, "LAYER LINEWEIGHT", &names);
                     for name in &names {
                         if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                             dl.line_weight = lw;
@@ -1363,8 +1460,9 @@ impl OpenCADStudio {
                         }
                     }
                     self.tabs[i].dirty = true;
+                    self.commit_layer_undo(i, undo);
                     // Lineweight is baked into the cached wires; repaint.
-                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].scene.invalidate_layer_dependencies(&names);
                 }
                 Task::none()
             }
@@ -1656,6 +1754,72 @@ impl OpenCADStudio {
             }
 
             Message::HoverDwellTick => self.on_hover_dwell_tick(),
+
+            Message::InteractionIndexReady {
+                tab_id,
+                epoch,
+                source,
+                wires,
+                index,
+                build_ms,
+            } => {
+                if self.active_interaction_index == Some((tab_id, epoch, source)) {
+                    self.active_interaction_index = None;
+                }
+                let installed = self
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == tab_id)
+                    .is_some_and(|i| {
+                        self.tabs[i].scene.install_prepared_interaction_index(
+                            epoch, source, wires, index,
+                        )
+                    });
+                if crate::perf::enabled() {
+                    crate::perf_record!(
+                        "[perf] interaction-index-bg {:>7.1}ms installed={installed}",
+                        build_ms,
+                    );
+                }
+                while let Some((
+                    queued_tab,
+                    queued_epoch,
+                    queued_source,
+                    queued_wires,
+                    screen_height,
+                )) = self.queued_interaction_indices.pop_front()
+                {
+                    let Some(i) = self.tabs.iter().position(|tab| tab.id == queued_tab) else {
+                        continue;
+                    };
+                    let stale = self.tabs[i].scene.geometry_epoch != queued_epoch
+                        || std::sync::Arc::as_ptr(&queued_wires) as usize != queued_source;
+                    let (wires, screen_height) = if stale {
+                        (
+                            self.tabs[i].scene.hit_test_wires(),
+                            self.tabs[i].scene.selection.borrow().vp_size.1,
+                        )
+                    } else {
+                        (queued_wires, screen_height)
+                    };
+                    if let Some(task) = self.prepare_interaction_index_task(
+                        i,
+                        wires,
+                        screen_height,
+                    ) {
+                        return task;
+                    }
+                }
+                if self.active_interaction_index.is_none() && !self.tabs.is_empty() {
+                    let i = self.active_tab.min(self.tabs.len() - 1);
+                    let wires = self.tabs[i].scene.hit_test_wires();
+                    let screen_height = self.tabs[i].scene.selection.borrow().vp_size.1;
+                    self.prepare_interaction_index_task(i, wires, screen_height)
+                        .unwrap_or_else(Task::none)
+                } else {
+                    Task::none()
+                }
+            }
 
             Message::VisibilityPick(idx) => {
                 if let Some(popup) = self.visibility_popup.take() {
@@ -2227,7 +2391,7 @@ impl OpenCADStudio {
                     // Stash the erased entities so OOPS can restore them.
                     self.oops_cache = handles
                         .iter()
-                        .filter_map(|h| self.tabs[i].scene.document.get_entity(*h).cloned())
+                        .filter_map(|h| self.tabs[i].scene.document.get_entity_arc(*h))
                         .collect();
                     self.tabs[i].scene.erase_entities(&handles);
                     self.tabs[i].dirty = true;
@@ -3659,6 +3823,8 @@ impl OpenCADStudio {
 
             Message::EnterViewport(handle) => {
                 let i = self.active_tab;
+                let perf = crate::perf::enabled();
+                let total = Instant::now();
                 // Clear paper-space selection before entering model space.
                 self.tabs[i].scene.deselect_all();
                 self.tabs[i].scene.active_viewport = Some(handle);
@@ -3666,13 +3832,32 @@ impl OpenCADStudio {
                 // centre so pan/zoom, paper↔model and the display all agree —
                 // otherwise the camera auto-fits to the model while the cursor
                 // math stays at the origin, jittering as pan toggles the two.
+                let phase = Instant::now();
                 self.tabs[i].scene.normalize_active_viewport_view();
+                let normalize_ms = phase.elapsed().as_secs_f64() * 1000.0;
                 // Grid/snap follow the entered viewport.
+                let phase = Instant::now();
                 self.adopt_view_display(i);
+                let display_ms = phase.elapsed().as_secs_f64() * 1000.0;
                 // Adopt the entered viewport's own per-viewport UCS.
+                let phase = Instant::now();
                 self.tabs[i].refresh_active_ucs();
+                let ucs_ms = phase.elapsed().as_secs_f64() * 1000.0;
+                let phase = Instant::now();
                 self.refresh_properties();
+                let properties_ms = phase.elapsed().as_secs_f64() * 1000.0;
                 self.command_line.push_output("MSPACE");
+                if perf {
+                    crate::perf_record!(
+                        "[perf] viewport-enter total={:.2}ms normalize={:.2}ms display={:.2}ms ucs={:.2}ms properties={:.2}ms handle={}",
+                        total.elapsed().as_secs_f64() * 1000.0,
+                        normalize_ms,
+                        display_ms,
+                        ucs_ms,
+                        properties_ms,
+                        handle.value(),
+                    );
+                }
                 Task::none()
             }
 
@@ -3766,17 +3951,8 @@ impl OpenCADStudio {
 
             Message::AutoSave => self.on_autosave(),
 
-            Message::UnsavedPickedSavePath(Some(path)) => {
-                self.on_unsaved_picked_save_path_some(path)
-            }
-
-            Message::UnsavedPickedSavePath(None) => {
-                // User cancelled the save-as dialog — re-open the confirmation dialog.
-                if self.pending_close.is_some() {
-                    return self.open_unsaved_dialog_window();
-                }
-                Task::none()
-            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::SaveFinished(outcome) => self.on_save_finished(outcome),
 
             // ── Page Setup ────────────────────────────────────────────────
             Message::UpdateCheckResult(latest) => {
@@ -3884,6 +4060,17 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::PlotWindowExportPath(Some(path)) => self.on_plot_window_export_path_some(path),
+
+            Message::BackgroundIoFinished(result, reopen_plot) => {
+                match result {
+                    Ok(message) => self.command_line.push_info(&message),
+                    Err(error) => self.command_line.push_error(&error),
+                }
+                if reopen_plot {
+                    self.active_modal = Some(crate::app::ModalKind::Plot);
+                }
+                Task::none()
+            }
 
             // ── Print to system printer ───────────────────────────────────────
             Message::PrintToPrinter => self.on_print_to_printer(),

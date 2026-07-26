@@ -253,6 +253,10 @@ impl Scene {
             // ~6× the view height deep. Orthographic depth precision is linear,
             // so the wide range costs no z-fighting.
             depth_half_range: (view_height as f32 * 64.0).max(1.0),
+            // A restored view has no model AABB yet; `fit_depth_to_saved_extents`
+            // fills it in from $EXTMIN/$EXTMAX right after, so the near/far tracks
+            // the eye direction once the view is orbited.
+            model_bounds: None,
         })
     }
 
@@ -483,24 +487,14 @@ impl Scene {
     /// `OpenCADStudio_Camera_<layout>` named View is honoured only as a
     /// backward-compatible fallback for files saved under the previous scheme.
     fn apply_sheet_viewport_camera(&mut self) -> bool {
-        let layout_block = self.current_layout_block_handle();
-        let sheet_vp = if layout_block.is_null() {
-            None
-        } else {
-            self.document
-                .entities()
-                .filter_map(|e| {
-                    if let EntityType::Viewport(vp) = e {
-                        Some(vp)
-                    } else {
-                        None
-                    }
-                })
-                .find(|vp| {
-                    vp.common.owner_handle == layout_block
-                        && !self.is_content_viewport_in_layout(vp, layout_block)
-                })
-                .cloned()
+        // The Layout object already owns the authoritative sheet-viewport
+        // handle. Do not scan every drawing entity on each Model↔Paper switch.
+        let sheet_vp = match self
+            .document
+            .get_entity(self.current_layout_sheet_viewport_handle())
+        {
+            Some(EntityType::Viewport(vp)) => Some(vp.clone()),
+            _ => None,
         };
 
         let vp = match sheet_vp {
@@ -586,38 +580,21 @@ impl Scene {
 
             // The sheet viewport entity is the authoritative paper-space view;
             // it round-trips natively, so no named-View side-channel is needed.
-            let layout_block = self.current_layout_block_handle();
-            if !layout_block.is_null() {
-                let sheet_handle = self
-                    .document
-                    .entities()
-                    .filter_map(|e| {
-                        if let EntityType::Viewport(vp) = e {
-                            Some(vp)
-                        } else {
-                            None
-                        }
-                    })
-                    .find(|vp| {
-                        vp.common.owner_handle == layout_block && !self.is_content_viewport_in_layout(vp, layout_block)
-                    })
-                    .map(|vp| vp.common.handle);
-
-                if let Some(handle) = sheet_handle {
-                    if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(handle) {
-                        // AutoCAD stores the paper-space view position in
-                        // `view_center` (DCS) with `view_target` at the origin —
-                        // writing it the other way round shifts the layout and
-                        // crashes nothing but renders the sheet off-place. Paper
-                        // space is always a plan view, so DCS == WCS XY here.
-                        vp.view_center =
-                            acadrust::types::Vector3::new(target_wcs.x, target_wcs.y, 0.0);
-                        vp.view_target = acadrust::types::Vector3::ZERO;
-                        vp.view_direction = vd3;
-                        vp.view_height = view_height as f64;
-                        vp.twist_angle = twist;
-                    }
-                }
+            let sheet_handle = self.current_layout_sheet_viewport_handle();
+            if let Some(EntityType::Viewport(vp)) =
+                self.document.get_entity_mut(sheet_handle)
+            {
+                // AutoCAD stores the paper-space view position in
+                // `view_center` (DCS) with `view_target` at the origin —
+                // writing it the other way round shifts the layout and
+                // crashes nothing but renders the sheet off-place. Paper
+                // space is always a plan view, so DCS == WCS XY here.
+                vp.view_center =
+                    acadrust::types::Vector3::new(target_wcs.x, target_wcs.y, 0.0);
+                vp.view_target = acadrust::types::Vector3::ZERO;
+                vp.view_direction = vd3;
+                vp.view_height = view_height as f64;
+                vp.twist_angle = twist;
             }
             true
         }

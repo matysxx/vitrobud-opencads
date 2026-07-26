@@ -214,7 +214,10 @@ impl OpenCADStudio {
             // UCS (relative offsets are rotated by the UCS axes), so a multi-
             // token `LINE 0,0 10,10` under a rotated UCS lands correctly.
             let ucs = self.tabs[i].active_ucs.clone();
-            let wcs = match (matches!(kind, super::helpers::CoordKind::Relative), self.last_point) {
+            let wcs = match (
+                matches!(kind, super::helpers::CoordKind::Relative),
+                self.last_point,
+            ) {
                 (true, Some(base)) => {
                     base + match &ucs {
                         Some(u) => super::helpers::ucs_rotate_vec(coord, u),
@@ -257,8 +260,7 @@ impl OpenCADStudio {
         {
             // Remember the working set for the "Previous" selection keyword
             // (#426) before dropping it.
-            self.tabs[i].prev_selection =
-                self.tabs[i].scene.selected.iter().copied().collect();
+            self.tabs[i].prev_selection = self.tabs[i].scene.selected.iter().copied().collect();
             self.tabs[i].scene.deselect_all();
             self.refresh_properties();
         }
@@ -352,7 +354,7 @@ impl OpenCADStudio {
                 // body — wire re-tessellation alone leaves the solid drawn at
                 // its old spot. (#135)
                 if self.tabs[i].scene.any_solid(&handles) {
-                    self.tabs[i].scene.populate_meshes_from_document();
+                    self.tabs[i].scene.refresh_meshes_for_handles(&handles);
                 }
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.clear_preview_wire();
@@ -372,7 +374,7 @@ impl OpenCADStudio {
                 let pending = self.begin_undo(i, label, handles.len(), delta_safe);
                 let new_handles = self.tabs[i].scene.copy_entities(&handles, &transform);
                 if self.tabs[i].scene.any_solid(&new_handles) {
-                    self.tabs[i].scene.populate_meshes_from_document();
+                    self.tabs[i].scene.refresh_meshes_for_handles(&new_handles);
                 }
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.deselect_all();
@@ -433,13 +435,16 @@ impl OpenCADStudio {
             }
             CmdResult::CommitSolid { entity, solid } => {
                 let label = self.history_label_from_active_cmd(i, "SOLID");
-                self.push_undo_snapshot(i, label);
+                let pending = self.begin_undo(i, label, 1, true);
                 self.add_solid_model(entity, *solid);
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.clear_preview_wire();
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.restore_pre_cmd_tangent();
+                if let Some(pd) = pending {
+                    self.commit_undo_delta(i, pd);
+                }
             }
             CmdResult::CommitAndEditText(entity) => {
                 let label = self.history_label_from_active_cmd(i, "ENTITY");
@@ -464,7 +469,10 @@ impl OpenCADStudio {
                 edit_index,
             } => {
                 let label = self.history_label_from_active_cmd(i, "ENTITY");
-                self.push_undo_snapshot(i, label);
+                let delta_safe = entities
+                    .iter()
+                    .all(|entity| self.delta_add_safe(i, entity));
+                let pending = self.begin_undo(i, label, entities.len(), delta_safe);
                 let mut edit_handle = None;
                 let mut leader_handle = None;
                 for (idx, entity) in entities.into_iter().enumerate() {
@@ -492,6 +500,9 @@ impl OpenCADStudio {
                 self.tabs[i].snap_result = None;
                 self.restore_pre_cmd_tangent();
                 self.ribbon.deactivate_tool();
+                if let Some(pd) = pending {
+                    self.commit_undo_delta(i, pd);
+                }
                 if let Some(h) = edit_handle {
                     return self.begin_text_edit(h);
                 }
@@ -520,7 +531,7 @@ impl OpenCADStudio {
                         self.refresh_properties();
                     }
                     Err(err) => {
-                        let _ = self.tabs[i].history.undo_stack.pop();
+                        self.discard_last_undo_entry(i);
                         self.command_line.push_error(&err);
                         let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
                         if let Some(p) = prompt {
@@ -531,7 +542,7 @@ impl OpenCADStudio {
             }
             CmdResult::CommitHatch(hatch) => {
                 let label = self.history_label_from_active_cmd(i, "HATCH");
-                self.push_undo_snapshot(i, label);
+                let pending = self.begin_undo(i, label, 1, true);
                 let new_handle = self.tabs[i].scene.add_hatch(hatch);
                 if !new_handle.is_null() {
                     self.tabs[i].scene.select_entity(new_handle, true);
@@ -542,6 +553,9 @@ impl OpenCADStudio {
                 self.tabs[i].snap_result = None;
                 self.restore_pre_cmd_tangent();
                 self.refresh_properties();
+                if let Some(pd) = pending {
+                    self.commit_undo_delta(i, pd);
+                }
             }
             CmdResult::BatchCopy(handles, transforms) => {
                 let label = self.history_label_from_active_cmd(i, "ARRAY");
@@ -549,8 +563,7 @@ impl OpenCADStudio {
                 // Same gate as COPY (dimension-free), sized by the total number
                 // of copies the array will add.
                 let delta_safe = self.delta_copy_safe(i, &handles);
-                let pending =
-                    self.begin_undo(i, label.clone(), handles.len() * count, delta_safe);
+                let pending = self.begin_undo(i, label.clone(), handles.len() * count, delta_safe);
                 for t in &transforms {
                     self.tabs[i].scene.copy_entities(&handles, t);
                 }
@@ -569,8 +582,7 @@ impl OpenCADStudio {
             }
             CmdResult::ReplaceMany(replacements, additions) => {
                 let label = self.history_label_from_active_cmd(i, "FILLET");
-                let was_catchment = self
-                    .tabs[i]
+                let was_catchment = self.tabs[i]
                     .active_cmd
                     .as_ref()
                     .is_some_and(|c| c.name() == "SS_CATCHMENT");
@@ -584,10 +596,7 @@ impl OpenCADStudio {
                             self.tabs[i].scene.document.get_entity(nh),
                             Some(acadrust::EntityType::Dimension(_))
                         ) {
-                            crate::modules::draw::modify::explode::invalidate_dim_block(
-                                &mut self.tabs[i].scene.document,
-                                nh,
-                            );
+                            self.tabs[i].scene.invalidate_dim_block_recorded(nh);
                         }
                     }
                 }
@@ -707,10 +716,7 @@ impl OpenCADStudio {
                         self.tabs[i].scene.document.get_entity(nh),
                         Some(acadrust::EntityType::Dimension(_))
                     ) {
-                        crate::modules::draw::modify::explode::invalidate_dim_block(
-                            &mut self.tabs[i].scene.document,
-                            nh,
-                        );
+                        self.tabs[i].scene.invalidate_dim_block_recorded(nh);
                     }
                 }
                 if let Some(cmd) = &mut self.tabs[i].active_cmd {
@@ -753,13 +759,17 @@ impl OpenCADStudio {
                         .and_then(|c| c.attreq_take_insert());
                     if let Some(entity) = entity {
                         let label = self.history_label_from_active_cmd(i, "INSERT");
-                        self.push_undo_snapshot(i, label);
+                        let delta_safe = self.delta_add_safe(i, &entity);
+                        let pending = self.begin_undo(i, label, 1, delta_safe);
                         self.commit_entity(entity);
                         self.tabs[i].dirty = true;
                         self.tabs[i].scene.clear_preview_wire();
                         self.tabs[i].active_cmd = None;
                         self.tabs[i].snap_result = None;
                         self.restore_pre_cmd_tangent();
+                        if let Some(pd) = pending {
+                            self.commit_undo_delta(i, pd);
+                        }
                     }
                 } else {
                     // Inject attdefs so the command enters attr-filling mode.
@@ -774,11 +784,19 @@ impl OpenCADStudio {
             }
             CmdResult::CommitLiveEntity(entity) => {
                 let label = self.history_label_from_active_cmd(i, "ENTITY");
-                self.push_undo_snapshot(i, label);
+                let delta_safe = self.delta_add_safe(i, &entity);
+                let pending = self.begin_undo(i, label, 1, delta_safe);
                 let handle = self.commit_entity_handle(entity);
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.clear_preview_wire();
+                if let Some(pd) = pending {
+                    self.commit_undo_delta(i, pd);
+                }
                 if let Some(h) = handle {
+                    // Keep the live document Arc unique while later vertices
+                    // replace the geometry in place. The final Arc is captured
+                    // by UpdateLiveEntity when the command completes.
+                    self.defer_live_entity_history_after(i, h);
                     if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
                         cmd.set_live_handle(h);
                     }
@@ -806,11 +824,13 @@ impl OpenCADStudio {
                     new.as_entity_mut().set_handle(old_handle);
                     new.as_entity_mut().set_layer(layer);
                     *old = new;
-                    self.tabs[i].scene.mark_entity_dirty(handle);
-                    self.tabs[i].scene.bump_geometry_no_blocks();
+                    self.tabs[i]
+                        .scene
+                        .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
                     self.tabs[i].dirty = true;
                 }
                 if finish {
+                    self.finish_live_entity_history(i, handle);
                     self.tabs[i].scene.clear_preview_wire();
                     self.tabs[i].active_cmd = None;
                     self.tabs[i].snap_result = None;
@@ -825,10 +845,10 @@ impl OpenCADStudio {
             CmdResult::RemoveLiveEntity(handle) => {
                 // The command backed off below a valid entity (PLINE Undo at
                 // one remaining vertex): take the live entity out of the
-                // document and keep prompting. No undo bookkeeping — the
-                // create's snapshot already covers the whole in-progress
-                // object as one unit.
+                // document, drop its provisional history entry and keep
+                // prompting. A later second point creates one fresh entry.
                 self.tabs[i].scene.erase_entities(&[handle]);
+                self.discard_last_undo_entry(i);
                 self.tabs[i].dirty = true;
                 let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
                 if let Some(p) = prompt {
@@ -910,10 +930,10 @@ impl OpenCADStudio {
                 // style crosses Dimension / Leader / Tolerance.
                 let src_clone = self.tabs[i].scene.document.get_entity(src).cloned();
                 let transparency = src_clone.as_ref().map(|e| e.common().transparency.clone());
-                // Dimension-style OVERRIDES ride the ACAD_DSTYLE xdata record;
-                // matching replicates the source's record (or clears the
-                // destination's when the source has none).
-                let dstyle_xdata: Option<Vec<acadrust::xdata::XDataValue>> = src_clone
+                // Dimension-style overrides ride the ACAD record, identified
+                // by a leading DSTYLE string. Matching replicates that payload
+                // (or clears the destination when the source has none).
+                let dstyle_xdata: Option<Vec<(i16, acadrust::xdata::XDataValue)>> = src_clone
                     .as_ref()
                     .filter(|e| {
                         matches!(
@@ -921,8 +941,7 @@ impl OpenCADStudio {
                             acadrust::EntityType::Dimension(_) | acadrust::EntityType::Leader(_)
                         )
                     })
-                    .and_then(|e| e.common().extended_data.get_record("ACAD_DSTYLE"))
-                    .map(|r| r.values.clone());
+                    .map(|e| crate::entities::dim_override::pairs(&e.common().extended_data));
 
                 if let Some((layer, color, linetype, lt_scale, lw)) = props {
                     self.push_undo_snapshot(i, "MATCHPROP");
@@ -944,9 +963,9 @@ impl OpenCADStudio {
                                 match_special_props(se, e);
                             }
                         }
-                        // Dim-style overrides (ACAD_DSTYLE) follow the style
-                        // for dimension / leader destinations — through
-                        // set_entity_xdata so no stale raw record survives.
+                        // Dim-style overrides follow the style for dimension /
+                        // leader destinations — through set_entity_xdata so no
+                        // stale raw record survives.
                         if dstyle_xdata.is_some()
                             || matches!(
                                 self.tabs[i].scene.document.get_entity(*h),
@@ -969,21 +988,17 @@ impl OpenCADStudio {
                                         | acadrust::EntityType::Leader(_)
                                 )
                             ) {
-                                crate::scene::view::dispatch::set_entity_xdata(
+                                crate::entities::dim_override::replace(
                                     &mut self.tabs[i].scene.document,
                                     *h,
-                                    "ACAD_DSTYLE",
-                                    dstyle_xdata.clone(),
+                                    dstyle_xdata.clone().unwrap_or_default(),
                                 );
                             }
                         }
                         // A restyled dimension renders from its baked *D block —
                         // drop the stale block so the new style shows (#398).
                         if any_dim {
-                            crate::modules::draw::modify::explode::invalidate_dim_block(
-                                &mut self.tabs[i].scene.document,
-                                *h,
-                            );
+                            self.tabs[i].scene.invalidate_dim_block_recorded(*h);
                         }
                         // Hatch fills render from a prebuilt model (#415).
                         self.tabs[i].scene.refresh_fill_model(*h);
@@ -1037,9 +1052,10 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.tabs[i].scene.clear_preview_wire();
-                self.push_undo_snapshot(i, "GROUP");
+                let undo = self.begin_group_undo(i, "GROUP");
                 self.tabs[i].scene.create_group(name.clone(), handles);
                 self.tabs[i].dirty = true;
+                self.commit_group_undo(i, undo);
                 self.command_line
                     .push_info(&format!("Group \"{}\" created.", name));
             }
@@ -1047,9 +1063,10 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.tabs[i].scene.clear_preview_wire();
-                self.push_undo_snapshot(i, "UNGROUP");
+                let undo = self.begin_group_undo(i, "UNGROUP");
                 let count = self.tabs[i].scene.delete_groups_containing(&handles);
                 self.tabs[i].dirty = true;
+                self.commit_group_undo(i, undo);
                 if count > 0 {
                     self.command_line
                         .push_info(&format!("{} group(s) dissolved.", count));
@@ -1163,7 +1180,9 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.tabs[i].scene.clear_preview_wire();
-                self.tabs[i].scene.zoom_to_window(p1.as_vec3(), p2.as_vec3());
+                self.tabs[i]
+                    .scene
+                    .zoom_to_window(p1.as_vec3(), p2.as_vec3());
                 self.command_line.push_output("Zoom Window");
             }
             CmdResult::Measurement(msg) => {
@@ -1337,10 +1356,8 @@ impl OpenCADStudio {
                             .and_then(convert_to_polyline);
                         match converted {
                             Some(pl) => {
-                                return self.apply_cmd_result(CmdResult::ReplaceEntity(
-                                    handle,
-                                    vec![pl],
-                                ));
+                                return self
+                                    .apply_cmd_result(CmdResult::ReplaceEntity(handle, vec![pl]));
                             }
                             None => self
                                 .command_line
@@ -1366,7 +1383,7 @@ impl OpenCADStudio {
                             self.command_line.push_output("PEDIT: applied.");
                             self.refresh_properties();
                         } else {
-                            let _ = self.tabs[i].history.undo_stack.pop();
+                            self.discard_last_undo_entry(i);
                             self.command_line
                                 .push_error("PEDIT: operation not applicable to this entity.");
                         }
@@ -1459,9 +1476,8 @@ impl OpenCADStudio {
                     let x1 = p1.x.max(p2.x);
                     let y1 = p1.y.max(p2.y);
                     self.plot_window = Some((x0, y0, x1, y1));
-                    self.command_line.push_output(&format!(
-                        "Plot window: {x0:.2},{y0:.2} to {x1:.2},{y1:.2}"
-                    ));
+                    self.command_line
+                        .push_output(&format!("Plot window: {x0:.2},{y0:.2} to {x1:.2},{y1:.2}"));
                     // Pick window closed the plot dialog so the viewport could
                     // receive the two clicks — bring the dialog back with the
                     // window now active.
@@ -1526,23 +1542,14 @@ impl OpenCADStudio {
                 let mut handles: Vec<Handle> = Vec::new();
                 {
                     let scene = &self.tabs[i].scene;
-                    let mut seen: rustc_hash::FxHashSet<Handle> = rustc_hash::FxHashSet::default();
-                    for w in scene.entity_wires().iter() {
-                        let Some(h) = crate::scene::Scene::handle_from_wire_name(&w.name) else {
-                            continue;
-                        };
-                        if !seen.insert(h) || scene.is_layer_locked(h) {
-                            continue;
-                        }
-                        let [ax, ay, bx, by] = w.aabb;
-                        if ax as f64 <= win_max.x
-                            && bx as f64 >= win_min.x
-                            && ay as f64 <= win_max.y
-                            && by as f64 >= win_min.y
-                        {
-                            handles.push(h);
-                        }
-                    }
+                    handles.extend(
+                        scene
+                            .interaction_handles_in_world_aabb([
+                                win_min.x, win_min.y, win_max.x, win_max.y,
+                            ])
+                            .into_iter()
+                            .filter(|&h| !scene.is_layer_locked(h)),
+                    );
                 }
                 if handles.is_empty() {
                     self.command_line
@@ -1566,8 +1573,15 @@ impl OpenCADStudio {
                 win_max,
                 delta,
             } => {
-                self.push_undo_snapshot(i, "STRETCH");
+                let structural = handles.iter().any(|handle| {
+                    matches!(
+                        self.tabs[i].scene.document.get_entity(*handle),
+                        Some(acadrust::EntityType::Dimension(_))
+                    )
+                });
+                let pending = self.begin_undo(i, "STRETCH", handles.len(), !structural);
                 let mut count = 0usize;
+                let mut changed_handles = Vec::new();
 
                 // Helper: is DXF point (x, y) inside the world-space window?
                 // Drawing plane is world XY (= DXF XY).
@@ -1583,6 +1597,7 @@ impl OpenCADStudio {
                 // stale afterwards and must be dropped (see #398 / #372).
                 let mut stretched_dims: Vec<acadrust::Handle> = Vec::new();
                 for handle in &handles {
+                    let before = self.tabs[i].scene.document.get_entity_arc(*handle);
                     let Some(entity) = self.tabs[i].scene.document.get_entity_mut(*handle) else {
                         continue;
                     };
@@ -1679,6 +1694,10 @@ impl OpenCADStudio {
                                 stretched = true;
                             }
                         }
+                        acadrust::EntityType::Viewport(vp) => {
+                            stretched =
+                                crate::entities::viewport::stretch(vp, win_min, win_max, delta);
+                        }
                         acadrust::EntityType::Dimension(dim) => {
                             use acadrust::entities::Dimension;
                             // Move every definition point that falls inside the
@@ -1754,7 +1773,11 @@ impl OpenCADStudio {
                         }
                     }
                     if stretched {
+                        if let Some(before) = before {
+                            self.tabs[i].scene.record_undo_before(*handle, Some(before));
+                        }
                         self.tabs[i].scene.mark_entity_dirty(*handle);
+                        changed_handles.push(*handle);
                         count += 1;
                     }
                 }
@@ -1762,10 +1785,7 @@ impl OpenCADStudio {
                 // one exists (file roundtrip) — drop it so tessellation falls
                 // back to the live points and the next save re-bakes. (#372)
                 for h in stretched_dims {
-                    crate::modules::draw::modify::explode::invalidate_dim_block(
-                        &mut self.tabs[i].scene.document,
-                        h,
-                    );
+                    self.tabs[i].scene.invalidate_dim_block_recorded(h);
                 }
 
                 // Geometry was edited in place via get_entity_mut, which the
@@ -1773,7 +1793,15 @@ impl OpenCADStudio {
                 // moved entities so the viewport reflects the stretch right away
                 // instead of only on the next unrelated redraw. See #95.
                 if count > 0 {
-                    self.tabs[i].scene.bump_geometry_no_blocks();
+                    if structural {
+                        self.tabs[i].scene.bump_geometry();
+                    } else {
+                        let changes: Vec<_> = changed_handles
+                            .iter()
+                            .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
+                            .collect();
+                        self.tabs[i].scene.bump_entities(&changes);
+                    }
                 }
                 self.tabs[i].dirty = true;
                 self.tabs[i].active_cmd = None;
@@ -1783,11 +1811,14 @@ impl OpenCADStudio {
                 self.command_line
                     .push_output(&format!("STRETCH: {count} entity(ies) stretched."));
                 self.refresh_properties();
+                if let Some(pending) = pending {
+                    self.commit_undo_delta(i, pending);
+                }
             }
             // ── Solid3D creation (BOX / SPHERE / CYLINDER) ────────────────
             CmdResult::CommitSolid3D { mesh_fn } => {
                 use crate::modules::insert::solid3d_cmds::empty_solid3d;
-                self.push_undo_snapshot(i, "SOLID3D");
+                let pending = self.begin_undo(i, "SOLID3D", 1, true);
                 let entity = empty_solid3d();
                 let handle = self.tabs[i].scene.add_entity(entity);
                 if !handle.is_null() {
@@ -1795,10 +1826,16 @@ impl OpenCADStudio {
                     let color = [0.6f32, 0.6, 0.8, 1.0]; // default colour; command embedded it
                     let _ = color; // color is captured inside mesh_fn
                     if let Some(mesh) = mesh_fn(name) {
-                        self.tabs[i].scene.meshes.insert(handle, crate::scene::MeshLodSet::from_single(mesh));
+                        self.tabs[i]
+                            .scene
+                            .meshes
+                            .insert(handle, crate::scene::MeshLodSet::from_single(mesh));
                     }
                     self.tabs[i].dirty = true;
                     self.command_line.push_output("Solid created.");
+                }
+                if let Some(pd) = pending {
+                    self.commit_undo_delta(i, pd);
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -1836,15 +1873,18 @@ impl OpenCADStudio {
                                         verts_low,
                                         normals,
                                         indices,
-                                    } => Some((crate::scene::model::mesh_model::MeshModel {
-                                        name: String::new(),
-                                        verts,
-                                        verts_low,
-                                        normals,
-                                        indices,
-                                        color,
-                                        selected: false,
-                                    }, solid)),
+                                    } => Some((
+                                        crate::scene::model::mesh_model::MeshModel {
+                                            name: String::new(),
+                                            verts,
+                                            verts_low,
+                                            normals,
+                                            indices,
+                                            color,
+                                            selected: false,
+                                        },
+                                        solid,
+                                    )),
                                     _ => None,
                                 }
                             }
@@ -1852,16 +1892,22 @@ impl OpenCADStudio {
                         }
                     });
                     if let Some((mut mesh, solid)) = result {
-                        self.push_undo_snapshot(i, "EXTRUDE");
+                        let pending = self.begin_undo(i, "EXTRUDE", 1, true);
                         let new_entity = empty_solid3d();
                         let new_handle = self.tabs[i].scene.add_entity(new_entity);
                         mesh.name = format!("{}", new_handle.value());
-                        self.tabs[i].scene.meshes.insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
+                        self.tabs[i]
+                            .scene
+                            .meshes
+                            .insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
                         // Keep the truck B-rep so the save path can export exact
                         // ACIS geometry (else the solid is dropped by other CAD apps).
                         self.tabs[i].scene.solid_models.insert(new_handle, solid);
                         self.tabs[i].dirty = true;
                         self.command_line.push_output("EXTRUDE: solid created.");
+                        if let Some(pd) = pending {
+                            self.commit_undo_delta(i, pd);
+                        }
                     } else {
                         self.command_line.push_error("EXTRUDE: could not build profile. Select a closed 2D entity (Circle, LwPolyline, etc.).");
                     }
@@ -1931,14 +1977,20 @@ impl OpenCADStudio {
                         }
                     });
                     if let Some(mut mesh) = result {
-                        self.push_undo_snapshot(i, "REVOLVE");
+                        let pending = self.begin_undo(i, "REVOLVE", 1, true);
                         let new_entity = empty_solid3d();
                         let new_handle = self.tabs[i].scene.add_entity(new_entity);
                         mesh.name = format!("{}", new_handle.value());
-                        self.tabs[i].scene.meshes.insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
+                        self.tabs[i]
+                            .scene
+                            .meshes
+                            .insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
                         self.tabs[i].dirty = true;
                         self.command_line
                             .push_output(&format!("REVOLVE: solid created ({:.0}°).", angle_deg));
+                        if let Some(pd) = pending {
+                            self.commit_undo_delta(i, pd);
+                        }
                     } else {
                         self.command_line
                             .push_error("REVOLVE: could not revolve profile.");
@@ -2096,13 +2148,19 @@ impl OpenCADStudio {
                 });
 
                 if let Some(mut mesh) = result {
-                    self.push_undo_snapshot(i, "SWEEP");
+                    let pending = self.begin_undo(i, "SWEEP", 1, true);
                     let new_entity = empty_solid3d();
                     let new_handle = self.tabs[i].scene.add_entity(new_entity);
                     mesh.name = format!("{}", new_handle.value());
-                    self.tabs[i].scene.meshes.insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
+                    self.tabs[i]
+                        .scene
+                        .meshes
+                        .insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
                     self.tabs[i].dirty = true;
                     self.command_line.push_output("SWEEP: solid created.");
+                    if let Some(pd) = pending {
+                        self.commit_undo_delta(i, pd);
+                    }
                 } else {
                     self.command_line.push_error("SWEEP: could not sweep profile along path. Use a closed 2D profile and a Line or Polyline path.");
                 }
@@ -2178,19 +2236,26 @@ impl OpenCADStudio {
                         }),
                         _ => None,
                     }
-                })();
+                })(
+                );
 
                 if let Some(mut mesh) = result {
-                    self.push_undo_snapshot(i, "LOFT");
+                    let pending = self.begin_undo(i, "LOFT", 1, true);
                     let new_entity = empty_solid3d();
                     let new_handle = self.tabs[i].scene.add_entity(new_entity);
                     mesh.name = format!("{}", new_handle.value());
-                    self.tabs[i].scene.meshes.insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
+                    self.tabs[i]
+                        .scene
+                        .meshes
+                        .insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
                     self.tabs[i].dirty = true;
                     self.command_line.push_output(&format!(
                         "LOFT: solid created from {} profiles.",
                         handles.len()
                     ));
+                    if let Some(pd) = pending {
+                        self.commit_undo_delta(i, pd);
+                    }
                 } else {
                     self.command_line.push_error("LOFT: could not loft profiles. Ensure sections have the same edge count and are compatible.");
                 }
@@ -2273,9 +2338,11 @@ impl OpenCADStudio {
                 return self.begin_text_edit(handle);
             }
             CmdResult::SuspendForTextEdit { handle } => {
-                let is_editable = crate::app::text_inline::can_edit_text(handle, &self.tabs[i].scene.document);
+                let is_editable =
+                    crate::app::text_inline::can_edit_text(handle, &self.tabs[i].scene.document);
                 if !is_editable {
-                    self.command_line.push_error("TEXTEDIT: selected entity is not text.");
+                    self.command_line
+                        .push_error("TEXTEDIT: selected entity is not text.");
                     let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
                     if let Some(p) = prompt {
                         self.command_line.push_info(&p);
@@ -2302,12 +2369,14 @@ impl OpenCADStudio {
             CmdResult::SetTexteditMode(val) => {
                 self.texteditmode = val;
                 let display_val = if val { 1 } else { 0 };
-                self.command_line.push_output(&format!("TEXTEDITMODE set to {display_val}"));
+                self.command_line
+                    .push_output(&format!("TEXTEDITMODE set to {display_val}"));
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.tabs[i].scene.clear_preview_wire();
             }
             CmdResult::DdeditEntity { handle, new_text } => {
+                self.push_undo_snapshot(i, "DDEDIT");
                 let mut updated = false;
                 let mut is_dim = false;
                 if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
@@ -2341,16 +2410,13 @@ impl OpenCADStudio {
                 if is_dim {
                     // The edited override changed the dimension text; drop its
                     // stale *D block so save re-bakes it. (#181)
-                    crate::modules::draw::modify::explode::invalidate_dim_block(
-                        &mut self.tabs[i].scene.document,
-                        handle,
-                    );
+                    self.tabs[i].scene.invalidate_dim_block_recorded(handle);
                 }
                 if updated {
-                    self.push_undo_snapshot(i, "DDEDIT");
                     self.tabs[i].dirty = true;
                     self.command_line.push_output("DDEDIT: text updated.");
                 } else {
+                    self.discard_last_undo_entry(i);
                     self.command_line
                         .push_error("DDEDIT: entity type not supported.");
                 }
@@ -2428,7 +2494,13 @@ impl OpenCADStudio {
         }
         let blocks = self.clipboard_deps.blocks.clone();
         for def in blocks {
-            if self.tabs[i].scene.document.block_records.get(&def.name).is_some() {
+            if self.tabs[i]
+                .scene
+                .document
+                .block_records
+                .get(&def.name)
+                .is_some()
+            {
                 continue;
             }
             self.tabs[i]
@@ -2738,7 +2810,7 @@ fn apply_dimspace(scene: &mut crate::scene::Scene, encoded: &str) {
         }
         // The dimension line moved, so its baked *D block is stale — drop it so
         // the next save re-bakes it (no-op for non-dimensions). (#181)
-        crate::modules::draw::modify::explode::invalidate_dim_block(&mut scene.document, h);
+        scene.invalidate_dim_block_recorded(h);
     }
     scene.bump_geometry();
 }

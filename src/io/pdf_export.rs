@@ -49,12 +49,14 @@ pub async fn pick_pdf_path_owned(_stem: String) -> Option<std::path::PathBuf> {
 }
 
 /// mm to PDF points (1 mm = 2.834645 pt).
+#[cfg(not(target_arch = "wasm32"))]
 const MM_TO_PT: f32 = 2.834645;
 /// `wire.line_weight_px` is the on-screen pixel weight: mm × (96/25.4) × 2.0,
 /// where the ×2 is a screen-legibility boost (see render.rs). Print wants the
 /// true physical weight, so undo both the 96-dpi scaling and the boost before
 /// converting to points — otherwise weights export ~2× too heavy in pixels
 /// (and the old `× 0.35278` left them inconsistent with the physical mm).
+#[cfg(not(target_arch = "wasm32"))]
 const LW_PX_TO_PT: f32 = MM_TO_PT / ((96.0 / 25.4) * 2.0);
 
 // ── Public entry point ────────────────────────────────────────────────────
@@ -635,9 +637,6 @@ fn emit_text(
                     .map(|mm| (mm * MM_TO_PT).max(0.1) / scale.max(1e-6));
             }
         }
-        let lw_pt = lw_override
-            .unwrap_or_else(|| (wire.line_weight_px * LW_PX_TO_PT).max(0.1) / scale.max(1e-6));
-
         let mut gi = 0;
         while gi + 6 <= verts.len() {
             let quad = &verts[gi..gi + 6];
@@ -703,13 +702,33 @@ fn emit_text(
                         });
                     }
                 } else {
-                    // Stroke (LFF pen) font or hollow glyph: polylines. Bold bakes
-                    // at a 1.7× pen over the same centrelines, so widen to match or
-                    // a bold run prints at regular weight.
+                    // Stroke (LFF/SHX pen) font or hollow glyph: polylines.
+                    // Match the SDF atlas' nominal glyph-space pen instead of
+                    // borrowing the entity lineweight: Roman Duplex and similar
+                    // multi-stroke faces rely on that band to close the narrow
+                    // gaps between parallel centrelines. An explicit CTB
+                    // lineweight still wins and stays absolute under the plot CTM.
                     ops.push(Op::SetOutlineColor {
-                        col: Color::Rgb(Rgb { r, g, b, icc_profile: None }),
+                        col: Color::Rgb(Rgb {
+                            r,
+                            g,
+                            b,
+                            icc_profile: None,
+                        }),
                     });
-                    let pen = if ge.bold { lw_pt * 1.7 } else { lw_pt };
+                    let pen = if let Some(ctb_pen) = lw_override {
+                        if ge.bold {
+                            ctb_pen * 1.7
+                        } else {
+                            ctb_pen
+                        }
+                    } else {
+                        let glyph_unit_mm = (((tl[0] - bl[0]).powi(2) + (tl[1] - bl[1]).powi(2))
+                            .sqrt()
+                            / sy.abs() as f64) as f32;
+                        (2.0 * sdf_atlas::stroke_pen_half_units(ge.bold) * glyph_unit_mm * MM_TO_PT)
+                            .max(0.1)
+                    };
                     ops.push(Op::SetOutlineThickness { pt: Pt(pen) });
                     for stroke in &ge.strokes {
                         if stroke.len() < 2 {

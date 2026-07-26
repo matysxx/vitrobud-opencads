@@ -13,6 +13,10 @@ use iced;
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+static NEXT_DOCUMENT_TAB_ID: AtomicU64 = AtomicU64::new(1);
 
 // ── Dynamic input ──────────────────────────────────────────────────────────
 
@@ -153,9 +157,15 @@ impl DocumentTab {
 }
 
 pub(super) struct DocumentTab {
+    /// Stable identity across tab insert/remove operations. Background work
+    /// must never target a tab by its transient vector index.
+    pub(super) id: u64,
     pub(super) scene: Scene,
     pub(super) current_path: Option<PathBuf>,
     pub(super) dirty: bool,
+    /// Monotonic committed-edit/undo/redo revision. Background save completion
+    /// uses it with scene epochs so an older snapshot never clears newer work.
+    pub(super) edit_revision: u64,
     pub(super) tab_title: String,
     pub(super) properties: PropertiesPanel,
     pub(super) layers: LayerPanel,
@@ -216,6 +226,10 @@ pub(super) struct DocumentTab {
     pub(super) active_mleader_style: String,
     /// Last camera_generation value written back to the document.
     pub(super) last_synced_camera_gen: u64,
+    /// Render-state key of `scene.document.preview`. Matching saves reuse the
+    /// encoded DWG thumbnail instead of rescanning every resident wire.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) thumbnail_cache_key: Option<super::ThumbnailCacheKey>,
     /// Sentinel "Welcome / Start" tab. Always at index 0 when present.
     /// Cannot be closed; the viewport area renders a welcome page instead
     /// of the model-space shader. The scene is still constructed so the
@@ -412,9 +426,11 @@ impl DocumentTab {
             }
         }
         Self {
+            id: NEXT_DOCUMENT_TAB_ID.fetch_add(1, Ordering::Relaxed),
             scene,
             current_path: None,
             dirty: false,
+            edit_revision: 0,
             prev_selection: Vec::new(),
             tab_title: format!("Drawing{}", n),
             properties: PropertiesPanel::empty(),
@@ -448,6 +464,8 @@ impl DocumentTab {
             block_edit: None,
             active_mleader_style: "Standard".to_string(),
             last_synced_camera_gen: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            thumbnail_cache_key: None,
             is_start: false,
             pan_mode: false,
             plugin_state: HashMap::new(),
@@ -477,56 +495,132 @@ impl DocumentTab {
     }
 }
 
-/// One undo/redo entry. Most edits touch the whole drawing's state and store a
-/// [`FullSnapshot`] (a document clone); frequent entity-only edits (move / copy /
-/// draw / erase) instead store a cheap [`DeltaSnapshot`] naming just the entities
-/// they changed, so an 800k-entity drawing doesn't pay a ~46 ms document clone
-/// per edit.
+/// One undo/redo entry. Every edit is represented as a first-touch entity delta
+/// plus an optional structure-only document image, so history never clones the
+/// full entity store.
 #[derive(Clone)]
 pub(super) enum HistorySnapshot {
-    Full(FullSnapshot),
     Delta(DeltaSnapshot),
 }
 
 impl HistorySnapshot {
     pub(super) fn label(&self) -> &str {
         match self {
-            HistorySnapshot::Full(f) => &f.label,
             HistorySnapshot::Delta(d) => &d.label,
+        }
+    }
+
+    /// Approximate retained history memory. Entity images are shared through
+    /// `Arc`; the estimate conservatively budgets their payloads and optional
+    /// structure state to keep pathological histories bounded.
+    pub(super) fn estimated_bytes(&self) -> usize {
+        match self {
+            HistorySnapshot::Delta(d) => d
+                .entities
+                .len()
+                .saturating_mul(512)
+                .saturating_add(
+                    d.structure
+                        .as_ref()
+                        .map_or(0, StructureSnapshot::estimated_bytes),
+                )
+                .saturating_add(d.selected_before.len().saturating_mul(16))
+                .saturating_add(d.selected_after.len().saturating_mul(16))
+                .saturating_add(d.label.len()),
         }
     }
 }
 
-/// A whole-document undo entry: the safe fallback for any command that may touch
-/// layers, objects, block records, styles or tables.
-#[derive(Clone)]
-pub(super) struct FullSnapshot {
-    pub(super) document: CadDocument,
-    pub(super) current_layout: String,
-    pub(super) selected: Vec<Handle>,
-    pub(super) dirty: bool,
-    pub(super) label: String,
-}
-
-/// An entity-only undo entry: for each touched handle, its before-image and
+/// A transactional undo entry: for each touched handle, its before-image and
 /// after-image (`None` = the entity was absent on that side, i.e. an add or an
 /// erase). Symmetric — undo applies the before side, redo the after side — so
 /// one delta moves between the undo and redo stacks without re-capturing. The
-/// command by construction changes no layers / objects / blocks, so only the
-/// cheap scalars (`current_layout`, selection, `dirty`) ride alongside.
+/// Optional structure state covers layers, objects, blocks and tables without
+/// cloning the flat entity store.
 #[derive(Clone)]
 pub(super) struct DeltaSnapshot {
-    pub(super) entities: Vec<(Handle, Option<EntityType>, Option<EntityType>)>,
-    pub(super) current_layout: String,
+    pub(super) entities: Vec<(Handle, Option<Arc<EntityType>>, Option<Arc<EntityType>>)>,
+    pub(super) current_layout_before: String,
+    pub(super) current_layout_after: String,
     pub(super) selected_before: Vec<Handle>,
     pub(super) selected_after: Vec<Handle>,
     pub(super) dirty_before: bool,
     pub(super) dirty_after: bool,
+    /// Opposite non-entity document state. `apply_delta_state` swaps this with
+    /// the live structure, so the same allocation shuttles between undo/redo.
+    pub(super) structure: Option<StructureSnapshot>,
     pub(super) label: String,
+}
+
+#[derive(Clone)]
+pub(super) enum StructureSnapshot {
+    /// Compatibility fallback for genuinely broad structural commands.
+    Full(CadDocument),
+    /// Exact layer-table entries touched by one command.
+    Layers(Vec<TableEntryDelta<acadrust::tables::Layer>>),
+    /// Exact text-style entries touched by one command.
+    TextStyles(Vec<TableEntryDelta<acadrust::tables::TextStyle>>),
+    /// Exact dimension-style entries touched by one command.
+    DimStyles(Vec<TableEntryDelta<acadrust::tables::DimStyle>>),
+    /// Exact object-map entries touched by one command. This supports commands
+    /// such as groups/dictionaries without retaining every unrelated object.
+    Objects(Vec<ObjectEntryDelta>),
+    /// The bounded set of style tables, style objects, current-style pointers,
+    /// and matching ribbon state touched by one Style Manager transaction.
+    Styles {
+        before: super::style_ops::StyleStateSnapshot,
+        after: super::style_ops::StyleStateSnapshot,
+        text_names: Vec<String>,
+        dim_names: Vec<String>,
+        object_handles: Vec<Handle>,
+    },
+}
+
+impl StructureSnapshot {
+    pub(super) fn estimated_bytes(&self) -> usize {
+        match self {
+            Self::Full(doc) => doc.objects.len().saturating_mul(192),
+            Self::Layers(entries) => entries.len().saturating_mul(256),
+            Self::TextStyles(entries) => entries.len().saturating_mul(320),
+            Self::DimStyles(entries) => entries.len().saturating_mul(1024),
+            Self::Objects(entries) => entries.len().saturating_mul(384),
+            Self::Styles { before, after, .. } => before
+                .estimated_bytes()
+                .saturating_add(after.estimated_bytes()),
+        }
+    }
+
+    pub(super) fn is_full(&self) -> bool {
+        matches!(self, Self::Full(_))
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct TableEntryDelta<T> {
+    pub(super) name: String,
+    pub(super) before: Option<T>,
+    pub(super) after: Option<T>,
+}
+
+#[derive(Clone)]
+pub(super) struct ObjectEntryDelta {
+    pub(super) handle: Handle,
+    pub(super) before: Option<acadrust::objects::ObjectType>,
+    pub(super) after: Option<acadrust::objects::ObjectType>,
 }
 
 #[derive(Default)]
 pub(super) struct HistoryState {
     pub(super) undo_stack: Vec<HistorySnapshot>,
     pub(super) redo_stack: Vec<HistorySnapshot>,
+    pub(super) pending: Option<PendingHistorySnapshot>,
+}
+
+pub(super) struct PendingHistorySnapshot {
+    pub(super) label: String,
+    pub(super) current_layout: String,
+    pub(super) selected_before: Vec<Handle>,
+    pub(super) dirty_before: bool,
+    pub(super) structure_before: CadDocument,
+    pub(super) recorder: Arc<acadrust::document::EntityChangeRecorder>,
 }

@@ -15,6 +15,7 @@ mod modules;
 mod patreon;
 mod videos;
 mod plugin;
+mod perf;
 mod scene;
 mod snap;
 mod ui;
@@ -150,6 +151,7 @@ fn main() -> iced::Result {
             files: if args.new { Vec::new() } else { args.files },
             new: args.new,
             read_only: args.read_only,
+            compat_renderer: args.compat_renderer,
             script_lines,
         });
 
