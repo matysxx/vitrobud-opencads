@@ -97,7 +97,7 @@ pub trait TextContent {
 /// Human-readable variant name used by Quick Select / Select Similar
 /// filtering. Stable across releases — the strings here are the canonical
 /// type identifiers throughout the UI.
-pub fn entity_type_name(et: &EntityType) -> &'static str {
+pub fn entity_type_name(et: &EntityType) -> &str {
     match et {
         EntityType::Point(_) => "Point",
         EntityType::Line(_) => "Line",
@@ -145,6 +145,7 @@ pub fn entity_type_name(et: &EntityType) -> &'static str {
         EntityType::Light(_) => "Light",
         EntityType::SectionSymbol(_) => "SectionSymbol",
         EntityType::ViewBorder(_) => "ViewBorder",
+        EntityType::Extended(entity) => entity.class_name(),
         EntityType::Unknown(_) => "Unknown",
     }
 }
@@ -275,7 +276,7 @@ impl EntityTypeOps for EntityType {
                 Wipeout, AttributeDefinition, AttributeEntity, MLine,
                 Tolerance, Solid, Face3D, PolygonMesh, PolyfaceMesh, Mesh,
                 Table, Text, MText, Leader, MultiLeader, Underlay, Shape,
-                Ole2Frame, Helix, Light,
+                Ole2Frame, Helix, Light, Extended,
             ],
             _ => None,
         )
@@ -288,10 +289,11 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Point, Spline, Text, MText,
                 Viewport, Insert, Leader, MultiLeader, Dimension, Hatch,
-                Underlay, Shape, Ole2Frame, Helix, Light,
+                Underlay, Shape, Ole2Frame, Helix, Light, SectionSymbol,
+                ViewBorder, Extended,
             ],
             _ => vec![],
         )
@@ -304,10 +306,11 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Hatch, Point, Spline, Text, MText,
                 Viewport, Insert, Dimension, Leader, MultiLeader, Underlay,
-                Shape, Ole2Frame, Helix, Light,
+                Shape, Ole2Frame, Helix, Light, SectionSymbol, ViewBorder,
+                Extended,
             ],
             _ => vec![],
         )
@@ -320,10 +323,11 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Hatch, Point, Spline, Text, MText,
                 Viewport, Insert, Dimension, Leader, MultiLeader, Underlay,
-                Shape, Ole2Frame, Helix, Light,
+                Shape, Ole2Frame, Helix, Light, SectionSymbol, ViewBorder,
+                Extended,
             ],
             _ => {},
         )
@@ -336,10 +340,11 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Point, Spline, Text, MText,
                 Viewport, Insert, Leader, MultiLeader, Dimension, Hatch,
-                Underlay, Shape, Ole2Frame, Helix, Light,
+                Underlay, Shape, Ole2Frame, Helix, Light, SectionSymbol,
+                ViewBorder, Extended,
             ],
             _ => {},
         )
@@ -352,10 +357,11 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Point, Spline, Text, MText,
                 Viewport, Insert, Leader, MultiLeader, Dimension, Hatch,
-                Underlay, Shape, Ole2Frame,
+                Underlay, Shape, Ole2Frame, SectionSymbol, ViewBorder,
+                Extended,
             ],
             _ => vec![],
         )
@@ -368,10 +374,11 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Point, Spline, Text, MText,
                 Viewport, Insert, Leader, MultiLeader, Dimension, Hatch,
-                Underlay, Shape, Ole2Frame,
+                Underlay, Shape, Ole2Frame, SectionSymbol, ViewBorder,
+                Extended,
             ],
             _ => {},
         )
@@ -388,10 +395,11 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Point, Spline, Text, MText,
                 Viewport, Insert, Leader, MultiLeader, Dimension, Hatch,
-                Underlay, Shape, Ole2Frame,
+                Underlay, Shape, Ole2Frame, SectionSymbol, ViewBorder,
+                Extended,
             ],
             _ => None,
         )
@@ -409,10 +417,10 @@ impl EntityTypeOps for EntityType {
                 Line, Circle, Arc, Ellipse, LwPolyline, Polyline, Polyline2D,
                 Polyline3D, Ray, XLine, RasterImage, Wipeout,
                 AttributeDefinition, AttributeEntity, MLine, Tolerance,
-                Solid, Solid3D, Region, Body, Face3D, PolygonMesh,
+                Solid, Solid3D, Region, Body, Surface, Face3D, PolygonMesh,
                 PolyfaceMesh, Mesh, Table, Point, Spline, Text, MText,
                 Viewport, Insert, Leader, MultiLeader, Dimension, Hatch,
-                Underlay, Shape, Ole2Frame,
+                Underlay, Shape, Ole2Frame, SectionSymbol, ViewBorder,
             ],
             _ => {},
         )
@@ -428,7 +436,8 @@ impl EntityTypeOps for EntityType {
                 Tolerance, Solid, Face3D, PolygonMesh, PolyfaceMesh, Mesh,
                 Table, MText, Point, Spline, Text, Viewport, Dimension,
                 Leader, MultiLeader, Underlay, Shape, Ole2Frame,
-                Solid3D, Region, Body, Surface, Helix, Light,
+                Solid3D, Region, Body, Surface, Helix, Light, SectionSymbol,
+                ViewBorder, Extended,
             ],
             _ => {},
         )

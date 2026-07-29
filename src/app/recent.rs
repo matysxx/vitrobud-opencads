@@ -1,7 +1,7 @@
 //! Recent-files list backing the Start page's Recent Documents panel. The list
-//! itself lives in the consolidated app config (`settings.json`, the "recent"
-//! section); this module just mutates the in-memory list and persists via
-//! `save_config`.
+//! itself lives in the consolidated app config (native `settings.json` or web
+//! `localStorage`, in the "recent" section); this module mutates the in-memory
+//! list, persists it via `save_config`, and evicts matching web OPFS copies.
 
 use super::OpenCADStudio;
 use std::path::{Path, PathBuf};
@@ -16,8 +16,15 @@ impl OpenCADStudio {
     /// the background task that decodes its thumbnail.
     pub(super) fn push_recent(&mut self, path: PathBuf) -> iced::Task<crate::app::Message> {
         self.recent_files.retain(|r| r != &path);
+        self.recent_thumbs.remove(&path);
         self.recent_files.insert(0, path);
-        self.recent_files.truncate(self.recent_limit);
+        let evicted = self
+            .recent_files
+            .split_off(self.recent_limit.min(self.recent_files.len()));
+        for path in &evicted {
+            self.recent_thumbs.remove(path);
+        }
+        remove_cached_copies(evicted);
         self.save_config();
         self.refresh_recent_thumbs()
     }
@@ -39,11 +46,36 @@ impl OpenCADStudio {
         if missing.is_empty() {
             return iced::Task::none();
         }
-        // The web build has no spawnable threads and no filesystem previews —
-        // recents there simply show without thumbnails.
         #[cfg(target_arch = "wasm32")]
         {
-            return iced::Task::none();
+            return iced::Task::perform(
+                async move {
+                    let mut thumbnails = Vec::with_capacity(missing.len());
+                    for path in missing {
+                        let handle = if let Some(name) = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                        {
+                            crate::io::web_recent::read_thumbnail(&name)
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|thumbnail| {
+                                    iced::widget::image::Handle::from_rgba(
+                                        thumbnail.width,
+                                        thumbnail.height,
+                                        thumbnail.rgba,
+                                    )
+                                })
+                        } else {
+                            None
+                        };
+                        thumbnails.push((path, handle));
+                    }
+                    thumbnails
+                },
+                crate::app::Message::RecentThumbsLoaded,
+            );
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -68,6 +100,8 @@ impl OpenCADStudio {
     /// Drop a path from the recents list (manual removal from the Start page).
     pub(super) fn remove_recent(&mut self, path: &Path) {
         self.recent_files.retain(|r| r.as_path() != path);
+        self.recent_thumbs.remove(path);
+        remove_cached_copies([path.to_path_buf()]);
         self.save_config();
     }
 
@@ -75,7 +109,31 @@ impl OpenCADStudio {
     /// persist both.
     pub(super) fn set_recent_limit(&mut self, limit: usize) {
         self.recent_limit = limit.clamp(RECENT_MIN, RECENT_MAX);
-        self.recent_files.truncate(self.recent_limit);
+        let evicted = self
+            .recent_files
+            .split_off(self.recent_limit.min(self.recent_files.len()));
+        for path in &evicted {
+            self.recent_thumbs.remove(path);
+        }
+        remove_cached_copies(evicted);
         self.save_config();
+    }
+}
+
+fn remove_cached_copies(paths: impl IntoIterator<Item = PathBuf>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = paths;
+
+    #[cfg(target_arch = "wasm32")]
+    for path in paths {
+        let Some(name) = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = crate::io::web_recent::remove(&name).await;
+        });
     }
 }

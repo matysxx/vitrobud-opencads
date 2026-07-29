@@ -142,6 +142,62 @@ impl OpenCADStudio {
                 return Some(Task::done(Message::ToggleViewCube));
             }
 
+            // ── LIMITS — drawing/grid boundary for the active space ─────────────
+            "LIMITS" => {
+                use crate::modules::view::limits::LimitsCommand;
+                let (min, max) = self.tabs[i]
+                    .scene
+                    .current_drawing_limits()
+                    .unwrap_or((glam::DVec2::ZERO, glam::DVec2::new(12.0, 9.0)));
+                let command = LimitsCommand::new(min, max);
+                self.command_line.push_info(&command.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
+            "LIMITS ON" | "LIMITS OFF" => {
+                let enabled = cmd.ends_with("ON");
+                if self.tabs[i].scene.drawing_limit_check_enabled() != enabled {
+                    self.push_undo_snapshot(i, "LIMITS");
+                    self.tabs[i].scene.set_drawing_limit_check(enabled);
+                    self.tabs[i].dirty = true;
+                }
+                self.command_line.push_output(if enabled {
+                    "Limits checking ON."
+                } else {
+                    "Limits checking OFF."
+                });
+            }
+            cmd if cmd.starts_with("LIMITS SET ") => {
+                let tokens: Vec<&str> = cmd["LIMITS SET ".len()..].split_whitespace().collect();
+                let values: Result<Vec<f64>, _> =
+                    tokens.iter().map(|value| value.parse()).collect();
+                let Ok(values) = values else {
+                    self.command_line
+                        .push_error("LIMITS: four numeric coordinates required.");
+                    return Some(Task::none());
+                };
+                if tokens.len() != 4 || !values.iter().all(|value| value.is_finite()) {
+                    self.command_line
+                        .push_error("LIMITS: four finite numeric coordinates required.");
+                } else {
+                    let first = glam::DVec2::new(values[0], values[1]);
+                    let opposite = glam::DVec2::new(values[2], values[3]);
+                    let min = first.min(opposite);
+                    let max = first.max(opposite);
+                    if min.x == max.x || min.y == max.y {
+                        self.command_line
+                            .push_error("LIMITS: corners must define a non-zero area.");
+                    } else {
+                        self.push_undo_snapshot(i, "LIMITS");
+                        self.tabs[i].scene.set_current_drawing_limits(min, max);
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(&format!(
+                            "Drawing limits: {:.4},{:.4} to {:.4},{:.4}.",
+                            min.x, min.y, max.x, max.y
+                        ));
+                    }
+                }
+            }
+
             // ── PROPERTIES — toggle Properties panel visibility ──────────────────
             "PROPERTIES" | "PROPS" => {
                 return Some(Task::done(Message::ToggleProperties));
@@ -392,40 +448,8 @@ impl OpenCADStudio {
             "PLOT" | "PRINT" => {
                 return Some(Task::done(Message::PlotDialogOpen));
             }
-            // With no argument these open the save dialog; with a path they
-            // export straight to it. The direct form is also the workaround for
-            // systems where the native save dialog cannot open at all (broken
-            // XDG portal / missing zenity on Linux) — there the dialog future
-            // resolves to None and no export would happen. (#369)
-            cmd if cmd == "EXPORT"
-                || cmd == "EXPORTPDF"
-                || cmd.starts_with("EXPORT ")
-                || cmd.starts_with("EXPORTPDF ") =>
-            {
-                // Strip the keyword actually typed — EXPORTPDF first, since
-                // EXPORT is its prefix (see #295 for the failure mode).
-                let arg = cmd
-                    .strip_prefix("EXPORTPDF")
-                    .or_else(|| cmd.strip_prefix("EXPORT"))
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"');
-                if arg.is_empty() {
-                    return Some(Task::done(Message::PlotExport));
-                }
-                let mut path = std::path::PathBuf::from(arg);
-                if path.extension().is_none() {
-                    path.set_extension("pdf");
-                }
-                // A bare filename lands next to the drawing when it has a home.
-                if path.is_relative() {
-                    if let Some(dir) =
-                        self.tabs[i].current_path.as_deref().and_then(|p| p.parent())
-                    {
-                        path = dir.join(path);
-                    }
-                }
-                return Some(self.on_plot_export_path_some(path));
+            "EXPORT" | "EXPORTPDF" => {
+                return Some(Task::done(Message::PlotExport));
             }
             // PLOTSTYLE — load or clear CTB/STB plot style table
             cmd if cmd == "PLOTSTYLE" || cmd.starts_with("PLOTSTYLE ") => {
@@ -630,7 +654,11 @@ impl OpenCADStudio {
                         n += 1;
                     }
                 }
-                self.tabs[i].scene.bump_geometry();
+                let changes: Vec<_> = handles
+                    .into_iter()
+                    .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                self.tabs[i].scene.bump_entities(&changes);
                 self.tabs[i].dirty = true;
                 self.command_line.push_output(&format!(
                     "OBJECTSCALE: marked {n} object(s) annotative (they scale with the annotation scale)."
@@ -720,6 +748,7 @@ impl OpenCADStudio {
                     let v = v.min(100);
                     self.push_undo_snapshot(i, "ADJUST");
                     let mut changed = 0usize;
+                    let mut changed_handles = Vec::new();
                     for h in &handles {
                         if let Some(acadrust::EntityType::RasterImage(img)) = self.tabs[i]
                             .scene
@@ -731,14 +760,17 @@ impl OpenCADStudio {
                                 "BRIGHTNESS" => {
                                     img.brightness = v;
                                     changed += 1;
+                                    changed_handles.push(*h);
                                 }
                                 "CONTRAST" => {
                                     img.contrast = v;
                                     changed += 1;
+                                    changed_handles.push(*h);
                                 }
                                 "FADE" => {
                                     img.fade = v;
                                     changed += 1;
+                                    changed_handles.push(*h);
                                 }
                                 _ => {}
                             }
@@ -746,7 +778,14 @@ impl OpenCADStudio {
                     }
                     if changed > 0 {
                         self.tabs[i].dirty = true;
-                        self.tabs[i].scene.bump_geometry();
+                        for &handle in &changed_handles {
+                            self.tabs[i].scene.reseed_derived_caches(handle);
+                        }
+                        let changes: Vec<_> = changed_handles
+                            .into_iter()
+                            .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                            .collect();
+                        self.tabs[i].scene.bump_entities(&changes);
                         self.command_line
                             .push_output(&format!("ADJUST: {action} = {v} on {changed} image(s)."));
                     } else {
@@ -804,7 +843,7 @@ impl OpenCADStudio {
                         let hdr = &mut self.tabs[i].scene.document.header;
                         hdr.current_annotation_scale = arg.clone();
                         hdr.annotation_scale_value = 1.0 / v as f64;
-                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].scene.invalidate_annotation_dependencies();
                         self.tabs[i].dirty = true;
                         self.command_line
                             .push_output(&format!("Annotation scale: {arg}"));
@@ -958,7 +997,6 @@ impl OpenCADStudio {
                         self.tabs[i]
                             .scene
                             .add_entity_clone(acadrust::EntityType::Table(table));
-                        self.tabs[i].scene.bump_geometry();
                         self.tabs[i].dirty = true;
                         self.command_line.push_output(&format!(
                             "DATALINK: imported {nrows}×{ncols} cells into a table at the origin."
@@ -1005,7 +1043,6 @@ impl OpenCADStudio {
                                 .scene
                                 .add_entity_clone(acadrust::EntityType::Point(p));
                         }
-                        self.tabs[i].scene.bump_geometry();
                         self.tabs[i].dirty = true;
                         self.command_line.push_output(&format!(
                             "LANDXMLIMPORT: imported {} survey point(s). Use ZOOM EXTENTS to view.",

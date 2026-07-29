@@ -4,6 +4,8 @@
 // Default save format: DWG (AC1032 / R2018+).
 
 pub mod file_association;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod edit_lock;
 pub mod obj;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod single_instance;
@@ -20,6 +22,8 @@ pub mod paper_sizes;
 pub mod thumbnail;
 #[cfg(target_arch = "wasm32")]
 mod web_worker;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod web_recent;
 
 use crate::scene::DerivedCaches;
 use acadrust::entities::EntityType;
@@ -172,7 +176,11 @@ pub async fn open_path_with_phase(
                         10000,
                     );
                 };
-                let mut caches = crate::scene::build_derived_caches_with_progress(&doc, &cache_progress);
+                let mut caches = crate::scene::build_derived_caches_with_progress(
+                    &doc,
+                    &cache_progress,
+                    path2.parent(),
+                );
         caches.timings = crate::scene::OpenTimings {
             parse_ms,
             purge_ms,
@@ -218,13 +226,51 @@ pub async fn pick_and_load_web(
     let name = handle.file_name();
     progress.set(crate::app::OPEN_PHASE_READING, 500, 1, 2);
     let bytes = handle.read().await;
+    let parsed = load_web_bytes(&name, &bytes, progress.clone());
+    let cached = web_recent::store(&name, &bytes);
+    let (result, cache_result) = iced::futures::future::join(parsed, cached).await;
+    if result.is_err() && cache_result.is_ok() {
+        let _ = web_recent::remove(&name).await;
+    }
+    result
+}
+
+/// Reopen a browser-private recent copy without showing the file picker.
+#[cfg(target_arch = "wasm32")]
+pub async fn open_recent_web(
+    path: PathBuf,
+    progress: Arc<OpenProgressState>,
+) -> Result<(String, PathBuf, CadDocument, DerivedCaches), String> {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| "Recent drawing has no file name".to_string())?;
+    let bytes = web_recent::read(&name)
+        .await
+        .map_err(|error| format!("Recent copy unavailable for \"{name}\": {error}"))?;
+    progress.set(
+        crate::app::OPEN_PHASE_READING,
+        1000,
+        bytes.len(),
+        bytes.len(),
+    );
+    load_web_bytes(&name, &bytes, progress).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_web_bytes(
+    name: &str,
+    bytes: &[u8],
+    progress: Arc<OpenProgressState>,
+) -> Result<(String, PathBuf, CadDocument, DerivedCaches), String> {
     progress.set(crate::app::OPEN_PHASE_PARSING, 1000, 0, 1);
-    let mut doc = match web_worker::parse_document(&name, bytes).await {
+    let mut doc = match web_worker::parse_document(name, bytes).await {
         Ok(document) => document,
         Err(error) => return Err(format!("Web parser worker: {error}")),
     };
     if name.to_ascii_lowercase().ends_with(".dxf") {
         fix_dxf_dimension_rotations(&mut doc);
+        fix_dxf_layout_plot_settings(&mut doc);
     }
     fix_viewport_status_flags(&mut doc);
     fix_current_style_names(&mut doc);
@@ -233,8 +279,8 @@ pub async fn pick_and_load_web(
     let mut caches = crate::scene::build_derived_caches(&doc);
     caches.corrupt_dropped = dropped;
     progress.set(crate::app::OPEN_PHASE_FINALIZING, 9900, 1, 1);
-    let path = PathBuf::from(&name);
-    Ok((name, path, doc, caches))
+    let path = PathBuf::from(name);
+    Ok((name.to_string(), path, doc, caches))
 }
 
 /// Parse a CAD document from in-memory bytes, choosing the format from
@@ -261,6 +307,7 @@ pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<CadDocument, String> {
                 .read()
                 .map_err(|e| e.to_string())?;
             fix_dxf_dimension_rotations(&mut doc);
+            fix_dxf_layout_plot_settings(&mut doc);
             fix_viewport_status_flags(&mut doc);
             fix_current_style_names(&mut doc);
             Ok(doc)
@@ -336,6 +383,7 @@ pub(crate) fn load_file_with_progress(
                 .read()
                 .map_err(|e| e.to_string())?;
             fix_dxf_dimension_rotations(&mut doc);
+            fix_dxf_layout_plot_settings(&mut doc);
             fix_viewport_status_flags(&mut doc);
             fix_current_style_names(&mut doc);
             resolve_raster_image_paths(&mut doc, path.parent());
@@ -423,6 +471,21 @@ pub(crate) fn resolve_image_file(raw: &str, base_dir: Option<&Path>) -> Option<S
 
 // ── Save ──────────────────────────────────────────────────────────────────
 
+pub const DEFAULT_SAVE_FORMAT: &str = "DWG 2018";
+
+pub const SAVE_FORMAT_OPTIONS: &[&str] = &[
+    "DWG 2018", "DWG 2013", "DWG 2010", "DWG 2007", "DWG 2004", "DWG 2000", "DWG R14", "DXF 2018",
+    "DXF 2013", "DXF 2010", "DXF 2007", "DXF 2004", "DXF 2000", "DXF R14",
+];
+
+pub fn canonical_save_format(format: &str) -> &'static str {
+    SAVE_FORMAT_OPTIONS
+        .iter()
+        .copied()
+        .find(|candidate| candidate.eq_ignore_ascii_case(format))
+        .unwrap_or(DEFAULT_SAVE_FORMAT)
+}
+
 /// Parse a format string like "DWG 2013" or "DXF 2007" into
 /// `(extension, DxfVersion)`.  Falls back to ("dwg", AC1032) for unknown strings.
 pub fn parse_save_format(format: &str) -> (&'static str, acadrust::DxfVersion) {
@@ -477,6 +540,10 @@ pub fn dropped_on_save_count(
     target_version: acadrust::DxfVersion,
     is_dxf: bool,
 ) -> usize {
+    if !is_dxf && doc.dwg_source_version == Some(target_version) {
+        return 0;
+    }
+
     let mut n = doc
         .objects
         .values()
@@ -494,10 +561,6 @@ pub fn dropped_on_save_count(
                         || raw_dwg_version.is_some_and(|source| source != target_version)
                 }
             }
-            acadrust::objects::ObjectType::GeoData(_)
-            | acadrust::objects::ObjectType::VisualStyle(_)
-            | acadrust::objects::ObjectType::Material(_)
-            | acadrust::objects::ObjectType::TableStyle(_) => !is_dxf,
             _ => false,
         })
         .count();
@@ -512,34 +575,6 @@ pub fn dropped_on_save_count(
                             .dwg_source_version
                             .is_some_and(|source| source != target_version)
                 }
-            }
-            acadrust::EntityType::Surface(entity) => {
-                is_dxf
-                    || entity.raw_dwg_data.is_none()
-                    || entity
-                        .dwg_source_version
-                        .is_some_and(|source| source != target_version)
-            }
-            acadrust::EntityType::Light(entity) => {
-                is_dxf
-                    || entity.raw_dwg_data.is_none()
-                    || entity
-                        .dwg_source_version
-                        .is_some_and(|source| source != target_version)
-            }
-            acadrust::EntityType::SectionSymbol(entity) => {
-                is_dxf
-                    || entity.raw_dwg_data.is_none()
-                    || entity
-                        .dwg_source_version
-                        .is_some_and(|source| source != target_version)
-            }
-            acadrust::EntityType::ViewBorder(entity) => {
-                is_dxf
-                    || entity.raw_dwg_data.is_none()
-                    || entity
-                        .dwg_source_version
-                        .is_some_and(|source| source != target_version)
             }
             _ => false,
         };
@@ -557,6 +592,125 @@ pub fn dropped_on_save_count(
 pub fn write_backup(path: &std::path::Path) {
     if path.exists() {
         let _ = std::fs::copy(path, path.with_extension("bak"));
+    }
+}
+
+/// Structured native-save failure. The UI needs the OS error category after
+/// the worker completes so file-sharing violations can offer recovery actions
+/// instead of being flattened into an opaque command-line string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveFailure {
+    pub message: String,
+    pub file_in_use: bool,
+    pub externally_modified: bool,
+}
+
+impl SaveFailure {
+    pub fn other(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            file_in_use: false,
+            externally_modified: false,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn file_in_use(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            file_in_use: true,
+            externally_modified: false,
+        }
+    }
+
+    fn replacing(path: &Path, error: std::io::Error) -> Self {
+        Self {
+            message: format!("replace {}: {error}", path.display()),
+            file_in_use: replace_error_is_file_in_use(&error),
+            externally_modified: false,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn externally_modified(path: &Path) -> Self {
+        Self {
+            message: format!(
+                "{} changed on disk after it was opened",
+                path.display()
+            ),
+            file_in_use: false,
+            externally_modified: true,
+        }
+    }
+}
+
+impl std::fmt::Display for SaveFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SaveFailure {}
+
+fn replace_error_is_file_in_use(error: &std::io::Error) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION. ReplaceFileW returns
+        // 32 for the common case where AutoCAD holds the DWG open (#498).
+        windows_replace_error_is_file_in_use(error.raw_os_error())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Advisory locks normally do not block rename on Unix, but filesystems
+        // may still report EBUSY or ETXTBSY for an active destination.
+        matches!(error.raw_os_error(), Some(16 | 26))
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_replace_error_is_file_in_use(raw_os_error: Option<i32>) -> bool {
+    matches!(raw_os_error, Some(32 | 33))
+}
+
+#[cfg(test)]
+mod save_failure_tests {
+    use super::windows_replace_error_is_file_in_use;
+
+    #[test]
+    fn issue_498_recognizes_windows_file_sharing_errors() {
+        assert!(windows_replace_error_is_file_in_use(Some(32)));
+        assert!(windows_replace_error_is_file_in_use(Some(33)));
+        assert!(!windows_replace_error_is_file_in_use(Some(5)));
+        assert!(!windows_replace_error_is_file_in_use(None));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn external_change_prevents_atomic_replace() {
+        let path = std::env::temp_dir().join(format!(
+            "ocs_external_change_{}_{}.dwg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"old").unwrap();
+        let expected = super::edit_lock::FileFingerprint::capture(&path).unwrap();
+        std::fs::write(&path, b"new").unwrap();
+
+        let error = super::save_owned_as_version_atomic(
+            acadrust::CadDocument::new(),
+            &path,
+            acadrust::DxfVersion::AC1032,
+            false,
+            Some(expected),
+        )
+        .unwrap_err();
+
+        assert!(error.externally_modified);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -605,30 +759,44 @@ pub fn save_as_version(
     let clone_started = iced::time::Instant::now();
     let snapshot = doc.clone();
     let clone_ms = clone_started.elapsed().as_secs_f64() * 1000.0;
-    save_owned_as_version_inner(snapshot, path, version, false, clone_ms)
+    save_owned_as_version_inner(snapshot, path, version, false, clone_ms, |_| Ok(()))
+        .map_err(|error| error.to_string())
 }
 
 /// Save an owned document snapshot. Preparation, serialization, compression and
 /// disk I/O can therefore run on a worker without borrowing live editor state.
 /// Output is written beside the destination and atomically renamed only after a
 /// complete file exists, so a failed save cannot truncate the previous drawing.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save_owned_as_version_atomic(
     doc: CadDocument,
     path: &Path,
     version: acadrust::DxfVersion,
     backup: bool,
-) -> Result<(), String> {
-    save_owned_as_version_inner(doc, path, version, backup, 0.0)
+    expected_fingerprint: Option<edit_lock::FileFingerprint>,
+) -> Result<(), SaveFailure> {
+    save_owned_as_version_inner(doc, path, version, backup, 0.0, move |path| {
+        let Some(expected) = expected_fingerprint else {
+            return Ok(());
+        };
+        match edit_lock::FileFingerprint::capture(path) {
+            Ok(current) if current == expected => Ok(()),
+            _ => Err(SaveFailure::externally_modified(path)),
+        }
+    })
 }
 
-fn save_owned_as_version_inner(
+fn save_owned_as_version_inner<F>(
     mut doc: CadDocument,
     path: &Path,
     version: acadrust::DxfVersion,
     backup: bool,
     clone_ms: f64,
-) -> Result<(), String> {
+    before_replace: F,
+) -> Result<(), SaveFailure>
+where
+    F: FnOnce(&Path) -> Result<(), SaveFailure>,
+{
     let perf = crate::perf::enabled();
     let total_started = iced::time::Instant::now();
     doc.version = version;
@@ -647,10 +815,15 @@ fn save_owned_as_version_inner(
     let result = match ext.as_str() {
         "dxf" => DxfWriter::new(&doc)
             .write_to_file(&temp_path)
-            .map_err(|e| e.to_string()),
-        _ => DwgWriter::write_to_file(&temp_path, &doc).map_err(|e| e.to_string()),
+            .map_err(|e| SaveFailure::other(e.to_string())),
+        _ => DwgWriter::write_to_file(&temp_path, &doc)
+            .map_err(|e| SaveFailure::other(e.to_string())),
     };
     if let Err(error) = result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    if let Err(error) = before_replace(path) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(error);
     }
@@ -659,7 +832,7 @@ fn save_owned_as_version_inner(
     }
     if let Err(error) = replace_save_file(&temp_path, path) {
         let _ = std::fs::remove_file(&temp_path);
-        return Err(format!("replace {}: {error}", path.display()));
+        return Err(SaveFailure::replacing(path, error));
     }
     if perf {
         crate::perf_record!(
@@ -1176,6 +1349,70 @@ fn fix_dxf_dimension_rotations(doc: &mut CadDocument) {
                 s.rotation = s.rotation.to_radians();
             }
             _ => {}
+        }
+    }
+}
+
+/// Recover integer-valued AcDbPlotSettings fields that acadrust can leave at
+/// their defaults when a DXF writer right-aligns the value with leading spaces.
+/// The raw pairs are preserved on Layout, so trim and parse those authoritative
+/// values after loading. In particular, losing code 73 turns a 90°/270° sheet
+/// back to 0° and makes a landscape layout render as portrait (#505).
+fn fix_dxf_layout_plot_settings(doc: &mut CadDocument) {
+    use acadrust::objects::{ObjectType, PlotFlags};
+
+    for object in doc.objects.values_mut() {
+        let ObjectType::Layout(layout) = object else {
+            continue;
+        };
+        let Some(codes) = layout.raw_plot_settings_codes.as_ref() else {
+            continue;
+        };
+
+        for (code, value) in codes {
+            match *code {
+                70 => {
+                    if let Ok(value) = value.trim().parse::<i32>() {
+                        layout.plot_flags = PlotFlags::from_bits(value);
+                    }
+                }
+                72 => {
+                    if let Ok(value) = value.trim().parse::<i16>() {
+                        layout.plot_paper_units = value;
+                    }
+                }
+                73 => {
+                    if let Ok(value) = value.trim().parse::<i16>() {
+                        layout.plot_rotation = value;
+                    }
+                }
+                74 => {
+                    if let Ok(value) = value.trim().parse::<i16>() {
+                        layout.plot_type = value;
+                    }
+                }
+                75 => {
+                    if let Ok(value) = value.trim().parse::<i16>() {
+                        layout.plot_scale_type = value;
+                    }
+                }
+                76 => {
+                    if let Ok(value) = value.trim().parse::<i16>() {
+                        layout.shade_plot_mode = value;
+                    }
+                }
+                77 => {
+                    if let Ok(value) = value.trim().parse::<i16>() {
+                        layout.shade_plot_resolution = value;
+                    }
+                }
+                78 => {
+                    if let Ok(value) = value.trim().parse::<i16>() {
+                        layout.shade_plot_dpi = value;
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }

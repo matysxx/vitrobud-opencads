@@ -1,18 +1,15 @@
+mod device_capabilities;
 pub mod face3d_gpu;
 pub mod hatch_gpu;
-/// Texture-backed compatibility hatch renderer. Used on WebGL2 and on native
-/// adapters that cannot support the storage-buffer batch.
-pub mod hatch_web_gpu;
 pub mod wipeout_gpu;
 pub mod image_gpu;
 pub mod mesh_gpu;
 pub mod text_gpu;
 pub mod uniforms;
 pub mod viewcube;
-/// Persistent per-entity wire instance arena (native), enabled by
-/// `OCS_WIRE_GPU_PATCH` — patches one entity's slab via `write_buffer` instead
-/// of re-uploading the whole wire set on an edit.
-#[cfg(not(target_arch = "wasm32"))]
+/// Persistent per-entity wire instance arena. Its indexed-storage and packed
+/// adapters share the same patch/cull lifecycle across native, WebGPU, and
+/// WebGL2.
 pub mod wire_arena;
 pub mod wire_gpu;
 
@@ -23,7 +20,6 @@ use iced::{Rectangle, Size};
 pub use face3d_gpu::Face3DGpu;
 pub use wipeout_gpu::WipeoutGpu;
 pub use image_gpu::ImageGpu;
-pub use mesh_gpu::MeshLodGpu;
 pub use uniforms::Uniforms;
 pub use viewcube::ViewCubePipeline;
 pub use wire_gpu::WireGpu;
@@ -32,9 +28,50 @@ use crate::scene::model::hatch_model::HatchModel;
 use crate::scene::model::image_model::ImageModel;
 use crate::scene::model::mesh_model::MeshLodSet;
 use crate::scene::model::wire_model::WireModel;
+use device_capabilities::DeviceCapabilities;
 
 /// MSAA sample count for the main drawing pipelines.
 const MSAA_SAMPLES: u32 = 4;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MeshHighlightKind {
+    Selected,
+    Hover,
+}
+
+#[derive(Clone, Copy)]
+struct MeshResidentRange {
+    chunk: usize,
+    dynamic: bool,
+    index_start: u32,
+    index_count: u32,
+    transparent: bool,
+    instance_start: u32,
+    instance_count: u32,
+}
+
+#[derive(Clone, Copy)]
+struct MeshHighlightDraw {
+    range: MeshResidentRange,
+    kind: MeshHighlightKind,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MeshCullItem {
+    min: [f32; 4],
+    max: [f32; 4],
+    counts: [u32; 4],
+    meta: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MeshCullUniform {
+    view_rot: [f32; 16],
+    eye: [f32; 4],
+    count: [u32; 4],
+}
 
 pub struct Pipeline {
     wire_pipeline: wgpu::RenderPipeline,
@@ -47,26 +84,24 @@ pub struct Pipeline {
     /// Used to draw ghost copies of selected wires through occluding geometry.
     wire_xray_pipeline: wgpu::RenderPipeline,
     /// Layout for the per-wire `WireConst` storage buffer (group 1 of the wire /
-    /// xray pipelines). `Some` only on the fast native path; `None` in packed
+    /// xray pipelines). `Some` on any storage-capable device; `None` in packed
     /// compatibility mode. Passed to `WireGpu::from_run` / `from_batch`.
     pub(crate) wire_const_bgl: Option<wgpu::BindGroupLayout>,
     wipeout_pipeline: wgpu::RenderPipeline,
-    /// Phase 4-B — single-draw batched hatch pipeline. Per-instance
-    /// data lives in storage buffers; one draw call covers every
-    /// hatch in the frame. `None` in compatibility mode.
-    hatch_pipeline: Option<wgpu::RenderPipeline>,
-    /// Texture-backed compatibility hatch pipeline + its group-1 layout.
-    /// Present whenever the storage-buffer batch is unavailable or forced off.
-    hatch_compat_bgl1: Option<wgpu::BindGroupLayout>,
-    hatch_compat_pipeline: Option<wgpu::RenderPipeline>,
+    /// Capability-selected hatch renderer. Storage and texture transports are
+    /// private backends behind one upload/LOD/draw lifecycle.
+    hatch_gpu: hatch_gpu::HatchGpu,
     image_pipeline: wgpu::RenderPipeline,
     /// SDF text-quad pipeline (Phase 2b): draws per-glyph quads sampling the
     /// shared glyph atlas. Fed only when `OCS_TEXT_SDF` is set (else no verts).
     text_pipeline: wgpu::RenderPipeline,
+    /// Depth-independent variant used by selection / rollover highlighting.
+    text_highlight_pipeline: wgpu::RenderPipeline,
     mesh_pipeline: wgpu::RenderPipeline,
     /// Depth-write-disabled variant of `mesh_pipeline` for non-opaque solids.
     mesh_transparent_pipeline: wgpu::RenderPipeline,
-    mesh_highlight_pipeline: wgpu::RenderPipeline,
+    mesh_selected_pipeline: wgpu::RenderPipeline,
+    mesh_hover_pipeline: wgpu::RenderPipeline,
     /// Wireframe variant of the mesh pipeline (LineList topology, same
     /// vertex layout / shader). Used when the active render mode is
     /// Wireframe 2D or Wireframe 3D so 3D solids draw as their
@@ -78,6 +113,18 @@ pub struct Pipeline {
     /// writes, writes depth). Used in HiddenLine mode so 3D solids
     /// occlude wires behind them without painting visible pixels.
     mesh_depth_pipeline: wgpu::RenderPipeline,
+    mesh_material_bgl: wgpu::BindGroupLayout,
+    mesh_default_material_bind_group: wgpu::BindGroup,
+    mesh_cull_pipeline: Option<wgpu::ComputePipeline>,
+    mesh_cull_bgl: Option<wgpu::BindGroupLayout>,
+    mesh_cull_uniform: Option<wgpu::Buffer>,
+    mesh_cull_items: Option<wgpu::Buffer>,
+    mesh_cull_bind_group: Option<wgpu::BindGroup>,
+    mesh_opaque_indirect: Option<wgpu::Buffer>,
+    mesh_transparent_indirect: Option<wgpu::Buffer>,
+    mesh_wire_indirect: Option<wgpu::Buffer>,
+    mesh_edge_indirect: Option<wgpu::Buffer>,
+    mesh_cull_count: u32,
     face3d_pipeline: wgpu::RenderPipeline,
     /// Depth-only variant of the face3d pipeline (no color writes,
     /// writes depth). Paired with `mesh_depth_pipeline` for HiddenLine.
@@ -85,11 +132,6 @@ pub struct Pipeline {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     wipeout_bgl1: wgpu::BindGroupLayout,
-    /// Group-1 layout for the batched hatch pipeline (storage buffers
-    /// for instances / boundary / families / dashes). `None` in compatibility
-    /// mode, where hatches render through `hatch_web_gpu`.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    hatch_bgl1: Option<wgpu::BindGroupLayout>,
     image_bgl1: wgpu::BindGroupLayout,
     /// Group-1 layout for the text pipeline (atlas texture + sampler).
     text_atlas_bgl: wgpu::BindGroupLayout,
@@ -153,31 +195,31 @@ pub struct Pipeline {
     /// replace this thin draw-range list on camera changes without touching the
     /// shared resident buffer.
     pub(crate) gpu_wires: std::sync::Arc<Vec<WireGpu>>,
-    /// Persistent per-entity wire instance arena (native, `OCS_WIRE_GPU_PATCH`).
+    /// Persistent per-entity wire instance arena (capability-selected format).
     /// When active, `gpu_wires` is a thin wrapper over this arena's buffers and an
     /// edit patches one entity's slab in place instead of rebuilding every wire.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) wire_arena: Option<wire_arena::WireArena>,
+    pub(crate) wire_arena: Option<wire_arena::PersistentWireArena>,
     /// Second arena for the mesh/solid EDGE wires (drawn with the mesh-edge skip /
     /// black treatment); the resident set is split into this + `wire_arena` so
     /// both patch incrementally. Shares `wire_arena_id`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) wire_arena_mesh: Option<wire_arena::WireArena>,
+    pub(crate) wire_arena_mesh: Option<wire_arena::PersistentWireArena>,
     /// Chunked resident buffers for whichever arena partition exceeded one
     /// GPU buffer. `Some(false)` = regular wires, `Some(true)` = mesh edges.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) wire_arena_fallback: std::sync::Arc<Vec<WireGpu>>,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) wire_arena_fallback_kind: Option<bool>,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) wire_arena_fallback_handles: rustc_hash::FxHashSet<acadrust::Handle>,
     /// The Model content id both arenas currently mirror (`u64::MAX` = none).
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) wire_arena_id: u64,
     /// Last content/camera/viewport tuple used to derive visible instance
     /// ranges from the resident arena.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) wire_cull_key: (u64, u64, u32, u32),
+    /// View/source keys for CPU visibility passes. A plain entity edit changes
+    /// the scene render signature, but it must not rescan every unchanged hatch,
+    /// wipeout, or mesh AABB when the camera and corresponding source stayed
+    /// identical.
+    pub(crate) hatch_lod_key: (usize, u64, u32, u32, bool),
+    pub(crate) wipeout_lod_key: (usize, u64, u32, u32, bool),
+    pub(crate) mesh_lod_key: (usize, u64, u32, u32),
     /// This content viewport's non-rectangular clip boundary as a triangle-fan
     /// vertex buffer in the render target's normalized device coords (`None` =
     /// rectangular / unclipped, where the viewport's own render rectangle does
@@ -190,12 +232,6 @@ pub struct Pipeline {
     /// frame they are present (small), drawn on top of the base wire pass — so
     /// a live drag never re-uploads the resident base buffer.
     gpu_preview_wires: Vec<WireGpu>,
-    /// The canonical hatch fills — a single batched GPU resource drawn in one
-    /// call with per-instance visibility masking the rest. All pattern line
-    /// families are uploaded (no cap). `None` in compatibility mode.
-    gpu_hatch: Option<hatch_gpu::HatchGpu>,
-    /// Compatibility hatch fills — one texture-backed GPU object per hatch.
-    gpu_hatches_compat: Vec<hatch_web_gpu::HatchWebGpu>,
     /// Wipeout masks — solid fills rendered after wires in a separate pass via
     /// the legacy per-primitive `WipeoutGpu` renderer.
     gpu_wipeouts: Vec<WipeoutGpu>,
@@ -204,29 +240,26 @@ pub struct Pipeline {
     /// viewport rect. Recomputed by `compute_wipeout_lod`.
     wipeout_skip_flags: Vec<bool>,
     gpu_images: Vec<ImageGpu>,
-    gpu_meshes: Vec<MeshLodGpu>,
     /// Batched mesh geometry — every solid's LOD0 concatenated into a few large
     /// buffers so the whole set draws in a handful of calls instead of one per
-    /// solid. Rebuilt only when the geometry epoch changes (see
-    /// `cached_mesh_batch_epoch`), so hover / selection never re-pack it.
+    /// solid. Hover / selection never re-pack it.
     gpu_mesh_batch: Vec<mesh_gpu::MeshBatchChunk>,
-    /// `geometry_epoch` the batch was built for. `u64::MAX` = not built yet.
-    pub cached_mesh_batch_epoch: u64,
-    /// Tinted copies of just the selected / hovered solids, drawn over the
-    /// static base batch so highlight shows without re-packing the whole set.
-    /// Rebuilt only when the selection/hover or geometry changes — O(highlighted).
-    gpu_mesh_highlight: Vec<mesh_gpu::MeshGpu>,
+    /// Small mutable working set rebuilt after entity-only edits. Static chunks
+    /// touched by an edit are disabled wholesale and their current handles are
+    /// repacked here, keeping the rest of a multi-million-triangle scene resident.
+    gpu_mesh_dynamic: Vec<mesh_gpu::MeshBatchChunk>,
+    mesh_disabled_chunks: rustc_hash::FxHashSet<usize>,
+    mesh_dynamic_handles: rustc_hash::FxHashSet<acadrust::Handle>,
+    /// Wire content generation whose geometry the static+dynamic mesh state
+    /// mirrors. It gates replay of the same per-entity journal handoff.
+    pub cached_mesh_content_id: u64,
+    /// Draw ranges for each entity inside the resident mesh chunks. Highlight
+    /// overlays reuse these buffers instead of uploading duplicate geometry.
+    mesh_ranges_by_handle:
+        rustc_hash::FxHashMap<acadrust::Handle, Vec<MeshResidentRange>>,
+    mesh_highlight_draws: Vec<MeshHighlightDraw>,
     /// `(geometry_epoch, selection_generation)` the highlight overlay was built for.
     pub cached_highlight_key: (u64, u64),
-    /// Per-mesh LOD level (0=high, 1=mid, 2=low) picked each frame from
-    /// the projected pixel diagonal. Mirrors `hatch_pixel_scissors` —
-    /// recomputed in `compute_mesh_lod`.
-    mesh_lod_levels: Vec<usize>,
-    /// Per-mesh frustum-visible flag (Phase 2.2). `false` when the
-    /// mesh's projected AABB falls entirely outside the viewport rect
-    /// — the draw loop skips it. Mirrors `mesh_lod_levels` length /
-    /// index space; recomputed alongside it.
-    mesh_visible: Vec<bool>,
     /// Batched 3DFACE fill (all faces in one buffer) and edges (merged wire).
     gpu_face3d_fill: Option<Face3DGpu>,
     gpu_face3d_edges: Vec<WireGpu>,
@@ -235,13 +268,14 @@ pub struct Pipeline {
     /// Arc makes pointer identity ABA-safe: an unchanged category reuses the
     /// same Arc even when an unrelated entity advances `geometry_epoch`.
     pub cached_hatch_source: Option<std::sync::Arc<Vec<HatchModel>>>,
+    pub cached_preview_hatch_source: Option<std::sync::Arc<Vec<HatchModel>>>,
     pub cached_wipeout_source: Option<std::sync::Arc<Vec<HatchModel>>>,
     pub cached_image_source: Option<std::sync::Arc<Vec<ImageModel>>>,
     pub cached_text_source: Option<std::sync::Arc<Vec<text_gpu::TextVertex>>>,
     pub cached_mesh_source: Option<std::sync::Arc<Vec<MeshLodSet>>>,
     pub cached_face3d_source: Option<std::sync::Arc<Vec<WireModel>>>,
     pub cached_face3d_depth_source:
-        Option<std::sync::Arc<rustc_hash::FxHashMap<u64, [f32; 2]>>>,
+        Option<std::sync::Weak<rustc_hash::FxHashMap<u64, [f32; 2]>>>,
     pub cached_fill_mode: bool,
     /// Last `(geometry_epoch, camera_generation)` value for which GPU buffers
     /// were uploaded. We re-upload when either side changes — pan/zoom bumps
@@ -261,11 +295,6 @@ pub struct Pipeline {
     /// a pick bumps only `selection_generation`, refreshing the overlay without
     /// touching the main wire buffers.
     pub cached_selection: (u64, u64),
-    /// `(geometry_epoch, selection_generation)` the resident mesh buffers were
-    /// uploaded for. Bumps on a selection/hover change so highlighted solids
-    /// re-upload with their tint.
-    #[allow(dead_code)] // per-mesh LOD path, bypassed by the batched mesh draw
-    pub cached_mesh_key: (u64, u64),
     /// `(wire_content_id, face3d_fill_active)` the Face3D edge/fill buffers were
     /// uploaded for. A stable content id avoids retaining the resident wire Arc:
     /// that Arc must stay uniquely owned by Scene so a small edit can splice it
@@ -338,31 +367,19 @@ impl Pipeline {
         });
 
         // ── Wire pipeline ──────────────────────────────────────────────────
-        // Select once per device. The fast native path hoists shared constants
-        // into storage; compatibility mode keeps them in 10 packed attributes.
-        let wire_mode = wire_gpu::WirePipelineMode::select(device);
-        let renderer_mode_name =
-            if wire_mode.uses_storage() { "fast-storage" } else { "packed-compat" };
+        // Select once from actual device limits. Any device whose compositor
+        // exposes the required storage limits uses the storage renderer; all
+        // other devices use the packed/texture compatibility renderer.
+        let device_caps = DeviceCapabilities::detect(device);
         #[cfg(not(target_arch = "wasm32"))]
-        if std::env::var_os("RUST_LOG").is_some() {
-            eprintln!(
-                "renderer pipeline: {} (storage buffers/stage: {})",
-                renderer_mode_name,
-                device.limits().max_storage_buffers_per_shader_stage
-            );
-        }
+        let force_compat_renderer = crate::cli::gui_config().compat_renderer;
         #[cfg(target_arch = "wasm32")]
-        log::info!(
-            "renderer pipeline: {} (storage buffers/stage: {})",
-            renderer_mode_name,
-            device.limits().max_storage_buffers_per_shader_stage
-        );
-        #[cfg(not(target_arch = "wasm32"))]
+        let force_compat_renderer = false;
+        let wire_mode =
+            wire_gpu::WirePipelineMode::select(device_caps, force_compat_renderer);
         let wire_const_bgl = wire_mode
             .uses_storage()
             .then(|| wire_gpu::WireConst::bind_group_layout(device));
-        #[cfg(target_arch = "wasm32")]
-        let wire_const_bgl: Option<wgpu::BindGroupLayout> = None;
         let mut wire_bgls: Vec<&wgpu::BindGroupLayout> = vec![&frame_bgl];
         if let Some(bgl) = &wire_const_bgl {
             wire_bgls.push(bgl);
@@ -379,7 +396,6 @@ impl Pipeline {
         let wire_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wire.shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(match wire_mode {
-                #[cfg(not(target_arch = "wasm32"))]
                 wire_gpu::WirePipelineMode::IndexedStorage => {
                     include_str!("../../shaders/wire_indexed.wgsl")
                 }
@@ -698,150 +714,320 @@ impl Pipeline {
             cache: None,
         });
 
-        // ── Hatch pipelines ────────────────────────────────────────────────
-        // Fast mode batches every hatch through five storage buffers. Compat
-        // mode uses one data texture per hatch and therefore needs no storage.
-        let (hatch_bgl1, hatch_pipeline) = if wire_mode.uses_storage() {
-            let hatch_bgl1 = hatch_gpu::HatchGpu::bind_group_layout(device);
-            let hatch_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("hatch.pipeline_layout"),
-                bind_group_layouts: &[&frame_bgl, &hatch_bgl1],
-                push_constant_ranges: &[],
-            });
-            let hatch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("hatch.shader"),
-                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
-                    "../../shaders/hatch.wgsl"
-                ))),
-            });
-            let hatch_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("hatch.pipeline"),
-                layout: Some(&hatch_layout),
-                vertex: wgpu::VertexState {
-                    module: &hatch_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[hatch_gpu::HatchVertex::layout()],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
-                    stencil: content_stencil.clone(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 1,
-                        slope_scale: 1.0,
-                        clamp: 0.0,
-                    },
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: MSAA_SAMPLES,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &hatch_shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview: None,
-                cache: None,
-            });
-            (Some(hatch_bgl1), Some(hatch_pipeline))
-        } else {
-            (None, None)
-        };
-
-        let (hatch_compat_bgl1, hatch_compat_pipeline) = if !wire_mode.uses_storage() {
-            let bgl1 = hatch_web_gpu::HatchWebGpu::bind_group_layout(device);
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("hatch_compat.pipeline_layout"),
-                bind_group_layouts: &[&frame_bgl, &bgl1],
-                push_constant_ranges: &[],
-            });
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("hatch_compat.shader"),
-                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
-                    "../../shaders/hatch_web.wgsl"
-                ))),
-            });
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("hatch_compat.pipeline"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: 16,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        }],
-                    }],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
-                    stencil: content_stencil.clone(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 1,
-                        slope_scale: 1.0,
-                        clamp: 0.0,
-                    },
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: MSAA_SAMPLES,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview: None,
-                cache: None,
-            });
-            (Some(bgl1), Some(pipeline))
-        } else {
-            (None, None)
-        };
+        // ── Hatch renderer ─────────────────────────────────────────────────
+        // The façade owns capability selection plus both backend lifecycles.
+        let hatch_gpu = hatch_gpu::HatchGpu::new(
+            device,
+            format,
+            &frame_bgl,
+            &content_stencil,
+            device_caps,
+            force_compat_renderer,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var_os("RUST_LOG").is_some() {
+            eprintln!(
+                "renderer pipelines: wire={} hatch={} mesh={} compute-cull={} (storage buffers/stage: {})",
+                if wire_mode.uses_storage() { "storage" } else { "packed" },
+                hatch_gpu.backend_name(),
+                if device_caps.supports_mesh_storage_instancing() { "storage" } else { "uniform" },
+                if device_caps.supports_mesh_compute_culling() { "gpu" } else { "cpu" },
+                device.limits().max_storage_buffers_per_shader_stage
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        log::info!(
+            "renderer pipelines: wire={} hatch={} mesh={} compute-cull={} (storage buffers/stage: {})",
+            if wire_mode.uses_storage() { "storage" } else { "packed" },
+            hatch_gpu.backend_name(),
+            if device_caps.supports_mesh_storage_instancing() { "storage" } else { "uniform" },
+            if device_caps.supports_mesh_compute_culling() { "gpu" } else { "cpu" },
+            device.limits().max_storage_buffers_per_shader_stage
+        );
 
         // ── Mesh pipeline ──────────────────────────────────────────────────
+        let mesh_storage_instancing = device_caps.supports_mesh_storage_instancing();
+        let mesh_source = include_str!("../../shaders/mesh.wgsl");
+        let mesh_source = if mesh_storage_instancing {
+            std::borrow::Cow::Borrowed(mesh_source)
+        } else {
+            std::borrow::Cow::Owned(mesh_source.replace(
+                "var<storage, read> mesh_instances: array<MeshInstance>;",
+                "var<uniform> mesh_instances: array<MeshInstance, 1>;",
+            ))
+        };
         let mesh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mesh.shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
-                "../../shaders/mesh.wgsl"
-            ))),
+            source: wgpu::ShaderSource::Wgsl(mesh_source),
         });
+        let (mesh_cull_bgl, mesh_cull_pipeline, mesh_cull_uniform) =
+            if device_caps.supports_mesh_compute_culling() {
+                let bgl =
+                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("mesh.cull.bgl"),
+                        entries: &[
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 0,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Uniform,
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 1,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage {
+                                        read_only: true,
+                                    },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage {
+                                        read_only: false,
+                                    },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 3,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage {
+                                        read_only: false,
+                                    },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 4,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage {
+                                        read_only: false,
+                                    },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 5,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage {
+                                        read_only: false,
+                                    },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                let shader =
+                    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("mesh.cull.shader"),
+                        source: wgpu::ShaderSource::Wgsl(
+                            std::borrow::Cow::Borrowed(include_str!(
+                                "../../shaders/mesh_cull.wgsl"
+                            )),
+                        ),
+                    });
+                let layout =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("mesh.cull.layout"),
+                        bind_group_layouts: &[&bgl],
+                        push_constant_ranges: &[],
+                    });
+                let pipeline =
+                    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("mesh.cull.pipeline"),
+                        layout: Some(&layout),
+                        module: &shader,
+                        entry_point: Some("main"),
+                        compilation_options:
+                            wgpu::PipelineCompilationOptions::default(),
+                        cache: None,
+                    });
+                let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("mesh.cull.uniform"),
+                    size: std::mem::size_of::<MeshCullUniform>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM
+                        | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                (Some(bgl), Some(pipeline), Some(uniform))
+            } else {
+                (None, None, None)
+            };
+
+        let mesh_material_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("mesh.material.bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 9,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 10,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 11,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 12,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 13,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 14,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 15,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: if mesh_storage_instancing {
+                                wgpu::BufferBindingType::Storage { read_only: true }
+                            } else {
+                                wgpu::BufferBindingType::Uniform
+                            },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let mesh_default_material_bind_group = mesh_gpu::create_material_bind_group(
+            device,
+            queue,
+            &mesh_material_bgl,
+            None,
+            None,
+        );
 
         let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh.pipeline_layout"),
-            bind_group_layouts: &[&frame_bgl],
+            bind_group_layouts: &[&frame_bgl, &mesh_material_bgl],
             push_constant_ranges: &[],
         });
 
@@ -938,49 +1124,56 @@ impl Pipeline {
                 cache: None,
             });
 
-        // Highlight variant — same shader / vertex layout, but `depth_compare =
-        // Always` and no depth write, so a hovered / selected solid's tint is
-        // drawn on top of everything (it shows through occluding geometry) and
-        // doesn't disturb the depth buffer for later passes.
-        let mesh_highlight_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("mesh.highlight.pipeline"),
-            layout: Some(&mesh_layout),
-            vertex: wgpu::VertexState {
-                module: &mesh_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[mesh_gpu::MeshVertex::layout()],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: content_stencil.clone(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLES,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &mesh_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview: None,
-            cache: None,
-        });
+        // Highlight variants reuse the resident mesh buffers and differ only in
+        // their fixed fragment tint. No selected mesh geometry is re-uploaded.
+        let make_mesh_highlight_pipeline =
+            |label: &'static str, fragment_entry: &'static str| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&mesh_layout),
+                    vertex: wgpu::VertexState {
+                        module: &mesh_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[mesh_gpu::MeshVertex::layout()],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth24PlusStencil8,
+                        depth_write_enabled: false,
+                        depth_compare: wgpu::CompareFunction::Always,
+                        stencil: content_stencil.clone(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState {
+                        count: MSAA_SAMPLES,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &mesh_shader,
+                        entry_point: Some(fragment_entry),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    multiview: None,
+                    cache: None,
+                })
+            };
+        let mesh_selected_pipeline = make_mesh_highlight_pipeline(
+            "mesh.highlight.selected.pipeline",
+            "fs_highlight_selected",
+        );
+        let mesh_hover_pipeline =
+            make_mesh_highlight_pipeline("mesh.highlight.hover.pipeline", "fs_highlight_hover");
 
         // Wireframe variant — same shader / vertex layout / depth state,
         // only the input topology changes (LineList) and back-face
@@ -995,8 +1188,8 @@ impl Pipeline {
                 layout: Some(&mesh_layout),
                 vertex: wgpu::VertexState {
                     module: &mesh_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[mesh_gpu::MeshVertex::layout()],
+                    entry_point: Some("vs_edge"),
+                    buffers: &[mesh_gpu::MeshVertex::edge_layout()],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 primitive: wgpu::PrimitiveState {
@@ -1278,8 +1471,8 @@ impl Pipeline {
 
         // ── Text (SDF glyph quads) ─────────────────────────────────────────
         let text_atlas_bgl = text_gpu::TextAtlasGpu::bind_group_layout(device);
-        let text_pipeline =
-            text_gpu::create_pipeline(device, &frame_bgl, &text_atlas_bgl, format, MSAA_SAMPLES);
+        let (text_pipeline, text_highlight_pipeline) =
+            text_gpu::create_pipelines(device, &frame_bgl, &text_atlas_bgl, format, MSAA_SAMPLES);
 
         let viewcube = ViewCubePipeline::new(device, queue, format);
 
@@ -1416,11 +1609,10 @@ impl Pipeline {
             wire_xray_pipeline,
             wire_const_bgl,
             wipeout_pipeline,
-            hatch_pipeline,
-            hatch_compat_bgl1,
-            hatch_compat_pipeline,
+            hatch_gpu,
             image_pipeline,
             text_pipeline,
+            text_highlight_pipeline,
             text_atlas_bgl,
             text_atlas_gpu: None,
             text_vbuf: None,
@@ -1433,16 +1625,28 @@ impl Pipeline {
             silhouette_vcount: 0,
             mesh_pipeline,
             mesh_transparent_pipeline,
-            mesh_highlight_pipeline,
+            mesh_selected_pipeline,
+            mesh_hover_pipeline,
             mesh_wireframe_pipeline,
             mesh_edge_black_pipeline,
             mesh_depth_pipeline,
+            mesh_material_bgl,
+            mesh_default_material_bind_group,
+            mesh_cull_pipeline,
+            mesh_cull_bgl,
+            mesh_cull_uniform,
+            mesh_cull_items: None,
+            mesh_cull_bind_group: None,
+            mesh_opaque_indirect: None,
+            mesh_transparent_indirect: None,
+            mesh_wire_indirect: None,
+            mesh_edge_indirect: None,
+            mesh_cull_count: 0,
             face3d_pipeline,
             face3d_depth_pipeline,
             uniform_buffer,
             uniform_bind_group,
             wipeout_bgl1,
-            hatch_bgl1,
             image_bgl1,
             depth_texture_size: Size::new(1, 1),
             // (0, 0) forces the first `ensure_depth_texture` to allocate at the
@@ -1458,39 +1662,35 @@ impl Pipeline {
             blit_uniform_buffer,
             surface_format: format,
             gpu_wires: std::sync::Arc::new(vec![]),
-            #[cfg(not(target_arch = "wasm32"))]
             wire_arena: None,
-            #[cfg(not(target_arch = "wasm32"))]
             wire_arena_mesh: None,
-            #[cfg(not(target_arch = "wasm32"))]
             wire_arena_fallback: std::sync::Arc::new(Vec::new()),
-            #[cfg(not(target_arch = "wasm32"))]
             wire_arena_fallback_kind: None,
-            #[cfg(not(target_arch = "wasm32"))]
             wire_arena_fallback_handles: rustc_hash::FxHashSet::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             wire_arena_id: u64::MAX,
-            #[cfg(not(target_arch = "wasm32"))]
             wire_cull_key: (u64::MAX, u64::MAX, 0, 0),
+            hatch_lod_key: (usize::MAX, u64::MAX, 0, 0, false),
+            wipeout_lod_key: (usize::MAX, u64::MAX, 0, 0, false),
+            mesh_lod_key: (usize::MAX, u64::MAX, 0, 0),
             clip_boundary: None,
             gpu_selected_wires: vec![],
             gpu_preview_wires: vec![],
-            gpu_hatch: None,
-            gpu_hatches_compat: vec![],
             gpu_wipeouts: vec![],
             wipeout_skip_flags: vec![],
             gpu_images: vec![],
-            gpu_meshes: vec![],
             gpu_mesh_batch: vec![],
-            cached_mesh_batch_epoch: u64::MAX,
-            gpu_mesh_highlight: vec![],
+            gpu_mesh_dynamic: vec![],
+            mesh_disabled_chunks: rustc_hash::FxHashSet::default(),
+            mesh_dynamic_handles: rustc_hash::FxHashSet::default(),
+            cached_mesh_content_id: u64::MAX,
+            mesh_ranges_by_handle: rustc_hash::FxHashMap::default(),
+            mesh_highlight_draws: vec![],
             cached_highlight_key: (u64::MAX, u64::MAX),
-            mesh_lod_levels: vec![],
-            mesh_visible: vec![],
             gpu_face3d_fill: None,
             gpu_face3d_edges: vec![],
             viewcube,
             cached_hatch_source: None,
+            cached_preview_hatch_source: None,
             cached_wipeout_source: None,
             cached_image_source: None,
             cached_text_source: None,
@@ -1501,7 +1701,6 @@ impl Pipeline {
             cached_epoch: (u64::MAX, u64::MAX, u64::MAX),
             cached_wire_id: u64::MAX,
             cached_selection: (u64::MAX, u64::MAX),
-            cached_mesh_key: (u64::MAX, u64::MAX),
             cached_face3d_key: (u64::MAX, false),
             wire_handle_index: std::sync::Arc::new(rustc_hash::FxHashMap::default()),
             render_sig: u64::MAX,
@@ -1588,36 +1787,64 @@ impl Pipeline {
         hover: Option<acadrust::Handle>,
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
     ) {
+        let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
         let hover = hover.filter(|h| !selected.contains(h));
         if selected.is_empty() && hover.is_none() {
             self.gpu_selected_wires = vec![];
             return;
         }
-        // Gather the highlighted entities' wires via the prebuilt index —
-        // O(highlighted), no per-wire string parse. Selection recolours blue,
-        // hover orange. Drawn on top (depth-compare Always) over the base pass.
-        let mut out: Vec<WireModel> = Vec::new();
-        let push = |handle_val: u64, color: [f32; 4], wires: &[WireModel], out: &mut Vec<WireModel>| {
-            if let Some(idxs) = self.wire_handle_index.get(&handle_val) {
+        // Gather borrowed highlighted wires via the prebuilt index —
+        // O(highlighted), no per-wire string parse or deep geometry clone.
+        let mut selected_wires: Vec<&WireModel> = Vec::new();
+        let mut hover_wires: Vec<&WireModel> = Vec::new();
+        for h in selected {
+            if let Some(idxs) = self.wire_handle_index.get(&h.value()) {
                 let mut slots = idxs.clone();
                 slots.sort_unstable();
                 for &i in &slots {
                     if let Some(w) = wires.get(i as usize) {
-                        let mut c = w.clone();
-                        c.color = color;
-                        out.push(c);
+                        selected_wires.push(w);
                     }
                 }
             }
-        };
-        for h in selected {
-            push(h.value(), WireModel::SELECTED, wires, &mut out);
         }
         if let Some(h) = hover {
-            push(h.value(), WireModel::HOVER, wires, &mut out);
+            if let Some(idxs) = self.wire_handle_index.get(&h.value()) {
+                let mut slots = idxs.clone();
+                slots.sort_unstable();
+                for &i in &slots {
+                    if let Some(w) = wires.get(i as usize) {
+                        hover_wires.push(w);
+                    }
+                }
+            }
         }
-        self.gpu_selected_wires =
-            WireGpu::from_run(device, &out, depth_map, false, self.wire_const_bgl.as_ref());
+        let mut gpu = WireGpu::from_highlight_refs(
+            device,
+            &selected_wires,
+            WireModel::SELECTED,
+            depth_map,
+            self.wire_const_bgl.as_ref(),
+        );
+        gpu.extend(WireGpu::from_highlight_refs(
+            device,
+            &hover_wires,
+            WireModel::HOVER,
+            depth_map,
+            self.wire_const_bgl.as_ref(),
+        ));
+        self.gpu_selected_wires = gpu;
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] wire-highlight {:>7.1}ms handles={} wires={}",
+                    elapsed_ms,
+                    selected.len() + usize::from(hover.is_some()),
+                    selected_wires.len() + hover_wires.len(),
+                );
+            }
+        }
     }
 
     /// Build the text-highlight overlay: the glyph quads of just the selected /
@@ -1631,6 +1858,7 @@ impl Pipeline {
         selected: &rustc_hash::FxHashSet<acadrust::Handle>,
         hover: Option<acadrust::Handle>,
     ) {
+        let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
         let hover = hover.filter(|h| !selected.contains(h));
         if selected.is_empty() && hover.is_none() {
             self.text_highlight_vbuf = None;
@@ -1661,6 +1889,16 @@ impl Pipeline {
         }
         self.text_highlight_vcount = out.len() as u32;
         self.text_highlight_vbuf = text_gpu::upload_vertices(device, &out);
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] text-highlight {:>7.1}ms vertices={}",
+                    elapsed_ms,
+                    out.len(),
+                );
+            }
+        }
     }
 
     /// Upload the live overlay (command preview / interim / grip-drag) wires.
@@ -1757,6 +1995,18 @@ impl Pipeline {
                         (w.y - hy as f64) as f32,
                         (w.z - hz as f64) as f32,
                     ],
+                    material: [0.5, 0.0, 0.0, 0.0],
+                    specular: [1.0, 1.0, 1.0, 1.0],
+                    uv_diffuse: [0.0; 2],
+                    ambient: [0.3, 0.3, 0.3, 0.0],
+                    advanced: [1.0; 4],
+                    flags: [0, 127, 0, 0],
+                    uv_specular: [0.0; 2],
+                    uv_reflection: [0.0; 2],
+                    uv_opacity: [0.0; 2],
+                    uv_bump: [0.0; 2],
+                    uv_refraction: [0.0; 2],
+                    uv_normal: [0.0; 2],
                 }
             };
             for g in &set.curved_gens {
@@ -1863,6 +2113,28 @@ impl Pipeline {
                     }
                 }
             }
+            if set.curved_gens.is_empty() || !set.complete {
+                let best = set.stored_silhouettes.iter().max_by(|left, right| {
+                    let score = |silhouette: &crate::scene::model::mesh_model::StoredSilhouette| {
+                        let direction = d3(silhouette.view_direction)
+                            .normalize_or(glam::DVec3::NEG_Z);
+                        direction.dot(view).abs()
+                    };
+                    score(left)
+                        .partial_cmp(&score(right))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                if let Some(silhouette) = best {
+                    for (index, high) in silhouette.edge_verts.iter().copied().enumerate() {
+                        let low = silhouette
+                            .edge_verts_low
+                            .get(index)
+                            .copied()
+                            .unwrap_or([0.0; 3]);
+                        verts.push(mk(lo(high, low)));
+                    }
+                }
+            }
         }
         if verts.is_empty() {
             self.silhouette_vbuf = None;
@@ -1923,15 +2195,24 @@ impl Pipeline {
         clip_w: u32,
         clip_h: u32,
     ) {
-        let Some(batch) = &mut self.gpu_hatch else {
+        let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
+        let instance_count = self.hatch_gpu.update_visibility(queue, |aabb| {
+            !aabb_below_pixel(aabb, view_rot, eye, clip_w, clip_h, 2.0)
+                && !aabb_offscreen(aabb, view_rot, eye, clip_w, clip_h)
+        });
+        if instance_count == 0 {
             return;
-        };
-        for (i, aabb) in batch.instance_aabbs.iter().enumerate() {
-            let skip = aabb_below_pixel(*aabb, view_rot, eye, clip_w, clip_h, 2.0)
-                || aabb_offscreen(*aabb, view_rot, eye, clip_w, clip_h);
-            batch.visibility[i] = if skip { 0 } else { 1 };
         }
-        batch.upload_visibility(queue);
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] hatch-lod {:>7.1}ms instances={}",
+                    elapsed_ms,
+                    instance_count,
+                );
+            }
+        }
     }
 
     /// Per-frame wipeout frustum-skip flag (Phase 2.3). Mirrors
@@ -1957,6 +2238,7 @@ impl Pipeline {
         wireframe_only: bool,
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
     ) {
+        let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
         // Edge buffer is always built from `face3d_wires`, so 3DFACE
         // outlines stay on the screen regardless of mode.
         self.gpu_face3d_edges =
@@ -1985,95 +2267,423 @@ impl Pipeline {
                 depth_map,
             ));
         }
-    }
-
-    #[allow(dead_code)] // per-mesh upload path, bypassed by upload_mesh_batch
-    pub fn upload_meshes(
-        &mut self,
-        device: &wgpu::Device,
-        meshes: &[MeshLodSet],
-        selected: &rustc_hash::FxHashSet<acadrust::Handle>,
-        hover: Option<acadrust::Handle>,
-    ) {
-        self.gpu_meshes = meshes
-            .iter()
-            .filter(|s| s.lods.iter().any(|m| !m.indices.is_empty()))
-            .map(|s| {
-                // A mesh's name is its source entity handle (decimal). Selection
-                // wins over hover when both apply to the same solid.
-                let h = s
-                    .lods
-                    .first()
-                    .and_then(|m| m.name.parse::<u64>().ok())
-                    .map(acadrust::Handle::new);
-                let mode = match h {
-                    Some(h) if selected.contains(&h) => mesh_gpu::Highlight::Selected,
-                    Some(h) if Some(h) == hover => mesh_gpu::Highlight::Hover,
-                    _ => mesh_gpu::Highlight::None,
-                };
-                MeshLodGpu::new(device, s, mode)
-            })
-            .collect();
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] face3d-upload {:>7.1}ms face-wires={} all-wires={}",
+                    elapsed_ms,
+                    face3d_wires.len(),
+                    all_wires.len(),
+                );
+            }
+        }
     }
 
     /// Build the batched mesh buffers (a few large buffers for the whole solid
     /// set, drawn in a handful of calls). Selection/hover tint is intentionally
     /// not applied here — the batch is geometry-only and stays resident across
     /// camera moves and pick changes.
-    pub fn upload_mesh_batch(&mut self, device: &wgpu::Device, meshes: &[MeshLodSet]) {
-        let (chunks, _tris) = mesh_gpu::build_mesh_batch(device, meshes);
-        self.gpu_mesh_batch = chunks;
-    }
-
-    /// Build tinted copies of just the selected / hovered solids. Drawn over the
-    /// static base batch with the LessEqual mesh pipeline so the tint shows on
-    /// top at the same depth. O(highlighted), so a pick never touches the rest.
-    pub fn upload_mesh_highlight(
+    pub fn upload_mesh_batch(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         meshes: &[MeshLodSet],
+    ) {
+        let started = iced::time::Instant::now();
+        let (mut chunks, triangles) = mesh_gpu::build_mesh_batch(device, meshes);
+        for chunk in &mut chunks {
+            chunk.material_bind_group = Some(mesh_gpu::create_material_bind_group(
+                device,
+                queue,
+                &self.mesh_material_bgl,
+                chunk.material.as_ref(),
+                Some(&chunk.instance_buffer),
+            ));
+        }
+        self.mesh_ranges_by_handle.clear();
+        for (chunk_index, chunk) in chunks.iter().enumerate() {
+            for range in &chunk.highlight_ranges {
+                self.mesh_ranges_by_handle
+                    .entry(range.handle)
+                    .or_default()
+                    .push(MeshResidentRange {
+                        chunk: chunk_index,
+                        dynamic: false,
+                        index_start: range.index_start,
+                        index_count: range.index_count,
+                        transparent: range.transparent,
+                        instance_start: range.instance_start,
+                        instance_count: range.instance_count,
+                    });
+            }
+        }
+        self.mesh_highlight_draws.clear();
+        self.cached_highlight_key = (u64::MAX, u64::MAX);
+        self.gpu_mesh_dynamic.clear();
+        self.mesh_disabled_chunks.clear();
+        self.mesh_dynamic_handles.clear();
+        self.gpu_mesh_batch = chunks;
+        self.rebuild_mesh_cull_resources(device);
+        if crate::perf::enabled() {
+            let instances: u64 = self
+                .gpu_mesh_batch
+                .iter()
+                .map(|chunk| chunk.instance_count as u64)
+                .sum();
+            crate::perf_record!(
+                "[perf] mesh-batch {:>7.1}ms sets={} chunks={} instances={} triangles={}",
+                started.elapsed().as_secs_f64() * 1000.0,
+                meshes.len(),
+                self.gpu_mesh_batch.len(),
+                instances,
+                triangles,
+            );
+        }
+    }
+
+    fn rebuild_mesh_cull_resources(&mut self, device: &wgpu::Device) {
+        let count = self.gpu_mesh_batch.len() + self.gpu_mesh_dynamic.len();
+        // Below this point CPU projection is cheaper than a compute pass plus
+        // indirect command reads. The large-scene path turns on automatically.
+        if count < 128
+            || self.mesh_cull_pipeline.is_none()
+            || self.mesh_cull_bgl.is_none()
+            || self.mesh_cull_uniform.is_none()
+        {
+            self.mesh_cull_bind_group = None;
+            self.mesh_cull_items = None;
+            self.mesh_opaque_indirect = None;
+            self.mesh_transparent_indirect = None;
+            self.mesh_wire_indirect = None;
+            self.mesh_edge_indirect = None;
+            self.mesh_cull_count = 0;
+            return;
+        }
+        let mut items = Vec::with_capacity(count);
+        for (index, chunk) in self.gpu_mesh_batch.iter().enumerate() {
+            items.push(MeshCullItem {
+                min: [
+                    chunk.world_aabb[0],
+                    chunk.world_aabb[1],
+                    chunk.world_aabb[2],
+                    0.0,
+                ],
+                max: [
+                    chunk.world_aabb[3],
+                    chunk.world_aabb[4],
+                    chunk.world_aabb[5],
+                    0.0,
+                ],
+                counts: [
+                    chunk.index_count,
+                    chunk.transp_index_count,
+                    chunk.wire_index_count,
+                    chunk.edge_vertex_count,
+                ],
+                meta: [
+                    chunk.instance_count,
+                    (!self.mesh_disabled_chunks.contains(&index)) as u32,
+                    0,
+                    0,
+                ],
+            });
+        }
+        for chunk in &self.gpu_mesh_dynamic {
+            items.push(MeshCullItem {
+                min: [
+                    chunk.world_aabb[0],
+                    chunk.world_aabb[1],
+                    chunk.world_aabb[2],
+                    0.0,
+                ],
+                max: [
+                    chunk.world_aabb[3],
+                    chunk.world_aabb[4],
+                    chunk.world_aabb[5],
+                    0.0,
+                ],
+                counts: [
+                    chunk.index_count,
+                    chunk.transp_index_count,
+                    chunk.wire_index_count,
+                    chunk.edge_vertex_count,
+                ],
+                meta: [chunk.instance_count, 1, 0, 0],
+            });
+        }
+        let items_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("mesh.cull.items"),
+                contents: bytemuck::cast_slice(&items),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let indexed_size = (count * std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>())
+            as u64;
+        let draw_size =
+            (count * std::mem::size_of::<wgpu::util::DrawIndirectArgs>()) as u64;
+        let make_output = |label: &'static str, size: u64| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+                mapped_at_creation: false,
+            })
+        };
+        let opaque = make_output("mesh.cull.opaque", indexed_size);
+        let transparent = make_output("mesh.cull.transparent", indexed_size);
+        let wire = make_output("mesh.cull.wire", indexed_size);
+        let edge = make_output("mesh.cull.edge", draw_size);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mesh.cull.bind_group"),
+            layout: self.mesh_cull_bgl.as_ref().expect("checked above"),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self
+                        .mesh_cull_uniform
+                        .as_ref()
+                        .expect("checked above")
+                        .as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: items_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: opaque.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: transparent.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wire.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: edge.as_entire_binding(),
+                },
+            ],
+        });
+        self.mesh_cull_bind_group = Some(bind_group);
+        self.mesh_cull_items = Some(items_buffer);
+        self.mesh_opaque_indirect = Some(opaque);
+        self.mesh_transparent_indirect = Some(transparent);
+        self.mesh_wire_indirect = Some(wire);
+        self.mesh_edge_indirect = Some(edge);
+        self.mesh_cull_count = count as u32;
+    }
+
+    fn rebuild_mesh_range_map(&mut self) {
+        self.mesh_ranges_by_handle.clear();
+        for (chunk_index, chunk) in self.gpu_mesh_batch.iter().enumerate() {
+            if self.mesh_disabled_chunks.contains(&chunk_index) {
+                continue;
+            }
+            for range in &chunk.highlight_ranges {
+                self.mesh_ranges_by_handle
+                    .entry(range.handle)
+                    .or_default()
+                    .push(MeshResidentRange {
+                        chunk: chunk_index,
+                        dynamic: false,
+                        index_start: range.index_start,
+                        index_count: range.index_count,
+                        transparent: range.transparent,
+                        instance_start: range.instance_start,
+                        instance_count: range.instance_count,
+                    });
+            }
+        }
+        for (chunk_index, chunk) in self.gpu_mesh_dynamic.iter().enumerate() {
+            for range in &chunk.highlight_ranges {
+                self.mesh_ranges_by_handle
+                    .entry(range.handle)
+                    .or_default()
+                    .push(MeshResidentRange {
+                        chunk: chunk_index,
+                        dynamic: true,
+                        index_start: range.index_start,
+                        index_count: range.index_count,
+                        transparent: range.transparent,
+                        instance_start: range.instance_start,
+                        instance_count: range.instance_count,
+                    });
+            }
+        }
+        self.mesh_highlight_draws.clear();
+        self.cached_highlight_key = (u64::MAX, u64::MAX);
+    }
+
+    /// Patch an entity-only geometry change without rebuilding the resident
+    /// mesh set. Any 32 MiB static chunk containing a changed handle is retired;
+    /// the current versions of all its handles are rebuilt into a small dynamic
+    /// working set. A bounded threshold falls back to a full rebuild before the
+    /// working set can grow into a second copy of the drawing.
+    pub fn patch_mesh_batch(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        meshes: &[MeshLodSet],
+        changes: &[(acadrust::Handle, crate::scene::ChangeKind)],
+    ) -> bool {
+        let started = iced::time::Instant::now();
+        if self.gpu_mesh_batch.is_empty() || changes.is_empty() {
+            return false;
+        }
+        let current_handles: rustc_hash::FxHashSet<_> = meshes
+            .iter()
+            .filter_map(|set| {
+                set.lods
+                    .first()
+                    .and_then(|mesh| mesh.name.parse::<u64>().ok())
+                    .map(acadrust::Handle::new)
+            })
+            .collect();
+        let changed: rustc_hash::FxHashSet<_> = changes
+            .iter()
+            .map(|(handle, _)| *handle)
+            .filter(|handle| {
+                current_handles.contains(handle)
+                    || self.mesh_dynamic_handles.contains(handle)
+                    || self
+                        .gpu_mesh_batch
+                        .iter()
+                        .any(|chunk| chunk.handles.contains(handle))
+            })
+            .collect();
+        if changed.is_empty() {
+            return true;
+        }
+        for (chunk_index, chunk) in self.gpu_mesh_batch.iter().enumerate() {
+            if chunk.handles.iter().any(|handle| changed.contains(handle)) {
+                self.mesh_disabled_chunks.insert(chunk_index);
+                self.mesh_dynamic_handles
+                    .extend(chunk.handles.iter().copied());
+            }
+        }
+        self.mesh_dynamic_handles.extend(changed.iter().copied());
+        let disabled_limit = self.gpu_mesh_batch.len().div_ceil(2).max(8);
+        if self.mesh_disabled_chunks.len() > disabled_limit
+            || self.mesh_dynamic_handles.len() > 4096
+        {
+            return false;
+        }
+        let (mut chunks, _) = mesh_gpu::build_mesh_batch_filtered(
+            device,
+            meshes,
+            Some(&self.mesh_dynamic_handles),
+        );
+        for chunk in &mut chunks {
+            chunk.material_bind_group = Some(mesh_gpu::create_material_bind_group(
+                device,
+                queue,
+                &self.mesh_material_bgl,
+                chunk.material.as_ref(),
+                Some(&chunk.instance_buffer),
+            ));
+        }
+        self.gpu_mesh_dynamic = chunks;
+        self.rebuild_mesh_cull_resources(device);
+        self.rebuild_mesh_range_map();
+        if crate::perf::enabled() {
+            crate::perf_record!(
+                "[perf] mesh-patch {:>7.1}ms changed={} retired={} dynamic_handles={} dynamic_chunks={}",
+                started.elapsed().as_secs_f64() * 1000.0,
+                changed.len(),
+                self.mesh_disabled_chunks.len(),
+                self.mesh_dynamic_handles.len(),
+                self.gpu_mesh_dynamic.len(),
+            );
+        }
+        true
+    }
+
+    /// Refresh selection/hover draw ranges. The overlay references resident
+    /// chunk buffers; changing hover never allocates or uploads mesh geometry.
+    pub fn update_mesh_highlight(
+        &mut self,
         selected: &rustc_hash::FxHashSet<acadrust::Handle>,
         hover: Option<acadrust::Handle>,
     ) {
-        use mesh_gpu::{Highlight, MeshGpu};
         let mut out = Vec::new();
-        if selected.is_empty() && hover.is_none() {
-            self.gpu_mesh_highlight = out;
-            return;
+        for handle in selected {
+            if let Some(ranges) = self.mesh_ranges_by_handle.get(handle) {
+                out.extend(ranges.iter().copied().map(|range| MeshHighlightDraw {
+                    range,
+                    kind: MeshHighlightKind::Selected,
+                }));
+            }
         }
-        for set in meshes {
-            let Some(m) = set.lods.iter().find(|m| !m.indices.is_empty()) else {
-                continue;
-            };
-            let h = m.name.parse::<u64>().ok().map(acadrust::Handle::new);
-            let mode = match h {
-                Some(h) if selected.contains(&h) => Highlight::Selected,
-                Some(h) if Some(h) == hover => Highlight::Hover,
-                _ => continue,
-            };
-            out.push(MeshGpu::new(device, m, mode));
+        if let Some(handle) = hover.filter(|handle| !selected.contains(handle)) {
+            if let Some(ranges) = self.mesh_ranges_by_handle.get(&handle) {
+                out.extend(ranges.iter().copied().map(|range| MeshHighlightDraw {
+                    range,
+                    kind: MeshHighlightKind::Hover,
+                }));
+            }
         }
-        self.gpu_mesh_highlight = out;
+        self.mesh_highlight_draws = out;
     }
 
-    /// Per-frame mesh LOD selector. Picks slot 0/1/2 based on the
-    /// projected pixel diagonal of each mesh's `world_aabb` (Phase 3.4
-    /// ladder: >200 px → 0, 50–200 → 1, <50 → 2). Falls back to the
-    /// nearest available lower slot when a level wasn't generated.
-    pub fn compute_mesh_lod(&mut self, view_rot: glam::Mat4, eye: glam::DVec3, clip_w: u32, clip_h: u32) {
-        self.mesh_lod_levels = self
-            .gpu_meshes
+    fn active_mesh_chunks_indexed(
+        &self,
+    ) -> impl Iterator<Item = (usize, &mesh_gpu::MeshBatchChunk)> {
+        let dynamic_offset = self.gpu_mesh_batch.len();
+        self.gpu_mesh_batch
             .iter()
-            .map(|m| pick_mesh_lod(m, view_rot, eye, clip_w, clip_h))
-            .collect();
-        // Phase 2.2 — frustum-visibility flag per mesh. Cheap: same
-        // 4-corner projection used for LOD selection, just answering a
-        // different question (any corner inside the viewport rect?).
-        self.mesh_visible = self
-            .gpu_meshes
-            .iter()
-            .map(|m| !aabb_offscreen(m.world_aabb, view_rot, eye, clip_w, clip_h))
-            .collect();
+            .enumerate()
+            .filter(|(index, _)| !self.mesh_disabled_chunks.contains(index))
+            .chain(
+                self.gpu_mesh_dynamic
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, chunk)| (dynamic_offset + index, chunk)),
+            )
+    }
+
+    /// Per-frame coarse frustum culling for the spatially sorted resident
+    /// chunks. It changes only draw eligibility and never rebuilds GPU data.
+    pub fn compute_mesh_lod(
+        &mut self,
+        queue: &wgpu::Queue,
+        view_rot: glam::Mat4,
+        eye: glam::DVec3,
+        clip_w: u32,
+        clip_h: u32,
+    ) {
+        if self.mesh_cull_count != 0 {
+            if let Some(uniform) = &self.mesh_cull_uniform {
+                queue.write_buffer(
+                    uniform,
+                    0,
+                    bytemuck::bytes_of(&MeshCullUniform {
+                        view_rot: view_rot.to_cols_array(),
+                        eye: [eye.x as f32, eye.y as f32, eye.z as f32, 0.0],
+                        count: [self.mesh_cull_count, 0, 0, 0],
+                    }),
+                );
+            }
+            for (index, chunk) in self.gpu_mesh_batch.iter_mut().enumerate() {
+                chunk.visible = !self.mesh_disabled_chunks.contains(&index);
+            }
+            for chunk in &mut self.gpu_mesh_dynamic {
+                chunk.visible = true;
+            }
+            return;
+        }
+        for (index, chunk) in self.gpu_mesh_batch.iter_mut().enumerate() {
+            chunk.visible =
+                !self.mesh_disabled_chunks.contains(&index)
+                    && !aabb3_offscreen(chunk.world_aabb, view_rot, eye, clip_w, clip_h);
+        }
+        for chunk in &mut self.gpu_mesh_dynamic {
+            chunk.visible =
+                !aabb3_offscreen(chunk.world_aabb, view_rot, eye, clip_w, clip_h);
+        }
     }
 
     pub fn upload_hatches(
@@ -2082,25 +2692,31 @@ impl Pipeline {
         queue: &wgpu::Queue,
         hatches: &[HatchModel],
     ) {
-        if let Some(bgl1) = &self.hatch_compat_bgl1 {
-            self.gpu_hatches_compat = hatches
-                .iter()
-                .filter(|h| h.boundary.len() >= 3)
-                .map(|h| hatch_web_gpu::HatchWebGpu::new(device, queue, h, bgl1))
-                .collect();
-            self.gpu_hatch = None;
-            return;
+        let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
+        let renderable_count = hatches
+            .iter()
+            .filter(|hatch| hatch.boundary.len() >= 3)
+            .count();
+        self.hatch_gpu.upload(device, queue, hatches);
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] hatch-upload {:>7.1}ms models={}",
+                    elapsed_ms,
+                    renderable_count,
+                );
+            }
         }
+    }
 
-        self.gpu_hatches_compat.clear();
-        let _ = queue;
-        let Some(bgl1) = &self.hatch_bgl1 else {
-            self.gpu_hatch = None;
-            return;
-        };
-        let renderable: Vec<HatchModel> =
-            hatches.iter().filter(|h| h.boundary.len() >= 3).cloned().collect();
-        self.gpu_hatch = hatch_gpu::HatchGpu::build(device, bgl1, &renderable);
+    pub fn upload_preview_hatches(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        hatches: &[HatchModel],
+    ) {
+        self.hatch_gpu.upload_preview(device, queue, hatches);
     }
 
     pub fn upload_wipeouts(&mut self, device: &wgpu::Device, wipeouts: &[HatchModel]) {
@@ -2132,6 +2748,7 @@ impl Pipeline {
         queue: &wgpu::Queue,
         verts: &[text_gpu::TextVertex],
     ) {
+        let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
         if let Ok(mut atlas) = crate::scene::text::sdf_atlas::text_atlas().lock() {
             if self.text_atlas_gpu.is_none() || atlas.is_dirty() {
                 self.text_atlas_gpu = Some(text_gpu::TextAtlasGpu::upload(
@@ -2145,6 +2762,16 @@ impl Pipeline {
         }
         self.text_vbuf = text_gpu::upload_vertices(device, verts);
         self.text_vcount = verts.len() as u32;
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 1.0 {
+                crate::perf_record!(
+                    "[perf] text-upload {:>7.1}ms vertices={}",
+                    elapsed_ms,
+                    verts.len(),
+                );
+            }
+        }
     }
 
     pub fn upload_uniforms(&self, queue: &wgpu::Queue, uniforms: &Uniforms) {
@@ -2258,40 +2885,13 @@ impl Pipeline {
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.draw(0..*vcount, 0..1);
             }
-            // Phase 4-B — single batched draw covers every hatch.
-            // Vertex shader culls per-instance via the `visibility`
-            // buffer (sub-pixel LOD + frustum cull written each frame
-            // by `compute_hatch_lod`). Per-hatch viewport scissor
-            // (paper-space MSPACE) isn't ported to the batched path
-            // yet — follow-up if it shows up as a visual issue.
-            if let (Some(batch), Some(pipeline)) =
-                (&self.gpu_hatch, &self.hatch_pipeline)
-            {
-                // Skipped while navigating (interaction LOD) — the per-pixel
-                // hatch pass dominates the GPU frame on hatch-heavy drawings.
-                if !self.skip_hatch_frame {
-                    pass.set_pipeline(pipeline);
-                    pass.set_stencil_reference(stencil_ref);
-                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    pass.set_bind_group(1, &batch.bind_group, &[]);
-                    pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));
-                    pass.draw(0..batch.vertex_count, 0..1);
-                }
-            }
-
-            // Storage-free compatibility path. Draw before wires so outlines
-            // remain on top, matching the batched path.
+            // The capability-selected façade dispatches storage or texture
+            // draws before wires so outlines remain on top in either backend.
+            // Skipped while navigating because per-pixel hatch work dominates
+            // hatch-heavy drawings.
             if !self.skip_hatch_frame {
-                if let Some(pipeline) = &self.hatch_compat_pipeline {
-                    pass.set_pipeline(pipeline);
-                    pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    pass.set_stencil_reference(stencil_ref);
-                    for hatch in &self.gpu_hatches_compat {
-                        pass.set_bind_group(1, &hatch.bind_group, &[]);
-                        pass.set_vertex_buffer(0, hatch.vertex_buffer.slice(..));
-                        pass.draw(0..6, 0..1);
-                    }
-                }
+                self.hatch_gpu
+                    .draw(&mut pass, &self.uniform_bind_group, stencil_ref);
             }
         }
 
@@ -2330,8 +2930,23 @@ impl Pipeline {
             }
         }
 
+        if self.mesh_cull_count != 0 {
+            if let (Some(pipeline), Some(bind_group)) =
+                (&self.mesh_cull_pipeline, &self.mesh_cull_bind_group)
+            {
+                let mut pass =
+                    encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("mesh.cull.compute_pass"),
+                        timestamp_writes: None,
+                    });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(self.mesh_cull_count.div_ceil(64), 1, 1);
+            }
+        }
+
         // ── Pass 4: solid meshes (batched) ────────────────────────────────
-        if !self.gpu_mesh_batch.is_empty() {
+        if !self.gpu_mesh_batch.is_empty() || !self.gpu_mesh_dynamic.is_empty() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("mesh.render_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2376,25 +2991,69 @@ impl Pipeline {
                 // Depth-only prepass: every solid surface occludes hidden edges,
                 // so both the opaque and the transparent tris write depth here.
                 pass.set_pipeline(&self.mesh_depth_pipeline);
-                for c in &self.gpu_mesh_batch {
+                for (mesh_command, c) in self.active_mesh_chunks_indexed() {
+                    if !c.visible {
+                        continue;
+                    }
+                    pass.set_bind_group(
+                        1,
+                        c.material_bind_group
+                            .as_ref()
+                            .unwrap_or(&self.mesh_default_material_bind_group),
+                        &[],
+                    );
                     pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
                     if c.index_count != 0 {
                         pass.set_index_buffer(
                             c.index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
                         );
-                        pass.draw_indexed(0..c.index_count, 0, 0..1);
+                        if let Some(indirect) = &self.mesh_opaque_indirect {
+                            pass.draw_indexed_indirect(
+                                indirect,
+                                mesh_command as u64
+                                    * std::mem::size_of::<
+                                        wgpu::util::DrawIndexedIndirectArgs,
+                                    >() as u64,
+                            );
+                        } else {
+                            pass.draw_indexed(0..c.index_count, 0, 0..c.instance_count);
+                        }
                     }
                     if c.transp_index_count != 0 {
                         pass.set_index_buffer(
                             c.transp_index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
                         );
-                        pass.draw_indexed(0..c.transp_index_count, 0, 0..1);
+                        if let Some(indirect) = &self.mesh_transparent_indirect {
+                            pass.draw_indexed_indirect(
+                                indirect,
+                                mesh_command as u64
+                                    * std::mem::size_of::<
+                                        wgpu::util::DrawIndexedIndirectArgs,
+                                    >() as u64,
+                            );
+                        } else {
+                            pass.draw_indexed(
+                                0..c.transp_index_count,
+                                0,
+                                0..c.instance_count,
+                            );
+                        }
                     }
                 }
                 pass.set_pipeline(&self.mesh_wireframe_pipeline);
-                for c in &self.gpu_mesh_batch {
+                for (mesh_command, c) in self.active_mesh_chunks_indexed() {
+                    if !c.visible {
+                        continue;
+                    }
+                    pass.set_bind_group(
+                        1,
+                        c.material_bind_group
+                            .as_ref()
+                            .unwrap_or(&self.mesh_default_material_bind_group),
+                        &[],
+                    );
                     // Plain-mesh triangulation edges.
                     if c.wire_index_count != 0 {
                         pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
@@ -2402,12 +3061,36 @@ impl Pipeline {
                             c.wire_index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
                         );
-                        pass.draw_indexed(0..c.wire_index_count, 0, 0..1);
+                        if let Some(indirect) = &self.mesh_wire_indirect {
+                            pass.draw_indexed_indirect(
+                                indirect,
+                                mesh_command as u64
+                                    * std::mem::size_of::<
+                                        wgpu::util::DrawIndexedIndirectArgs,
+                                    >() as u64,
+                            );
+                        } else {
+                            pass.draw_indexed(
+                                0..c.wire_index_count,
+                                0,
+                                0..c.instance_count,
+                            );
+                        }
                     }
                     // ACIS solid B-rep feature edges (LineList, non-indexed).
                     if c.edge_vertex_count != 0 {
                         pass.set_vertex_buffer(0, c.edge_vertex_buffer.slice(..));
-                        pass.draw(0..c.edge_vertex_count, 0..1);
+                        if let Some(indirect) = &self.mesh_edge_indirect {
+                            pass.draw_indirect(
+                                indirect,
+                                mesh_command as u64
+                                    * std::mem::size_of::<
+                                        wgpu::util::DrawIndirectArgs,
+                                    >() as u64,
+                            );
+                        } else {
+                            pass.draw(0..c.edge_vertex_count, 0..c.instance_count);
+                        }
                     }
                 }
                 // DISPSILH silhouettes (whole batch, one buffer).
@@ -2418,18 +3101,52 @@ impl Pipeline {
             } else {
                 if mesh_wireframe {
                     pass.set_pipeline(&self.mesh_wireframe_pipeline);
-                    for c in &self.gpu_mesh_batch {
+                    for (mesh_command, c) in self.active_mesh_chunks_indexed() {
+                        if !c.visible {
+                            continue;
+                        }
+                        pass.set_bind_group(
+                            1,
+                            c.material_bind_group
+                                .as_ref()
+                                .unwrap_or(&self.mesh_default_material_bind_group),
+                            &[],
+                        );
                         if c.wire_index_count != 0 {
                             pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
                             pass.set_index_buffer(
                                 c.wire_index_buffer.slice(..),
                                 wgpu::IndexFormat::Uint32,
                             );
-                            pass.draw_indexed(0..c.wire_index_count, 0, 0..1);
+                            if let Some(indirect) = &self.mesh_wire_indirect {
+                                pass.draw_indexed_indirect(
+                                    indirect,
+                                    mesh_command as u64
+                                        * std::mem::size_of::<
+                                            wgpu::util::DrawIndexedIndirectArgs,
+                                        >() as u64,
+                                );
+                            } else {
+                                pass.draw_indexed(
+                                    0..c.wire_index_count,
+                                    0,
+                                    0..c.instance_count,
+                                );
+                            }
                         }
                         if c.edge_vertex_count != 0 {
                             pass.set_vertex_buffer(0, c.edge_vertex_buffer.slice(..));
-                            pass.draw(0..c.edge_vertex_count, 0..1);
+                            if let Some(indirect) = &self.mesh_edge_indirect {
+                                pass.draw_indirect(
+                                    indirect,
+                                    mesh_command as u64
+                                        * std::mem::size_of::<
+                                            wgpu::util::DrawIndirectArgs,
+                                        >() as u64,
+                                );
+                            } else {
+                                pass.draw(0..c.edge_vertex_count, 0..c.instance_count);
+                            }
                         }
                     }
                     // DISPSILH silhouettes.
@@ -2440,19 +3157,49 @@ impl Pipeline {
                 } else {
                     // Opaque fills first (they write depth).
                     pass.set_pipeline(&self.mesh_pipeline);
-                    for c in &self.gpu_mesh_batch {
+                    for (mesh_command, c) in self.active_mesh_chunks_indexed() {
+                        if !c.visible {
+                            continue;
+                        }
+                        pass.set_bind_group(
+                            1,
+                            c.material_bind_group
+                                .as_ref()
+                                .unwrap_or(&self.mesh_default_material_bind_group),
+                            &[],
+                        );
                         if c.index_count == 0 {
                             continue;
                         }
                         pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
                         pass.set_index_buffer(c.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..c.index_count, 0, 0..1);
+                        if let Some(indirect) = &self.mesh_opaque_indirect {
+                            pass.draw_indexed_indirect(
+                                indirect,
+                                mesh_command as u64
+                                    * std::mem::size_of::<
+                                        wgpu::util::DrawIndexedIndirectArgs,
+                                    >() as u64,
+                            );
+                        } else {
+                            pass.draw_indexed(0..c.index_count, 0, 0..c.instance_count);
+                        }
                     }
                     // Transparent fills last, with depth writes disabled, so they
                     // blend over the opaque geometry behind them instead of
                     // culling it via the depth buffer.
                     pass.set_pipeline(&self.mesh_transparent_pipeline);
-                    for c in &self.gpu_mesh_batch {
+                    for (mesh_command, c) in self.active_mesh_chunks_indexed() {
+                        if !c.visible {
+                            continue;
+                        }
+                        pass.set_bind_group(
+                            1,
+                            c.material_bind_group
+                                .as_ref()
+                                .unwrap_or(&self.mesh_default_material_bind_group),
+                            &[],
+                        );
                         if c.transp_index_count == 0 {
                             continue;
                         }
@@ -2461,21 +3208,80 @@ impl Pipeline {
                             c.transp_index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
                         );
-                        pass.draw_indexed(0..c.transp_index_count, 0, 0..1);
+                        if let Some(indirect) = &self.mesh_transparent_indirect {
+                            pass.draw_indexed_indirect(
+                                indirect,
+                                mesh_command as u64
+                                    * std::mem::size_of::<
+                                        wgpu::util::DrawIndexedIndirectArgs,
+                                    >() as u64,
+                            );
+                        } else {
+                            pass.draw_indexed(
+                                0..c.transp_index_count,
+                                0,
+                                0..c.instance_count,
+                            );
+                        }
                     }
                 }
-                // Selection / hover highlight: tinted copies of the picked
-                // solids, drawn last with the Always-depth highlight pipeline so
-                // the tint shows on top even when the solid is behind others.
-                if !self.gpu_mesh_highlight.is_empty() {
-                    pass.set_pipeline(&self.mesh_highlight_pipeline);
-                    for g in &self.gpu_mesh_highlight {
-                        if g.index_count == 0 {
+                // Selection / hover highlight reuses index ranges already
+                // resident in the chunk buffers; hover never uploads geometry.
+                for kind in [MeshHighlightKind::Selected, MeshHighlightKind::Hover] {
+                    if !self
+                        .mesh_highlight_draws
+                        .iter()
+                        .any(|draw| draw.kind == kind)
+                    {
+                        continue;
+                    }
+                    pass.set_pipeline(match kind {
+                        MeshHighlightKind::Selected => &self.mesh_selected_pipeline,
+                        MeshHighlightKind::Hover => &self.mesh_hover_pipeline,
+                    });
+                    for draw in self
+                        .mesh_highlight_draws
+                        .iter()
+                        .filter(|draw| draw.kind == kind)
+                    {
+                        let chunk = if draw.range.dynamic {
+                            self.gpu_mesh_dynamic.get(draw.range.chunk)
+                        } else {
+                            self.gpu_mesh_batch.get(draw.range.chunk)
+                        };
+                        let Some(chunk) = chunk else {
+                            continue;
+                        };
+                        if !chunk.visible || draw.range.index_count == 0 {
                             continue;
                         }
-                        pass.set_vertex_buffer(0, g.vertex_buffer.slice(..));
-                        pass.set_index_buffer(g.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..g.index_count, 0, 0..1);
+                        pass.set_bind_group(
+                            1,
+                            chunk
+                                .material_bind_group
+                                .as_ref()
+                                .unwrap_or(&self.mesh_default_material_bind_group),
+                            &[],
+                        );
+                        pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+                        if draw.range.transparent {
+                            pass.set_index_buffer(
+                                chunk.transp_index_buffer.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                        } else {
+                            pass.set_index_buffer(
+                                chunk.index_buffer.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                        }
+                        pass.draw_indexed(
+                            draw.range.index_start
+                                ..draw.range.index_start + draw.range.index_count,
+                            0,
+                            draw.range.instance_start
+                                ..draw.range.instance_start + draw.range.instance_count,
+                        );
                     }
                 }
                 // *WithEdges variants: overlay edge segments on top of the shaded
@@ -2483,18 +3289,52 @@ impl Pipeline {
                 // test keeps the edges visible over the fragments the fill wrote.
                 if want_solid_with_edges {
                     pass.set_pipeline(&self.mesh_edge_black_pipeline);
-                    for c in &self.gpu_mesh_batch {
+                    for (mesh_command, c) in self.active_mesh_chunks_indexed() {
+                        if !c.visible {
+                            continue;
+                        }
+                        pass.set_bind_group(
+                            1,
+                            c.material_bind_group
+                                .as_ref()
+                                .unwrap_or(&self.mesh_default_material_bind_group),
+                            &[],
+                        );
                         if c.wire_index_count != 0 {
                             pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
                             pass.set_index_buffer(
                                 c.wire_index_buffer.slice(..),
                                 wgpu::IndexFormat::Uint32,
                             );
-                            pass.draw_indexed(0..c.wire_index_count, 0, 0..1);
+                            if let Some(indirect) = &self.mesh_wire_indirect {
+                                pass.draw_indexed_indirect(
+                                    indirect,
+                                    mesh_command as u64
+                                        * std::mem::size_of::<
+                                            wgpu::util::DrawIndexedIndirectArgs,
+                                        >() as u64,
+                                );
+                            } else {
+                                pass.draw_indexed(
+                                    0..c.wire_index_count,
+                                    0,
+                                    0..c.instance_count,
+                                );
+                            }
                         }
                         if c.edge_vertex_count != 0 {
                             pass.set_vertex_buffer(0, c.edge_vertex_buffer.slice(..));
-                            pass.draw(0..c.edge_vertex_count, 0..1);
+                            if let Some(indirect) = &self.mesh_edge_indirect {
+                                pass.draw_indirect(
+                                    indirect,
+                                    mesh_command as u64
+                                        * std::mem::size_of::<
+                                            wgpu::util::DrawIndirectArgs,
+                                        >() as u64,
+                                );
+                            } else {
+                                pass.draw(0..c.edge_vertex_count, 0..c.instance_count);
+                            }
                         }
                     }
                     // DISPSILH silhouettes over the shaded fill.
@@ -2691,14 +3531,13 @@ impl Pipeline {
         }
 
         // ── Pass 5c: SDF text quads (drawn over wires) ────────────────────
-        // The highlight buffer (selected / hovered text, tinted) is drawn in
-        // the same pass right after the base text so it recolours those glyphs.
+        // Selection / rollover text is drawn later with the selected-wire xray
+        // overlay, after wipeouts, so normal text cannot hide its own tint.
         if let Some(atlas) = &self.text_atlas_gpu {
             let have_base = self.text_vbuf.is_some() && self.text_vcount > 0;
-            let have_hl = self.text_highlight_vbuf.is_some() && self.text_highlight_vcount > 0;
             let have_preview =
                 self.text_preview_vbuf.is_some() && self.text_preview_vcount > 0;
-            if have_base || have_hl || have_preview {
+            if have_base || have_preview {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("text.render_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2730,12 +3569,6 @@ impl Pipeline {
                     if self.text_vcount > 0 {
                         pass.set_vertex_buffer(0, vbuf.slice(..));
                         pass.draw(0..self.text_vcount, 0..1);
-                    }
-                }
-                if let Some(hlbuf) = &self.text_highlight_vbuf {
-                    if self.text_highlight_vcount > 0 {
-                        pass.set_vertex_buffer(0, hlbuf.slice(..));
-                        pass.draw(0..self.text_highlight_vcount, 0..1);
                     }
                 }
                 // Grip-drag / command-preview glyphs, drawn over the base text.
@@ -2786,12 +3619,14 @@ impl Pipeline {
             }
         }
 
-        // ── Pass 7: selected wire overlay pass ───────────────────────────
-        // Redraws selected wires with depth_compare=Always so they appear on
-        // top of all other geometry at full brightness.
-        if !self.gpu_selected_wires.is_empty() {
+        // ── Pass 7: selection overlay pass ───────────────────────────────
+        // Redraws selected wires and text with depth_compare=Always so both
+        // appear on top of all other geometry at full brightness.
+        let have_text_highlight =
+            self.text_highlight_vbuf.is_some() && self.text_highlight_vcount > 0;
+        if !self.gpu_selected_wires.is_empty() || have_text_highlight {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("wire_xray.render_pass"),
+                label: Some("selection_xray.render_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: msaa,
                     depth_slice: None,
@@ -2813,19 +3648,31 @@ impl Pipeline {
                 occlusion_query_set: None,
             });
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
-            pass.set_pipeline(&self.wire_xray_pipeline);
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             pass.set_stencil_reference(stencil_ref);
-            for wire in &self.gpu_selected_wires {
-                if wire.instance_count > 0 {
-                    if let Some(bg) = &wire.const_bind_group {
-                        pass.set_bind_group(1, bg.as_ref(), &[]);
+            if !self.gpu_selected_wires.is_empty() {
+                pass.set_pipeline(&self.wire_xray_pipeline);
+                for wire in &self.gpu_selected_wires {
+                    if wire.instance_count > 0 {
+                        if let Some(bg) = &wire.const_bind_group {
+                            pass.set_bind_group(1, bg.as_ref(), &[]);
+                        }
+                        pass.set_vertex_buffer(0, wire.instance_buffer.slice(..));
+                        pass.draw(
+                            0..6,
+                            wire.first_instance..wire.first_instance + wire.instance_count,
+                        );
                     }
-                    pass.set_vertex_buffer(0, wire.instance_buffer.slice(..));
-                    pass.draw(
-                        0..6,
-                        wire.first_instance..wire.first_instance + wire.instance_count,
-                    );
+                }
+            }
+            if let (Some(atlas), Some(hlbuf)) =
+                (&self.text_atlas_gpu, &self.text_highlight_vbuf)
+            {
+                if self.text_highlight_vcount > 0 {
+                    pass.set_pipeline(&self.text_highlight_pipeline);
+                    pass.set_bind_group(1, &atlas.bind_group, &[]);
+                    pass.set_vertex_buffer(0, hlbuf.slice(..));
+                    pass.draw(0..self.text_highlight_vcount, 0..1);
                 }
             }
         }
@@ -2935,70 +3782,45 @@ fn round_up_tex(n: u32) -> u32 {
     ((n.max(1) + GRID - 1) / GRID) * GRID
 }
 
-/// Project a mesh's `world_aabb` and pick a LOD slot:
-///   diagonal > 200 px → 0 (HIGH)
-///   diagonal 50–200 px → 1 (MID)
-///   diagonal < 50 px   → 2 (LOW)
-/// When the picked slot is missing from `gpu_meshes[i].lods`, walks down
-/// to the next available coarser/finer level so the mesh always renders.
-fn pick_mesh_lod(
-    mesh: &MeshLodGpu,
+fn aabb3_offscreen(
+    aabb: [f32; 6],
     view_rot: glam::Mat4,
     eye: glam::DVec3,
     clip_w: u32,
     clip_h: u32,
-) -> usize {
-    let diag_px = aabb_diagonal_pixels(mesh.world_aabb, view_rot, eye, clip_w, clip_h);
-    let target = if diag_px > 200.0 {
-        0
-    } else if diag_px > 50.0 {
-        1
-    } else {
-        2
-    };
-    // Walk down to nearest available LOD (some entities won't have all 3).
-    for level in (0..=target).rev() {
-        if mesh.lods.get(level).is_some() {
-            return level;
-        }
-    }
-    0
-}
-
-fn aabb_diagonal_pixels(
-    aabb: [f32; 4],
-    view_rot: glam::Mat4,
-    eye: glam::DVec3,
-    clip_w: u32,
-    clip_h: u32,
-) -> f32 {
-    let [x0, y0, x1, y1] = aabb;
-    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
-        return f32::INFINITY;
+) -> bool {
+    if aabb.iter().any(|value| !value.is_finite()) {
+        return false;
     }
     let w = clip_w as f32;
     let h = clip_h as f32;
-    let corners = [
-        view_rot.project_point3((glam::DVec3::new(x0 as f64, y0 as f64, 0.0) - eye).as_vec3()),
-        view_rot.project_point3((glam::DVec3::new(x1 as f64, y0 as f64, 0.0) - eye).as_vec3()),
-        view_rot.project_point3((glam::DVec3::new(x0 as f64, y1 as f64, 0.0) - eye).as_vec3()),
-        view_rot.project_point3((glam::DVec3::new(x1 as f64, y1 as f64, 0.0) - eye).as_vec3()),
-    ];
     let mut min_px = f32::INFINITY;
     let mut max_px = f32::NEG_INFINITY;
     let mut min_py = f32::INFINITY;
     let mut max_py = f32::NEG_INFINITY;
-    for c in &corners {
-        let px = (c.x + 1.0) * 0.5 * w;
-        let py = (1.0 - c.y) * 0.5 * h;
-        if px < min_px { min_px = px; }
-        if px > max_px { max_px = px; }
-        if py < min_py { min_py = py; }
-        if py > max_py { max_py = py; }
+    for x in [aabb[0], aabb[3]] {
+        for y in [aabb[1], aabb[4]] {
+            for z in [aabb[2], aabb[5]] {
+                let relative =
+                    (glam::DVec3::new(x as f64, y as f64, z as f64) - eye).as_vec3();
+                let clip = view_rot * relative.extend(1.0);
+                if !clip.is_finite() || clip.w <= f32::EPSILON {
+                    return false;
+                }
+                let ndc = clip.truncate() / clip.w;
+                let px = (ndc.x + 1.0) * 0.5 * w;
+                let py = (1.0 - ndc.y) * 0.5 * h;
+                min_px = min_px.min(px);
+                max_px = max_px.max(px);
+                min_py = min_py.min(py);
+                max_py = max_py.max(py);
+            }
+        }
     }
-    let dx = max_px - min_px;
-    let dy = max_py - min_py;
-    (dx * dx + dy * dy).sqrt()
+    const MARGIN_FRAC: f32 = 0.25;
+    let mx = w * MARGIN_FRAC;
+    let my = h * MARGIN_FRAC;
+    max_px < -mx || min_px > w + mx || max_py < -my || min_py > h + my
 }
 
 /// `true` when the world-XY AABB projects entirely outside the

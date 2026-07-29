@@ -138,7 +138,7 @@ impl PlineCommand {
 
 /// Compute the bulge for the arc from `a` to `b` that is tangent to `tangent` at `a`.
 /// Returns 0.0 if the points are coincident or the tangent is parallel to the chord.
-fn compute_bulge(a: DVec2, tangent: DVec2, b: DVec2) -> f64 {
+pub(crate) fn compute_bulge(a: DVec2, tangent: DVec2, b: DVec2) -> f64 {
     let d = b - a;
     let len_sq = d.length_squared();
     if len_sq < 1e-10 {
@@ -178,7 +178,7 @@ fn compute_bulge(a: DVec2, tangent: DVec2, b: DVec2) -> f64 {
 /// the chord direction rotated by half the arc sweep (the chord bisects the
 /// entry/exit tangents of a bulge arc). Used to restore tangent continuity
 /// after Undo pops a segment.
-fn seg_exit_tangent(a: DVec3, b: DVec3, bulge: f64) -> Option<Vec2> {
+pub(crate) fn seg_exit_tangent(a: DVec3, b: DVec3, bulge: f64) -> Option<Vec2> {
     let d = DVec2::new(b.x - a.x, b.y - a.y);
     if d.length_squared() < 1e-10 {
         return None;
@@ -189,7 +189,7 @@ fn seg_exit_tangent(a: DVec3, b: DVec3, bulge: f64) -> Option<Vec2> {
 }
 
 /// Update `tangent` after an arc segment described by `bulge` from `a` to `b`.
-fn update_tangent_after_arc(tangent: &mut Option<Vec2>, bulge: f64) {
+pub(crate) fn update_tangent_after_arc(tangent: &mut Option<Vec2>, bulge: f64) {
     let Some(t) = *tangent else {
         return;
     };
@@ -203,7 +203,7 @@ fn update_tangent_after_arc(tangent: &mut Option<Vec2>, bulge: f64) {
 
 /// Sample a circular arc defined by bulge into `n` line-segment points.
 /// Returns the sampled [x, y, z] points (uses `z` from `a`).
-fn arc_sample_points(a: Vec3, bulge: f64, b: Vec3, n: usize) -> Vec<[f32; 3]> {
+pub(crate) fn arc_sample_points(a: Vec3, bulge: f64, b: Vec3, n: usize) -> Vec<[f32; 3]> {
     let ax = a.x as f64;
     let ay = a.y as f64;
     let bx = b.x as f64;
@@ -345,12 +345,28 @@ impl CadCommand for PlineCommand {
     }
 
     fn on_enter(&mut self) -> CmdResult {
-        // The committed vertices already live in the document; finalise it.
-        self.sync_live(false, true)
+        // Every landed vertex is already published into the live document
+        // entity. Finishing must only close its history/command state; replacing
+        // the identical polyline again would advance geometry_epoch and make
+        // large drawings do another cache/GPU patch for no visual change.
+        match self.live_handle {
+            Some(handle) => CmdResult::FinalizeLiveEntity(handle),
+            None => CmdResult::Cancel,
+        }
     }
 
     fn on_escape(&mut self) -> CmdResult {
-        self.sync_live(false, true)
+        match self.live_handle {
+            Some(handle) => CmdResult::FinalizeLiveEntity(handle),
+            None => CmdResult::Cancel,
+        }
+    }
+
+    fn on_space_change(&mut self) -> CmdResult {
+        match self.live_handle {
+            Some(handle) => CmdResult::FinalizeLiveEntity(handle),
+            None => CmdResult::Cancel,
+        }
     }
 
     fn wants_text_input(&self) -> bool {
@@ -431,3 +447,75 @@ impl CadCommand for PlineCommand {
 
 // ── Autocomplete registry ─────────────────────────────────
 inventory::submit!(crate::command::CommandRegistration { names: &["PLINE"] });  // PlineCommand
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_contains_only_the_pending_segment() {
+        let mut command = PlineCommand::new();
+        command.on_point(DVec3::new(0.0, 0.0, 0.0));
+        command.on_point(DVec3::new(10.0, 0.0, 0.0));
+        command.on_point(DVec3::new(10.0, 5.0, 0.0));
+
+        let preview = command
+            .on_mouse_move(DVec3::new(15.0, 5.0, 0.0))
+            .expect("polyline with vertices should have a preview");
+
+        assert_eq!(
+            preview.points,
+            vec![[10.0, 5.0, 0.0], [15.0, 5.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn committed_vertices_update_one_live_polyline() {
+        let mut command = PlineCommand::new();
+        assert!(matches!(
+            command.on_point(DVec3::new(0.0, 0.0, 0.0)),
+            CmdResult::NeedPoint
+        ));
+
+        match command.on_point(DVec3::new(10.0, 0.0, 0.0)) {
+            CmdResult::CommitLiveEntity(EntityType::LwPolyline(polyline)) => {
+                assert_eq!(polyline.vertices.len(), 2);
+            }
+            _ => panic!("the first segment should create a live polyline"),
+        }
+
+        let handle = Handle::new(42);
+        command.set_live_handle(handle);
+        match command.on_point(DVec3::new(10.0, 5.0, 0.0)) {
+            CmdResult::UpdateLiveEntity {
+                handle: updated,
+                entity: EntityType::LwPolyline(polyline),
+                finish,
+            } => {
+                assert_eq!(updated, handle);
+                assert_eq!(polyline.vertices.len(), 3);
+                assert!(!finish);
+            }
+            _ => panic!("later segments should update the same live polyline"),
+        }
+    }
+
+    #[test]
+    fn finishing_live_polyline_does_not_publish_duplicate_update() {
+        let handle = Handle::new(42);
+
+        let mut enter = PlineCommand::new();
+        enter.live_handle = Some(handle);
+        assert!(matches!(
+            enter.on_enter(),
+            CmdResult::FinalizeLiveEntity(h) if h == handle
+        ));
+
+        let mut escape = PlineCommand::new();
+        escape.live_handle = Some(handle);
+        assert!(matches!(
+            escape.on_escape(),
+            CmdResult::FinalizeLiveEntity(h) if h == handle
+        ));
+    }
+}

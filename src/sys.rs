@@ -17,6 +17,37 @@ pub fn open_url(url: &str) {
     }
 }
 
+/// Reveal a saved drawing in the native platform's file manager.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("explorer.exe")
+        .arg("/select,")
+        .arg(path)
+        .status();
+
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .status();
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let folder = path
+            .parent()
+            .ok_or_else(|| format!("Path has no parent folder: {}", path.display()))?;
+        return open::that(folder).map_err(|e| e.to_string());
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("File manager exited with {status}")),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Web: read text from the system clipboard via the async Clipboard API.
 /// iced's own `clipboard::read` is a no-op on the web (the browser clipboard is
 /// async + permission-gated), so the editor paste paths use this instead. The
@@ -94,6 +125,20 @@ pub fn handle_path(h: &rfd::FileHandle) -> std::path::PathBuf {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn file_dialog() -> rfd::AsyncFileDialog {
     let dlg = rfd::AsyncFileDialog::new();
+    match crate::config::last_dialog_dir() {
+        Some(dir) => dlg.set_directory(dir),
+        None => dlg,
+    }
+}
+
+/// Blocking native file dialog seeded with the last-used directory.
+///
+/// Use this through `iced::window::run` when the picker needs the main
+/// window's raw handle. Portal-based desktops can otherwise reject or lose a
+/// parentless save request without ever showing a dialog (#537).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn blocking_file_dialog() -> rfd::FileDialog {
+    let dlg = rfd::FileDialog::new();
     match crate::config::last_dialog_dir() {
         Some(dir) => dlg.set_directory(dir),
         None => dlg,

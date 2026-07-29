@@ -200,7 +200,10 @@ impl OpenCADStudio {
                     }
                 }
                 self.tabs[i].scene.document.layers.remove(&src);
-                self.tabs[i].scene.bump_geometry();
+                self.tabs[i].scene.invalidate_dependency_index();
+                self.tabs[i]
+                    .scene
+                    .invalidate_layer_dependencies(std::slice::from_ref(&dst));
                 self.tabs[i].dirty = true;
                 self.refresh_layer_panel();
                 self.command_line.push_output(&format!(
@@ -491,9 +494,16 @@ impl OpenCADStudio {
                         .push_error("ISOLATEOBJECTS: select the objects to isolate first.");
                 } else {
                     let n = self.tabs[i].scene.selected.len();
-                    self.push_undo_snapshot(i, "ISOLATEOBJECTS");
+                    let before = self.tabs[i].scene.object_isolation.clone();
+                    let selected_before =
+                        self.tabs[i].scene.selected.iter().copied().collect();
                     self.tabs[i].scene.isolate_selected();
-                    self.tabs[i].dirty = true;
+                    self.push_object_visibility_history(
+                        i,
+                        "ISOLATEOBJECTS",
+                        before,
+                        selected_before,
+                    );
                     self.command_line.push_info(&format!(
                         "Isolated {n} object(s). UNISOLATEOBJECTS to restore."
                     ));
@@ -507,9 +517,17 @@ impl OpenCADStudio {
                         .push_error("HIDEOBJECTS: select the objects to hide first.");
                 } else {
                     let n = self.tabs[i].scene.selected.len();
-                    self.push_undo_snapshot(i, "HIDEOBJECTS");
+                    let before = self.tabs[i].scene.object_isolation.clone();
+                    let selected_before =
+                        self.tabs[i].scene.selected.iter().copied().collect();
                     self.tabs[i].scene.hide_selected();
-                    self.tabs[i].dirty = true;
+                    self.push_object_visibility_history(
+                        i,
+                        "HIDEOBJECTS",
+                        before,
+                        selected_before,
+                    );
+                    self.refresh_properties();
                     self.command_line
                         .push_info(&format!("Hid {n} object(s). UNISOLATEOBJECTS to restore."));
                 }
@@ -518,9 +536,16 @@ impl OpenCADStudio {
             // UNISOLATEOBJECTS — bring back everything hidden by Isolate / Hide
             "UNISOLATEOBJECTS" => {
                 if self.tabs[i].scene.is_isolation_active() {
-                    self.push_undo_snapshot(i, "UNISOLATEOBJECTS");
+                    let before = self.tabs[i].scene.object_isolation.clone();
+                    let selected_before =
+                        self.tabs[i].scene.selected.iter().copied().collect();
                     self.tabs[i].scene.end_isolation();
-                    self.tabs[i].dirty = true;
+                    self.push_object_visibility_history(
+                        i,
+                        "UNISOLATEOBJECTS",
+                        before,
+                        selected_before,
+                    );
                     self.command_line
                         .push_info("Isolation ended — all objects shown.");
                 } else {

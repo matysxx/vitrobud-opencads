@@ -212,8 +212,15 @@ impl OpenCADStudio {
                 return Some(Task::done(Message::AboutOpen));
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
             "PLUGINS" | "PLUGINMANAGER" => {
                 return Some(Task::done(Message::PluginManagerOpen));
+            }
+
+            #[cfg(target_arch = "wasm32")]
+            "PLUGINS" | "PLUGINMANAGER" => {
+                self.command_line
+                    .push_info("External plugins are available in the desktop app.");
             }
 
             "CHANGELOG" => {
@@ -412,7 +419,14 @@ impl OpenCADStudio {
                         .push_error("MVIEW: switch to a paper space layout first.");
                 } else {
                     use crate::modules::layout::mview::MviewCommand;
-                    let new_cmd = MviewCommand::new();
+                    let scene = &self.tabs[i].scene;
+                    let layout = scene.current_layout.clone();
+                    let paper_bounds = scene
+                        .printable_area_limits()
+                        .or_else(|| scene.paper_limits())
+                        .unwrap_or(((0.0, 0.0), (297.0, 210.0)));
+                    let views = scene.document.views.iter().cloned().collect();
+                    let new_cmd = MviewCommand::new(layout, paper_bounds, views);
                     self.command_line.push_info(&new_cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(new_cmd));
                 }
@@ -747,7 +761,7 @@ impl OpenCADStudio {
                         .push_info(&format!("{cmd}: no text or dimension objects."));
                     return Some(Task::none());
                 }
-                self.tabs[i].scene.selected = handles;
+                self.tabs[i].scene.replace_selection(handles);
                 return self.dispatch_view(
                     if to_front {
                         "DRAWORDER FRONT"
@@ -949,7 +963,9 @@ impl OpenCADStudio {
                         // render-side `sort_cache` rebuilds per geometry epoch.
                         // Bump it so the new draw order shows immediately
                         // instead of waiting for an unrelated geometry change.
-                        self.tabs[i].scene.bump_geometry();
+                        // Draw order changes submission order only; all
+                        // per-entity tessellation remains valid.
+                        self.tabs[i].scene.bump_geometry_no_blocks();
                         self.tabs[i].dirty = true;
                     } else {
                         self.command_line.push_info(

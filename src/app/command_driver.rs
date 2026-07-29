@@ -4,6 +4,149 @@ use acadrust::Handle;
 use iced::Task;
 
 impl OpenCADStudio {
+    /// Drop cursor-relative state that was computed in the drawing space being
+    /// left. This is also used by MVIEW, whose command object survives its
+    /// intentional paper/model round-trip while its old-space overlays cannot.
+    pub(super) fn reset_space_interaction_state(&mut self) {
+        let i = self.active_tab;
+        self.tabs[i].scene.clear_preview_wire();
+        self.tabs[i].snap_result = None;
+        self.last_point = None;
+        self.snapper.from_point = None;
+        self.snapper.clear_tracking();
+        self.otrack_active = None;
+        self.axis_lock_dir = None;
+        self.dyn_user_reshaped = false;
+        self.grip_hover = None;
+        self.grip_popup = None;
+        self.grip_pending = None;
+        self.visibility_popup = None;
+        self.hover_dwell = None;
+        self.ucs_grip_drag = None;
+        self.ucs_icon_selected = false;
+        self.ucs_icon_hover = false;
+        self.tabs[i].pan_mode = false;
+        let _ = self.on_viewport_exit();
+    }
+
+    /// Roll a hot grip back to its pre-drag image and remove every grip-owned
+    /// overlay. Shared by Escape and drawing-space transitions.
+    pub(super) fn cancel_active_grip_edit(&mut self) -> bool {
+        let i = self.active_tab;
+        let had_grip = self.tabs[i].active_grip.take().is_some()
+            || self.grip_add_provisional.is_some()
+            || self.grip_preview_handle.is_some();
+        if !had_grip {
+            return false;
+        }
+
+        // An Add-Leader arrow being placed is still provisional.
+        if let Some((handle, grip_id)) = self.grip_add_provisional.take() {
+            use crate::entities::traits::EntityTypeOps;
+            if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                entity.apply_grip_menu(
+                    grip_id,
+                    crate::scene::model::object::GripMenuAction::RemoveLeader,
+                );
+            }
+            self.tabs[i]
+                .scene
+                .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
+        }
+
+        if let Some(handle) = self.grip_preview_handle.take() {
+            if let Some(original) = self.grip_original.take() {
+                if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                    *entity = original;
+                }
+            }
+            self.tabs[i].scene.preview_hidden.remove(&handle);
+            self.tabs[i]
+                .scene
+                .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
+        } else {
+            self.grip_original = None;
+        }
+
+        self.grip_text_verts.clear();
+        self.grip_text_slide = false;
+        self.tabs[i].scene.clear_preview_wire();
+        self.tabs[i].snap_result = None;
+        self.refresh_selected_grips();
+        self.refresh_properties();
+        true
+    }
+
+    /// End an interactive command before its drawing coordinate context
+    /// changes. This is a full interaction boundary, not only an `active_cmd`
+    /// check: grip drags, suspended editor commands, snaps, tracking, dynamic
+    /// input and pointer gestures all carry coordinates from the old space.
+    pub(super) fn cancel_active_command_for_space_change(&mut self) -> Task<Message> {
+        let i = self.active_tab;
+        let mut tasks = Vec::new();
+        let mut cancellation_reported = false;
+
+        if let Some(result) = self.tabs[i]
+            .active_cmd
+            .as_mut()
+            .map(|command| command.on_space_change())
+        {
+            let (result, message_pending) = match result {
+                CmdResult::Cancel => (CmdResult::CancelForSpaceChange, false),
+                other => (other, true),
+            };
+            tasks.push(self.apply_cmd_result(result));
+
+            // `on_space_change` must be terminal. Force a plain cancellation
+            // if an external/plugin command violates that contract.
+            if self.tabs[i].active_cmd.is_some() {
+                tasks.push(self.apply_cmd_result(CmdResult::CancelForSpaceChange));
+            } else if message_pending {
+                self.command_line
+                    .push_info("Command cancelled because the active drawing space changed.");
+            }
+            cancellation_reported = true;
+        }
+
+        let grip_cancelled = self.cancel_active_grip_edit();
+        let suspended_cancelled = self.tabs[i].suspended_cmd.take().is_some();
+        let editor_cancelled = self.text_inline.is_some() || self.mtext_editor.is_some();
+        if editor_cancelled {
+            self.text_inline_cancel();
+            self.mtext_cancel();
+        }
+        if !cancellation_reported && (grip_cancelled || suspended_cancelled || editor_cancelled) {
+            self.command_line
+                .push_info("Command cancelled because the active drawing space changed.");
+        }
+
+        self.command_line.input.clear();
+        self.command_line.autocomplete_cursor = None;
+        self.command_line.close_history();
+        self.reset_space_interaction_state();
+        if tasks.is_empty() {
+            Task::none()
+        } else {
+            Task::batch(tasks)
+        }
+    }
+
+    /// Apply LIMCHECK/PLIMCHECK to a point before an interactive command
+    /// consumes it. LIMITS itself must be able to redefine a rectangle beyond
+    /// the old boundary, so it is the sole bypass.
+    pub(super) fn command_point_allowed(&mut self, i: usize, point: glam::DVec3) -> bool {
+        let checks_limits = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|command| command.name() != "LIMITS")
+            && self.tabs[i].scene.drawing_limit_check_enabled();
+        if checks_limits && !self.tabs[i].scene.point_inside_drawing_limits(point) {
+            self.command_line.push_error("Outside limits.");
+            return false;
+        }
+        true
+    }
+
     /// Drive the active command's step machine with one [`StepInput`], then
     /// apply the result. This is the single entry point every input source
     /// (command line, headless, dynamic input, plugin API, viewport) funnels
@@ -19,6 +162,11 @@ impl OpenCADStudio {
             }
         }
         let i = self.active_tab;
+        if let StepInput::Point(point) = &input {
+            if !self.command_point_allowed(i, *point) {
+                return Task::none();
+            }
+        }
         let ctrl = self.ctrl_down;
         let shift = self.shift_down;
         let result: Option<CmdResult> = {
@@ -229,6 +377,9 @@ impl OpenCADStudio {
                     None => coord,
                 },
             };
+            if !self.command_point_allowed(i, wcs) {
+                return;
+            }
             self.last_point = Some(wcs);
             self.push_ucs_to_cmd(i);
             let _ = self.feed_command(StepInput::Point(wcs));
@@ -268,6 +419,7 @@ impl OpenCADStudio {
         // command an ADDSELECTED launched, revert the template-property override
         // so CLAYER / CECOLOR / … are left unchanged (#239). No-op otherwise.
         if was_active && self.tabs[i].active_cmd.is_none() {
+            self.tabs[i].scene.set_hover_highlight(None);
             self.restore_add_selected_defaults();
         }
         task
@@ -292,6 +444,13 @@ impl OpenCADStudio {
                 let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
                 if let Some(p) = prompt {
                     self.command_line.push_info(&p);
+                }
+                if !self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .is_some_and(|c| c.entity_pick_highlights_hover())
+                {
+                    self.tabs[i].scene.set_hover_highlight(None);
                 }
                 // The command may have advanced to a step with a different
                 // dynamic-input shape (e.g. FILLET object-pick → radius entry).
@@ -327,9 +486,9 @@ impl OpenCADStudio {
                     self.update_cont_anchor(&entity);
                 }
                 let label = self.history_label_from_active_cmd(i, "ENTITY");
-                // A plain drawable added on an existing layer touches only the
-                // one new entity; a block/image/dimension/viewport add also
-                // mutates layers/objects/blocks → keep the full snapshot.
+                // Ordinary drawables, viewports and raster images use targeted
+                // entity/object deltas. Block sentinels and novel layers retain
+                // the structure snapshot fallback.
                 let delta_safe = self.delta_add_safe(i, &entity);
                 let pending = self.begin_undo(i, label, 1, delta_safe);
                 self.commit_entity(entity);
@@ -341,6 +500,266 @@ impl OpenCADStudio {
                 if let Some(pd) = pending {
                     self.commit_undo_delta(i, pd);
                 }
+            }
+            CmdResult::CommitEntities(entities) => {
+                let label = self.history_label_from_active_cmd(i, "ENTITY");
+                let delta_safe = entities
+                    .iter()
+                    .all(|entity| self.delta_add_safe(i, entity));
+                let pending = self.begin_undo(i, label, entities.len(), delta_safe);
+                for entity in entities {
+                    self.commit_entity(entity);
+                }
+                self.tabs[i].dirty = true;
+                let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
+                if let Some(p) = prompt {
+                    self.command_line.push_info(&p);
+                }
+                if let Some(pd) = pending {
+                    self.commit_undo_delta(i, pd);
+                }
+            }
+            CmdResult::MviewCreate {
+                viewport,
+                preserve_view,
+            } => {
+                let saved_view = preserve_view.then(|| {
+                    (
+                        viewport.view_target.clone(),
+                        viewport.view_direction.clone(),
+                        viewport.view_center.clone(),
+                        viewport.view_height,
+                        viewport.custom_scale,
+                        viewport.lens_length,
+                        viewport.twist_angle,
+                        viewport.status.perspective,
+                    )
+                });
+                let label = self.history_label_from_active_cmd(i, "MVIEW");
+                let pending = self.begin_undo(i, label, 1, true);
+                let handle = self.commit_entity_handle(
+                    acadrust::EntityType::Viewport(viewport),
+                );
+                if let (Some(handle), Some(saved)) = (handle, saved_view) {
+                    if let Some(acadrust::EntityType::Viewport(viewport)) =
+                        self.tabs[i].scene.document.get_entity_mut(handle)
+                    {
+                        viewport.view_target = saved.0;
+                        viewport.view_direction = saved.1;
+                        viewport.view_center = saved.2;
+                        viewport.view_height = saved.3;
+                        viewport.custom_scale = saved.4;
+                        viewport.lens_length = saved.5;
+                        viewport.twist_angle = saved.6;
+                        viewport.status.perspective = saved.7;
+                    }
+                    self.tabs[i].scene.camera_generation += 1;
+                }
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
+                if let Some(pending) = pending {
+                    self.commit_undo_delta(i, pending);
+                }
+            }
+            CmdResult::MviewCreateClipped {
+                boundary,
+                boundary_handle,
+            } => {
+                if boundary.is_none() {
+                    let scene = &self.tabs[i].scene;
+                    let valid = scene
+                        .entity_belongs_to_current_layout(boundary_handle)
+                        && scene
+                        .document
+                        .get_entity(boundary_handle)
+                        .is_some_and(|entity| {
+                            match entity {
+                                acadrust::EntityType::Circle(_) => true,
+                                acadrust::EntityType::Ellipse(ellipse) => ellipse.is_full(),
+                                acadrust::EntityType::LwPolyline(polyline) => {
+                                    polyline.is_closed
+                                }
+                                acadrust::EntityType::Polyline(polyline) => {
+                                    polyline.is_closed()
+                                }
+                                acadrust::EntityType::Polyline2D(polyline) => {
+                                    polyline.is_closed()
+                                }
+                                acadrust::EntityType::Polyline3D(polyline) => {
+                                    polyline.flags.closed
+                                }
+                                _ => false,
+                            }
+                        });
+                    if !valid {
+                        self.command_line.push_error(
+                            "MVIEW Object: select a closed paper-space circle, ellipse, or polyline.",
+                        );
+                        if let Some(prompt) =
+                            self.tabs[i].active_cmd.as_ref().map(|command| command.prompt())
+                        {
+                            self.command_line.push_info(&prompt);
+                        }
+                        return Task::none();
+                    }
+                }
+
+                let created_boundary = boundary.is_some();
+                let touched = 2;
+                let label = self.history_label_from_active_cmd(i, "MVIEW");
+                let pending = self.begin_undo(i, label, touched, true);
+                let clip_handle = match boundary {
+                    Some(mut boundary) => {
+                        // A non-rectangular viewport owns a helper boundary
+                        // entity through `clip_boundary_handle`. Keep that
+                        // helper in the document for DWG compatibility and
+                        // stencil clipping, but do not expose it as a separate
+                        // selectable polyline.
+                        boundary.common_mut().invisible = true;
+                        match self.commit_entity_handle(boundary) {
+                            Some(handle) => handle,
+                            None => {
+                                self.tabs[i].active_cmd = None;
+                                if let Some(pending) = pending {
+                                    self.commit_undo_delta(i, pending);
+                                }
+                                return Task::none();
+                            }
+                        }
+                    }
+                    None => boundary_handle,
+                };
+                let polygon = self.tabs[i]
+                    .scene
+                    .clip_boundary_polygon(clip_handle, 0.0);
+                let bounds: Option<(f64, f64, f64, f64)> =
+                    polygon.iter().fold(None, |bounds, point| {
+                        if !point[0].is_finite() || !point[1].is_finite() {
+                            return bounds;
+                        }
+                        Some(match bounds {
+                            Some((min_x, min_y, max_x, max_y)) => (
+                                min_x.min(point[0] as f64),
+                                min_y.min(point[1] as f64),
+                                max_x.max(point[0] as f64),
+                                max_y.max(point[1] as f64),
+                            ),
+                            None => (
+                                point[0] as f64,
+                                point[1] as f64,
+                                point[0] as f64,
+                                point[1] as f64,
+                            ),
+                        })
+                    });
+                let Some((min_x, min_y, max_x, max_y)) = bounds else {
+                    self.command_line
+                        .push_error("MVIEW: the clipping boundary has no usable area.");
+                    self.tabs[i].active_cmd = None;
+                    if let Some(pending) = pending {
+                        self.commit_undo_delta(i, pending);
+                    }
+                    return Task::none();
+                };
+                if max_x - min_x < 1e-6 || max_y - min_y < 1e-6 {
+                    self.command_line
+                        .push_error("MVIEW: the clipping boundary has no usable area.");
+                    self.tabs[i].active_cmd = None;
+                    if let Some(pending) = pending {
+                        self.commit_undo_delta(i, pending);
+                    }
+                    return Task::none();
+                }
+
+                let mut viewport = acadrust::entities::Viewport::new();
+                viewport.center = acadrust::types::Vector3::new(
+                    (min_x + max_x) / 2.0,
+                    (min_y + max_y) / 2.0,
+                    0.0,
+                );
+                viewport.width = max_x - min_x;
+                viewport.height = max_y - min_y;
+                viewport.id = 2;
+                viewport.clip_boundary_handle = clip_handle;
+                let viewport_handle = self.commit_entity_handle(
+                    acadrust::EntityType::Viewport(viewport),
+                );
+                if let Some(viewport_handle) = viewport_handle {
+                    if !created_boundary {
+                        let before = self.tabs[i]
+                            .scene
+                            .document
+                            .get_entity(clip_handle)
+                            .cloned()
+                            .map(std::sync::Arc::new);
+                        self.tabs[i]
+                            .scene
+                            .record_undo_before(clip_handle, before);
+                    }
+                    if let Some(boundary) =
+                        self.tabs[i].scene.document.get_entity_mut(clip_handle)
+                    {
+                        let common = boundary.common_mut();
+                        common.invisible = true;
+                        if !common.reactors.contains(&viewport_handle) {
+                            common.reactors.push(viewport_handle);
+                        }
+                    }
+                    self.tabs[i].scene.bump_entities(&[(
+                        clip_handle,
+                        crate::scene::ChangeKind::Modified,
+                    )]);
+                }
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
+                if let Some(pending) = pending {
+                    self.commit_undo_delta(i, pending);
+                }
+            }
+            CmdResult::WipeoutFromPolyline(handle) => {
+                let wipeout = {
+                    let scene = &self.tabs[i].scene;
+                    scene
+                        .entity_belongs_to_active_space(handle)
+                        .then(|| scene.document.get_entity(handle))
+                        .flatten()
+                        .and_then(
+                            crate::modules::draw::draw::wipeout::wipeout_from_polyline,
+                        )
+                };
+                if let Some(wipeout) = wipeout {
+                    return self.apply_cmd_result(CmdResult::CommitAndExit(wipeout));
+                }
+                self.command_line.push_error(
+                    "WIPEOUT Polyline: select a closed planar polyline with at least 3 vertices.",
+                );
+                if let Some(prompt) =
+                    self.tabs[i].active_cmd.as_ref().map(|command| command.prompt())
+                {
+                    self.command_line.push_info(&prompt);
+                }
+            }
+            CmdResult::MviewSwitchLayout(layout) => {
+                let task = self.on_layout_switch_preserving_command(layout);
+                if let Some(prompt) =
+                    self.tabs[i].active_cmd.as_ref().map(|command| command.prompt())
+                {
+                    self.command_line.push_info(&prompt);
+                }
+                return task;
+            }
+            CmdResult::MviewCancelToLayout(layout) => {
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
+                return self.on_layout_switch(layout);
             }
             CmdResult::TransformSelected(handles, transform) => {
                 let label = self.history_label_from_active_cmd(i, "MOVE");
@@ -842,6 +1261,16 @@ impl OpenCADStudio {
                     }
                 }
             }
+            CmdResult::FinalizeLiveEntity(handle) => {
+                // The live geometry already matches the command's committed
+                // vertices. Close the deferred history image and UI state
+                // without publishing a redundant Modified delta.
+                self.finish_live_entity_history(i, handle);
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
+            }
             CmdResult::RemoveLiveEntity(handle) => {
                 // The command backed off below a valid entity (PLINE Undo at
                 // one remaining vertex): take the live entity out of the
@@ -855,12 +1284,17 @@ impl OpenCADStudio {
                     self.command_line.push_info(&p);
                 }
             }
-            CmdResult::Cancel => {
+            cancel @ (CmdResult::Cancel | CmdResult::CancelForSpaceChange) => {
+                let space_changed = matches!(cancel, CmdResult::CancelForSpaceChange);
                 self.tabs[i].scene.clear_preview_wire();
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.restore_pre_cmd_tangent();
-                self.command_line.push_info("Command cancelled.");
+                self.command_line.push_info(if space_changed {
+                    "Command cancelled because the active drawing space changed."
+                } else {
+                    "Command cancelled."
+                });
             }
             CmdResult::Relaunch(cmd, handles) => {
                 self.tabs[i].scene.deselect_all();
@@ -913,23 +1347,29 @@ impl OpenCADStudio {
             CmdResult::MatchProperties { dest, src } => {
                 // The command stays active after each apply so more targets
                 // can keep being picked; Enter / Esc ends it (#362).
-                let props = self.tabs[i].scene.document.get_entity(src).map(|e| {
-                    let c = e.common();
-                    (
-                        c.layer.clone(),
-                        c.color,
-                        c.linetype.clone(),
-                        c.linetype_scale,
-                        c.line_weight,
-                    )
-                });
                 // Special (type-specific) properties travel like AutoCAD's
                 // Special Properties: each is captured from the source when it
                 // carries it and applied only to destinations that support it
                 // (#281). Text formatting crosses TEXT ↔ MTEXT (#361); the dim
                 // style crosses Dimension / Leader / Tolerance.
                 let src_clone = self.tabs[i].scene.document.get_entity(src).cloned();
-                let transparency = src_clone.as_ref().map(|e| e.common().transparency.clone());
+                let src_common = src_clone.as_ref().map(|e| e.common().clone());
+                let thickness = src_clone
+                    .as_ref()
+                    .and_then(crate::scene::view::dispatch::entity_thickness);
+                // This application record is the hatch background colour.
+                // Keep the outer Option to distinguish "source is not a
+                // hatch" from "source hatch has no background".
+                let hatch_background_xdata: Option<Option<Vec<acadrust::xdata::XDataValue>>> =
+                    match src_clone.as_ref() {
+                        Some(acadrust::EntityType::Hatch(h)) => Some(
+                            h.common
+                                .extended_data
+                                .get_record("HATCHBACKGROUNDCOLOR")
+                                .map(|r| r.values.clone()),
+                        ),
+                        _ => None,
+                    };
                 // Dimension-style overrides ride the ACAD record, identified
                 // by a leading DSTYLE string. Matching replicates that payload
                 // (or clears the destination when the source has none).
@@ -943,24 +1383,51 @@ impl OpenCADStudio {
                     })
                     .map(|e| crate::entities::dim_override::pairs(&e.common().extended_data));
 
-                if let Some((layer, color, linetype, lt_scale, lw)) = props {
+                if let Some(common) = src_common {
                     self.push_undo_snapshot(i, "MATCHPROP");
-                    let mut any_dim = false;
                     for h in &dest {
+                        let mut is_dim = false;
+                        let mut is_hatch = false;
                         if let Some(e) = self.tabs[i].scene.document.get_entity_mut(*h) {
-                            e.as_entity_mut().set_layer(layer.clone());
-                            crate::scene::view::dispatch::apply_color(e, color);
-                            crate::scene::view::dispatch::apply_line_weight(e, lw);
-                            e.common_mut().linetype = linetype.clone();
-                            e.common_mut().linetype_scale = lt_scale;
-                            if let Some(t) = &transparency {
-                                e.common_mut().transparency = t.clone();
+                            e.as_entity_mut().set_layer(common.layer.clone());
+                            crate::scene::view::dispatch::apply_color(e, common.color);
+                            crate::scene::view::dispatch::apply_line_weight(e, common.line_weight);
+                            {
+                                let dst_common = e.common_mut();
+                                dst_common.linetype = common.linetype.clone();
+                                dst_common.linetype_handle = common.linetype_handle;
+                                dst_common.linetype_scale = common.linetype_scale;
+                                dst_common.transparency = common.transparency.clone();
+                                dst_common.color_book_handle = common.color_book_handle;
+                                dst_common.full_visual_style_handle =
+                                    common.full_visual_style_handle;
+                                dst_common.face_visual_style_handle =
+                                    common.face_visual_style_handle;
+                                dst_common.edge_visual_style_handle =
+                                    common.edge_visual_style_handle;
+                                dst_common.material_flags = common.material_flags;
+                                dst_common.material_handle = common.material_handle;
+                                dst_common.shadow_flags = common.shadow_flags;
+                                dst_common.plotstyle_flags = common.plotstyle_flags;
+                                dst_common.plotstyle_handle = common.plotstyle_handle;
+                            }
+                            if let Some(value) = thickness {
+                                crate::scene::view::dispatch::set_entity_thickness(e, value);
                             }
                             if let Some(se) = &src_clone {
-                                if matches!(e, acadrust::EntityType::Dimension(_)) {
-                                    any_dim = true;
-                                }
+                                is_dim = matches!(e, acadrust::EntityType::Dimension(_));
+                                is_hatch = matches!(e, acadrust::EntityType::Hatch(_));
                                 match_special_props(se, e);
+                            }
+                        }
+                        if is_hatch {
+                            if let Some(values) = &hatch_background_xdata {
+                                crate::scene::view::dispatch::set_entity_xdata(
+                                    &mut self.tabs[i].scene.document,
+                                    *h,
+                                    "HATCHBACKGROUNDCOLOR",
+                                    values.clone(),
+                                );
                             }
                         }
                         // Dim-style overrides follow the style for dimension /
@@ -997,7 +1464,7 @@ impl OpenCADStudio {
                         }
                         // A restyled dimension renders from its baked *D block —
                         // drop the stale block so the new style shows (#398).
-                        if any_dim {
+                        if is_dim {
                             self.tabs[i].scene.invalidate_dim_block_recorded(*h);
                         }
                         // Hatch fills render from a prebuilt model (#415).
@@ -1005,9 +1472,14 @@ impl OpenCADStudio {
                     }
                     self.tabs[i].dirty = true;
                     // Color / linetype / lineweight are baked into the cached
-                    // wires at tessellation time; bump the geometry epoch so the
-                    // matched objects repaint instead of holding their old look.
-                    self.tabs[i].scene.bump_geometry();
+                    // wires at tessellation time; re-tessellate only the matched
+                    // objects instead of rebuilding a large drawing.
+                    let changes: Vec<_> = dest
+                        .iter()
+                        .copied()
+                        .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                        .collect();
+                    self.tabs[i].scene.bump_entities(&changes);
                     self.refresh_properties();
                     self.command_line
                         .push_info(&format!("Properties matched to {} object(s).", dest.len()));
@@ -1377,9 +1849,10 @@ impl OpenCADStudio {
                         if changed {
                             self.tabs[i].dirty = true;
                             // Repaint immediately (wide-band fill included).
-                            self.tabs[i].scene.mark_entity_dirty(handle);
                             self.tabs[i].scene.refresh_fill_model(handle);
-                            self.tabs[i].scene.bump_geometry_no_blocks();
+                            self.tabs[i]
+                                .scene
+                                .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
                             self.command_line.push_output("PEDIT: applied.");
                             self.refresh_properties();
                         } else {
@@ -1750,6 +2223,22 @@ impl OpenCADStudio {
                                     stretched |= mv(&mut d.feature_location);
                                     stretched |= mv(&mut d.leader_endpoint);
                                 }
+                                Dimension::Arc(d) => {
+                                    stretched |= mv(&mut d.definition_point);
+                                    stretched |= mv(&mut d.first_extension_point);
+                                    stretched |= mv(&mut d.second_extension_point);
+                                    stretched |= mv(&mut d.center_point);
+                                    if d.has_leader {
+                                        stretched |= mv(&mut d.first_leader_point);
+                                        stretched |= mv(&mut d.second_leader_point);
+                                    }
+                                }
+                                Dimension::LargeRadial(d) => {
+                                    stretched |= mv(&mut d.definition_point);
+                                    stretched |= mv(&mut d.chord_point);
+                                    stretched |= mv(&mut d.override_center);
+                                    stretched |= mv(&mut d.jog_point);
+                                }
                             }
                             // Pinned text follows too; the zero sentinel means
                             // "auto placement" and must not be captured by a
@@ -1793,15 +2282,11 @@ impl OpenCADStudio {
                 // moved entities so the viewport reflects the stretch right away
                 // instead of only on the next unrelated redraw. See #95.
                 if count > 0 {
-                    if structural {
-                        self.tabs[i].scene.bump_geometry();
-                    } else {
-                        let changes: Vec<_> = changed_handles
-                            .iter()
-                            .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
-                            .collect();
-                        self.tabs[i].scene.bump_entities(&changes);
-                    }
+                    let changes: Vec<_> = changed_handles
+                        .iter()
+                        .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
+                        .collect();
+                    self.tabs[i].scene.bump_entities(&changes);
                 }
                 self.tabs[i].dirty = true;
                 self.tabs[i].active_cmd = None;
@@ -1880,6 +2365,8 @@ impl OpenCADStudio {
                                             verts_low,
                                             normals,
                                             indices,
+                                            triangle_material_handles: Vec::new(),
+                                            triangle_colors: Vec::new(),
                                             color,
                                             selected: false,
                                         },
@@ -1970,6 +2457,8 @@ impl OpenCADStudio {
                                 verts_low,
                                 normals,
                                 indices,
+                                triangle_material_handles: Vec::new(),
+                                triangle_colors: Vec::new(),
                                 color,
                                 selected: false,
                             }),
@@ -2062,6 +2551,8 @@ impl OpenCADStudio {
                                         verts_low,
                                         normals,
                                         indices,
+                                        triangle_material_handles: Vec::new(),
+                                        triangle_colors: Vec::new(),
                                         color,
                                         selected: false,
                                     }),
@@ -2081,6 +2572,8 @@ impl OpenCADStudio {
                                         verts_low,
                                         normals,
                                         indices,
+                                        triangle_material_handles: Vec::new(),
+                                        triangle_colors: Vec::new(),
                                         color,
                                         selected: false,
                                     }),
@@ -2115,6 +2608,8 @@ impl OpenCADStudio {
                                         verts_low,
                                         normals,
                                         indices,
+                                        triangle_material_handles: Vec::new(),
+                                        triangle_colors: Vec::new(),
                                         color,
                                         selected: false,
                                     }),
@@ -2134,6 +2629,8 @@ impl OpenCADStudio {
                                         verts_low,
                                         normals,
                                         indices,
+                                        triangle_material_handles: Vec::new(),
+                                        triangle_colors: Vec::new(),
                                         color,
                                         selected: false,
                                     }),
@@ -2231,6 +2728,8 @@ impl OpenCADStudio {
                             verts_low,
                             normals,
                             indices,
+                            triangle_material_handles: Vec::new(),
+                            triangle_colors: Vec::new(),
                             color,
                             selected: false,
                         }),
@@ -2614,9 +3113,15 @@ impl OpenCADStudio {
                 }
             }
         }
-        // The wires were tessellated before the filters existed; force a rebuild
-        // so the clip is applied to the freshly-pasted, now-filtered inserts.
-        self.tabs[i].scene.bump_geometry();
+        // The wires were tessellated before the filters existed; refresh only
+        // the freshly-pasted entities whose clip object graph was attached.
+        let changes: Vec<_> = by_index
+            .iter()
+            .copied()
+            .filter(|handle| !handle.is_null())
+            .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+            .collect();
+        self.tabs[i].scene.bump_entities(&changes);
     }
 
     /// Recreate the captured xdictionary subtrees in this document (fresh
@@ -2783,9 +3288,11 @@ fn apply_dimspace(scene: &mut crate::scene::Scene, encoded: &str) {
     };
 
     let effective_spacing = if spacing <= 0.0 { 10.0 } else { spacing };
+    let mut changes = Vec::new();
     for (idx, &hv) in other_vals.iter().enumerate() {
         let h = acadrust::Handle::from(hv);
         let target = base_coord + effective_spacing * (idx + 1) as f64;
+        let mut changed = false;
         if let Some(acadrust::EntityType::Dimension(dim)) = scene.document.get_entity_mut(h) {
             // Slide this dim's definition point along perp so its perpendicular
             // coordinate equals `target`; update both the struct field (render)
@@ -2800,19 +3307,26 @@ fn apply_dimspace(scene: &mut crate::scene::Scene, encoded: &str) {
                 Dimension::Linear(d) => {
                     slide(&mut d.definition_point);
                     d.base.definition_point = d.definition_point;
+                    changed = true;
                 }
                 Dimension::Aligned(d) => {
                     slide(&mut d.definition_point);
                     d.base.definition_point = d.definition_point;
+                    changed = true;
                 }
                 _ => {}
             }
         }
-        // The dimension line moved, so its baked *D block is stale — drop it so
-        // the next save re-bakes it (no-op for non-dimensions). (#181)
-        scene.invalidate_dim_block_recorded(h);
+        if changed {
+            // The dimension line moved, so its baked *D block is stale — drop it
+            // so the next save re-bakes it. (#181)
+            scene.invalidate_dim_block_recorded(h);
+            changes.push((h, crate::scene::ChangeKind::Modified));
+        }
     }
-    scene.bump_geometry();
+    if !changes.is_empty() {
+        scene.bump_entities(&changes);
+    }
 }
 
 // ── MLEADERALIGN helper ───────────────────────────────────────────────────────
@@ -2913,23 +3427,62 @@ fn match_special_props(src: &acadrust::EntityType, dst: &mut acadrust::EntityTyp
 
     // Text-ish source formatting.
     let text_fmt = match src {
-        E::Text(t) => Some((t.style.clone(), t.height, t.width_factor, t.oblique_angle)),
-        E::MText(m) => Some((m.style.clone(), m.height, 1.0, 0.0)),
+        E::Text(t) => Some((
+            t.style.clone(),
+            t.height,
+            Some(t.width_factor),
+            Some(t.oblique_angle),
+        )),
+        E::MText(m) => Some((m.style.clone(), m.height, None, None)),
+        E::AttributeDefinition(a) => Some((
+            a.text_style.clone(),
+            a.height,
+            Some(a.width_factor),
+            Some(a.oblique_angle),
+        )),
+        E::AttributeEntity(a) => Some((
+            a.text_style.clone(),
+            a.height,
+            Some(a.width_factor),
+            Some(a.oblique_angle),
+        )),
         _ => None,
     };
     if let Some((style, height, wf, ob)) = text_fmt {
         match dst {
             E::Text(t) => {
-                t.style = style;
+                t.style = style.clone();
                 t.height = height;
-                if matches!(src, E::Text(_)) {
-                    t.width_factor = wf;
-                    t.oblique_angle = ob;
+                if let Some(value) = wf {
+                    t.width_factor = value;
+                }
+                if let Some(value) = ob {
+                    t.oblique_angle = value;
                 }
             }
             E::MText(m) => {
-                m.style = style;
+                m.style = style.clone();
                 m.height = height;
+            }
+            E::AttributeDefinition(a) => {
+                a.text_style = style.clone();
+                a.height = height;
+                if let Some(value) = wf {
+                    a.width_factor = value;
+                }
+                if let Some(value) = ob {
+                    a.oblique_angle = value;
+                }
+            }
+            E::AttributeEntity(a) => {
+                a.text_style = style;
+                a.height = height;
+                if let Some(value) = wf {
+                    a.width_factor = value;
+                }
+                if let Some(value) = ob {
+                    a.oblique_angle = value;
+                }
             }
             _ => {}
         }
@@ -2968,16 +3521,81 @@ fn match_special_props(src: &acadrust::EntityType, dst: &mut acadrust::EntityTyp
         dh.pattern_angle = sh.pattern_angle;
         dh.pattern_scale = sh.pattern_scale;
         dh.is_solid = sh.is_solid;
+        dh.is_double = sh.is_double;
+        dh.style = sh.style;
         dh.gradient_color = sh.gradient_color.clone();
     }
 
-    // Polyline display style: width + linetype generation.
-    if let (E::LwPolyline(sp), E::LwPolyline(dp)) = (src, dst as &mut E) {
-        dp.constant_width = sp.constant_width;
-        dp.plinegen = sp.plinegen;
-        for v in &mut dp.vertices {
-            v.start_width = sp.constant_width;
-            v.end_width = sp.constant_width;
+    // Polyline display style crosses lightweight and legacy 2D polylines.
+    // Per-vertex/tapered widths are resampled over the destination vertices;
+    // they must not be flattened into the source's constant-width field.
+    if let Some(style) = PolylineMatchStyle::from_entity(src) {
+        style.apply_to(dst);
+    }
+
+    if let (E::Leader(sl), E::Leader(dl)) = (src, dst as &mut E) {
+        dl.arrow_enabled = sl.arrow_enabled;
+        dl.path_type = sl.path_type;
+        dl.hookline_direction = sl.hookline_direction;
+        dl.hookline_enabled = sl.hookline_enabled;
+        dl.override_color = sl.override_color;
+        dl.dimension_gap = sl.dimension_gap;
+        dl.arrowhead_type = sl.arrowhead_type;
+        dl.arrow_size = sl.arrow_size;
+        dl.byblock_color = sl.byblock_color;
+    }
+    if let (E::Tolerance(st), E::Tolerance(dt)) = (src, dst as &mut E) {
+        dt.dimension_style_handle = st.dimension_style_handle;
+        dt.text_height = st.text_height;
+        dt.dimension_gap = st.dimension_gap;
+    }
+
+    // Paper-space geometry and view position stay; viewport display/plot
+    // styling and effective scale follow the source.
+    if let (E::Viewport(sv), E::Viewport(dv)) = (src, dst as &mut E) {
+        let scale = crate::scene::vp_effective_scale(sv.custom_scale, sv.view_height, sv.height);
+        dv.custom_scale = scale;
+        if scale.abs() > 1e-9 {
+            dv.view_height = dv.height / scale;
+        }
+        dv.status.locked = sv.status.locked;
+        dv.status.hide_plot = sv.status.hide_plot;
+        dv.render_mode = sv.render_mode;
+        dv.style_sheet = sv.style_sheet.clone();
+        dv.shade_plot_mode = sv.shade_plot_mode;
+        dv.background_handle = sv.background_handle;
+        dv.shade_plot_handle = sv.shade_plot_handle;
+        dv.visual_style_handle = sv.visual_style_handle;
+        dv.default_lighting = sv.default_lighting;
+        dv.default_lighting_type = sv.default_lighting_type;
+        dv.brightness = sv.brightness;
+        dv.contrast = sv.contrast;
+        dv.ambient_color = sv.ambient_color;
+    }
+
+    if let (E::Table(st), E::Table(dt)) = (src, dst as &mut E) {
+        dt.table_style_handle = st.table_style_handle;
+        dt.base_style = st.base_style.clone();
+        dt.override_flag = st.override_flag;
+        dt.override_border_color = st.override_border_color;
+        dt.override_border_line_weight = st.override_border_line_weight;
+        dt.override_border_visibility = st.override_border_visibility;
+        dt.legacy_style_override = st.legacy_style_override.clone();
+        dt.legacy_border_colors = st.legacy_border_colors.clone();
+        dt.legacy_border_line_weights = st.legacy_border_line_weights.clone();
+        dt.legacy_border_visibility = st.legacy_border_visibility.clone();
+    }
+
+    if let (E::MLine(sm), E::MLine(dm)) = (src, dst as &mut E) {
+        dm.style_handle = sm.style_handle;
+        dm.style_name = sm.style_name.clone();
+        dm.style_element_count = sm.style_element_count;
+        dm.justification = sm.justification;
+        dm.scale_factor = sm.scale_factor;
+        // Stored segment offsets bake the old style into each vertex. Empty
+        // data deliberately selects the renderer's style-derived fallback.
+        for vertex in &mut dm.vertices {
+            vertex.segments.clear();
         }
     }
 
@@ -2998,7 +3616,228 @@ fn match_special_props(src: &acadrust::EntityType, dst: &mut acadrust::EntityTyp
         dm.text_color = sm.text_color;
         dm.text_frame = sm.text_frame;
         dm.text_height = sm.text_height;
+        dm.text_left_attachment = sm.text_left_attachment;
+        dm.text_right_attachment = sm.text_right_attachment;
+        dm.text_top_attachment = sm.text_top_attachment;
+        dm.text_bottom_attachment = sm.text_bottom_attachment;
+        dm.text_attachment_direction = sm.text_attachment_direction;
+        dm.text_attachment_point = sm.text_attachment_point;
+        dm.text_alignment = sm.text_alignment;
+        dm.text_angle_type = sm.text_angle_type;
+        dm.text_direction_negative = sm.text_direction_negative;
+        dm.text_align_in_ipe = sm.text_align_in_ipe;
+        dm.block_content_color = sm.block_content_color;
+        dm.block_connection_type = sm.block_connection_type;
+        dm.block_scale = sm.block_scale;
         dm.scale_factor = sm.scale_factor;
         dm.property_override_flags = sm.property_override_flags;
+        dm.enable_annotation_scale = sm.enable_annotation_scale;
+        dm.extend_leader_to_text = sm.extend_leader_to_text;
+        dm.arrowhead_overrides = sm.arrowhead_overrides.clone();
+
+        let sc = &sm.context;
+        let dc = &mut dm.context;
+        dc.scale_factor = sc.scale_factor;
+        dc.text_height = sc.text_height;
+        dc.text_width = sc.text_width;
+        dc.text_boundary_height = sc.text_boundary_height;
+        dc.line_spacing_factor = sc.line_spacing_factor;
+        dc.line_spacing_style = sc.line_spacing_style;
+        dc.text_color = sc.text_color;
+        dc.text_attachment_point = sc.text_attachment_point;
+        dc.text_flow_direction = sc.text_flow_direction;
+        dc.text_alignment = sc.text_alignment;
+        dc.text_left_attachment = sc.text_left_attachment;
+        dc.text_right_attachment = sc.text_right_attachment;
+        dc.text_top_attachment = sc.text_top_attachment;
+        dc.text_bottom_attachment = sc.text_bottom_attachment;
+        dc.text_height_automatic = sc.text_height_automatic;
+        dc.word_break = sc.word_break;
+        dc.text_style_handle = sc.text_style_handle;
+        dc.block_content_scale = sc.block_content_scale;
+        dc.block_content_color = sc.block_content_color;
+        dc.block_connection_type = sc.block_connection_type;
+        dc.column_type = sc.column_type;
+        dc.column_width = sc.column_width;
+        dc.column_gutter = sc.column_gutter;
+        dc.column_flow_reversed = sc.column_flow_reversed;
+        dc.column_sizes = sc.column_sizes.clone();
+        dc.background_fill_enabled = sc.background_fill_enabled;
+        dc.background_mask_fill_on = sc.background_mask_fill_on;
+        dc.background_fill_color = sc.background_fill_color;
+        dc.background_scale_factor = sc.background_scale_factor;
+        dc.background_transparency = sc.background_transparency;
+        dc.arrowhead_size = sc.arrowhead_size;
+        dc.landing_gap = sc.landing_gap;
+        dc.scale_handle = sc.scale_handle;
     }
+
+    // External-reference identity, placement and clip geometry stay. Only
+    // display controls/appearance are matched.
+    if let (E::RasterImage(si), E::RasterImage(di)) = (src, dst as &mut E) {
+        di.flags = si.flags;
+        di.clipping_enabled = si.clipping_enabled;
+        di.brightness = si.brightness;
+        di.contrast = si.contrast;
+        di.fade = si.fade;
+        di.clip_boundary.clip_mode = si.clip_boundary.clip_mode;
+    }
+    if let (E::Wipeout(sw), E::Wipeout(dw)) = (src, dst as &mut E) {
+        dw.flags = sw.flags;
+        dw.clipping_enabled = sw.clipping_enabled;
+        dw.brightness = sw.brightness;
+        dw.contrast = sw.contrast;
+        dw.fade = sw.fade;
+        dw.clip_mode = sw.clip_mode;
+    }
+    if let (E::Underlay(su), E::Underlay(du)) = (src, dst as &mut E) {
+        du.flags = su.flags;
+        du.contrast = su.contrast;
+        du.fade = su.fade;
+        du.clip_inverted = su.clip_inverted;
+    }
+}
+
+struct PolylineMatchStyle {
+    plinegen: bool,
+    widths: Vec<(f64, f64)>,
+}
+
+impl PolylineMatchStyle {
+    fn from_entity(entity: &acadrust::EntityType) -> Option<Self> {
+        use acadrust::EntityType as E;
+
+        match entity {
+            E::LwPolyline(poly) => {
+                let widths = if poly.vertices.is_empty() {
+                    vec![(poly.constant_width, poly.constant_width)]
+                } else {
+                    poly.vertices
+                        .iter()
+                        .map(|v| {
+                            (
+                                width_or_default(v.start_width, poly.constant_width),
+                                width_or_default(v.end_width, poly.constant_width),
+                            )
+                        })
+                        .collect()
+                };
+                Some(Self {
+                    plinegen: poly.plinegen,
+                    widths,
+                })
+            }
+            E::Polyline2D(poly) => {
+                let widths = if poly.vertices.is_empty() {
+                    vec![(poly.start_width, poly.end_width)]
+                } else {
+                    poly.vertices
+                        .iter()
+                        .map(|v| {
+                            (
+                                width_or_default(v.start_width, poly.start_width),
+                                width_or_default(v.end_width, poly.end_width),
+                            )
+                        })
+                        .collect()
+                };
+                Some(Self {
+                    plinegen: poly.flags.bits()
+                        & acadrust::entities::PolylineFlags::LINETYPE_CONTINUOUS.bits()
+                        != 0,
+                    widths,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn apply_to(&self, entity: &mut acadrust::EntityType) {
+        use acadrust::EntityType as E;
+
+        match entity {
+            E::LwPolyline(poly) => {
+                poly.plinegen = self.plinegen;
+                let sampled = resample_widths(&self.widths, poly.vertices.len());
+                let first = sampled.first().copied().unwrap_or((0.0, 0.0));
+                let can_use_constant = widths_are_same(&sampled) && nearly_equal(first.0, first.1);
+                poly.constant_width = if can_use_constant { first.0 } else { 0.0 };
+                for (vertex, (start, end)) in poly.vertices.iter_mut().zip(sampled) {
+                    if can_use_constant {
+                        vertex.start_width = 0.0;
+                        vertex.end_width = 0.0;
+                    } else {
+                        vertex.start_width = start;
+                        vertex.end_width = end;
+                    }
+                }
+            }
+            E::Polyline2D(poly) => {
+                let mut bits = poly.flags.bits();
+                let flag = acadrust::entities::PolylineFlags::LINETYPE_CONTINUOUS.bits();
+                if self.plinegen {
+                    bits |= flag;
+                } else {
+                    bits &= !flag;
+                }
+                poly.flags = acadrust::entities::PolylineFlags::from_bits(bits);
+                let sampled = resample_widths(&self.widths, poly.vertices.len());
+                let first = sampled.first().copied().unwrap_or((0.0, 0.0));
+                let can_use_defaults = widths_are_same(&sampled);
+                if can_use_defaults {
+                    poly.start_width = first.0;
+                    poly.end_width = first.1;
+                } else {
+                    poly.start_width = 0.0;
+                    poly.end_width = 0.0;
+                }
+                for (vertex, (start, end)) in poly.vertices.iter_mut().zip(sampled) {
+                    if can_use_defaults {
+                        vertex.start_width = 0.0;
+                        vertex.end_width = 0.0;
+                    } else {
+                        vertex.start_width = start;
+                        vertex.end_width = end;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn width_or_default(value: f64, default: f64) -> f64 {
+    if value.abs() <= 1e-12 {
+        default
+    } else {
+        value
+    }
+}
+
+fn nearly_equal(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9
+}
+
+fn widths_are_same(widths: &[(f64, f64)]) -> bool {
+    let Some(first) = widths.first() else {
+        return true;
+    };
+    widths
+        .iter()
+        .all(|value| nearly_equal(value.0, first.0) && nearly_equal(value.1, first.1))
+}
+
+fn resample_widths(source: &[(f64, f64)], count: usize) -> Vec<(f64, f64)> {
+    if count == 0 || source.is_empty() {
+        return Vec::new();
+    }
+    if count == 1 || source.len() == 1 {
+        return vec![source[0]; count];
+    }
+    (0..count)
+        .map(|index| {
+            let source_index = index.saturating_mul(source.len() - 1) / count.saturating_sub(1);
+            source[source_index]
+        })
+        .collect()
 }

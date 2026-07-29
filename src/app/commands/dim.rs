@@ -169,7 +169,11 @@ impl OpenCADStudio {
                     }
                 }
                 self.tabs[i].dirty = true;
-                self.tabs[i].scene.bump_geometry();
+                let changes: Vec<_> = handles
+                    .into_iter()
+                    .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                self.tabs[i].scene.bump_entities(&changes);
                 self.command_line
                     .push_output(&format!("JUSTIFYTEXT: updated {n} text object(s)."));
             }
@@ -253,7 +257,11 @@ impl OpenCADStudio {
                     }
                 }
                 self.tabs[i].dirty = true;
-                self.tabs[i].scene.bump_geometry();
+                let changes: Vec<_> = handles
+                    .into_iter()
+                    .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                self.tabs[i].scene.bump_entities(&changes);
                 self.command_line
                     .push_output(&format!("TCASE: updated {n} text object(s)."));
             }
@@ -326,7 +334,9 @@ impl OpenCADStudio {
                     n += 1;
                 }
                 // Draw the text in front of its newly-added masks.
-                self.tabs[i].scene.selected = handles.iter().cloned().collect();
+                self.tabs[i]
+                    .scene
+                    .replace_selection(handles.iter().cloned().collect());
                 self.tabs[i].dirty = true;
                 self.command_line
                     .push_output(&format!("TEXTMASK: masked {n} text object(s)."));
@@ -397,7 +407,11 @@ impl OpenCADStudio {
                     }
                 }
                 self.tabs[i].dirty = true;
-                self.tabs[i].scene.bump_geometry();
+                let changes: Vec<_> = handles
+                    .into_iter()
+                    .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                self.tabs[i].scene.bump_entities(&changes);
                 self.command_line.push_output(&format!(
                     "TEXTFIT: fitted {n} text object(s) to width {target}."
                 ));
@@ -459,7 +473,11 @@ impl OpenCADStudio {
                     }
                 }
                 self.tabs[i].dirty = true;
-                self.tabs[i].scene.bump_geometry();
+                let changes: Vec<_> = texts
+                    .iter()
+                    .map(|(handle, _, _)| (*handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                self.tabs[i].scene.bump_entities(&changes);
                 self.command_line.push_output(&format!(
                     "TCOUNT: numbered {} text object(s) from {start}.",
                     texts.len()
@@ -692,9 +710,9 @@ impl OpenCADStudio {
                 self.command_line.push_output("Zoom Out");
             }
 
-            // ZOOM ALL — fit all entities (same as EXTENTS for now)
+            // ZOOM ALL — fit the configured drawing limits.
             "ZOOM ALL" | "ZOOM A" | "ZA" => {
-                self.tabs[i].scene.fit_all();
+                self.tabs[i].scene.fit_all_with_limits();
                 self.command_line.push_output("Zoom All");
             }
 

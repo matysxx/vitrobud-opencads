@@ -298,7 +298,8 @@ impl ImageModel {
     /// the frame is degenerate or nothing in the blob decodes, so the caller
     /// falls back to the frame placeholder.
     pub fn from_ole2frame(ole: &acadrust::entities::Ole2Frame) -> Option<Self> {
-        let (pixels, width, height) = super::ole_pres::decode(&ole.binary_data)?;
+        let payload = ole.encoded_payload();
+        let (pixels, width, height) = super::ole_pres::decode(&payload)?;
 
         // Frame rectangle in WCS. `upper_left`/`lower_right` name the diagonal;
         // normalise to left/right/top/bottom so the bitmap sits upright.
@@ -433,10 +434,7 @@ fn decode_reference(path: &str) -> Option<DecodedImage> {
 /// synchronous fetch and would hit CORS on a cross-origin image anyway.
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_remote(url: &str) -> Option<Vec<u8>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(8)))
-        .build()
-        .into();
+    let agent = crate::network::agent(std::time::Duration::from_secs(8));
     let mut resp = agent
         .get(url)
         .header(

@@ -43,6 +43,17 @@ where
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn native_paths_match(left: &std::path::Path, right: &std::path::Path) -> bool {
+    match (
+        std::fs::canonicalize(left),
+        std::fs::canonicalize(right),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 impl OpenCADStudio {
     /// Before a save, give every cached truck solid that still has no ACIS
     /// geometry (EXTRUDE/REVOLVE/SWEEP/LOFT/boolean results) an exact modeler
@@ -107,6 +118,7 @@ impl OpenCADStudio {
             backup_on_save: self.backup_on_save,
             file_assoc_enabled: self.file_assoc_enabled,
             savetime_min: self.savetime_min,
+            default_save_format: self.default_save_format.clone(),
             pick_add: self.pick_add,
             pick_drag_rect: self.pick_drag_rect,
             bg_color: self.default_bg_color.map(f4_to_u3),
@@ -134,6 +146,8 @@ impl OpenCADStudio {
         self.backup_on_save = s.backup_on_save;
         self.file_assoc_enabled = s.file_assoc_enabled;
         self.savetime_min = s.savetime_min;
+        self.default_save_format =
+            crate::io::canonical_save_format(&s.default_save_format).to_string();
         self.pick_add = s.pick_add;
         self.pick_drag_rect = s.pick_drag_rect;
         self.default_bg_color = s.bg_color.map(u3_to_f4);
@@ -277,8 +291,29 @@ impl OpenCADStudio {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(in crate::app) fn fetch_releases_task(&self, _repo: String) -> Task<Message> {
-        Task::none()
+    pub(in crate::app) fn fetch_releases_task(&self, repo: String) -> Task<Message> {
+        Task::done(Message::PluginReleasesFetched(
+            repo,
+            Err("External plugins are available in the desktop app.".to_string()),
+        ))
+    }
+
+    /// Background task: fetch a repository README from its default branch.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) fn fetch_plugin_readme_task(&self, repo: String) -> Task<Message> {
+        let label = repo.clone();
+        Task::perform(
+            async move { crate::plugin::marketplace::fetch_readme(&repo) },
+            move |result| Message::PluginReadmeFetched(label, result),
+        )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(in crate::app) fn fetch_plugin_readme_task(&self, repo: String) -> Task<Message> {
+        Task::done(Message::PluginReadmeFetched(
+            repo,
+            Err("Plugin details are available in the desktop app.".to_string()),
+        ))
     }
 
     /// Background task: download and install the `tag` release of `owner/repo`.
@@ -291,7 +326,7 @@ impl OpenCADStudio {
                     .into_iter()
                     .find(|r| r.tag == tag)
                     .ok_or_else(|| format!("release {tag} not found"))?;
-                crate::plugin::marketplace::install(&rel)
+                crate::plugin::marketplace::install(&rel, &repo)
             },
             Message::PluginInstalled,
         )
@@ -299,13 +334,16 @@ impl OpenCADStudio {
 
     #[cfg(target_arch = "wasm32")]
     pub(in crate::app) fn install_task(&self, _repo: String, _tag: String) -> Task<Message> {
-        Task::none()
+        Task::done(Message::PluginInstalled(Err(
+            "External plugins are available in the desktop app.".to_string(),
+        )))
     }
 
     /// Gather the full persisted config (all sections) from live app state.
     pub(in crate::app) fn current_config(&self) -> crate::app::config::AppConfig {
         crate::app::config::AppConfig {
             settings: self.current_settings(),
+            theme: self.ui_theme.clone(),
             recent: crate::app::config::RecentConfig {
                 files: self
                     .recent_files
@@ -328,6 +366,9 @@ impl OpenCADStudio {
     /// Distribute a loaded config into live app state (called once at startup).
     pub(in crate::app) fn apply_config(&mut self, cfg: crate::app::config::AppConfig) {
         self.apply_settings(&cfg.settings);
+        self.ui_theme = cfg.theme.clone();
+        self.active_theme = self.ui_theme.to_iced();
+        self.theme_color_inputs = self.ui_theme.palette.hex_values();
         self.recent_files = cfg
             .recent
             .files
@@ -348,8 +389,8 @@ impl OpenCADStudio {
         self.plot_dialog = cfg.plot;
     }
 
-    /// Write the config to disk only when it changed since the last write, so a
-    /// toggle persists immediately without thrashing the file.
+    /// Write the config only when it changed since the last write, so a toggle
+    /// persists immediately without thrashing native or browser storage.
     pub(in crate::app) fn save_config(&mut self) {
         let cur = self.current_config();
         if self.last_saved_config.as_ref() != Some(&cur) {
@@ -390,7 +431,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     self.opening = Some(crate::app::OpenProgress {
                         name: "Opening…".into(),
                         size_bytes: 0,
-                state: state.clone(),
+                        state: state.clone(),
                         started: Instant::now(),
                     });
                     Task::perform(crate::io::pick_and_load_web(state), Message::FileOpened)
@@ -405,13 +446,24 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
     /// resolved (deleted since) matches nothing and falls through to the normal
     /// open, which reports the miss.
     pub(in crate::app) fn tab_showing(&self, path: &std::path::Path) -> Option<usize> {
-        let want = std::fs::canonicalize(path).ok()?;
-        self.tabs.iter().position(|t| {
-            t.current_path
-                .as_deref()
-                .and_then(|p| std::fs::canonicalize(p).ok())
-                .is_some_and(|p| p == want)
-        })
+        #[cfg(target_arch = "wasm32")]
+        {
+            return self
+                .tabs
+                .iter()
+                .position(|tab| tab.current_path.as_deref() == Some(path));
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let want = std::fs::canonicalize(path).ok()?;
+            self.tabs.iter().position(|t| {
+                t.current_path
+                    .as_deref()
+                    .and_then(|p| std::fs::canonicalize(p).ok())
+                    .is_some_and(|p| p == want)
+            })
+        }
     }
 
     /// Start the next drawing a second launch handed us, if any.
@@ -423,6 +475,233 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         match self.pending_opens.pop_front() {
             Some(p) => Task::done(Message::OpenExternal(p)),
             None => Task::none(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_native_edit_guard(
+        &mut self,
+        i: usize,
+        path: &std::path::Path,
+        loaded_fingerprint: Option<crate::io::edit_lock::FileFingerprint>,
+    ) {
+        let current_fingerprint =
+            crate::io::edit_lock::FileFingerprint::capture(path).ok();
+        if loaded_fingerprint
+            .as_ref()
+            .zip(current_fingerprint.as_ref())
+            .is_some_and(|(loaded, current)| loaded != current)
+        {
+            self.command_line.push_error_once(
+                "Drawing changed on disk while it was opening; Save will require conflict resolution.",
+            );
+        }
+        self.tabs[i].disk_fingerprint =
+            loaded_fingerprint.or(current_fingerprint);
+        match crate::io::edit_lock::EditLease::acquire(path) {
+            Ok(lease) => {
+                if let Some(warning) = lease.platform_warning() {
+                    self.command_line.push_info(&format!(
+                        "Edit lease active; {warning}. External-change checks remain active."
+                    ));
+                }
+                self.tabs[i].edit_lease = Some(lease);
+                self.tabs[i].edit_lock_conflict = false;
+            }
+            Err(crate::io::edit_lock::EditLeaseError::Locked(error)) => {
+                self.tabs[i].edit_lease = None;
+                self.tabs[i].edit_lock_conflict = true;
+                self.command_line.push_error_once(&format!(
+                    "Opened read-only against other editors: {error}"
+                ));
+            }
+            Err(crate::io::edit_lock::EditLeaseError::Unavailable(error)) => {
+                self.tabs[i].edit_lease = None;
+                self.tabs[i].edit_lock_conflict = false;
+                self.command_line.push_info(&format!(
+                    "{error}. External-change checks remain active."
+                ));
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) fn refresh_native_edit_guard_after_save(
+        &mut self,
+        i: usize,
+        path: &std::path::Path,
+        path_changed: bool,
+        destination_lease: Option<crate::io::edit_lock::EditLease>,
+    ) {
+        if path_changed {
+            self.tabs[i].edit_lease = None;
+            self.tabs[i].edit_lease = destination_lease;
+            self.tabs[i].edit_lock_conflict = false;
+            if self.tabs[i].edit_lease.is_none() {
+                self.install_native_edit_guard(i, path, None);
+                return;
+            }
+        }
+
+        let refresh = self.tabs[i].edit_lease.as_mut().map(|lease| {
+            lease
+                .refresh_drawing_lock(path)
+                .map(|_| lease.platform_warning().map(str::to_owned))
+        });
+        match refresh {
+            Some(Ok(warning)) => {
+                self.tabs[i].edit_lock_conflict = false;
+                if let Some(warning) = warning {
+                    self.command_line.push_info(&format!(
+                        "{warning}. External-change checks remain active."
+                    ));
+                }
+            }
+            Some(Err(crate::io::edit_lock::EditLeaseError::Locked(error))) => {
+                self.tabs[i].edit_lock_conflict = true;
+                self.command_line.push_error_once(&format!(
+                    "Saved, but the refreshed drawing is locked by another editor: {error}"
+                ));
+            }
+            Some(Err(crate::io::edit_lock::EditLeaseError::Unavailable(error))) => {
+                self.tabs[i].edit_lock_conflict = false;
+                self.command_line.push_info(&format!(
+                    "{error}. External-change checks remain active."
+                ));
+            }
+            None => self.install_native_edit_guard(i, path, None),
+        }
+        self.tabs[i].disk_fingerprint =
+            crate::io::edit_lock::FileFingerprint::capture(path).ok();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) fn save_tab_synchronously_protected(
+        &mut self,
+        i: usize,
+        path: std::path::PathBuf,
+        set_current_path: bool,
+    ) -> Result<(), crate::io::SaveFailure> {
+        let path_changed = self.tabs[i]
+            .current_path
+            .as_deref()
+            .is_none_or(|current| !native_paths_match(current, &path));
+        if !path_changed && self.tabs[i].edit_lock_conflict {
+            return Err(crate::io::SaveFailure::file_in_use(
+                "drawing edit lock is held by another editor",
+            ));
+        }
+
+        let destination_lease = if path_changed {
+            match crate::io::edit_lock::EditLease::acquire(&path) {
+                Ok(lease) => Some(lease),
+                Err(crate::io::edit_lock::EditLeaseError::Locked(error)) => {
+                    return Err(crate::io::SaveFailure::file_in_use(error));
+                }
+                Err(crate::io::edit_lock::EditLeaseError::Unavailable(error)) => {
+                    self.command_line.push_info(&format!(
+                        "{error}. External-change checks remain active."
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let expected_fingerprint = if path_changed {
+            match crate::io::edit_lock::FileFingerprint::capture(&path) {
+                Ok(fingerprint) => Some(fingerprint),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(crate::io::SaveFailure::other(format!(
+                        "could not verify {} before saving: {error}",
+                        path.display()
+                    )));
+                }
+            }
+        } else {
+            self.tabs[i].disk_fingerprint.clone().or_else(|| {
+                crate::io::edit_lock::FileFingerprint::capture(&path).ok()
+            })
+        };
+
+        self.prepare_native_save(i);
+        let version = self.tabs[i].scene.document.version;
+        let snapshot = self.tabs[i].scene.document.clone();
+        crate::io::save_owned_as_version_atomic(
+            snapshot,
+            &path,
+            version,
+            self.backup_on_save,
+            expected_fingerprint,
+        )?;
+
+        if set_current_path {
+            self.tabs[i].current_path = Some(path.clone());
+        }
+        self.refresh_native_edit_guard_after_save(
+            i,
+            &path,
+            path_changed,
+            destination_lease,
+        );
+        self.tabs[i].dirty = false;
+        let _ = std::fs::remove_file(path.with_extension("sv$"));
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retry_native_edit_guard(
+        &mut self,
+        i: usize,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        if let Some(lease) = self.tabs[i].edit_lease.as_mut() {
+            match lease.refresh_drawing_lock(path) {
+                Ok(()) => {
+                    let warning = lease.platform_warning().map(str::to_owned);
+                    self.tabs[i].edit_lock_conflict = false;
+                    if let Some(warning) = warning {
+                        self.command_line.push_info(&format!(
+                            "{warning}. External-change checks remain active."
+                        ));
+                    }
+                    return Ok(());
+                }
+                Err(crate::io::edit_lock::EditLeaseError::Locked(error)) => {
+                    return Err(error);
+                }
+                Err(crate::io::edit_lock::EditLeaseError::Unavailable(error)) => {
+                    self.tabs[i].edit_lock_conflict = false;
+                    self.command_line.push_info(&format!(
+                        "{error}. External-change checks remain active."
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+
+        match crate::io::edit_lock::EditLease::acquire(path) {
+            Ok(lease) => {
+                let warning = lease.platform_warning().map(str::to_owned);
+                self.tabs[i].edit_lease = Some(lease);
+                self.tabs[i].edit_lock_conflict = false;
+                if let Some(warning) = warning {
+                    self.command_line.push_info(&format!(
+                        "{warning}. External-change checks remain active."
+                    ));
+                }
+                Ok(())
+            }
+            Err(crate::io::edit_lock::EditLeaseError::Locked(error)) => Err(error),
+            Err(crate::io::edit_lock::EditLeaseError::Unavailable(error)) => {
+                self.tabs[i].edit_lock_conflict = false;
+                self.command_line.push_info(&format!(
+                    "{error}. External-change checks remain active."
+                ));
+                Ok(())
+            }
         }
     }
 
@@ -490,7 +769,16 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     idx
                 };
 
+                #[cfg(not(target_arch = "wasm32"))]
+                let opened_fingerprint = self
+                    .opening
+                    .as_ref()
+                    .and_then(|opening| opening.fingerprint.clone());
                 self.tabs[i].current_path = Some(path.clone());
+                #[cfg(not(target_arch = "wasm32"))]
+                self.install_native_edit_guard(i, &path, opened_fingerprint);
+                self.tabs[i].scene.material_base_dir =
+                    path.parent().map(std::path::Path::to_path_buf);
                 self.tabs[i].scene.document = doc;
                 // A file saved without the built-in Standard styles (foreign
                 // or damaged) gets them re-seeded so nothing dangles (#366).
@@ -540,13 +828,16 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.tabs[i].scene.images = caches.images;
                 self.tabs[i].scene.meshes = caches.meshes;
                 self.tabs[i].scene.block_meshes = caches.block_meshes;
+                self.tabs[i].scene.object_data_cache = caches.object_data;
         let prepared_geometry = caches.prepared_geometry.take();
                 // Invalidate the wire cache so the new document is tessellated.
                 self.tabs[i].scene.bump_geometry();
                 if let Some(prepared) = prepared_geometry {
                     self.tabs[i].scene.install_prepared_open_geometry(prepared);
                 }
-                self.tabs[i].scene.selected = rustc_hash::FxHashSet::default();
+                self.tabs[i]
+                    .scene
+                    .replace_selection(rustc_hash::FxHashSet::default());
                 self.tabs[i].scene.preview_wires = vec![];
                 // Reopen in whichever space the file was saved in — the CTAB
                 // tab name when recorded, else the $TILEMODE model/paper flag —
@@ -570,10 +861,10 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                             .unwrap_or_else(|| "Model".to_string()),
                     };
                 }
-                // Rebuild the Isolate/Hide set from the entities the file itself
-                // marks invisible (DXF code 60), so hidden objects stay hidden on
-                // reopen and End Isolation can bring them back.
-                self.tabs[i].scene.sync_hidden_from_invisible();
+                // Object isolation is session-only. A newly opened drawing must
+                // not inherit the previous tab's filter, and persisted entity
+                // visibility remains independent (not an isolation session).
+                self.tabs[i].scene.reset_transient_visibility();
                 crate::io::linetypes::populate_document(&mut self.tabs[i].scene.document);
                 self.tabs[i].properties = PropertiesPanel::empty();
                 // Seed the current table / multileader style from the file's
@@ -616,7 +907,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
                 self.tabs[i].dirty = false;
                 self.tabs[i].history = crate::app::document::HistoryState::default();
-                self.refresh_selected_grips();
+                self.refresh_properties();
                 #[cfg(not(target_arch = "wasm32"))]
                 let interaction_task = {
                     let wires = self.tabs[i].scene.hit_test_wires();
@@ -746,6 +1037,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         purpose: crate::app::SavePurpose,
         continuation: crate::app::SaveContinuation,
         set_current_path: bool,
+        check_external_change: bool,
     ) -> Task<Message> {
         let tab_id = self.tabs[i].id;
         if self.active_save_jobs.contains_key(&tab_id) {
@@ -754,6 +1046,67 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     .push_info("Save already running for this drawing.");
             }
             return Task::none();
+        }
+        if purpose != crate::app::SavePurpose::Autosave
+            && !set_current_path
+            && self.tabs[i].edit_lock_conflict
+        {
+            let error = "Drawing edit lock is held by another editor.".to_string();
+            self.command_line.push_error_once(&format!(
+                "Unable to save \"{}\": {error}",
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string())
+            ));
+            self.pending_save_failure = Some(crate::app::PendingSaveFailure {
+                tab_id,
+                path,
+                version,
+                purpose,
+                continuation,
+                set_current_path,
+                error,
+            });
+            self.restore_failed_save_continuation(continuation, i);
+            self.active_modal = Some(crate::app::ModalKind::FileInUse);
+            return Task::none();
+        }
+
+        let destination_is_current = self.tabs[i]
+            .current_path
+            .as_deref()
+            .is_some_and(|current| native_paths_match(current, &path));
+        if set_current_path && !destination_is_current {
+            match crate::io::edit_lock::EditLease::acquire(&path) {
+                Ok(lease) => {
+                    self.pending_save_leases.insert(tab_id, lease);
+                }
+                Err(crate::io::edit_lock::EditLeaseError::Locked(error)) => {
+                    self.command_line.push_error_once(&format!(
+                        "Unable to save \"{}\": {error}",
+                        path.file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string())
+                    ));
+                    self.pending_save_failure = Some(crate::app::PendingSaveFailure {
+                        tab_id,
+                        path,
+                        version,
+                        purpose,
+                        continuation,
+                        set_current_path,
+                        error,
+                    });
+                    self.restore_failed_save_continuation(continuation, i);
+                    self.active_modal = Some(crate::app::ModalKind::FileInUse);
+                    return Task::none();
+                }
+                Err(crate::io::edit_lock::EditLeaseError::Unavailable(error)) => {
+                    self.command_line.push_info(&format!(
+                        "{error}. External-change checks remain active."
+                    ));
+                }
+            }
         }
 
         let epoch = self.tabs[i].scene.geometry_epoch;
@@ -800,6 +1153,16 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         self.active_save_jobs.insert(tab_id, job_id);
         let previous_autosave = set_current_path.then(|| self.autosave_target(i));
         let backup = purpose != crate::app::SavePurpose::Autosave && self.backup_on_save;
+        let expected_fingerprint =
+            if check_external_change && purpose != crate::app::SavePurpose::Autosave {
+                if set_current_path {
+                    crate::io::edit_lock::FileFingerprint::capture(&path).ok()
+                } else {
+                    self.tabs[i].disk_fingerprint.clone()
+                }
+            } else {
+                None
+            };
         let worker_path = path.clone();
 
         Task::perform(
@@ -829,11 +1192,17 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         &worker_path,
                         version,
                         backup,
+                        expected_fingerprint,
                     );
                     (result, refreshed_preview)
                 })
                 .join()
-                .unwrap_or_else(|_| (Err("save worker panicked".to_string()), None));
+                .unwrap_or_else(|_| {
+                    (
+                        Err(crate::io::SaveFailure::other("save worker panicked")),
+                        None,
+                    )
+                });
                 crate::app::SaveOutcome {
                     job_id,
                     tab_id,
@@ -841,6 +1210,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     revision,
                     camera_generation,
                     path,
+                    version,
                     previous_autosave,
                     set_current_path,
                     purpose,
@@ -864,6 +1234,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         if latest {
             self.active_save_jobs.remove(&outcome.tab_id);
         }
+        let destination_lease = self.pending_save_leases.remove(&outcome.tab_id);
 
         let Some(i) = self.tabs.iter().position(|tab| tab.id == outcome.tab_id) else {
             if outcome.purpose == crate::app::SavePurpose::Autosave {
@@ -878,7 +1249,60 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             return Task::none();
         }
 
-        if let Err(error) = outcome.result {
+        if let Err(error) = &outcome.result {
+            if error.externally_modified
+                && outcome.purpose != crate::app::SavePurpose::Autosave
+            {
+                let file_name = outcome
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| outcome.path.display().to_string());
+                self.command_line.push_error_once(&format!(
+                    "Save stopped: \"{file_name}\" changed outside Open CAD Studio."
+                ));
+                self.pending_external_change = Some(crate::app::PendingExternalChange {
+                    tab_id: outcome.tab_id,
+                    path: outcome.path.clone(),
+                    version: outcome.version,
+                    purpose: outcome.purpose,
+                    continuation: outcome.continuation,
+                    set_current_path: outcome.set_current_path,
+                });
+                self.restore_failed_save_continuation(outcome.continuation, i);
+                self.active_modal = Some(crate::app::ModalKind::ExternalChange);
+                return Task::none();
+            }
+            if error.file_in_use && outcome.purpose != crate::app::SavePurpose::Autosave {
+                let file_name = outcome
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| outcome.path.display().to_string());
+                self.command_line.push_error_once(&format!(
+                    "Unable to save \"{file_name}\": file is in use by another application."
+                ));
+                self.pending_save_failure = Some(crate::app::PendingSaveFailure {
+                    tab_id: outcome.tab_id,
+                    path: outcome.path.clone(),
+                    version: outcome.version,
+                    purpose: outcome.purpose,
+                    continuation: outcome.continuation,
+                    set_current_path: outcome.set_current_path,
+                    error: error.to_string(),
+                });
+                match outcome.continuation {
+                    crate::app::SaveContinuation::CloseTab => {
+                        self.pending_close = Some(crate::app::PendingClose::Tab(i));
+                    }
+                    crate::app::SaveContinuation::Quit => {
+                        self.pending_close = Some(crate::app::PendingClose::Quit);
+                    }
+                    crate::app::SaveContinuation::None => {}
+                }
+                self.active_modal = Some(crate::app::ModalKind::FileInUse);
+                return Task::none();
+            }
             self.command_line
                 .push_error(&format!("Save failed: {error}"));
             return match outcome.continuation {
@@ -909,6 +1333,13 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.command_line.push_output("Autosaved 1 drawing");
             }
             crate::app::SavePurpose::Manual | crate::app::SavePurpose::SaveAs => {
+                let path_changed = outcome.set_current_path
+                    && self.tabs[i]
+                        .current_path
+                        .as_deref()
+                        .is_none_or(|current| {
+                            !native_paths_match(current, &outcome.path)
+                        });
                 self.command_line
                     .push_output(&format!("Saved: {}", outcome.path.display()));
                 self.recent_thumbs.remove(&outcome.path);
@@ -919,8 +1350,15 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 }
                 if outcome.set_current_path {
                     self.tabs[i].current_path = Some(outcome.path.clone());
+                    self.tabs[i].scene.document.version = outcome.version;
                     tasks.push(self.push_recent(outcome.path.clone()));
                 }
+                self.refresh_native_edit_guard_after_save(
+                    i,
+                    &outcome.path,
+                    path_changed,
+                    destination_lease,
+                );
                 if snapshot_is_current {
                     self.tabs[i].dirty = false;
                     let _ = std::fs::remove_file(outcome.path.with_extension("sv$"));
@@ -934,6 +1372,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.pending_close = None;
                 tasks.push(self.close_unsaved_dialog_window());
                 tasks.push(self.update(Message::TabClose(i)));
+                tasks.push(self.continue_tab_close_queue());
             }
             crate::app::SaveContinuation::Quit if snapshot_is_current => {
                 self.pending_close = None;
@@ -955,6 +1394,150 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             }
         }
         Task::batch(tasks)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restore_failed_save_continuation(
+        &mut self,
+        continuation: crate::app::SaveContinuation,
+        tab_idx: usize,
+    ) {
+        self.pending_close = match continuation {
+            crate::app::SaveContinuation::None => None,
+            crate::app::SaveContinuation::CloseTab => {
+                Some(crate::app::PendingClose::Tab(tab_idx))
+            }
+            crate::app::SaveContinuation::Quit => Some(crate::app::PendingClose::Quit),
+        };
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn on_save_file_in_use_retry(&mut self) -> Task<Message> {
+        let Some(mut failure) = self.pending_save_failure.take() else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        let Some(i) = self.tabs.iter().position(|tab| tab.id == failure.tab_id) else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        if self.tabs[i].edit_lock_conflict {
+            if let Err(error) = self.retry_native_edit_guard(i, &failure.path) {
+                let continuation = failure.continuation;
+                failure.error = error.clone();
+                self.pending_save_failure = Some(failure);
+                self.restore_failed_save_continuation(continuation, i);
+                self.command_line
+                    .push_error_once(&format!("Unable to acquire edit lock: {error}"));
+                self.active_modal = Some(crate::app::ModalKind::FileInUse);
+                return Task::none();
+            }
+        }
+        self.close_active_modal();
+        self.restore_failed_save_continuation(failure.continuation, i);
+        self.active_tab = i;
+        self.prepare_native_save(i);
+        self.queue_native_save(
+            i,
+            failure.path,
+            failure.version,
+            failure.purpose,
+            failure.continuation,
+            failure.set_current_path,
+            true,
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn on_save_file_in_use_save_as(&mut self) -> Task<Message> {
+        let Some(failure) = self.pending_save_failure.take() else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        let Some(i) = self.tabs.iter().position(|tab| tab.id == failure.tab_id) else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        self.close_active_modal();
+        self.restore_failed_save_continuation(failure.continuation, i);
+        self.active_tab = i;
+        self.save_dialog_for_unsaved =
+            failure.continuation != crate::app::SaveContinuation::None;
+        self.open_save_dialog_window(i)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn on_external_change_overwrite(&mut self) -> Task<Message> {
+        let Some(conflict) = self.pending_external_change.take() else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        let Some(i) = self.tabs.iter().position(|tab| tab.id == conflict.tab_id) else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        self.close_active_modal();
+        self.restore_failed_save_continuation(conflict.continuation, i);
+        self.active_tab = i;
+        self.prepare_native_save(i);
+        self.queue_native_save(
+            i,
+            conflict.path,
+            conflict.version,
+            conflict.purpose,
+            conflict.continuation,
+            conflict.set_current_path,
+            false,
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn on_external_change_save_as(&mut self) -> Task<Message> {
+        let Some(conflict) = self.pending_external_change.take() else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        let Some(i) = self.tabs.iter().position(|tab| tab.id == conflict.tab_id) else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        self.close_active_modal();
+        self.restore_failed_save_continuation(conflict.continuation, i);
+        self.active_tab = i;
+        self.save_dialog_for_unsaved =
+            conflict.continuation != crate::app::SaveContinuation::None;
+        self.open_save_dialog_window(i)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn on_external_change_reload(&mut self) -> Task<Message> {
+        let Some(conflict) = self.pending_external_change.take() else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        let Some(i) = self.tabs.iter().position(|tab| tab.id == conflict.tab_id) else {
+            self.close_active_modal();
+            return Task::none();
+        };
+        let metadata = match std::fs::metadata(&conflict.path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.close_active_modal();
+                self.command_line
+                    .push_error(&format!("Reload failed: {error}"));
+                return Task::none();
+            }
+        };
+        self.close_active_modal();
+        self.pending_close = None;
+        self.tab_counter += 1;
+        self.tabs[i] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
+        self.active_tab = i;
+        self.apply_bg_default(i);
+        self.update(Message::OpenPathPicked(Some((
+            conflict.path,
+            metadata.len(),
+        ))))
     }
 
     pub(super) fn on_save_file(&mut self) -> Task<Message> {
@@ -985,25 +1568,27 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         crate::app::SavePurpose::Manual,
                         crate::app::SaveContinuation::None,
                         false,
+                        true,
                     );
                 }
                 self.save_dialog_for_unsaved = false;
-                self.save_default_dwg2018(i)
+                self.save_with_default_format(i)
     }
 
-    /// Save without the version picker: default to DWG 2018 and go straight to
+    /// Save without the version picker: use the configured default and go straight to
     /// the native destination dialog (native) or the browser download (web).
     /// Used by plain Save (QSAVE) on an as-yet-unsaved drawing and by the
     /// save-before-close flow — the version picker is reserved for Save As.
-    pub(in crate::app) fn save_default_dwg2018(&mut self, tab_idx: usize) -> Task<Message> {
+    pub(in crate::app) fn save_with_default_format(&mut self, tab_idx: usize) -> Task<Message> {
         self.active_tab = tab_idx;
-        self.save_dialog_format = "DWG 2018".to_string();
+        self.save_dialog_format = self.default_save_format.clone();
+        let (ext, _) = crate::io::parse_save_format(&self.save_dialog_format);
         self.save_dialog_filename = self.tabs[tab_idx]
             .current_path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("{}.dwg", self.tabs[tab_idx].tab_display_name()));
+            .unwrap_or_else(|| format!("{}.{ext}", self.tabs[tab_idx].tab_display_name()));
         self.aec_drop_acknowledged = false;
         self.on_save_dialog_confirm()
     }
@@ -1081,22 +1666,57 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     self.stamp_header_sysvars(i);
                     self.sync_truck_solids_to_acis(i);
                     self.stamp_thumbnail(i, version);
-                    match crate::io::save_to_bytes(&self.tabs[i].scene.document, ext, version) {
+                    let mut recent_task = Task::none();
+                    let saved = match crate::io::save_to_bytes(
+                        &self.tabs[i].scene.document,
+                        ext,
+                        version,
+                    ) {
                         Ok(bytes) => {
                             crate::sys::download_bytes(&filename, &bytes);
+                            let cache_name = std::path::Path::new(&filename)
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| filename.clone());
+                            let path = std::path::PathBuf::from(cache_name);
+                            self.tabs[i].current_path = Some(path.clone());
+                            self.tabs[i].scene.document.version = version;
                             self.tabs[i].dirty = false;
+                            recent_task = Task::perform(
+                                async move {
+                                    crate::io::web_recent::store(
+                                        &path.to_string_lossy(),
+                                        &bytes,
+                                    )
+                                    .await
+                                    .map(|_| path)
+                                },
+                                Message::WebRecentStored,
+                            );
                             self.command_line.push_output(&format!("Saved: {filename}"));
+                            true
                         }
-                        Err(e) => self.command_line.push_error(&format!("Save failed: {e}")),
-                    }
+                        Err(e) => {
+                            self.command_line.push_error(&format!("Save failed: {e}"));
+                            false
+                        }
+                    };
                     // Continue a pending tab close.
                     if self.save_dialog_for_unsaved {
-                        if let Some(crate::app::PendingClose::Tab(idx)) = self.pending_close.take() {
-                            let cont = self.update(Message::TabClose(idx));
-                            return Task::batch([close, cont]);
+                        if saved {
+                            if let Some(crate::app::PendingClose::Tab(idx)) =
+                                self.pending_close.take()
+                            {
+                                let cont = self.update(Message::TabClose(idx));
+                                let rest = self.continue_tab_close_queue();
+                                return Task::batch([close, recent_task, cont, rest]);
+                            }
+                        } else if self.pending_close.is_some() {
+                            let retry = self.open_unsaved_dialog_window();
+                            return Task::batch([close, recent_task, retry]);
                         }
                     }
-                    close
+                    Task::batch([close, recent_task])
                 }
     }
 
@@ -1134,6 +1754,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             crate::app::SavePurpose::SaveAs,
             continuation,
             true,
+            true,
         )
     }
 
@@ -1146,12 +1767,24 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
     }
 
     /// AEC-drop warning → "Save in source version": switch the target to the
-    /// document's own DWG version (where the unsupported objects round-trip as
-    /// verbatim bytes), then save.
+    /// document's source type and version, then save.
     pub(super) fn on_aec_drop_same_version(&mut self) -> Task<Message> {
-        let src = self.tabs[self.active_tab].scene.document.version;
-        self.save_dialog_format = crate::io::format_for_version(src, false);
-        // Strip any extension (e.g. .dxf) so the confirm path appends .dwg.
+        let tab = &self.tabs[self.active_tab];
+        let is_dxf = tab
+            .current_path
+            .as_ref()
+            .and_then(|path| path.extension())
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.eq_ignore_ascii_case("dxf"))
+            .unwrap_or(false);
+        let document = &tab.scene.document;
+        let src = if is_dxf {
+            document.version
+        } else {
+            document.dwg_source_version.unwrap_or(document.version)
+        };
+        self.save_dialog_format = crate::io::format_for_version(src, is_dxf);
+        // Strip the old extension so the confirm path appends the source type.
         let stem = std::path::Path::new(&self.save_dialog_filename)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -1201,6 +1834,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 version,
                 crate::app::SavePurpose::Autosave,
                 crate::app::SaveContinuation::None,
+                false,
                 false,
             ));
         }
@@ -1345,9 +1979,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     }
 
                     self.tabs[i].dirty = true;
-                    // The paper sheet fill is cached; bump geometry so the new
-                    // sheet size re-tessellates and shows immediately.
-                    self.tabs[i].scene.bump_geometry();
+                    // The paper sheet fill is cached by epoch, while document
+                    // entity tessellation is unaffected by the paper size.
+                    self.tabs[i].scene.bump_geometry_no_blocks();
                     self.command_line.push_info(&format!(
                         "Page setup: {w:.1}×{h:.1} mm  area={plot_area}  \
                          center={center}  rot={rotation}°"

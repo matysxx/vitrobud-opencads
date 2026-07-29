@@ -112,13 +112,12 @@ impl Scene {
     }
 
     pub fn add_entity(&mut self, mut entity: EntityType) -> Handle {
-        // Only Insert / Block entities can introduce or reference a block
-        // definition that the block cache must (re)build. Adding a plain
-        // top-level entity (line, arc, text, …) leaves every block defn intact,
-        // so it keeps the cache and skips the all-blocks re-tessellation.
+        // Only block sentinels mutate a block definition and require rebuilding
+        // the block cache. A top-level INSERT merely references an existing
+        // definition, so adding it can patch just that new render handle.
         let affects_blocks = matches!(
             &entity,
-            EntityType::Insert(_) | EntityType::Block(_) | EntityType::BlockEnd(_)
+            EntityType::Block(_) | EntityType::BlockEnd(_)
         );
         // INSERT invalidates rendered block instances, but it does not mutate
         // the referenced block definition. Only block sentinels require a
@@ -140,7 +139,13 @@ impl Scene {
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
             &entity,
-            EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) | EntityType::Surface(_)
+            EntityType::Solid3D(_)
+                | EntityType::Region(_)
+                | EntityType::Body(_)
+                | EntityType::Surface(_)
+                | EntityType::Mesh(_)
+                | EntityType::PolygonMesh(_)
+                | EntityType::PolyfaceMesh(_)
         ) {
             let color = self.render_style(&entity).0;
             crate::entities::solid3d::tessellate_volume(&entity, color, facet_res, isolines)
@@ -155,6 +160,9 @@ impl Scene {
             if img.definition_handle.is_none() {
                 use acadrust::objects::{ImageDefinition, ObjectType};
                 let def_handle = Handle::new(self.document.next_handle());
+                if self.is_recording_undo() {
+                    self.record_undo_object_before(def_handle, None);
+                }
                 let mut img_def = ImageDefinition::with_dimensions(
                     &img.file_path,
                     img.size.x as u32,
@@ -178,7 +186,6 @@ impl Scene {
         // definition mutates non-entity state a pure-entity delta can't undo.
         let creates_layer =
             self.is_recording_undo() && !layer.trim().is_empty() && !self.document.layers.contains(&layer);
-        let is_image = matches!(&entity, EntityType::RasterImage(_));
         self.ensure_layer(&layer);
 
         // Route to the correct block based on current editing mode:
@@ -206,16 +213,38 @@ impl Scene {
             if let Some(model) = image_seed {
                 self.images.insert(handle, model);
             }
-            if let Some(model) = mesh_seed {
+            if let Some(mut model) = mesh_seed {
+                if let Some(entity) = self.document.get_entity(handle) {
+                    let color = self.render_style(entity).0;
+                    let material =
+                        crate::scene::model::material_model::resolve_material_with_base(
+                            &self.document,
+                            entity,
+                            color,
+                            None,
+                            self.material_base_dir.as_deref(),
+                        );
+                    material.apply_to_with_face_overrides(
+                        &mut model,
+                        &self.document,
+                        self.material_base_dir.as_deref(),
+                    );
+                    crate::scene::model::visual_style_model::apply_mesh_visual_style(
+                        &mut model,
+                        &self.document,
+                        entity,
+                    );
+                }
                 self.meshes.insert(handle, model);
             }
             // Delta-undo: the new handle's before-image is "nothing" (it did not
             // exist). Poison the recording if this add also mutated non-entity
-            // state (a new layer / block / image definition) so the app knows a
-            // pure-entity delta would be incomplete.
+            // state (a new layer / block) so the app knows a pure-entity delta
+            // would be incomplete. Raster image definitions are captured as
+            // targeted object before-images above.
             if self.is_recording_undo() {
                 self.record_undo_before(handle, None);
-                if creates_layer || mutates_block_structure || is_image {
+                if creates_layer || mutates_block_structure {
                     self.poison_undo_recording();
                 }
             }
@@ -296,14 +325,15 @@ impl Scene {
         // The caller edited a snapshot copy; keep the live entity in its block.
         entity.common_mut().owner_handle = existing.common().owner_handle;
 
-        // Replacing (or becoming) a block entity forces a full block-cache
-        // rebuild; a plain entity only needs its own wires re-tessellated.
+        // Replacing (or becoming) a block sentinel forces a full block-cache
+        // rebuild. INSERT edits (including retargeting to another existing
+        // definition) only change that top-level render handle.
         let affects_blocks = matches!(
             existing,
-            EntityType::Insert(_) | EntityType::Block(_) | EntityType::BlockEnd(_)
+            EntityType::Block(_) | EntityType::BlockEnd(_)
         ) || matches!(
             &entity,
-            EntityType::Insert(_) | EntityType::Block(_) | EntityType::BlockEnd(_)
+            EntityType::Block(_) | EntityType::BlockEnd(_)
         );
 
         // A plugin edit may retarget the entity to a novel layer; register it
@@ -330,7 +360,13 @@ impl Scene {
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
             &entity,
-            EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) | EntityType::Surface(_)
+            EntityType::Solid3D(_)
+                | EntityType::Region(_)
+                | EntityType::Body(_)
+                | EntityType::Surface(_)
+                | EntityType::Mesh(_)
+                | EntityType::PolygonMesh(_)
+                | EntityType::PolyfaceMesh(_)
         ) {
             let color = self.render_style(&entity).0;
             crate::entities::solid3d::tessellate_volume(&entity, color, facet_res, isolines)
@@ -369,7 +405,28 @@ impl Scene {
         if let Some(model) = image_seed {
             self.images.insert(handle, model);
         }
-        if let Some(model) = mesh_seed {
+        if let Some(mut model) = mesh_seed {
+            if let Some(entity) = self.document.get_entity(handle) {
+                let color = self.render_style(entity).0;
+                let material =
+                    crate::scene::model::material_model::resolve_material_with_base(
+                        &self.document,
+                        entity,
+                        color,
+                        None,
+                        self.material_base_dir.as_deref(),
+                    );
+                material.apply_to_with_face_overrides(
+                    &mut model,
+                    &self.document,
+                    self.material_base_dir.as_deref(),
+                );
+                crate::scene::model::visual_style_model::apply_mesh_visual_style(
+                    &mut model,
+                    &self.document,
+                    entity,
+                );
+            }
             self.meshes.insert(handle, model);
         }
 
@@ -427,6 +484,34 @@ impl Scene {
         if handles.is_empty() {
             return;
         }
+        let mesh_entities: Vec<(Handle, std::sync::Arc<EntityType>)> = handles
+            .iter()
+            .filter_map(|&handle| {
+                let entity = self.document.get_entity_arc(handle)?;
+                matches!(
+                    entity.as_ref(),
+                    EntityType::Solid3D(_)
+                        | EntityType::Region(_)
+                        | EntityType::Body(_)
+                        | EntityType::Surface(_)
+                        | EntityType::Mesh(_)
+                        | EntityType::PolygonMesh(_)
+                        | EntityType::PolyfaceMesh(_)
+                )
+                .then_some((handle, entity))
+            })
+            .collect();
+        for handle in handles {
+            self.meshes.remove(handle);
+            self.block_meshes.remove(handle);
+            self.solid_models.remove(handle);
+        }
+        // The overwhelmingly common Undo/Redo target is 2-D geometry. Return
+        // before scanning every Layout object just to discover there is no mesh
+        // to rebuild.
+        if mesh_entities.is_empty() {
+            return;
+        }
         let layout_blocks: std::collections::HashSet<Handle> = self
             .document
             .objects
@@ -438,29 +523,15 @@ impl Scene {
                 _ => None,
             })
             .collect();
-        let entries: Vec<(Handle, std::sync::Arc<EntityType>, [f32; 4], bool)> = handles
-            .iter()
-            .filter_map(|&handle| {
-                let entity = self.document.get_entity_arc(handle)?;
-                if !matches!(
-                    entity.as_ref(),
-                    EntityType::Solid3D(_)
-                        | EntityType::Region(_)
-                        | EntityType::Body(_)
-                        | EntityType::Surface(_)
-                ) {
-                    return None;
-                }
-                let color = self.render_style(entity.as_ref()).0;
-                let top_level = layout_blocks.contains(&entity.common().owner_handle);
-                Some((handle, entity, color, top_level))
-            })
-            .collect();
-        for handle in handles {
-            self.meshes.remove(handle);
-            self.block_meshes.remove(handle);
-            self.solid_models.remove(handle);
-        }
+        let entries: Vec<(Handle, std::sync::Arc<EntityType>, [f32; 4], bool)> =
+            mesh_entities
+                .into_iter()
+                .map(|(handle, entity)| {
+                    let color = self.render_style(entity.as_ref()).0;
+                    let top_level = layout_blocks.contains(&entity.common().owner_handle);
+                    (handle, entity, color, top_level)
+                })
+                .collect();
         let facet_res = self.document.header.facet_resolution;
         let isolines = self.document.header.isolines.max(0) as usize;
         use crate::par::prelude::*;
@@ -473,7 +544,24 @@ impl Scene {
                     facet_res,
                     isolines,
                 )
-                .map(|mesh| {
+                .map(|mut mesh| {
+                    crate::scene::model::material_model::resolve_material_with_base(
+                        &self.document,
+                        entity.as_ref(),
+                        color,
+                        None,
+                        self.material_base_dir.as_deref(),
+                    )
+                    .apply_to_with_face_overrides(
+                        &mut mesh,
+                        &self.document,
+                        self.material_base_dir.as_deref(),
+                    );
+                    crate::scene::model::visual_style_model::apply_mesh_visual_style(
+                        &mut mesh,
+                        &self.document,
+                        entity.as_ref(),
+                    );
                     let mesh = if top_level {
                         offset_mesh_lod_set(mesh)
                     } else {
@@ -483,10 +571,11 @@ impl Scene {
                 })
             })
             .collect();
-        for (handle, mesh, top_level) in built {
+        for (handle, mut mesh, top_level) in built {
             if top_level {
                 self.meshes.insert(handle, mesh);
             } else {
+                mesh.prepare_instance_source(handle);
                 self.block_meshes.insert(handle, mesh);
             }
         }
@@ -737,7 +826,10 @@ impl Scene {
                     return true;
                 };
                 let c = entity.common();
-                if c.invisible || layer_hidden(&c.layer) {
+                if c.invisible
+                    || self.entity_temporarily_hidden(handle)
+                    || layer_hidden(&c.layer)
+                {
                     return false;
                 }
                 // Per-viewport layer freeze: a content viewport that freezes
@@ -758,8 +850,29 @@ impl Scene {
                         ))
             })
             .flat_map(|(&handle, model)| {
-                let entity = self.document.get_entity(handle);
-                let mut m = model.clone();
+                let contextual = self
+                    .document
+                    .get_entity(handle)
+                    .map(|entity| {
+                        crate::scene::annotative::entity_for_active_context(
+                            &self.document,
+                            entity,
+                        )
+                    });
+                let entity = contextual.as_deref();
+                let mut m = match entity {
+                    Some(EntityType::Hatch(dxf))
+                        if crate::scene::annotative::active_object_context(
+                            &self.document,
+                            handle,
+                        )
+                        .is_some() =>
+                    {
+                        Self::hatch_model_from_dxf(dxf, model.color)
+                            .unwrap_or_else(|| model.clone())
+                    }
+                    _ => model.clone(),
+                };
                 // Optional solid backdrop drawn behind the pattern/gradient when
                 // the hatch carries a HATCHBACKGROUNDCOLOR. Same draw_depth +
                 // emitted first so LessEqual layering keeps it underneath.
@@ -958,10 +1071,15 @@ impl Scene {
             out
         }
         for entity in self.document.entities() {
-            let EntityType::Insert(ins) = entity else {
+            let contextual =
+                crate::scene::annotative::entity_for_active_context(&self.document, entity);
+            let EntityType::Insert(ins) = contextual.as_ref() else {
                 continue;
             };
-            if ins.common.invisible || layer_hidden(&ins.common.layer) {
+            if ins.common.invisible
+                || self.entity_temporarily_hidden(ins.common.handle)
+                || layer_hidden(&ins.common.layer)
+            {
                 continue;
             }
             // Per-viewport freeze: an INSERT on a layer frozen in this content
@@ -1034,6 +1152,10 @@ impl Scene {
             )> = explode_including_dims(ins, &self.document)
                 .into_iter()
                 .filter(|e| !offscale(e))
+                .map(|e| {
+                    crate::scene::annotative::entity_for_active_context(&self.document, &e)
+                        .into_owned()
+                })
                 .map(|e| (normalize(e), 0usize, ins_color, l0, (base_depth, half_gap)))
                 .collect();
             while let Some((sub, depth, sub_ins_color, sub_l0, (d_base, d_half))) = stack.pop() {
@@ -1050,14 +1172,25 @@ impl Scene {
                         let on_l0 = crate::scene::view::render::is_effective_layer_zero(
                             &nins.common.layer,
                         );
-                        let child_ins_color = if nins.common.color == Color::ByBlock {
+                        let nested_entity = EntityType::Insert(nins.clone());
+                        let has_book_color =
+                            crate::scene::view::render::has_resolved_book_color(
+                                &self.document,
+                                &nested_entity,
+                            );
+                        let child_ins_color = if !has_book_color
+                            && nins.common.color == Color::ByBlock
+                        {
                             sub_ins_color
-                        } else if on_l0 && nins.common.color == Color::ByLayer {
+                        } else if !has_book_color
+                            && on_l0
+                            && nins.common.color == Color::ByLayer
+                        {
                             sub_l0.color
                         } else {
                             crate::scene::view::render::render_style_for(
                                 &self.document,
-                                &EntityType::Insert(nins.clone()),
+                                &nested_entity,
                             )
                             .0
                         };
@@ -1081,6 +1214,12 @@ impl Scene {
                             if offscale(&e) {
                                 continue;
                             }
+                            let e =
+                                crate::scene::annotative::entity_for_active_context(
+                                    &self.document,
+                                    &e,
+                                )
+                                .into_owned();
                             stack.push((
                                 normalize(e),
                                 depth + 1,
@@ -1172,7 +1311,9 @@ impl Scene {
             let EntityType::Wipeout(wo) = entity else {
                 continue;
             };
-            if entity.common().invisible {
+            if entity.common().invisible
+                || self.entity_temporarily_hidden(wo.common.handle)
+            {
                 continue;
             }
             // Reject block-defn-only wipeouts (owned by a BLOCK record that is
@@ -1235,11 +1376,14 @@ impl Scene {
         // apply_rotation) rather than through Insert::explode — the latter
         // double-scales the u/v basis.
         for entity in self.document.entities() {
-            let EntityType::Insert(ins) = entity else {
+            let contextual =
+                crate::scene::annotative::entity_for_active_context(&self.document, entity);
+            let EntityType::Insert(ins) = contextual.as_ref() else {
                 continue;
             };
             let c = &ins.common;
             if c.invisible
+                || self.entity_temporarily_hidden(c.handle)
                 || self
                     .document
                     .layers
@@ -1927,7 +2071,13 @@ impl Scene {
     /// at load, so a pattern-scale / background / boundary edit stays
     /// invisible until the cached model is refreshed (#415).
     pub fn refresh_fill_model(&mut self, handle: Handle) {
-        let new_model = match self.document.get_entity(handle) {
+        let contextual = self
+            .document
+            .get_entity(handle)
+            .map(|entity| {
+                crate::scene::annotative::entity_for_active_context(&self.document, entity)
+            });
+        let new_model = match contextual.as_deref() {
             Some(EntityType::Hatch(dxf)) => {
                 let color = convert::tess_util::aci_to_rgba(&dxf.common.color);
                 Self::hatch_model_from_dxf(dxf, color)
@@ -1955,7 +2105,11 @@ impl Scene {
             .document
             .entities()
             .filter_map(|e| match e {
-                EntityType::Hatch(h) => Some((h.common.handle, e.clone())),
+                EntityType::Hatch(h) => Some((
+                    h.common.handle,
+                    crate::scene::annotative::entity_for_active_context(&self.document, e)
+                        .into_owned(),
+                )),
                 EntityType::Solid(s) => Some((s.common.handle, e.clone())),
                 _ => None,
             })
@@ -2047,7 +2201,13 @@ impl Scene {
             .document
             .entities()
             .filter_map(|e| match e {
-                EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) | EntityType::Surface(_) => {
+                EntityType::Solid3D(_)
+                | EntityType::Region(_)
+                | EntityType::Body(_)
+                | EntityType::Surface(_)
+                | EntityType::Mesh(_)
+                | EntityType::PolygonMesh(_)
+                | EntityType::PolyfaceMesh(_) => {
                     let handle = e.common().handle;
                     // Incremental (post-xref) pass: leave already-tessellated
                     // host solids untouched, only build the newly merged ones.
@@ -2073,16 +2233,34 @@ impl Scene {
         let built: Vec<(Handle, MeshLodSet, bool)> = entries
             .into_par_iter()
             .filter_map(|(handle, entity, color, top_level)| {
-                crate::entities::solid3d::tessellate_volume(&entity, color, facet_res, isolines).map(|m| {
-                    let m = if top_level { offset_mesh_lod_set(m) } else { m };
-                    (handle, m, top_level)
+                crate::entities::solid3d::tessellate_volume(&entity, color, facet_res, isolines).map(|mut mesh| {
+                    let material = crate::scene::model::material_model::resolve_material_with_base(
+                        &self.document,
+                        &entity,
+                        color,
+                        None,
+                        self.material_base_dir.as_deref(),
+                    );
+                    material.apply_to_with_face_overrides(
+                        &mut mesh,
+                        &self.document,
+                        self.material_base_dir.as_deref(),
+                    );
+                    crate::scene::model::visual_style_model::apply_mesh_visual_style(
+                        &mut mesh,
+                        &self.document,
+                        &entity,
+                    );
+                    let mesh = if top_level { offset_mesh_lod_set(mesh) } else { mesh };
+                    (handle, mesh, top_level)
                 })
             })
             .collect();
-        for (handle, m, top_level) in built {
+        for (handle, mut m, top_level) in built {
             if top_level {
                 self.meshes.insert(handle, m);
             } else {
+                m.prepare_instance_source(handle);
                 self.block_meshes.insert(handle, m);
             }
         }
@@ -2295,7 +2473,7 @@ impl Scene {
     pub fn clear(&mut self) {
         self.document.record_all_entities_for_transaction();
         self.document = CadDocument::new();
-        self.selected = HashSet::default();
+        self.replace_selection(HashSet::default());
         self.preview_wires = vec![];
         self.preview_text = vec![];
         self.current_layout = "Model".to_string();

@@ -4,7 +4,7 @@ use crate::modules::draw::modify::block_edit::BlockEditSession;
 use crate::modules::draw::modify::refedit::RefEditSession;
 use crate::scene::pick::grip::GripEdit;
 use crate::scene::GripDef;
-use crate::scene::Scene;
+use crate::scene::{ObjectIsolationState, Scene};
 use crate::snap::SnapResult;
 use crate::ui::{LayerPanel, PropertiesPanel};
 use acadrust::tables::Ucs;
@@ -162,6 +162,17 @@ pub(super) struct DocumentTab {
     pub(super) id: u64,
     pub(super) scene: Scene,
     pub(super) current_path: Option<PathBuf>,
+    /// Persistent native edit lease for the drawing currently at
+    /// `current_path`. The sidecar portion survives atomic file replacement.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) edit_lease: Option<crate::io::edit_lock::EditLease>,
+    /// True when another editor owns the drawing lease. Direct Save stays
+    /// blocked until Retry acquires it or the user chooses Save As.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) edit_lock_conflict: bool,
+    /// Disk state observed after open or the latest successful save.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) disk_fingerprint: Option<crate::io::edit_lock::FileFingerprint>,
     pub(super) dirty: bool,
     /// Monotonic committed-edit/undo/redo revision. Background save completion
     /// uses it with scene epochs so an older snapshot never clears newer work.
@@ -220,8 +231,11 @@ pub(super) struct DocumentTab {
     pub(super) paper_bg_color: Option<[f32; 4]>,
     /// Active REFEDIT session, if any.
     pub(super) refedit_session: Option<RefEditSession>,
-    /// Active BEDIT block-editor space session, if any (issue #261).
-    pub(super) block_edit: Option<BlockEditSession>,
+    /// Open BEDIT block tabs. Definitions are edited live; each tab owns its
+    /// entry snapshot and camera so nested blocks can remain open independently.
+    pub(super) block_edits: Vec<BlockEditSession>,
+    /// Index of the block tab currently shown, or `None` for Model/Paper space.
+    pub(super) active_block_edit: Option<usize>,
     /// Currently active MLeader style name.
     pub(super) active_mleader_style: String,
     /// Last camera_generation value written back to the document.
@@ -247,6 +261,16 @@ pub(super) struct DocumentTab {
 }
 
 impl DocumentTab {
+    pub(super) fn active_block_edit_session(&self) -> Option<&BlockEditSession> {
+        self.active_block_edit
+            .and_then(|index| self.block_edits.get(index))
+    }
+
+    pub(super) fn active_block_edit_session_mut(&mut self) -> Option<&mut BlockEditSession> {
+        self.active_block_edit
+            .and_then(|index| self.block_edits.get_mut(index))
+    }
+
     /// The active WCS↔UCS converter for this tab — identity when no UCS is set.
     /// Every consumer that needs UCS-relative coordinates goes through this.
     pub(super) fn ucs_xform(&self) -> super::helpers::UcsXform {
@@ -429,6 +453,12 @@ impl DocumentTab {
             id: NEXT_DOCUMENT_TAB_ID.fetch_add(1, Ordering::Relaxed),
             scene,
             current_path: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            edit_lease: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            edit_lock_conflict: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            disk_fingerprint: None,
             dirty: false,
             edit_revision: 0,
             prev_selection: Vec::new(),
@@ -461,7 +491,8 @@ impl DocumentTab {
             bg_color: None,
             paper_bg_color: None,
             refedit_session: None,
-            block_edit: None,
+            block_edits: Vec::new(),
+            active_block_edit: None,
             active_mleader_style: "Standard".to_string(),
             last_synced_camera_gen: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -501,12 +532,14 @@ impl DocumentTab {
 #[derive(Clone)]
 pub(super) enum HistorySnapshot {
     Delta(DeltaSnapshot),
+    ObjectVisibility(ObjectVisibilitySnapshot),
 }
 
 impl HistorySnapshot {
     pub(super) fn label(&self) -> &str {
         match self {
             HistorySnapshot::Delta(d) => &d.label,
+            HistorySnapshot::ObjectVisibility(v) => &v.label,
         }
     }
 
@@ -527,8 +560,40 @@ impl HistorySnapshot {
                 .saturating_add(d.selected_before.len().saturating_mul(16))
                 .saturating_add(d.selected_after.len().saturating_mul(16))
                 .saturating_add(d.label.len()),
+            HistorySnapshot::ObjectVisibility(v) => v
+                .before
+                .hidden
+                .len()
+                .saturating_add(
+                    v.before
+                        .keep
+                        .as_ref()
+                        .map_or(0, rustc_hash::FxHashSet::len),
+                )
+                .saturating_add(v.after.hidden.len())
+                .saturating_add(
+                    v.after
+                        .keep
+                        .as_ref()
+                        .map_or(0, rustc_hash::FxHashSet::len),
+                )
+                .saturating_add(v.selected_before.len())
+                .saturating_add(v.selected_after.len())
+                .saturating_mul(16)
+                .saturating_add(v.label.len()),
         }
     }
+}
+
+/// Symmetric undo/redo image for session-only object visibility. It contains
+/// no document entity data and therefore can never make isolation serializable.
+#[derive(Clone)]
+pub(super) struct ObjectVisibilitySnapshot {
+    pub(super) before: ObjectIsolationState,
+    pub(super) after: ObjectIsolationState,
+    pub(super) selected_before: Vec<Handle>,
+    pub(super) selected_after: Vec<Handle>,
+    pub(super) label: String,
 }
 
 /// A transactional undo entry: for each touched handle, its before-image and

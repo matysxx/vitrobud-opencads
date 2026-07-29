@@ -16,7 +16,7 @@ use super::external;
 use super::external::RegistryEntry;
 
 /// The curated registry, read from the OpenCADStudio repo's `main` branch.
-const REGISTRY_URL: &str =
+pub(crate) const REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/HakanSeven12/OpenCADStudio/main/plugins/registry.json";
 
 /// Fetch the curated plugin registry (`plugins/registry.json`).
@@ -104,10 +104,7 @@ fn external_lib_ext() -> &'static str {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(15)))
-        .build()
-        .into()
+    crate::network::agent(std::time::Duration::from_secs(15))
 }
 
 const UA: &str = concat!("OpenCADStudio/", env!("CARGO_PKG_VERSION"));
@@ -148,6 +145,20 @@ pub fn fetch_releases(repo: &str) -> Result<Vec<Release>, String> {
     Ok(out)
 }
 
+/// Fetch the repository README from its default branch as raw Markdown.
+pub fn fetch_readme(repo: &str) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/{repo}/readme");
+    agent()
+        .get(&url)
+        .header("User-Agent", UA)
+        .header("Accept", "application/vnd.github.raw+json")
+        .call()
+        .map_err(|e| e.to_string())?
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| e.to_string())
+}
+
 fn download_string(url: &str) -> Result<String, String> {
     agent()
         .get(url)
@@ -176,7 +187,7 @@ fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
 /// Download and install a release's package into the plugins folder. Verifies
 /// the API version from the package's `plugin.toml` first. Returns the plugin
 /// id on success.
-pub fn install(release: &Release) -> Result<String, String> {
+pub fn install(release: &Release, repository: &str) -> Result<String, String> {
     let lib = release.lib_asset().ok_or("no library for this platform")?;
     let toml = release.toml_asset().ok_or("release has no plugin.toml")?;
 
@@ -199,6 +210,8 @@ pub fn install(release: &Release) -> Result<String, String> {
     let bytes = download_bytes(&lib.url)?;
     replace_library(&dir, &lib.name, external_lib_ext(), &bytes)?;
     std::fs::write(dir.join("plugin.toml"), toml_text).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(".source_repo"), format!("{repository}\n"))
+        .map_err(|e| e.to_string())?;
     Ok(manifest.id)
 }
 

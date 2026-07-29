@@ -1386,8 +1386,36 @@ pub fn tessellate(
     }
 
     // ── Fallback for Viewport / Insert / Hatch / Ole2Frame ────────────────
-    let (points_f64, snap_pts, tangent_geoms, key_vertices) =
+    let (mut points_f64, snap_pts, tangent_geoms, mut key_vertices) =
         fallback_geometry(entity);
+    let clipped_viewport_polygon = match entity {
+        EntityType::Viewport(viewport) if !viewport.clip_boundary_handle.is_null() => {
+            let polygon = crate::scene::project::clip_boundary_polygon_for_document(
+                document,
+                viewport.clip_boundary_handle,
+                viewport.center.z as f32,
+            );
+            if polygon.len() >= 3 {
+                let polygon: Vec<[f64; 3]> = polygon
+                    .into_iter()
+                    .map(|point| {
+                        [
+                            point[0] as f64,
+                            point[1] as f64,
+                            point[2] as f64,
+                        ]
+                    })
+                    .collect();
+                points_f64 = polygon.clone();
+                points_f64.push(polygon[0]);
+                key_vertices = polygon.clone();
+                Some(polygon)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
     // `points_f64` are absolute world coords; split into the double-single
     // high/low pair so the outline reconstructs to f64 precision at UTM scale
     // (a NaN separator stays NaN in both buffers).
@@ -1427,14 +1455,18 @@ pub fn tessellate(
     };
     let (pick_tris, pick_tris_low) = match entity {
         EntityType::Viewport(vp) if !is_sheet_vp(vp) => {
-            let (cx, cy, cz) = (vp.center.x, vp.center.y, vp.center.z);
-            let (hw, hh) = (vp.width / 2.0, vp.height / 2.0);
-            points_to_ds(crate::entities::common::quad_pick_tris(&[
-                [cx - hw, cy - hh, cz],
-                [cx + hw, cy - hh, cz],
-                [cx + hw, cy + hh, cz],
-                [cx - hw, cy + hh, cz],
-            ]))
+            if let Some(polygon) = clipped_viewport_polygon.as_ref() {
+                points_to_ds(crate::entities::mesh::triangulate_planar(polygon))
+            } else {
+                let (cx, cy, cz) = (vp.center.x, vp.center.y, vp.center.z);
+                let (hw, hh) = (vp.width / 2.0, vp.height / 2.0);
+                points_to_ds(crate::entities::common::quad_pick_tris(&[
+                    [cx - hw, cy - hh, cz],
+                    [cx + hw, cy - hh, cz],
+                    [cx + hw, cy + hh, cz],
+                    [cx - hw, cy + hh, cz],
+                ]))
+            }
         }
         _ => (Vec::new(), Vec::new()),
     };
@@ -1723,7 +1755,8 @@ fn solid_wire_fallback(entity: &EntityType) -> Vec<[f64; 3]> {
             continue;
         }
         for v in &wire.points {
-            pts.push([v.x, v.y, v.z]);
+            let transformed = crate::entities::solid3d::wire_point(wire, v);
+            pts.push([transformed.x, transformed.y, transformed.z]);
         }
         // NaN sentinel separates distinct wire segments.
         pts.push([f64::NAN, f64::NAN, f64::NAN]);

@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "0.8.7"
+version = "0.8.9"
 edition = "2021"
 build = "build.rs"
 
@@ -35,6 +35,7 @@ solid3d = ["dep:truck-meshalgo", "dep:truck-shapeops", "dep:lzma-sys"]
 # and the consolidated user config (settings.json) via serde-derived structs.
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+semver = "1"
 # Stable, dependency-free add-on contract (manifest + ribbon/CadModule types).
 # Plugin authors target this crate's semver, not OpenCADStudio internals.
 # The `host` feature (out-of-process plugin runtime: interprocess, libloading,
@@ -47,7 +48,8 @@ serde = { version = "1", features = ["derive"] }
 # Forcing the `static` feature builds liblzma from the bundled source, making
 # the binary self-contained on every platform.
 lzma-sys = { version = "0.1", features = ["static"], optional = true }
-iced = { version = "0.14", features = ["image", "svg", "advanced", "canvas", "smol"] }
+iced = { version = "0.14", features = ["image", "svg", "advanced", "canvas", "smol", "markdown"] }
+iced_aw = { version = "0.14.1", features = ["menu"] }
 bytemuck = { version = "1.25", features = ["derive"] }
 glam = { version = "0.33", features = ["bytemuck"] }
 truck-modeling = "0.6"
@@ -82,6 +84,11 @@ ttf-parser = "0.25"
 cosmic-text = "0.15"
 lyon_tessellation = "1.0.20"
 
+[dev-dependencies]
+# Shader-interface regression tests. This is already present transitively
+# through wgpu; declaring it here lets tests inspect WGSL entry-point budgets.
+naga = { version = "27", features = ["wgsl-in"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 # Win32_System_Com    — COM behind "Set as default app"
 #                       (IApplicationAssociationRegistrationUI dialog).
@@ -90,8 +97,8 @@ lyon_tessellation = "1.0.20"
 windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_Registry", "Win32_Storage_FileSystem", "Win32_Foundation"] }
 
 [patch.crates-io]
-# Track the verified DWG round-trip, I/O, and unified PERF fixes.
-acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "8cc4793" }
+# Track standard DWG object relationships used by the scene integration.
+acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "a66b0d9" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native enables the plugin host runtime (out-of-process plugins).
@@ -101,7 +108,7 @@ open = "5"
 # PDF export / printing. Native-only: printpdf pulls a wasm-incompatible
 # `memchr` (1.0.2) via lopdf → nom_locate, and the web build has no filesystem.
 printpdf = { version = "0.9.1", default-features = false }
-ureq = { version = "3", default-features = false, features = ["rustls"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "win-system-proxy"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Web gets the dependency-free manifest/ribbon contract only (no plugin host).
@@ -125,11 +132,20 @@ bincode = "1.3"
 # (Response) for the lazy per-script web font loader (#141).
 web-sys = { version = "0.3", features = [
     "Window",
+    "Storage",
+    "StorageManager",
     "Navigator",
     "Document",
     "Element",
     "HtmlAnchorElement",
     "Blob",
+    "File",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetDirectoryOptions",
+    "FileSystemGetFileOptions",
+    "FileSystemWritableFileStream",
+    "WritableStream",
     "Url",
     "Response",
     "Worker",

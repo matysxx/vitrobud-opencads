@@ -39,6 +39,22 @@ fn is_modal_blocked_key_msg(msg: &Message) -> bool {
     )
 }
 
+fn perf_message_label(msg: &Message) -> &'static str {
+    match msg {
+        Message::ViewportLeftPress | Message::PanePress(_) => "pointer-down",
+        Message::ViewportLeftRelease | Message::PaneRelease(_) => "pointer-up",
+        Message::ViewportMove(_) | Message::PaneMove(_, _) => "pointer-move",
+        Message::CommandFinalize => "command-finalize",
+        Message::CommandEscape => "command-escape",
+        Message::Undo | Message::UndoMany(_) => "undo",
+        Message::Redo | Message::RedoMany(_) => "redo",
+        Message::DeleteSelected => "delete",
+        Message::HoverDwellTick => "hover-dwell",
+        Message::InteractionIndexReady { .. } => "interaction-index-ready",
+        _ => "other",
+    }
+}
+
 const VIEWCUBE_HIT_SIZE: f32 = VIEWCUBE_DRAW_PX;
 
 fn format_size(bytes: u64) -> String {
@@ -55,6 +71,17 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+fn reorder_insertion_index(from: usize, to: usize, after: bool, len: usize) -> Option<usize> {
+    if from >= len || to >= len || from == to {
+        return None;
+    }
+    let mut insertion = to + usize::from(after);
+    if from < insertion {
+        insertion -= 1;
+    }
+    (insertion != from).then_some(insertion)
 }
 
 mod command;
@@ -79,6 +106,16 @@ impl OpenCADStudio {
         }
         if self.active_modal == Some(ScaleManager) {
             self.scale_stage_discard();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.active_modal == Some(FileInUse) {
+            self.pending_save_failure = None;
+            self.pending_close = None;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.active_modal == Some(ExternalChange) {
+            self.pending_external_change = None;
+            self.pending_close = None;
         }
         match self.active_modal {
             // Dismissing these via ✕ is the cancel/decline path.
@@ -118,6 +155,8 @@ impl OpenCADStudio {
     }
 
     pub fn update(&mut self, msg: Message) -> Task<Message> {
+        let perf_started = crate::perf::enabled().then(Instant::now);
+        let perf_label = perf_message_label(&msg);
         // A modal dialog must capture the keyboard the same way it already
         // captures the mouse. Otherwise keystrokes from the global key
         // subscription leak past the modal into the command line and fire as
@@ -164,6 +203,15 @@ impl OpenCADStudio {
             self.snapper.clear_tracking();
             self.otrack_active = None;
         }
+        if let Some(started) = perf_started {
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms >= 5.0 {
+                crate::perf_record!(
+                    "[perf] update {:>7.1}ms message={perf_label}",
+                    elapsed_ms,
+                );
+            }
+        }
         task
     }
 
@@ -202,7 +250,7 @@ impl OpenCADStudio {
                         crate::scene::text::web_font::insert(script, Some(bytes));
                         crate::scene::text::ttf_glyph::clear_fallback_cache();
                         for tab in self.tabs.iter_mut() {
-                            tab.scene.bump_geometry();
+                            tab.scene.invalidate_text_geometry_dependencies();
                         }
                     }
                     Err(e) => {
@@ -242,18 +290,45 @@ impl OpenCADStudio {
             ),
 
             Message::OpenRecent(path) => {
-                // Recents are read from disk every save → the path may be
-                // stale. Skip silently if the file no longer exists; the
-                // entry stays in the list so the user can clean it up.
-                match std::fs::metadata(&path) {
-                    Ok(m) => self.update(Message::OpenPathPicked(Some((path, m.len())))),
-                    Err(_) => {
-                        self.command_line.push_error(&format!(
-                            "Recent file no longer exists: {}",
-                            path.display()
-                        ));
-                        Task::none()
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    // Recents are read from disk every save → the path may be
+                    // stale. Skip silently if the file no longer exists; the
+                    // entry stays in the list so the user can clean it up.
+                    return match std::fs::metadata(&path) {
+                        Ok(m) => self.update(Message::OpenPathPicked(Some((path, m.len())))),
+                        Err(_) => {
+                            self.command_line.push_error(&format!(
+                                "Recent file no longer exists: {}",
+                                path.display()
+                            ));
+                            Task::none()
+                        }
+                    };
+                }
+
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if let Some(idx) = self.tab_showing(&path) {
+                        return self.update(Message::TabSwitch(idx));
                     }
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                    let state = std::sync::Arc::new(crate::io::OpenProgressState::new(
+                        crate::app::OPEN_PHASE_READING,
+                    ));
+                    self.opening = Some(crate::app::OpenProgress {
+                        name,
+                        size_bytes: 0,
+                        state: state.clone(),
+                        started: Instant::now(),
+                    });
+                    Task::perform(
+                        crate::io::open_recent_web(path, state),
+                        Message::FileOpened,
+                    )
                 }
             }
 
@@ -457,6 +532,9 @@ impl OpenCADStudio {
                     size_bytes,
                     state: progress.clone(),
                     started: Instant::now(),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fingerprint:
+                        crate::io::edit_lock::FileFingerprint::capture(&path).ok(),
                 });
                 let size_label = format_size(size_bytes);
                 self.command_line
@@ -496,6 +574,17 @@ impl OpenCADStudio {
                 // behind it.
                 self.drain_pending_open()
             }
+
+            #[cfg(target_arch = "wasm32")]
+            Message::WebRecentStored(result) => match result {
+                Ok(path) => self.push_recent(path),
+                Err(error) => {
+                    self.command_line.push_error(&format!(
+                        "Saved download, but recent copy could not be stored: {error}"
+                    ));
+                    Task::none()
+                }
+            },
 
             Message::ImagePick => {
                 Task::perform(crate::io::pick_image_file(), Message::ImagePickResult)
@@ -906,6 +995,8 @@ impl OpenCADStudio {
             }
 
             Message::TabSwitch(idx) => {
+                self.layout_list_open = false;
+                self.layout_rename_state = None;
                 if idx < self.tabs.len() {
                     if idx != self.active_tab {
                         // The attribute editor is tab-scoped; leaving its tab
@@ -917,6 +1008,11 @@ impl OpenCADStudio {
                         self.stamp_header_sysvars(prev);
                     }
                     self.active_tab = idx;
+                    if self.tabs[idx].is_start
+                        && self.active_modal == Some(super::ModalKind::LayoutManager)
+                    {
+                        self.close_active_modal();
+                    }
                     self.sync_ribbon_layers();
                     self.sync_ribbon_styles();
                     // #21: also re-seed ribbon Color / Linetype / Lineweight
@@ -934,13 +1030,122 @@ impl OpenCADStudio {
                         &self.tabs[idx].scene.document.header.code_page,
                     ) {
                         crate::scene::text::ttf_glyph::clear_fallback_cache();
-                        self.tabs[idx].scene.bump_geometry();
+                        self.tabs[idx]
+                            .scene
+                            .invalidate_text_geometry_dependencies();
                     }
                 }
                 Task::none()
             }
 
+            Message::TabReorder { from, to, after } => {
+                let Some(insertion) =
+                    reorder_insertion_index(from, to, after, self.tabs.len())
+                else {
+                    return Task::none();
+                };
+                if self.tabs.get(from).is_some_and(|tab| tab.is_start)
+                    || self.tabs.get(to).is_some_and(|tab| tab.is_start)
+                {
+                    return Task::none();
+                }
+
+                let active_id = self.tabs[self.active_tab].id;
+                let moved = self.tabs.remove(from);
+                self.tabs.insert(insertion, moved);
+                if let Some(index) = self.tabs.iter().position(|tab| tab.id == active_id) {
+                    self.active_tab = index;
+                }
+                Task::none()
+            }
+
             Message::TabClose(idx) => self.on_tab_close(idx),
+
+            Message::DocTabSaveAll => self.dispatch_command("SAVEALL"),
+
+            Message::DocTabCloseAll => {
+                let ids = self
+                    .tabs
+                    .iter()
+                    .filter(|tab| !tab.is_start)
+                    .map(|tab| tab.id)
+                    .collect();
+                self.begin_tab_close_queue(ids)
+            }
+
+            Message::DocTabCloseOthers(idx) => {
+                let Some(keep_id) = self.tabs.get(idx).filter(|tab| !tab.is_start).map(|t| t.id)
+                else {
+                    return Task::none();
+                };
+                let switch = self.update(Message::TabSwitch(idx));
+                let ids = self
+                    .tabs
+                    .iter()
+                    .filter(|tab| !tab.is_start && tab.id != keep_id)
+                    .map(|tab| tab.id)
+                    .collect();
+                Task::batch([switch, self.begin_tab_close_queue(ids)])
+            }
+
+            Message::DocTabCopyFullPath(idx) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let Some(path) = self.tabs.get(idx).and_then(|tab| tab.current_path.clone())
+                    else {
+                        self.command_line
+                            .push_error("Save the drawing before copying its file path.");
+                        return Task::none();
+                    };
+                    let full_path = path.canonicalize().unwrap_or_else(|_| {
+                        if path.is_absolute() {
+                            path
+                        } else {
+                            std::env::current_dir()
+                                .map(|dir| dir.join(&path))
+                                .unwrap_or(path)
+                        }
+                    });
+                    self.command_line
+                        .push_output(&format!("Copied path: {}", full_path.display()));
+                    return iced::clipboard::write(full_path.to_string_lossy().into_owned());
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = idx;
+                    self.command_line
+                        .push_error("Full file paths are unavailable in the web application.");
+                    Task::none()
+                }
+            }
+
+            Message::DocTabOpenFileLocation(idx) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let Some(path) = self.tabs.get(idx).and_then(|tab| tab.current_path.clone())
+                    else {
+                        self.command_line
+                            .push_error("Save the drawing before opening its file location.");
+                        return Task::none();
+                    };
+                    match crate::sys::reveal_in_file_manager(&path) {
+                        Ok(()) => self
+                            .command_line
+                            .push_output(&format!("Opened file location: {}", path.display())),
+                        Err(error) => self
+                            .command_line
+                            .push_error(&format!("Could not open file location: {error}")),
+                    }
+                    Task::none()
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = idx;
+                    self.command_line
+                        .push_error("File locations are unavailable in the web application.");
+                    Task::none()
+                }
+            }
 
             Message::CommandInput(s) => {
                 // Space submits (acts like Enter) so a command advances
@@ -1008,6 +1213,12 @@ impl OpenCADStudio {
             }
 
             Message::CommandHistoryPrev => {
+                if self.tabs[self.active_tab]
+                    .properties
+                    .hatch_pattern_picker_open
+                {
+                    return self.update(Message::PropHatchPatternNavigate(-2));
+                }
                 // Grip popup wins first — arrow keys walk its items.
                 if let Some(popup) = self.grip_popup.as_mut() {
                     if !popup.items.is_empty() {
@@ -1030,6 +1241,12 @@ impl OpenCADStudio {
             }
 
             Message::CommandHistoryNext => {
+                if self.tabs[self.active_tab]
+                    .properties
+                    .hatch_pattern_picker_open
+                {
+                    return self.update(Message::PropHatchPatternNavigate(2));
+                }
                 if let Some(popup) = self.grip_popup.as_mut() {
                     if !popup.items.is_empty() {
                         popup.selected = (popup.selected + 1) % popup.items.len();
@@ -1144,7 +1361,17 @@ impl OpenCADStudio {
             }
             Message::CommandFinalize => self.on_command_finalize(),
 
-            Message::CommandEscape => self.on_command_escape(),
+            Message::CommandEscape => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                if panel.hatch_pattern_picker_open {
+                    panel.hatch_pattern_picker_open = false;
+                    panel.hatch_pattern_search.clear();
+                    panel.hatch_pattern_focus = 0;
+                    Task::none()
+                } else {
+                    self.on_command_escape()
+                }
+            }
 
             Message::Command(cmd) => {
                 // Close viewport context menu if open.
@@ -1934,12 +2161,9 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::TogglePolarPopup => {
-                self.polar_popup_open ^= true;
-                if self.polar_popup_open {
-                    // Start the custom field empty each time; picking a preset or
-                    // typing a value is what actually enables polar tracking.
-                    self.polar_custom_input.clear();
-                }
+                // MenuBar owns its open state. Reset only the transient field
+                // whenever the caret starts a fresh interaction.
+                self.polar_custom_input.clear();
                 Task::none()
             }
             Message::ClosePolarPopup => {
@@ -1967,7 +2191,8 @@ impl OpenCADStudio {
                 self.scale_popup_open = false;
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
                     tab.scene.annotation_scale = scale;
-                    tab.scene.bump_geometry();
+                    util::sync_annotation_scale_header(&mut tab.scene);
+                    tab.scene.invalidate_annotation_dependencies();
                 }
                 Task::none()
             }
@@ -2205,11 +2430,15 @@ impl OpenCADStudio {
                             self.tabs[i].scene.document.header.annotation_scale_value = p / d;
                         }
                     }
-                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].scene.invalidate_annotation_dependencies();
                 }
                 Task::none()
             }
             Message::ToggleLayoutList => {
+                if self.tabs[self.active_tab].is_start {
+                    self.layout_list_open = false;
+                    return Task::none();
+                }
                 self.layout_list_open ^= true;
                 Task::none()
             }
@@ -2557,6 +2786,12 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MTextCaretMove(d) => {
+                if self.tabs[self.active_tab]
+                    .properties
+                    .hatch_pattern_picker_open
+                {
+                    return self.update(Message::PropHatchPatternNavigate(d as i8));
+                }
                 self.mtext_caret_move(d);
                 Task::none()
             }
@@ -2795,78 +3030,165 @@ impl OpenCADStudio {
             Message::PropLayerChanged(layer) => {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
-                if !handles.is_empty() {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_common_prop(
-                                entity, "layer", &layer,
-                            );
-                        }
-                    }
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].dirty = true;
+                if handles.is_empty() {
+                    let task = self.on_ribbon_layer_changed(layer);
                     self.refresh_properties();
+                    return task;
                 }
+                self.push_undo_snapshot(i, "CHPROP");
+                for &handle in &handles {
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                        crate::scene::view::dispatch::apply_common_prop(
+                            entity, "layer", &layer,
+                        );
+                    }
+                }
+                self.invalidate_property_targets(i, &handles);
+                self.tabs[i].dirty = true;
+                self.refresh_properties();
                 Task::none()
             }
 
             Message::PropColorChanged(color) => {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
-                if !handles.is_empty() {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_color(entity, color);
-                        }
-                    }
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].properties.color_picker_open = false;
+                if handles.is_empty() {
                     self.tabs[i].properties.color_palette_open = false;
-                    self.tabs[i].dirty = true;
+                    let task = self.on_ribbon_color_changed(color);
                     self.refresh_properties();
+                    return task;
                 }
+                self.push_undo_snapshot(i, "CHPROP");
+                for &handle in &handles {
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                        crate::scene::view::dispatch::apply_color(entity, color);
+                    }
+                }
+                self.invalidate_property_targets(i, &handles);
+                self.tabs[i].properties.color_picker_open = false;
+                self.tabs[i].properties.color_palette_open = false;
+                self.tabs[i].dirty = true;
+                self.refresh_properties();
                 Task::none()
             }
 
             Message::PropLwChanged(lw) => {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
-                if !handles.is_empty() {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_line_weight(entity, lw);
-                        }
-                    }
-                    self.invalidate_property_targets(i, &handles);
+                if handles.is_empty() {
+                    self.tabs[i].scene.document.header.current_line_weight = lw.value();
                     self.tabs[i].dirty = true;
+                    self.ribbon.active_lineweight = lw;
                     self.refresh_properties();
+                    return Task::none();
                 }
+                self.push_undo_snapshot(i, "CHPROP");
+                for &handle in &handles {
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                        crate::scene::view::dispatch::apply_line_weight(entity, lw);
+                    }
+                }
+                self.invalidate_property_targets(i, &handles);
+                self.tabs[i].dirty = true;
+                self.refresh_properties();
                 Task::none()
             }
 
             Message::PropLinetypeChanged(lt) => {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
-                if !handles.is_empty() {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_common_prop(
-                                entity, "linetype", &lt,
-                            );
-                        }
-                    }
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].dirty = true;
+                if handles.is_empty() {
+                    let task = self.on_ribbon_linetype_changed(lt);
                     self.refresh_properties();
+                    return task;
+                }
+                self.push_undo_snapshot(i, "CHPROP");
+                for &handle in &handles {
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                        crate::scene::view::dispatch::apply_common_prop(
+                            entity, "linetype", &lt,
+                        );
+                    }
+                }
+                self.invalidate_property_targets(i, &handles);
+                self.tabs[i].dirty = true;
+                self.refresh_properties();
+                Task::none()
+            }
+
+            Message::PropHatchPatternChanged(name) => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                panel.hatch_pattern_picker_open = false;
+                panel.hatch_pattern_search.clear();
+                self.on_prop_hatch_pattern_changed(name)
+            }
+
+            Message::PropHatchPatternPickerToggle(current) => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                panel.hatch_pattern_picker_open = !panel.hatch_pattern_picker_open;
+                if panel.hatch_pattern_picker_open {
+                    panel.color_picker_open = false;
+                    panel.color_palette_open = false;
+                    panel.open_color_field = None;
+                    panel.edit_choice_open = false;
+                    panel.hatch_pattern_focus =
+                        crate::ui::properties::filtered_hatch_patterns("")
+                            .iter()
+                            .position(|entry| entry.name.eq_ignore_ascii_case(&current))
+                            .unwrap_or(0);
+                    return iced::widget::operation::focus(iced::widget::Id::new(
+                        "hatch-pattern-search",
+                    ));
+                } else {
+                    panel.hatch_pattern_search.clear();
+                    panel.hatch_pattern_focus = 0;
                 }
                 Task::none()
             }
 
-            Message::PropHatchPatternChanged(name) => self.on_prop_hatch_pattern_changed(name),
+            Message::PropHatchPatternSearchChanged(search) => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                panel.hatch_pattern_search = search;
+                panel.hatch_pattern_focus = 0;
+                Task::none()
+            }
+
+            Message::PropHatchPatternFocus(index) => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                let len =
+                    crate::ui::properties::filtered_hatch_patterns(&panel.hatch_pattern_search)
+                        .len();
+                if index < len {
+                    panel.hatch_pattern_focus = index;
+                }
+                Task::none()
+            }
+
+            Message::PropHatchPatternNavigate(delta) => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                let len =
+                    crate::ui::properties::filtered_hatch_patterns(&panel.hatch_pattern_search)
+                        .len();
+                if len > 0 {
+                    panel.hatch_pattern_focus =
+                        (panel.hatch_pattern_focus as isize + delta as isize)
+                            .rem_euclid(len as isize) as usize;
+                }
+                Task::none()
+            }
+
+            Message::PropHatchPatternConfirm => {
+                let panel = &self.tabs[self.active_tab].properties;
+                let name =
+                    crate::ui::properties::filtered_hatch_patterns(&panel.hatch_pattern_search)
+                        .get(panel.hatch_pattern_focus)
+                        .map(|entry| entry.name.clone());
+                if let Some(name) = name {
+                    self.update(Message::PropHatchPatternChanged(name))
+                } else {
+                    Task::none()
+                }
+            }
 
             Message::PropBoolToggle(field) => {
                 let i = self.active_tab;
@@ -3014,6 +3336,10 @@ impl OpenCADStudio {
             Message::PropEditChoiceToggle => {
                 let panel = &mut self.tabs[self.active_tab].properties;
                 panel.edit_choice_open = !panel.edit_choice_open;
+                if panel.edit_choice_open {
+                    panel.hatch_pattern_picker_open = false;
+                    panel.hatch_pattern_search.clear();
+                }
                 Task::none()
             }
 
@@ -3033,6 +3359,8 @@ impl OpenCADStudio {
                     !self.tabs[i].properties.color_picker_open;
                 if self.tabs[i].properties.color_picker_open {
                     self.tabs[i].properties.color_palette_open = false;
+                    self.tabs[i].properties.hatch_pattern_picker_open = false;
+                    self.tabs[i].properties.hatch_pattern_search.clear();
                 }
                 Task::none()
             }
@@ -3160,6 +3488,8 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 self.tabs[i].properties.color_picker_open = false;
                 self.tabs[i].properties.color_palette_open = false;
+                self.tabs[i].properties.hatch_pattern_picker_open = false;
+                self.tabs[i].properties.hatch_pattern_search.clear();
                 Task::none()
             }
 
@@ -3174,25 +3504,70 @@ impl OpenCADStudio {
                 self.on_layout_switch(name)
             }
 
+            Message::BlockEditSwitch(name) => {
+                self.layout_list_open = false;
+                self.on_block_edit_switch(name)
+            }
+
+            Message::LayoutReorder { from, to, after } => {
+                let i = self.active_tab;
+                if self.tabs[i].is_start {
+                    return Task::none();
+                }
+                let mut paper: Vec<String> = self.tabs[i]
+                    .scene
+                    .layout_names()
+                    .into_iter()
+                    .skip(1)
+                    .collect();
+                let Some(from_index) = paper.iter().position(|name| name == &from) else {
+                    return Task::none();
+                };
+                let Some(to_index) = paper.iter().position(|name| name == &to) else {
+                    return Task::none();
+                };
+                let Some(insertion) =
+                    reorder_insertion_index(from_index, to_index, after, paper.len())
+                else {
+                    return Task::none();
+                };
+
+                let moved = paper.remove(from_index);
+                paper.insert(insertion, moved);
+                self.push_undo_snapshot(i, "LAYOUT REORDER");
+                self.tabs[i].scene.set_layout_tab_order(&paper);
+                self.tabs[i].dirty = true;
+                Task::none()
+            }
+
             Message::LayoutCreate => self.on_layout_create(),
 
             Message::LayoutDelete(name) => {
                 let i = self.active_tab;
+                let deleting_current = self.tabs[i].scene.current_layout == name;
+                let cancel_task = if deleting_current {
+                    self.cancel_active_command_for_space_change()
+                } else {
+                    Task::none()
+                };
                 self.push_undo_snapshot(i, "LAYOUT DEL");
+                let switch_task = if deleting_current {
+                    self.on_layout_switch("Model".to_string())
+                } else {
+                    Task::none()
+                };
                 if self.tabs[i].scene.delete_layout(&name) {
-                    self.layout_context_menu = None;
                     self.layout_rename_state = None;
                     self.command_line
                         .push_output(&format!("Layout \"{name}\" silindi"));
                     self.tabs[i].dirty = true;
                 }
-                Task::none()
+                Task::batch([cancel_task, switch_task])
             }
 
             Message::LayoutRenameStart(name) => {
                 if name != "Model" {
                     self.layout_rename_state = Some((name.clone(), name));
-                    self.layout_context_menu = None;
                     // Focus the inline field so the user types into it
                     // directly instead of the command line (issue #86).
                     return iced::widget::operation::focus(iced::widget::Id::new(
@@ -3217,28 +3592,14 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::LayoutContextMenu(name) => {
-                // No menu on the transient BEDIT block tab: Rename/Delete are
-                // layout operations and don't apply to it.
-                let is_block_tab = self.tabs[self.active_tab]
-                    .block_edit
-                    .as_ref()
-                    .map(|be| be.block_name == name)
-                    .unwrap_or(false);
-                if name != "Model" && !is_block_tab {
-                    self.layout_context_menu = Some(name);
-                }
-                Task::none()
-            }
-
-            Message::LayoutContextMenuClose => {
-                self.layout_context_menu = None;
-                Task::none()
-            }
-
             // ── Layout Manager Panel ──────────────────────────────────────────
             Message::LayoutManagerOpen => {
                 let i = self.active_tab;
+                if self.tabs[i].is_start {
+                    self.command_line
+                        .push_info("Open or create a drawing to manage layouts.");
+                    return Task::none();
+                }
                 let current = self.tabs[i].scene.current_layout.clone();
                 self.layout_manager_selected = current.clone();
                 self.layout_manager_rename_buf = if current == "Model" {
@@ -3292,6 +3653,11 @@ impl OpenCADStudio {
             }
             Message::LayoutManagerNew => {
                 let i = self.active_tab;
+                if self.tabs[i].is_start {
+                    self.command_line
+                        .push_info("Open or create a drawing to add a layout.");
+                    return Task::none();
+                }
                 let existing = self.tabs[i].scene.layout_names();
                 let n = (1usize..)
                     .find(|n| !existing.contains(&format!("Layout{n}")))
@@ -3316,20 +3682,28 @@ impl OpenCADStudio {
                 if name == "Model" {
                     self.command_line
                         .push_error("Cannot delete the Model layout.");
+                    Task::none()
                 } else {
+                    let deleting_current = self.tabs[i].scene.current_layout == name;
+                    let cancel_task = if deleting_current {
+                        self.cancel_active_command_for_space_change()
+                    } else {
+                        Task::none()
+                    };
                     self.push_undo_snapshot(i, "LAYOUT DELETE");
+                    let switch_task = if deleting_current {
+                        self.on_layout_switch("Model".to_string())
+                    } else {
+                        Task::none()
+                    };
                     self.tabs[i].scene.delete_layout(&name);
                     self.tabs[i].dirty = true;
-                    // Switch to Model if active layout was deleted.
-                    if self.tabs[i].scene.current_layout == name {
-                        self.tabs[i].scene.set_current_layout("Model".to_string());
-                    }
                     self.layout_manager_selected = "Model".to_string();
                     self.layout_manager_rename_buf = String::new();
                     self.command_line
                         .push_output(&format!("Layout '{name}' deleted."));
+                    Task::batch([cancel_task, switch_task])
                 }
-                Task::none()
             }
             Message::LayoutManagerMoveLeft => {
                 let i = self.active_tab;
@@ -3367,16 +3741,22 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::LayoutManagerSetCurrent => {
-                let i = self.active_tab;
                 let name = self.layout_manager_selected.clone();
-                self.tabs[i].scene.set_current_layout(name.clone());
-                self.command_line
-                    .push_output(&format!("Switched to layout '{name}'."));
-                Task::none()
+                let task = self.on_layout_switch(name.clone());
+                if self.tabs[self.active_tab].scene.current_layout == name {
+                    self.command_line
+                        .push_output(&format!("Switched to layout '{name}'."));
+                }
+                task
             }
 
             Message::SetTheme(theme) => {
+                self.ui_theme.name = theme.to_string();
+                self.ui_theme.palette =
+                    crate::app::config::UiThemePalette::from_iced(theme.palette());
+                self.theme_color_inputs = self.ui_theme.palette.hex_values();
                 self.active_theme = theme;
+                self.persist_settings_if_changed();
                 Task::none()
             }
 
@@ -3436,7 +3816,49 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            // ── About window ──────────────────────────────────────────────
+            // ── Options / About windows ───────────────────────────────────
+            Message::OptionsOpen => {
+                self.active_modal = Some(super::ModalKind::Options);
+                Task::none()
+            }
+
+            Message::DefaultSaveFormatChanged(format) => {
+                self.default_save_format =
+                    crate::io::canonical_save_format(&format).to_string();
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
+            Message::OptionsThemeChanged(name) => {
+                self.ui_theme.name = name;
+                if let Some(theme) =
+                    crate::app::config::builtin_theme(&self.ui_theme.name)
+                {
+                    self.ui_theme.palette =
+                        crate::app::config::UiThemePalette::from_iced(theme.palette());
+                    self.theme_color_inputs = self.ui_theme.palette.hex_values();
+                    self.active_theme = theme;
+                } else {
+                    self.ui_theme.name = "Custom".to_string();
+                    self.active_theme = self.ui_theme.to_iced();
+                }
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
+            Message::OptionsThemeColorChanged(index, value) => {
+                if index >= self.theme_color_inputs.len() {
+                    return Task::none();
+                }
+                self.theme_color_inputs[index] = value.clone();
+                if self.ui_theme.palette.set_hex(index, &value) {
+                    self.ui_theme.name = "Custom".to_string();
+                    self.active_theme = self.ui_theme.to_iced();
+                    self.persist_settings_if_changed();
+                }
+                Task::none()
+            }
+
             Message::AboutOpen => {
                 self.active_modal = Some(super::ModalKind::About);
                 Task::none()
@@ -3634,24 +4056,56 @@ impl OpenCADStudio {
 
             // ── Plugin Manager window ─────────────────────────────────────
             Message::PluginManagerOpen => {
-                // Refresh the on-disk external-plugin list each time the manager
-                // opens so newly dropped-in packages show up.
-                self.external_plugins = crate::plugin::external::discover();
-                self.active_modal = Some(super::ModalKind::PluginManager);
-                // Fetch the curated registry and release lists for linked repos.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.command_line
+                        .push_info("External plugins are available in the desktop app.");
+                    return Task::none();
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
+                    // Refresh the on-disk external-plugin list each time the manager
+                    // opens so newly dropped-in packages show up.
+                    self.external_plugins = crate::plugin::external::discover();
+                    self.marketplace_status.clear();
+                    self.active_modal = Some(super::ModalKind::PluginManager);
+                    // Fetch the curated registry and release lists for linked repos.
+                    self.plugin_registry_loading = true;
+                    self.plugin_registry_error = None;
+                    self.plugin_registry_error_details_open = false;
                     let mut tasks = vec![self.fetch_registry_task()];
+                    let release_repos: rustc_hash::FxHashSet<String> = self
+                        .plugin_repos
+                        .iter()
+                        .cloned()
+                        .chain(
+                            self.external_plugins
+                                .iter()
+                                .filter_map(|plugin| plugin.repository.clone()),
+                        )
+                        .collect();
                     tasks.extend(
-                        self.plugin_repos
-                            .clone()
+                        release_repos
                             .into_iter()
                             .map(|r| self.fetch_releases_task(r)),
                     );
+                    if self.selected_plugin_repo.is_none() {
+                        self.selected_plugin_repo = self
+                            .external_plugins
+                            .iter()
+                            .find_map(|plugin| plugin.repository.clone())
+                            .or_else(|| self.plugin_registry.first().map(|entry| entry.repo.clone()))
+                            .or_else(|| self.plugin_repos.first().cloned());
+                    }
+                    if let Some(repo) = self.selected_plugin_repo.clone() {
+                        if !self.plugin_readmes.contains_key(&repo)
+                            && self.plugin_readme_loading.insert(repo.clone())
+                        {
+                            tasks.push(self.fetch_plugin_readme_task(repo));
+                        }
+                    }
                     return Task::batch(tasks);
                 }
-                #[cfg(target_arch = "wasm32")]
-                Task::none()
             }
             Message::PluginManagerClose => {
                 self.close_active_modal();
@@ -3671,38 +4125,102 @@ impl OpenCADStudio {
                 self.plugin_repo_input = s;
                 Task::none()
             }
+            Message::PluginSearchInput(s) => {
+                self.plugin_search_input = s;
+                Task::none()
+            }
             Message::PluginRepoAdd => {
-                let repo = self
-                    .plugin_repo_input
-                    .trim()
-                    .trim_start_matches("https://github.com/")
-                    .trim_end_matches('/')
-                    .to_string();
-                if repo.is_empty() || self.plugin_repos.contains(&repo) {
+                let Some(repo) =
+                    crate::plugin::external::normalize_repository(&self.plugin_repo_input)
+                else {
+                    self.marketplace_status =
+                        "Enter a GitHub URL or repository in owner/repo format.".to_string();
+                    return Task::none();
+                };
+                if self.plugin_repos.contains(&repo)
+                    || self.plugin_registry.iter().any(|entry| entry.repo == repo)
+                {
+                    self.marketplace_status = format!("{repo} is already in the catalog.");
+                    self.selected_plugin_repo = Some(repo.clone());
+                    if !self.plugin_readmes.contains_key(&repo)
+                        && self.plugin_readme_loading.insert(repo.clone())
+                    {
+                        return self.fetch_plugin_readme_task(repo);
+                    }
+                    return Task::none();
+                }
+                if self
+                    .external_plugins
+                    .iter()
+                    .any(|plugin| plugin.repository.as_deref() == Some(repo.as_str()))
+                {
+                    self.marketplace_status = format!("{repo} is already installed.");
+                    self.selected_plugin_repo = Some(repo.clone());
+                    if !self.plugin_readmes.contains_key(&repo)
+                        && self.plugin_readme_loading.insert(repo.clone())
+                    {
+                        return self.fetch_plugin_readme_task(repo);
+                    }
                     return Task::none();
                 }
                 self.plugin_repos.push(repo.clone());
                 self.plugin_repo_input.clear();
                 self.persist_settings_if_changed();
                 self.marketplace_status = format!("Fetching releases for {repo}…");
-                self.fetch_releases_task(repo)
+                self.selected_plugin_repo = Some(repo.clone());
+                self.plugin_readmes.remove(&repo);
+                self.plugin_readme_loading.insert(repo.clone());
+                Task::batch(vec![
+                    self.fetch_releases_task(repo.clone()),
+                    self.fetch_plugin_readme_task(repo),
+                ])
             }
             Message::PluginRepoRemove(repo) => {
                 self.plugin_repos.retain(|r| r != &repo);
                 self.repo_release_tags.remove(&repo);
                 self.repo_selected_tag.remove(&repo);
+                if self.selected_plugin_repo.as_deref() == Some(repo.as_str())
+                    && !self.plugin_registry.iter().any(|entry| entry.repo == repo)
+                {
+                    self.selected_plugin_repo =
+                        self.plugin_registry.first().map(|entry| entry.repo.clone());
+                }
                 self.persist_settings_if_changed();
                 Task::none()
             }
             Message::PluginRegistryFetched(Ok(entries)) => {
+                self.plugin_registry_loading = false;
+                self.plugin_registry_error = None;
+                self.plugin_registry_error_details_open = false;
                 // Fetch releases for every curated repo so the dropdowns fill in.
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let tasks: Vec<_> = entries
+                    if self.selected_plugin_repo.is_none() {
+                        self.selected_plugin_repo = self
+                            .external_plugins
+                            .iter()
+                            .find_map(|plugin| {
+                                plugin.repository.clone().or_else(|| {
+                                    entries
+                                        .iter()
+                                        .find(|entry| entry.name.eq_ignore_ascii_case(&plugin.name))
+                                        .map(|entry| entry.repo.clone())
+                                })
+                            })
+                            .or_else(|| entries.first().map(|entry| entry.repo.clone()));
+                    }
+                    let mut tasks: Vec<_> = entries
                         .iter()
                         .map(|e| self.fetch_releases_task(e.repo.clone()))
                         .collect();
                     self.plugin_registry = entries;
+                    if let Some(repo) = self.selected_plugin_repo.clone() {
+                        if !self.plugin_readmes.contains_key(&repo)
+                            && self.plugin_readme_loading.insert(repo.clone())
+                        {
+                            tasks.push(self.fetch_plugin_readme_task(repo));
+                        }
+                    }
                     return Task::batch(tasks);
                 }
                 #[cfg(target_arch = "wasm32")]
@@ -3712,7 +4230,41 @@ impl OpenCADStudio {
                 }
             }
             Message::PluginRegistryFetched(Err(e)) => {
-                self.marketplace_status = format!("Registry: {e}");
+                self.plugin_registry_loading = false;
+                self.plugin_registry_error = Some(e);
+                self.plugin_registry_error_details_open = false;
+                Task::none()
+            }
+            Message::PluginRegistryRetry => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.plugin_registry_loading = true;
+                    self.plugin_registry_error = None;
+                    self.plugin_registry_error_details_open = false;
+                    return self.fetch_registry_task();
+                }
+                #[cfg(target_arch = "wasm32")]
+                Task::none()
+            }
+            Message::PluginRegistryErrorDetailsToggle => {
+                if self.plugin_registry_error.is_some() {
+                    self.plugin_registry_error_details_open =
+                        !self.plugin_registry_error_details_open;
+                }
+                Task::none()
+            }
+            Message::PluginRegistryCopyDiagnostics => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(error) = &self.plugin_registry_error {
+                    return iced::clipboard::write(format!(
+                        "Open CAD Studio v{}\nOS: {}\nArchitecture: {}\nRegistry: {}\nError: {}",
+                        env!("CARGO_PKG_VERSION"),
+                        std::env::consts::OS,
+                        std::env::consts::ARCH,
+                        crate::plugin::marketplace::REGISTRY_URL,
+                        error,
+                    ));
+                }
                 Task::none()
             }
             Message::PatronsFetched(Ok(names)) => {
@@ -3737,6 +4289,16 @@ impl OpenCADStudio {
                 self.videos_loading = false;
                 Task::none()
             }
+            Message::DiscussionsFetched(Ok(discussions)) => {
+                self.discussions_loading = false;
+                self.discussions = discussions;
+                Task::none()
+            }
+            // Offline: keep the native cache (web leaves the panel empty).
+            Message::DiscussionsFetched(Err(_)) => {
+                self.discussions_loading = false;
+                Task::none()
+            }
             Message::RecentThumbsLoaded(thumbs) => {
                 for (path, handle) in thumbs {
                     self.recent_thumbs.insert(path, handle);
@@ -3749,7 +4311,10 @@ impl OpenCADStudio {
                         .entry(repo.clone())
                         .or_insert_with(|| first.clone());
                 }
-                self.marketplace_status = format!("{repo}: {} installable release(s)", tags.len());
+                if self.marketplace_status == format!("Fetching releases for {repo}…") {
+                    self.marketplace_status =
+                        format!("Repository added. {} installable release(s) found.", tags.len());
+                }
                 self.repo_release_tags.insert(repo, tags);
                 Task::none()
             }
@@ -3761,11 +4326,36 @@ impl OpenCADStudio {
                 self.repo_selected_tag.insert(repo, tag);
                 Task::none()
             }
+            Message::PluginReadmeSelect(repo) => {
+                self.selected_plugin_repo = Some(repo.clone());
+                if self.plugin_readme_loading.contains(&repo) {
+                    return Task::none();
+                }
+                if matches!(self.plugin_readmes.get(&repo), Some(Ok(_))) {
+                    return Task::none();
+                }
+                // A second click on an error state acts as retry.
+                self.plugin_readmes.remove(&repo);
+                self.plugin_readme_loading.insert(repo.clone());
+                self.fetch_plugin_readme_task(repo)
+            }
+            Message::PluginReadmeFetched(repo, result) => {
+                self.plugin_readme_loading.remove(&repo);
+                self.plugin_readmes.insert(
+                    repo,
+                    result.map(|source| iced::widget::markdown::Content::parse(&source)),
+                );
+                Task::none()
+            }
             Message::PluginInstall(repo) => {
                 let Some(tag) = self.repo_selected_tag.get(&repo).cloned() else {
                     return Task::none();
                 };
                 self.marketplace_status = format!("Installing {repo} {tag}…");
+                self.install_task(repo, tag)
+            }
+            Message::PluginUpdate(repo, tag) => {
+                self.marketplace_status = format!("Updating {repo} to {tag}…");
                 self.install_task(repo, tag)
             }
             Message::PluginInstalled(Ok(id)) => {
@@ -3823,8 +4413,17 @@ impl OpenCADStudio {
 
             Message::EnterViewport(handle) => {
                 let i = self.active_tab;
+                let context_changed = self.tabs[i].scene.active_viewport != Some(handle);
+                let cancel_task = if context_changed {
+                    self.cancel_active_command_for_space_change()
+                } else {
+                    Task::none()
+                };
                 let perf = crate::perf::enabled();
                 let total = Instant::now();
+                if context_changed {
+                    self.tabs[i].scene.clear_preview_wire();
+                }
                 // Clear paper-space selection before entering model space.
                 self.tabs[i].scene.deselect_all();
                 self.tabs[i].scene.active_viewport = Some(handle);
@@ -3858,11 +4457,23 @@ impl OpenCADStudio {
                         handle.value(),
                     );
                 }
-                Task::none()
+                if context_changed {
+                    self.sync_dyn_fields();
+                }
+                cancel_task
             }
 
             Message::ExitViewport => {
                 let i = self.active_tab;
+                let context_changed = self.tabs[i].scene.active_viewport.is_some();
+                let cancel_task = if context_changed {
+                    self.cancel_active_command_for_space_change()
+                } else {
+                    Task::none()
+                };
+                if context_changed {
+                    self.tabs[i].scene.clear_preview_wire();
+                }
                 // Clear model-space selection before returning to paper space.
                 self.tabs[i].scene.deselect_all();
                 self.tabs[i].scene.active_viewport = None;
@@ -3872,7 +4483,10 @@ impl OpenCADStudio {
                 self.tabs[i].refresh_active_ucs();
                 self.refresh_properties();
                 self.command_line.push_output("PSPACE");
-                Task::none()
+                if context_changed {
+                    self.sync_dyn_fields();
+                }
+                cancel_task
             }
 
             Message::MspaceCommand => {
@@ -3931,10 +4545,18 @@ impl OpenCADStudio {
             }
 
             Message::Noop => Task::none(),
+            Message::StatusMenuTooltipHidden(hidden) => {
+                self.status_menu_tooltip_hidden = hidden;
+                if hidden {
+                    self.polar_custom_input.clear();
+                }
+                Task::none()
+            }
 
             // ── Unsaved-changes dialog ────────────────────────────────────
             Message::UnsavedDialogCancel => {
                 self.pending_close = None;
+                self.pending_tab_closes.clear();
                 self.close_unsaved_dialog_window()
             }
 
@@ -3953,6 +4575,33 @@ impl OpenCADStudio {
 
             #[cfg(not(target_arch = "wasm32"))]
             Message::SaveFinished(outcome) => self.on_save_finished(outcome),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::SaveFileInUseRetry => self.on_save_file_in_use_retry(),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::SaveFileInUseSaveAs => self.on_save_file_in_use_save_as(),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::SaveFileInUseCancel => {
+                self.close_active_modal();
+                Task::none()
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::ExternalChangeReload => self.on_external_change_reload(),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::ExternalChangeSaveAs => self.on_external_change_save_as(),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::ExternalChangeOverwrite => self.on_external_change_overwrite(),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            Message::ExternalChangeCancel => {
+                self.close_active_modal();
+                Task::none()
+            }
 
             // ── Page Setup ────────────────────────────────────────────────
             Message::UpdateCheckResult(latest) => {
@@ -4011,23 +4660,25 @@ impl OpenCADStudio {
                     .and_then(|p: &std::path::Path| p.file_stem())
                     .map(|s: &std::ffi::OsStr| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "drawing".into());
-                Task::perform(
-                    crate::io::pdf_export::pick_pdf_path_owned(stem),
-                    Message::PlotExportPath,
-                )
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let Some(window_id) = self.main_window else {
+                        return Task::done(Message::PlotExportPath(None));
+                    };
+                    iced::window::run(window_id, move |parent| {
+                        crate::io::pdf_export::pick_pdf_path_owned(stem, parent)
+                    })
+                    .map(Message::PlotExportPath)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    Task::perform(
+                        crate::io::pdf_export::pick_pdf_path_owned(stem),
+                        Message::PlotExportPath,
+                    )
+                }
             }
-            // None means the save dialog was cancelled — or never opened at
-            // all (a broken XDG portal / missing zenity on Linux resolves to
-            // None too, and rfd only reports that through `log`, which is
-            // opt-in). Either way say something instead of silently doing
-            // nothing. (#369)
-            Message::PlotExportPath(None) => {
-                self.command_line.push_info(
-                    "PDF export canceled — no file chosen. \
-                     If no dialog appeared, use EXPORTPDF <path>.",
-                );
-                Task::none()
-            }
+            Message::PlotExportPath(None) => Task::none(),
             Message::PlotExportPath(Some(path)) => self.on_plot_export_path_some(path),
 
             Message::PlotFormat(f) => {
@@ -4046,19 +4697,25 @@ impl OpenCADStudio {
                     .and_then(|p: &std::path::Path| p.file_stem())
                     .map(|s: &std::ffi::OsStr| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "drawing".into());
-                Task::perform(
-                    crate::io::pdf_export::pick_pdf_path_owned(stem),
-                    Message::PlotWindowExportPath,
-                )
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let Some(window_id) = self.main_window else {
+                        return Task::done(Message::PlotWindowExportPath(None));
+                    };
+                    iced::window::run(window_id, move |parent| {
+                        crate::io::pdf_export::pick_pdf_path_owned(stem, parent)
+                    })
+                    .map(Message::PlotWindowExportPath)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    Task::perform(
+                        crate::io::pdf_export::pick_pdf_path_owned(stem),
+                        Message::PlotWindowExportPath,
+                    )
+                }
             }
-            // Same silent-None trap as PlotExportPath above. (#369)
-            Message::PlotWindowExportPath(None) => {
-                self.command_line.push_info(
-                    "PDF export canceled — no file chosen. \
-                     If no dialog appeared, use EXPORTPDF <path>.",
-                );
-                Task::none()
-            }
+            Message::PlotWindowExportPath(None) => Task::none(),
             Message::PlotWindowExportPath(Some(path)) => self.on_plot_window_export_path_some(path),
 
             Message::BackgroundIoFinished(result, reopen_plot) => {
@@ -4618,6 +5275,13 @@ impl OpenCADStudio {
             }
             Message::MLeaderStyleSetEnum { field, value } => {
                 self.on_mleader_style_set_enum(field, value)
+            }
+            Message::MLeaderStyleLineWeightChanged(line_weight) => {
+                let i = self.active_tab;
+                if let Some(s) = self.mleaderstyle_mut(i) {
+                    s.line_weight = line_weight;
+                }
+                Task::none()
             }
             Message::MLeaderStyleSetHandle { field, value } => {
                 self.on_mleader_style_set_handle(field, value)

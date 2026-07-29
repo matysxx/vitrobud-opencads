@@ -23,6 +23,34 @@ use iced::{mouse, Point, Task};
 
 
 impl OpenCADStudio {
+pub(super) fn begin_tab_close_queue(&mut self, tab_ids: Vec<u64>) -> Task<Message> {
+                self.pending_tab_closes.clear();
+                self.pending_tab_closes.extend(tab_ids);
+                self.continue_tab_close_queue()
+    }
+
+    /// Close queued drawings until a dirty tab requires confirmation. Queue
+    /// entries use stable document ids because removing an earlier tab changes
+    /// every later vector index.
+    pub(super) fn continue_tab_close_queue(&mut self) -> Task<Message> {
+        let mut tasks = Vec::new();
+        while let Some(tab_id) = self.pending_tab_closes.pop_front() {
+            let Some(idx) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+                continue;
+            };
+            if self.tabs[idx].is_start {
+                continue;
+            }
+            if self.tabs[idx].dirty {
+                self.pending_close = Some(crate::app::PendingClose::Tab(idx));
+                tasks.push(self.open_unsaved_dialog_window());
+                break;
+            }
+            tasks.push(self.on_tab_close(idx));
+        }
+        Task::batch(tasks)
+    }
+
 pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 // Start tab is fixed — close requests on it are no-ops.
                 if self.tabs.get(idx).map_or(false, |t| t.is_start) {
@@ -171,7 +199,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     self.tabs[i]
                         .scene
                         .invalidate_dim_block_recorded(pending.handle);
-                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].scene.bump_entities(&[(
+                        pending.handle,
+                        crate::scene::ChangeKind::Modified,
+                    )]);
                     self.tabs[i].dirty = true;
                     self.refresh_selected_grips();
                     self.refresh_properties();
@@ -295,6 +326,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     if let Some((base, dir)) = self.otrack_active {
                         if let Some(dist) = crate::app::expr_eval::eval_number(text.trim()) {
                             let pt = base + dir * dist;
+                            if !self.command_point_allowed(i, pt) {
+                                return Task::none();
+                            }
                             self.last_point = Some(pt);
                             self.dyn_user_reshaped = false;
                             self.sync_dyn_fields();
@@ -337,6 +371,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 }
                             }
                         };
+                        if !self.command_point_allowed(i, wcs_pt) {
+                            return Task::none();
+                        }
                         self.last_point = Some(wcs_pt);
                         self.dyn_user_reshaped = false;
                         self.sync_dyn_fields();
@@ -487,47 +524,12 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     self.command_line.input.clear();
                     return Task::none();
                 }
-                // A hot grip (click-move-click placement in progress) ends on
-                // Escape, leaving the entity at its last previewed position.
-                if self.tabs[self.active_tab].active_grip.take().is_some() {
-                    // An Add-Leader arrow being placed: Esc removes it again.
-                    if let Some((h, gid)) = self.grip_add_provisional.take() {
-                        let i = self.active_tab;
-                        use crate::entities::traits::EntityTypeOps;
-                        if let Some(e) = self.tabs[i].scene.document.get_entity_mut(h) {
-                            e.apply_grip_menu(
-                                gid,
-                                crate::scene::model::object::GripMenuAction::RemoveLeader,
-                            );
-                        }
-                        self.tabs[i].scene.bump_geometry();
-                        self.refresh_selected_grips();
-                    }
-                    // Cancel an in-progress grip drag: restore the edited
-                    // entity from its pre-drag backup, un-hide it, re-tessellate
-                    // once, and drop the preview.
-                    if let Some(h) = self.grip_preview_handle.take() {
-                        let i = self.active_tab;
-                        self.grip_text_verts = Vec::new();
-                        self.grip_text_slide = false;
-                        if let Some(orig) = self.grip_original.take() {
-                            if let Some(e) = self.tabs[i].scene.document.get_entity_mut(h) {
-                                *e = orig;
-                            }
-                        }
-                        self.tabs[i].scene.hidden.remove(&h);
-                        self.tabs[i].scene.clear_preview_wire();
-                        // Geometry restored to the backup — re-tessellate just it.
-                        self.tabs[i]
-                            .scene
-                            .bump_entities(&[(h, crate::scene::ChangeKind::Modified)]);
-                        self.refresh_selected_grips();
-                    }
-                    self.tabs[self.active_tab].snap_result = None;
-                    self.refresh_properties();
+                // A hot grip (click-move-click placement in progress) rolls
+                // back to its pre-drag image on Escape.
+                if self.cancel_active_grip_edit() {
                     return Task::none();
                 }
-                // Cancel layout rename / context menus first, then fall through.
+                // Cancel layout rename first, then fall through.
                 let i_e = self.active_tab;
                 if self.qselect.take().is_some() {
                     return Task::none();
@@ -539,9 +541,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         return Task::none();
                     }
                 }
-                if self.layout_rename_state.take().is_some()
-                    || self.layout_context_menu.take().is_some()
-                {
+                if self.layout_rename_state.take().is_some() {
                     return Task::none();
                 }
                 // Typed text on the command line cancels first — one
@@ -617,7 +617,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         self.tabs[i]
                             .layers
                             .sync_with_viewports(&doc_layers, vp_info);
-                        self.tabs[i].scene.bump_geometry();
+                        // Per-viewport layer visibility changes the resident
+                        // assembly, not any entity's tessellated geometry.
+                        self.tabs[i].scene.bump_geometry_no_blocks();
                         self.tabs[i].dirty = true;
                     }
                 }
@@ -990,7 +992,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 self.tabs[i]
                     .scene
                     .invalidate_dim_block_recorded(popup.handle);
-                self.tabs[i].scene.bump_geometry();
+                self.tabs[i]
+                    .scene
+                    .bump_entities(&[(popup.handle, crate::scene::ChangeKind::Modified)]);
                 self.tabs[i].dirty = true;
                 self.refresh_selected_grips();
                 self.refresh_properties();
@@ -1244,7 +1248,34 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             if let Some(acadrust::EntityType::Hatch(dxf)) =
                                 self.tabs[i].scene.document.get_entity_mut(handle)
                             {
-                                dxf.pattern = hatch_patterns::build_dxf_pattern(entry);
+                                let old_origin = dxf.pattern.lines.first().map(|line| {
+                                    (line.base_point.x, line.base_point.y)
+                                });
+                                let mut pattern = hatch_patterns::build_dxf_pattern(entry);
+                                // Stored pattern lines are final world-space
+                                // geometry. Preserve the selected hatch's scale,
+                                // angle and origin when replacing the catalog
+                                // pattern.
+                                crate::entities::hatch::scale_pattern_geometry(
+                                    &mut pattern,
+                                    dxf.pattern_scale,
+                                );
+                                crate::entities::hatch::rotate_pattern_geometry(
+                                    &mut pattern,
+                                    dxf.pattern_angle,
+                                );
+                                if let (Some((old_x, old_y)), Some(new_origin)) =
+                                    (old_origin, pattern.lines.first())
+                                {
+                                    let dx = old_x - new_origin.base_point.x;
+                                    let dy = old_y - new_origin.base_point.y;
+                                    crate::entities::hatch::translate_pattern_geometry(
+                                        &mut pattern,
+                                        dx,
+                                        dy,
+                                    );
+                                }
+                                dxf.pattern = pattern;
                                 dxf.is_solid = matches!(
                                     entry.gpu,
                                     crate::scene::model::hatch_model::HatchPattern::Solid
@@ -1475,7 +1506,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             .get(&value)
                             .map(|br| br.name.clone());
                         if let Some(canon) = canon {
-                            let mut changed = false;
+                            let mut changes = Vec::new();
                             for &handle in &handles {
                                 if self.tabs[i].scene.is_layer_locked(handle) {
                                     continue;
@@ -1485,14 +1516,15 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 {
                                     if ins.block_name != canon {
                                         ins.block_name = canon.clone();
-                                        changed = true;
+                                        changes.push((
+                                            handle,
+                                            crate::scene::ChangeKind::Modified,
+                                        ));
                                     }
                                 }
                             }
-                            if changed {
-                                // The picked block may not be in the defn cache
-                                // yet — rebuild block definitions too.
-                                self.tabs[i].scene.bump_geometry();
+                            if !changes.is_empty() {
+                                self.tabs[i].scene.bump_entities(&changes);
                             }
                         }
                     } else if field == "plot_style" {
@@ -1745,7 +1777,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
             if protected {
                 return;
             }
-            let mut changed = false;
+            let mut changes = Vec::new();
             for &handle in handles {
                 if self.tabs[i].scene.is_layer_locked(handle) {
                     continue;
@@ -1755,12 +1787,12 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 {
                     if ins.block_name != canon {
                         ins.block_name = canon.clone();
-                        changed = true;
+                        changes.push((handle, crate::scene::ChangeKind::Modified));
                     }
                 }
             }
-            if changed {
-                self.tabs[i].scene.bump_geometry();
+            if !changes.is_empty() {
+                self.tabs[i].scene.bump_entities(&changes);
             }
             return;
         }

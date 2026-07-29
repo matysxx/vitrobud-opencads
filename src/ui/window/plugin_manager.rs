@@ -6,222 +6,306 @@
 
 use crate::app::Message;
 use crate::plugin::external::{ExternalPlugin, RegistryEntry};
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
-use iced::{Background, Border, Color, Element, Fill, Theme};
+use iced::widget::{
+    button, column, container, markdown, pick_list, row, rule, scrollable, text, text_input, Space,
+};
+use iced::{Background, Border, Element, Fill, Length, Theme};
 use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Empty lane kept at the right edge of scroll content so the vertical
+/// scrollbar never covers card controls.
+const SCROLLBAR_GUTTER: f32 = 16.0;
 
 /// Marketplace state passed to the Plugin Manager view.
 pub struct MarketView<'a> {
     pub registry: &'a [RegistryEntry],
+    pub registry_loading: bool,
+    pub registry_error: Option<&'a str>,
+    pub registry_error_details_open: bool,
     pub input: &'a str,
+    pub search: &'a str,
     pub repos: &'a [String],
     pub release_tags: &'a FxHashMap<String, Vec<String>>,
     pub selected_tag: &'a FxHashMap<String, String>,
+    pub selected_repo: Option<&'a str>,
+    pub readmes: &'a FxHashMap<String, Result<markdown::Content, String>>,
+    pub readme_loading: &'a FxHashSet<String>,
     pub status: &'a str,
 }
 
-// Register the command names for autocomplete.
+// External plugins are native dynamic libraries, so the browser build must not
+// advertise a manager it cannot use.
+#[cfg(not(target_arch = "wasm32"))]
 inventory::submit!(crate::command::CommandRegistration {
     names: &["PLUGINS", "PLUGINMANAGER"]
 });
 
-const BG: Color = Color {
-    r: 0.15,
-    g: 0.15,
-    b: 0.15,
-    a: 1.0,
-};
-const CARD: Color = Color {
-    r: 0.12,
-    g: 0.12,
-    b: 0.12,
-    a: 1.0,
-};
-const BORDER: Color = Color {
-    r: 0.30,
-    g: 0.30,
-    b: 0.30,
-    a: 1.0,
-};
-const DIM: Color = Color {
-    r: 0.55,
-    g: 0.55,
-    b: 0.55,
-    a: 1.0,
-};
-const ACCENT: Color = Color {
-    r: 0.30,
-    g: 0.62,
-    b: 0.95,
-    a: 1.0,
-};
-const WHITE: Color = Color {
-    r: 0.92,
-    g: 0.92,
-    b: 0.92,
-    a: 1.0,
-};
+fn muted_style(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+    }
+}
+
+fn primary_style(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(theme.extended_palette().primary.base.color),
+    }
+}
 
 fn badge<'a>(label: String) -> Element<'a, Message> {
-    container(text(label).size(11).color(WHITE))
+    container(text(label).size(11))
         .padding([2, 8])
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(Color {
-                r: 0.20,
-                g: 0.34,
-                b: 0.52,
-                a: 1.0,
-            })),
+        .style(|theme: &Theme| {
+            let pair = theme.extended_palette().primary.weak;
+            container::Style {
+            background: Some(Background::Color(pair.color)),
+            text_color: Some(pair.text),
             border: Border {
                 radius: 4.0.into(),
                 ..Default::default()
             },
             ..Default::default()
+            }
         })
         .into()
 }
 
 fn toggle_button<'a>(id: &str, disabled: bool) -> Element<'a, Message> {
     // Label shows the action the click performs.
-    let (label, on, off) = if disabled {
-        ("Enable", Color { r: 0.18, g: 0.5, b: 0.25, a: 1.0 }, Color { r: 0.22, g: 0.6, b: 0.3, a: 1.0 })
+    let label = if disabled {
+        "Enable"
     } else {
-        ("Disable", Color { r: 0.4, g: 0.22, b: 0.22, a: 1.0 }, Color { r: 0.55, g: 0.28, b: 0.28, a: 1.0 })
+        "Disable"
     };
     let want_enabled = disabled; // clicking flips the state
     let id_owned = id.to_string();
-    button(text(label).size(12).color(WHITE))
+    button(text(label).size(12))
         .padding([3, 12])
         .on_press(Message::SetPluginEnabled(id_owned, want_enabled))
-        .style(move |_: &Theme, status| {
-            let bg = match status {
-                button::Status::Hovered | button::Status::Pressed => off,
-                _ => on,
-            };
-            button::Style {
-                background: Some(Background::Color(bg)),
-                text_color: WHITE,
-                border: Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            }
-        })
+        .style(if disabled { button::success } else { button::danger })
         .into()
 }
 
+#[derive(Clone, Copy)]
+enum StatusKind {
+    Muted,
+    Success,
+    Danger,
+    Warning,
+}
+
 /// Coloured status pill for a discovered external package.
-fn status_badge<'a>(label: &str, color: Color) -> Element<'a, Message> {
-    container(text(label.to_string()).size(11).color(WHITE))
+fn status_badge<'a>(label: &str, kind: StatusKind) -> Element<'a, Message> {
+    container(text(label.to_string()).size(11))
         .padding([2, 8])
-        .style(move |_: &Theme| container::Style {
-            background: Some(Background::Color(color)),
+        .style(move |theme: &Theme| {
+            let palette = theme.extended_palette();
+            let pair = match kind {
+                StatusKind::Muted => palette.background.weak,
+                StatusKind::Success => palette.success.weak,
+                StatusKind::Danger => palette.danger.weak,
+                StatusKind::Warning => palette.warning.weak,
+            };
+            container::Style {
+            background: Some(Background::Color(pair.color)),
+            text_color: Some(pair.text),
             border: Border {
                 radius: 4.0.into(),
                 ..Default::default()
             },
             ..Default::default()
+            }
         })
         .into()
 }
 
-fn external_card<'a>(p: &ExternalPlugin, loaded: bool, disabled: bool) -> Element<'a, Message> {
-    let (status, color) = if loaded && disabled {
-        ("Disabled", Color { r: 0.45, g: 0.45, b: 0.45, a: 1.0 })
+fn card_style(theme: &Theme, selected: bool) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: selected
+            .then(|| Background::Color(palette.primary.weak.color.scale_alpha(0.18))),
+        border: Border {
+            color: if selected {
+                palette.primary.base.color
+            } else {
+                palette.background.strong.color
+            },
+            width: if selected { 1.5 } else { 1.0 },
+            radius: 6.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+fn repository_for_external(
+    plugin: &ExternalPlugin,
+    registry: &[RegistryEntry],
+) -> Option<String> {
+    plugin.repository.clone().or_else(|| {
+        registry
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(&plugin.name))
+            .map(|entry| entry.repo.clone())
+    })
+}
+
+fn matches_search(query: &str, values: &[&str]) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || values
+            .iter()
+            .any(|value| value.to_lowercase().contains(&query))
+}
+
+fn external_matches_search(plugin: &ExternalPlugin, repository: Option<&str>, query: &str) -> bool {
+    matches_search(
+        query,
+        &[
+            &plugin.name,
+            &plugin.id,
+            &plugin.description,
+            repository.unwrap_or_default(),
+        ],
+    ) || plugin
+        .command_prefixes
+        .iter()
+        .any(|command| matches_search(query, &[command]))
+}
+
+fn repository_is_installed(
+    repository: &str,
+    registry_name: Option<&str>,
+    externals: &[ExternalPlugin],
+) -> bool {
+    externals.iter().any(|plugin| {
+        plugin.repository.as_deref() == Some(repository)
+            || registry_name
+                .is_some_and(|name| plugin.name.eq_ignore_ascii_case(name))
+    })
+}
+
+fn trim_version_prefix(value: &str) -> &str {
+    value.trim_start_matches(|c| c == 'v' || c == 'V')
+}
+
+fn newest_update(installed: &str, tags: &[String]) -> Option<String> {
+    let installed = semver::Version::parse(trim_version_prefix(installed)).ok()?;
+    tags.iter()
+        .filter_map(|tag| {
+            semver::Version::parse(trim_version_prefix(tag))
+                .ok()
+                .map(|version| (version, tag))
+        })
+        .filter(|(version, _)| version > &installed)
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, tag)| tag.clone())
+}
+
+fn external_card<'a>(
+    p: &ExternalPlugin,
+    repository: Option<String>,
+    update_tag: Option<String>,
+    loaded: bool,
+    disabled: bool,
+    selected: bool,
+) -> Element<'a, Message> {
+    let (status, kind) = if loaded && disabled {
+        ("Disabled", StatusKind::Muted)
     } else if loaded {
-        ("Loaded", Color { r: 0.2, g: 0.5, b: 0.3, a: 1.0 })
+        ("Loaded", StatusKind::Success)
     } else if !p.api_compatible() {
-        ("API incompatible", Color { r: 0.55, g: 0.28, b: 0.28, a: 1.0 })
+        ("API incompatible", StatusKind::Danger)
     } else if !p.lib_present {
-        ("No library", Color { r: 0.5, g: 0.42, b: 0.2, a: 1.0 })
+        ("No library", StatusKind::Warning)
     } else {
-        ("Restart to load", Color { r: 0.5, g: 0.42, b: 0.2, a: 1.0 })
+        ("Restart to load", StatusKind::Warning)
     };
-    let mut header = row![
-        text(p.name.clone()).size(15).color(WHITE),
+    let header = row![
+        text(p.name.clone()).size(15),
         Space::new().width(8),
         badge(format!("v{}", p.version)),
         Space::new().width(8),
         badge(format!("API {}", p.api_version)),
         Space::new().width(Fill),
-        status_badge(status, color),
+        status_badge(status, kind),
     ]
     .align_y(iced::Center);
-    // A loaded plugin can be turned off (drops its ribbon tab + dispatch).
-    if loaded {
-        header = header.push(Space::new().width(10));
-        header = header.push(toggle_button(&p.id, disabled));
-    }
-    header = header.push(Space::new().width(6));
-    header = header.push(pill_button(
-        "Uninstall",
-        Message::PluginUninstall(p.id.clone()),
-        Color { r: 0.4, g: 0.25, b: 0.25, a: 1.0 },
-    ));
 
-    let id_line = text(p.id.clone()).size(11).color(ACCENT);
-    let mut body = column![header, id_line].spacing(5);
+    let id_line = text(p.id.clone()).size(11).style(muted_style);
+    let mut info_body = column![header, id_line].spacing(5);
     if !p.description.is_empty() {
-        body = body.push(text(p.description.clone()).size(12).color(DIM));
+        info_body = info_body.push(text(p.description.clone()).size(12).style(muted_style));
     }
     if !p.command_prefixes.is_empty() {
-        body = body.push(
+        info_body = info_body.push(
             text(format!("Commands: {}", p.command_prefixes.join(", ")))
                 .size(11)
-                .color(DIM),
+                .style(muted_style),
         );
     }
-    container(body.padding([12, 14]))
+
+    let info: Element<'a, Message> = if let Some(repo) = repository.clone() {
+        button(info_body.width(Fill))
+            .width(Fill)
+            .padding(0)
+            .style(button::text)
+            .on_press(Message::PluginReadmeSelect(repo))
+            .into()
+    } else {
+        info_body.width(Fill).into()
+    };
+
+    let mut actions = row![Space::new().width(Fill)].align_y(iced::Center);
+    if let (Some(repo), Some(tag)) = (repository, update_tag) {
+        let label = format!("Update to {tag}");
+        actions = actions.push(pill_button(
+            &label,
+            Message::PluginUpdate(repo, tag),
+            button::primary,
+        ));
+        actions = actions.push(Space::new().width(6));
+    }
+    // A loaded plugin can be turned off (drops its ribbon tab + dispatch).
+    if loaded {
+        actions = actions.push(toggle_button(&p.id, disabled));
+        actions = actions.push(Space::new().width(6));
+    }
+    actions = actions.push(pill_button(
+        "Uninstall",
+        Message::PluginUninstall(p.id.clone()),
+        button::danger,
+    ));
+
+    container(column![info, actions].spacing(8).padding([10, 12]))
         .width(Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(CARD)),
-            border: Border { color: BORDER, width: 1.0, radius: 6.0.into() },
-            ..Default::default()
-        })
+        .style(move |theme: &Theme| card_style(theme, selected))
         .into()
 }
 
-fn pill_button<'a>(label: &str, msg: Message, bg: Color) -> Element<'a, Message> {
-    button(text(label.to_string()).size(12).color(WHITE))
+fn pill_button<'a>(
+    label: &str,
+    msg: Message,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> Element<'a, Message> {
+    button(text(label.to_string()).size(12))
         .padding([4, 12])
         .on_press(msg)
-        .style(move |_: &Theme, status| {
-            let c = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                Color { r: bg.r + 0.08, g: bg.g + 0.08, b: bg.b + 0.08, a: 1.0 }
-            } else {
-                bg
-            };
-            button::Style {
-                background: Some(Background::Color(c)),
-                text_color: WHITE,
-                border: Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            }
-        })
+        .style(style)
         .into()
 }
 
 /// Square icon variant of [`pill_button`] for glyph-free actions (e.g. remove).
-fn pill_icon_button<'a>(icon: &'static [u8], msg: Message, bg: Color) -> Element<'a, Message> {
-    button(crate::ui::icons::tinted(icon, 11.0, WHITE))
+fn pill_icon_button<'a>(
+    icon: &'static [u8],
+    msg: Message,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> Element<'a, Message> {
+    button(crate::ui::icons::themed(icon, 11.0))
         .padding([5, 9])
         .on_press(msg)
-        .style(move |_: &Theme, status| {
-            let c = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                Color { r: bg.r + 0.08, g: bg.g + 0.08, b: bg.b + 0.08, a: 1.0 }
-            } else {
-                bg
-            };
-            button::Style {
-                background: Some(Background::Color(c)),
-                text_color: WHITE,
-                border: Border { radius: 4.0.into(), ..Default::default() },
-                ..Default::default()
-            }
-        })
+        .style(style)
         .into()
 }
-
-const GREEN: Color = Color { r: 0.2, g: 0.45, b: 0.28, a: 1.0 };
-const RED: Color = Color { r: 0.4, g: 0.25, b: 0.25, a: 1.0 };
 
 /// Release dropdown + Install (+ optional unlink) for one repo.
 fn install_controls<'a>(
@@ -232,7 +316,7 @@ fn install_controls<'a>(
 ) -> Element<'a, Message> {
     let repo_s = repo.to_string();
     let picker: Element<'_, Message> = if tags.is_empty() {
-        text("no releases").size(11).color(DIM).into()
+        text("no releases").size(11).style(muted_style).into()
     } else {
         let r = repo_s.clone();
         pick_list(tags, selected, move |tag| {
@@ -244,7 +328,11 @@ fn install_controls<'a>(
     let mut controls = row![
         picker,
         Space::new().width(8),
-        pill_button("Install", Message::PluginInstall(repo_s.clone()), GREEN),
+        pill_button(
+            "Install",
+            Message::PluginInstall(repo_s.clone()),
+            button::success,
+        ),
     ]
     .align_y(iced::Center)
     .spacing(4);
@@ -253,118 +341,539 @@ fn install_controls<'a>(
         controls = controls.push(pill_icon_button(
             crate::ui::icons::CLOSE,
             Message::PluginRepoRemove(repo_s),
-            RED,
+            button::danger,
         ));
     }
     controls.into()
 }
 
-fn market_card<'a>(body: iced::widget::Column<'a, Message>) -> Element<'a, Message> {
+fn market_card<'a>(
+    body: iced::widget::Column<'a, Message>,
+    selected: bool,
+) -> Element<'a, Message> {
     container(body.spacing(4).padding([10, 12]))
         .width(Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(CARD)),
-            border: Border { color: BORDER, width: 1.0, radius: 6.0.into() },
-            ..Default::default()
-        })
+        .style(move |theme: &Theme| card_style(theme, selected))
         .into()
 }
 
-fn marketplace_section<'a>(m: &MarketView) -> Element<'a, Message> {
-    let mut col = column![text("Available plugins").size(13).color(ACCENT)].spacing(6);
+fn repository_display_name(repository: &str) -> String {
+    repository
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(repository)
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if part.eq_ignore_ascii_case("opencad") {
+                "OpenCAD".to_string()
+            } else {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+                    .unwrap_or_default()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn add_repository_card<'a>(m: &MarketView) -> Element<'a, Message> {
+    let form = row![
+        text_input("GitHub URL or owner/repository", m.input)
+            .on_input(Message::PluginRepoInput)
+            .on_submit(Message::PluginRepoAdd)
+            .size(13)
+            .width(Fill),
+        Space::new().width(8),
+        pill_button(
+            "Add repository",
+            Message::PluginRepoAdd,
+            button::primary,
+        ),
+    ]
+    .align_y(iced::Center);
+
+    market_card(
+        column![
+            text("Add from GitHub").size(14),
+            text(
+                "Paste a public repository URL. Compatible releases and the README \
+                 are detected automatically.",
+            )
+            .size(11)
+            .style(muted_style),
+            Space::new().height(3),
+            form,
+        ]
+        .spacing(5),
+        false,
+    )
+}
+
+fn registry_error_message(error: &str) -> (&'static str, &'static str) {
+    let error = error.to_ascii_lowercase();
+    if error.contains("certificate")
+        || error.contains("unknownissuer")
+        || error.contains("unknown issuer")
+    {
+        (
+            "Unable to verify the server certificate",
+            "Open CAD Studio could not trust the certificate presented for the plugin registry. \
+             Check your system certificate and proxy settings, then retry.",
+        )
+    } else if error.contains("timed out") || error.contains("timeout") {
+        (
+            "Plugin registry request timed out",
+            "Check your internet or proxy connection, then retry. Manually added repositories \
+             remain available.",
+        )
+    } else {
+        (
+            "Unable to load the plugin registry",
+            "Check your internet or proxy connection, then retry. Manually added repositories \
+             remain available.",
+        )
+    }
+}
+
+fn registry_notice<'a>(m: &MarketView) -> Option<Element<'a, Message>> {
+    if let Some(error) = m.registry_error {
+        let (title, message) = registry_error_message(error);
+        let actions = row![
+            pill_button(
+                "Retry",
+                Message::PluginRegistryRetry,
+                button::primary,
+            ),
+            Space::new().width(6),
+            pill_button(
+                if m.registry_error_details_open {
+                    "Hide details"
+                } else {
+                    "Show details"
+                },
+                Message::PluginRegistryErrorDetailsToggle,
+                button::secondary,
+            ),
+            Space::new().width(6),
+            pill_button(
+                "Copy details",
+                Message::PluginRegistryCopyDiagnostics,
+                button::secondary,
+            ),
+        ]
+        .align_y(iced::Center);
+        let mut body = column![
+            text(title).size(13),
+            text(message).size(11).style(muted_style),
+            Space::new().height(3),
+            actions,
+        ]
+        .spacing(5);
+        if m.registry_error_details_open {
+            body = body.push(
+                container(text(error.to_string()).size(10).width(Fill))
+                    .padding(8)
+                    .width(Fill)
+                    .style(container::bordered_box),
+            );
+        }
+        return Some(
+            container(body.padding([10, 12]))
+                .width(Fill)
+                .style(|theme: &Theme| {
+                    let pair = theme.extended_palette().warning.weak;
+                    container::Style {
+                        background: Some(Background::Color(pair.color.scale_alpha(0.16))),
+                        border: Border {
+                            color: pair.color,
+                            width: 1.0,
+                            radius: 6.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                })
+                .into(),
+        );
+    }
+
+    (m.registry_loading && m.registry.is_empty()).then(|| {
+        container(
+            column![
+                text("Loading plugin catalog…").size(13),
+                text("Connecting securely using your system certificate settings.")
+                    .size(11)
+                    .style(muted_style),
+            ]
+            .spacing(5)
+            .padding([10, 12]),
+        )
+        .width(Fill)
+        .style(container::bordered_box)
+        .into()
+    })
+}
+
+fn marketplace_section<'a>(
+    m: &MarketView,
+    externals: &[ExternalPlugin],
+) -> Element<'a, Message> {
+    let mut col = column![text("Available plugins").size(13).style(primary_style)].spacing(6);
+    let mut visible = 0usize;
+    if let Some(notice) = registry_notice(m) {
+        col = col.push(notice);
+    }
 
     // Curated registry entries (from the OpenCADStudio repo).
     for e in m.registry {
+        if repository_is_installed(&e.repo, Some(&e.name), externals)
+            || !matches_search(m.search, &[&e.name, &e.description, &e.repo])
+        {
+            continue;
+        }
+        visible += 1;
         let tags = m.release_tags.get(&e.repo).cloned().unwrap_or_default();
         let selected = m.selected_tag.get(&e.repo).cloned();
-        let header = row![
-            text(e.name.clone()).size(14).color(WHITE),
+        let mut info = column![text(e.name.clone()).size(14)].spacing(4);
+        if !e.description.is_empty() {
+            info = info.push(text(e.description.clone()).size(12).style(muted_style));
+        }
+        let info = button(info.width(Fill))
+            .width(Fill)
+            .padding(0)
+            .style(button::text)
+            .on_press(Message::PluginReadmeSelect(e.repo.clone()));
+        let actions = row![
             Space::new().width(Fill),
             install_controls(&e.repo, tags, selected, false),
         ]
         .align_y(iced::Center);
-        let mut body = column![header, text(e.repo.clone()).size(11).color(ACCENT)];
-        if !e.description.is_empty() {
-            body = body.push(text(e.description.clone()).size(12).color(DIM));
-        }
-        col = col.push(market_card(body));
+        col = col.push(market_card(
+            column![info, actions].spacing(8),
+            m.selected_repo == Some(e.repo.as_str()),
+        ));
     }
 
-    // Manual: link any repo by owner/repo.
-    col = col.push(Space::new().height(6));
-    col = col.push(text("Add a repository").size(12).color(DIM));
-    col = col.push(
-        row![
-            text_input("owner/repo", m.input)
-                .on_input(Message::PluginRepoInput)
-                .on_submit(Message::PluginRepoAdd)
-                .size(13)
-                .width(Fill),
-            Space::new().width(8),
-            pill_button("Add", Message::PluginRepoAdd, Color { r: 0.2, g: 0.4, b: 0.62, a: 1.0 }),
-        ]
-        .align_y(iced::Center),
-    );
+    // User-linked repositories join the same catalog, but curated and installed
+    // repositories are suppressed so every plugin appears only once.
     for repo in m.repos {
+        if m.registry.iter().any(|entry| entry.repo == *repo)
+            || repository_is_installed(repo, None, externals)
+        {
+            continue;
+        }
+        let display_name = repository_display_name(repo);
+        if !matches_search(m.search, &[&display_name, repo]) {
+            continue;
+        }
+        visible += 1;
         let tags = m.release_tags.get(repo).cloned().unwrap_or_default();
         let selected = m.selected_tag.get(repo).cloned();
-        let header = row![
-            text(repo.clone()).size(13).color(WHITE),
+        let info = button(
+            column![
+                text(display_name).size(14),
+                text("Added from GitHub").size(11).style(muted_style),
+            ]
+            .spacing(4)
+            .width(Fill),
+        )
+        .width(Fill)
+        .padding(0)
+        .style(button::text)
+        .on_press(Message::PluginReadmeSelect(repo.clone()));
+        let actions = row![
             Space::new().width(Fill),
             install_controls(repo, tags, selected, true),
         ]
         .align_y(iced::Center);
-        col = col.push(market_card(column![header]));
+        col = col.push(market_card(
+            column![info, actions].spacing(8),
+            m.selected_repo == Some(repo.as_str()),
+        ));
     }
 
+    if visible == 0
+        && m.registry_error.is_none()
+        && !(m.registry_loading && m.registry.is_empty())
+    {
+        let message = if m.search.trim().is_empty() {
+            "No additional plugins are available."
+        } else {
+            "No available plugins match your search."
+        };
+        col = col.push(text(message).size(12).style(muted_style));
+    }
+
+    col = col.push(Space::new().height(8));
+    col = col.push(add_repository_card(m));
     if !m.status.is_empty() {
-        col = col.push(text(m.status.to_string()).size(11).color(DIM));
+        col = col.push(text(m.status.to_string()).size(11).style(muted_style));
     }
     col.into()
+}
+
+fn resolve_readme_link(repo: &str, uri: &str) -> String {
+    if uri.starts_with("https://")
+        || uri.starts_with("http://")
+        || uri.starts_with("mailto:")
+    {
+        uri.to_string()
+    } else if uri.starts_with('/') {
+        format!("https://github.com{uri}")
+    } else if uri.starts_with('#') {
+        format!("https://github.com/{repo}{uri}")
+    } else {
+        format!(
+            "https://github.com/{repo}/blob/HEAD/{}",
+            uri.trim_start_matches("./")
+        )
+    }
+}
+
+fn readme_panel<'a>(market: &MarketView<'a>, theme: &Theme) -> Element<'a, Message> {
+    let Some(repo) = market.selected_repo else {
+        return container(
+            column![
+                text("Plugin details").size(16),
+                text("Select a plugin to read its GitHub README.")
+                    .size(12)
+                    .style(muted_style),
+            ]
+            .spacing(8),
+        )
+        .center(Fill)
+        .width(Fill)
+        .height(Fill)
+        .style(container::bordered_box)
+        .into();
+    };
+
+    let name = repo
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(repo)
+        .to_string();
+    let header = row![
+        column![
+            text(name).size(16),
+            text(repo.to_string()).size(11).style(primary_style),
+        ]
+        .spacing(3)
+        .width(Fill),
+        pill_button(
+            "View on GitHub",
+            Message::OpenUrl(format!("https://github.com/{repo}")),
+            button::secondary,
+        ),
+    ]
+    .align_y(iced::Center);
+
+    let content: Element<'a, Message> = if market.readme_loading.contains(repo) {
+        container(
+            column![
+                text("Loading README…").size(13),
+                text("Fetching the default branch from GitHub.")
+                    .size(11)
+                    .style(muted_style),
+            ]
+            .spacing(6),
+        )
+        .center(Fill)
+        .width(Fill)
+        .height(Fill)
+        .into()
+    } else {
+        match market.readmes.get(repo) {
+            Some(Ok(readme)) => {
+                let source_repo = repo.to_string();
+                markdown::view(
+                    readme.items(),
+                    markdown::Settings::with_text_size(13, theme),
+                )
+                .map(move |uri| {
+                    Message::OpenUrl(resolve_readme_link(&source_repo, &uri))
+                })
+            }
+            Some(Err(error)) => container(
+                column![
+                    text("README could not be loaded").size(14),
+                    text(error.clone()).size(11).style(muted_style),
+                    Space::new().height(4),
+                    pill_button(
+                        "Retry",
+                        Message::PluginReadmeSelect(repo.to_string()),
+                        button::secondary,
+                    ),
+                ]
+                .spacing(6),
+            )
+            .center(Fill)
+            .width(Fill)
+            .height(Fill)
+            .into(),
+            None => container(
+                text("Select the plugin again to load its README.")
+                    .size(12)
+                    .style(muted_style),
+            )
+            .center(Fill)
+            .width(Fill)
+            .height(Fill)
+            .into(),
+        }
+    };
+
+    let gutter = iced::Padding {
+        top: 8.0,
+        right: SCROLLBAR_GUTTER,
+        bottom: 8.0,
+        left: 0.0,
+    };
+    let readme = scrollable(container(content).padding(gutter))
+        .height(Fill)
+        .width(Fill);
+
+    container(
+        column![header, rule::horizontal(1), readme]
+            .spacing(10)
+            .padding([12, 14])
+            .width(Fill)
+            .height(Fill),
+    )
+    .width(Fill)
+    .height(Fill)
+    .style(container::bordered_box)
+    .into()
 }
 
 pub fn view_window<'a>(
     disabled: &FxHashSet<String>,
     externals: &[ExternalPlugin],
     loaded: &FxHashSet<String>,
-    market: MarketView,
+    market: MarketView<'a>,
+    theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let title = text("Plugins").size(20).color(WHITE);
-    let subtitle = text("Add-ons load from the plugins folder. Install from a repository below.")
+    let title = text("Plugins").size(20);
+    let subtitle = text("Browse, install, and manage add-ons. Select one to view its README.")
         .size(12)
-        .color(DIM);
+        .style(muted_style);
 
     let mut list = column![].spacing(10);
     // Installed external packages (from the plugins folder).
     if externals.is_empty() {
-        list = list.push(text("No plugins installed yet.").size(13).color(DIM));
+        list = list.push(text("No plugins installed yet.").size(13).style(muted_style));
     } else {
-        list = list.push(text("Installed").size(13).color(ACCENT));
+        let mut visible_installed = 0usize;
         for p in externals {
+            let repository = repository_for_external(p, market.registry);
+            if !external_matches_search(p, repository.as_deref(), market.search) {
+                continue;
+            }
+            if visible_installed == 0 {
+                list = list.push(text("Installed").size(13).style(primary_style));
+            }
+            visible_installed += 1;
+            let selected = repository.as_deref() == market.selected_repo;
+            let update_tag = repository
+                .as_ref()
+                .and_then(|repo| market.release_tags.get(repo))
+                .and_then(|tags| newest_update(&p.version, tags));
             list = list.push(external_card(
                 p,
+                repository,
+                update_tag,
                 loaded.contains(&p.id),
                 disabled.contains(&p.id),
+                selected,
             ));
+        }
+        if visible_installed == 0 && !market.search.trim().is_empty() {
+            list = list.push(
+                text("No installed plugins match your search.")
+                    .size(12)
+                    .style(muted_style),
+            );
         }
     }
     // Marketplace: install from a linked repository's releases.
     list = list.push(Space::new().height(14));
-    list = list.push(marketplace_section(&market));
-    let body: Element<'_, Message> = scrollable(list.width(Fill)).height(Fill).into();
+    list = list.push(marketplace_section(&market, externals));
+    let gutter = iced::Padding {
+        top: 0.0,
+        right: SCROLLBAR_GUTTER,
+        bottom: 0.0,
+        left: 0.0,
+    };
+    let catalog = scrollable(container(list.width(Fill)).padding(gutter))
+        .height(Fill)
+        .width(Fill);
+    let search = text_input("Search plugins…", market.search)
+        .on_input(Message::PluginSearchInput)
+        .size(13)
+        .padding([7, 10])
+        .width(Fill);
+    let catalog_pane = column![search, catalog].spacing(10).width(Fill).height(Fill);
+    let details = readme_panel(&market, theme);
+    let body = row![
+        container(catalog_pane)
+            .width(Length::Fixed(410.0))
+            .height(Fill),
+        details,
+    ]
+    .spacing(14)
+    .height(Fill)
+    .width(Fill);
 
     container(
         column![title, subtitle, Space::new().height(12), body]
             .spacing(4)
-            .padding(20)
+            .padding(18)
             .width(Fill)
             .height(Fill),
     )
-    .style(|_: &Theme| container::Style {
-        background: Some(Background::Color(BG)),
+    .style(|theme: &Theme| container::Style {
+        background: Some(Background::Color(
+            theme.extended_palette().background.base.color,
+        )),
         ..Default::default()
     })
     .width(Fill)
     .height(Fill)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{newest_update, registry_error_message, repository_display_name};
+
+    #[test]
+    fn newest_update_uses_semver_not_release_order() {
+        let tags = vec![
+            "v1.4.0".to_string(),
+            "v2.0.0".to_string(),
+            "v1.9.9".to_string(),
+        ];
+        assert_eq!(newest_update("1.3.0", &tags).as_deref(), Some("v2.0.0"));
+        assert_eq!(newest_update("2.0.0", &tags), None);
+    }
+
+    #[test]
+    fn repository_name_is_human_readable() {
+        assert_eq!(
+            repository_display_name("owner/opencad-storm_sewer-plugin"),
+            "OpenCAD Storm Sewer Plugin",
+        );
+    }
+
+    #[test]
+    fn certificate_errors_get_user_friendly_copy() {
+        let (title, message) =
+            registry_error_message("io: invalid peer certificate: UnknownIssuer");
+
+        assert_eq!(title, "Unable to verify the server certificate");
+        assert!(message.contains("system certificate"));
+        assert!(!message.contains("UnknownIssuer"));
+    }
 }

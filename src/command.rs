@@ -806,6 +806,8 @@ pub enum CmdResult {
     Preview(WireModel),
     /// Commit an acadrust entity to the document; keep the command active.
     CommitEntity(EntityType),
+    /// Commit several acadrust entities in one undo step; keep the command active.
+    CommitEntities(Vec<EntityType>),
     /// Commit an acadrust entity to the document and end the command.
     CommitAndExit(EntityType),
     /// Commit a Model-tab 3D solid: the acadrust entity (for selection /
@@ -846,6 +848,9 @@ pub enum CmdResult {
     ReplaceMany(Vec<(Handle, Vec<EntityType>)>, Vec<EntityType>),
     /// Cancel: discard any preview and end the command.
     Cancel,
+    /// Cancel because the active drawing space changed. Cleanup is identical
+    /// to `Cancel`, but the host reports the context change explicitly.
+    CancelForSpaceChange,
     /// End the selection-gather phase and re-dispatch the named command
     /// with the gathered handles installed as the active scene selection.
     Relaunch(String, Vec<Handle>),
@@ -904,6 +909,25 @@ pub enum CmdResult {
     },
     /// Set the plot window on the active layout's PlotSettings.
     SetPlotWindow { p1: DVec3, p2: DVec3 },
+    /// Create a paper-space viewport. `preserve_view` keeps an explicitly
+    /// selected/defined view instead of applying the normal model-extents fit.
+    MviewCreate {
+        viewport: acadrust::entities::Viewport,
+        preserve_view: bool,
+    },
+    /// Create a viewport clipped by either a new polygon boundary or an
+    /// existing closed paper-space entity.
+    MviewCreateClipped {
+        boundary: Option<EntityType>,
+        boundary_handle: Handle,
+    },
+    /// Create a wipeout from an existing closed polyline in the active space.
+    WipeoutFromPolyline(Handle),
+    /// Temporarily switch between paper and Model while MVIEW defines a new
+    /// model-space window, keeping the command active.
+    MviewSwitchLayout(String),
+    /// Cancel MVIEW's temporary Model-space step and return to its layout.
+    MviewCancelToLayout(String),
     /// Quick-print the bounding box of the given selected entities to a PDF.
     QuickPrint(Vec<Handle>),
     /// Replace the text content of a Text/MText entity in-place.
@@ -999,6 +1023,10 @@ pub enum CmdResult {
         entity: EntityType,
         finish: bool,
     },
+    /// End a command-owned live entity without replacing its already-current
+    /// document geometry. PLINE uses this for Enter/Escape after the latest
+    /// vertex was published, avoiding one redundant geometry epoch/GPU patch.
+    FinalizeLiveEntity(Handle),
     /// Remove the live entity from the document but keep the command running —
     /// PLINE's Undo popping back below the two vertices an entity needs.
     RemoveLiveEntity(Handle),
@@ -1254,8 +1282,32 @@ pub trait CadCommand: Send {
         CmdResult::Cancel
     }
 
+    /// Abort because the active drawing coordinate space is about to change.
+    /// Unlike `on_escape`, the default never interprets cancellation as
+    /// "finish with the points collected so far" (SPLINE does that for a
+    /// deliberate Escape). Commands owning a live document entity can
+    /// override this to close that entity's deferred history safely.
+    fn on_space_change(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+
     /// Returns `true` when the command needs entity picking (hit-test) instead of point picking.
     fn needs_entity_pick(&self) -> bool {
+        false
+    }
+
+    /// Include filled hatch / DXF SOLID regions in the entity hit-test.
+    ///
+    /// Most entity-pick commands operate on curve geometry and intentionally
+    /// keep the cheaper wire-only path. Commands that accept fill entities
+    /// override this so clicking inside a fill resolves its entity handle.
+    fn entity_pick_includes_fills(&self) -> bool {
+        false
+    }
+
+    /// Render the entity under the cursor through the normal rollover
+    /// highlight while this command is waiting for an entity pick.
+    fn entity_pick_highlights_hover(&self) -> bool {
         false
     }
 

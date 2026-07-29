@@ -4,63 +4,41 @@ use crate::app::Message;
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
 };
-use iced::{Background, Border, Color, Element, Fill, Theme};
-
-const BORDER: Color = Color {
-    r: 0.35,
-    g: 0.35,
-    b: 0.35,
-    a: 1.0,
-};
-const TEXT: Color = Color {
-    r: 0.88,
-    g: 0.88,
-    b: 0.88,
-    a: 1.0,
-};
-const DIM: Color = Color {
-    r: 0.55,
-    g: 0.55,
-    b: 0.55,
-    a: 1.0,
-};
-const ACCENT: Color = Color {
-    r: 0.25,
-    g: 0.50,
-    b: 0.85,
-    a: 1.0,
-};
+use iced::{Background, Border, Element, Fill, Theme};
 
 fn btn_s(accent: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_: &Theme, st| button::Style {
-        background: Some(Background::Color(match (accent, st) {
-            (true, button::Status::Hovered | button::Status::Pressed) => Color {
-                r: 0.20,
-                g: 0.42,
-                b: 0.72,
-                a: 1.0,
-            },
-            (false, button::Status::Hovered | button::Status::Pressed) => Color {
-                r: 0.28,
-                g: 0.28,
-                b: 0.28,
-                a: 1.0,
-            },
-            (true, _) => ACCENT,
-            _ => Color {
-                r: 0.22,
-                g: 0.22,
-                b: 0.22,
-                a: 1.0,
-            },
-        })),
-        text_color: TEXT,
+    move |theme: &Theme, st| {
+        let palette = theme.extended_palette();
+        let pair = match (accent, st) {
+            (true, button::Status::Hovered | button::Status::Pressed) => palette.primary.strong,
+            (false, button::Status::Hovered | button::Status::Pressed) => {
+                palette.background.strong
+            }
+            (true, _) => palette.primary.base,
+            _ => palette.background.weak,
+        };
+        button::Style {
+        background: Some(Background::Color(pair.color)),
+        text_color: pair.text,
         border: Border {
-            color: BORDER,
+            color: palette.background.neutral.color,
             width: 1.0,
             radius: 4.0.into(),
         },
         ..Default::default()
+        }
+    }
+}
+
+fn muted_style(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+    }
+}
+
+fn primary_style(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(theme.extended_palette().primary.base.color),
     }
 }
 
@@ -83,7 +61,6 @@ pub struct MLeaderStyleView<'a> {
     pub line_color: &'a str,
     pub text_color: &'a str,
     pub description: &'a str,
-    pub line_weight: &'a str,
     pub align_space: &'a str,
     pub block_color: &'a str,
     pub block_rotation: &'a str,
@@ -107,7 +84,7 @@ pub struct MLeaderStyleView<'a> {
 }
 
 fn section<'a>(label: &'static str) -> Element<'a, Message> {
-    text(label).size(11).color(ACCENT).into()
+    text(label).size(11).style(primary_style).into()
 }
 
 fn num_row<'a>(
@@ -117,7 +94,7 @@ fn num_row<'a>(
     field: &'static str,
 ) -> Element<'a, Message> {
     row![
-        text(label).size(11).color(DIM).width(150),
+        text(label).size(11).style(muted_style).width(150),
         text_input(placeholder, value)
             .on_input(move |v| Message::MLeaderStyleEdit { field, value: v })
             .size(11)
@@ -151,7 +128,7 @@ fn color_row<'a>(
         Message::MLeaderColorMore(field),
         Message::OpenColorWindow(crate::app::ColorPickTarget::MLeader(field)),
     );
-    row![text(label).size(11).color(DIM).width(150), selector]
+    row![text(label).size(11).style(muted_style).width(150), selector]
         .spacing(8)
         .align_y(iced::Center)
         .into()
@@ -164,10 +141,27 @@ fn enum_row<'a>(
     field: &'static str,
 ) -> Element<'a, Message> {
     row![
-        text(label).size(11).color(DIM).width(150),
+        text(label).size(11).style(muted_style).width(150),
         pick_list(options, Some(selected), move |value| {
             Message::MLeaderStyleSetEnum { field, value }
         })
+        .text_size(11)
+        .width(190),
+    ]
+    .spacing(8)
+    .align_y(iced::Center)
+    .into()
+}
+
+fn lineweight_row<'a>(selected: acadrust::types::LineWeight) -> Element<'a, Message> {
+    let selected = crate::ui::properties::LwItem(selected);
+    row![
+        text("Line weight:").size(11).style(muted_style).width(150),
+        pick_list(
+            crate::ui::properties::lw_options(),
+            Some(selected),
+            |item| Message::MLeaderStyleLineWeightChanged(item.0)
+        )
         .text_size(11)
         .width(190),
     ]
@@ -204,7 +198,7 @@ fn handle_row<'a>(
     field: &'static str,
 ) -> Element<'a, Message> {
     row![
-        text(label).size(11).color(DIM).width(150),
+        text(label).size(11).style(muted_style).width(150),
         pick_list(options, Some(selected), move |value| {
             Message::MLeaderStyleSetHandle { field, value }
         })
@@ -231,7 +225,7 @@ pub fn view_window<'a>(v: MLeaderStyleView<'a>) -> Element<'a, Message> {
         scrollable(
             column![
                 row![
-                    text("Name:").size(11).color(DIM).width(150),
+                    text("Name:").size(11).style(muted_style).width(150),
                     text(s.name.clone()).size(11),
                 ]
                 .spacing(8),
@@ -245,7 +239,7 @@ pub fn view_window<'a>(v: MLeaderStyleView<'a>) -> Element<'a, Message> {
                     "path_type"
                 ),
                 color_row("Line color (ACI):", v.line_color, "line_color", v.color_open == Some("line_color")),
-                num_row("Line weight:", "-2", v.line_weight, "line_weight"),
+                lineweight_row(s.line_weight),
                 handle_row(
                     "Line type:",
                     v.lt_opts.clone(),
@@ -406,7 +400,7 @@ pub fn view_window<'a>(v: MLeaderStyleView<'a>) -> Element<'a, Message> {
         .height(Fill)
         .into()
     } else {
-        container(text("Select a style to view details.").size(11).color(DIM))
+        container(text("Select a style to view details.").size(11).style(muted_style))
             .padding([12, 12])
             .into()
     };

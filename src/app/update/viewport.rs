@@ -95,7 +95,7 @@ impl OpenCADStudio {
         let next = if self.point_size_relative { -mag } else { mag };
         self.push_undo_snapshot(i, "PDSIZE");
         self.tabs[i].scene.document.header.point_display_size = next;
-        self.tabs[i].scene.bump_geometry();
+        self.tabs[i].scene.invalidate_point_dependencies();
         self.tabs[i].dirty = true;
     }
 
@@ -110,7 +110,7 @@ impl OpenCADStudio {
         }
         self.push_undo_snapshot(i, "PDMODE");
         self.tabs[i].scene.document.header.point_display_mode = next;
-        self.tabs[i].scene.bump_geometry();
+        self.tabs[i].scene.invalidate_point_dependencies();
         self.tabs[i].dirty = true;
     }
 
@@ -161,7 +161,7 @@ impl OpenCADStudio {
         self.tabs[i].wireframe = wf;
         self.ribbon.set_wireframe(wf);
         self.tabs[i].visual_style = label.into();
-        self.tabs[i].scene.bump_geometry();
+        self.tabs[i].scene.bump_geometry_no_blocks();
     }
 
     /// Project a pane-local cursor onto the active drawing plane and return a
@@ -370,7 +370,12 @@ impl OpenCADStudio {
         let gen = self.tabs[i].scene.camera_generation;
         if gen != self.tabs[i].last_synced_camera_gen {
             self.tabs[i].last_synced_camera_gen = gen;
-            if self.tabs[i].scene.sync_camera_to_document() {
+            if self.tabs[i].active_block_edit.is_some() {
+                let camera = self.tabs[i].scene.camera.borrow().clone();
+                if let Some(session) = self.tabs[i].active_block_edit_session_mut() {
+                    session.editor_camera = camera;
+                }
+            } else if self.tabs[i].scene.sync_camera_to_document() {
                 self.tabs[i].dirty = true;
             }
         }
@@ -405,7 +410,7 @@ impl OpenCADStudio {
         // viewport, the picker drives that viewport entity's own
         // render mode; the model-layout tab style is untouched.
         if self.tabs[i].scene.set_active_viewport_render_mode(mode) {
-            self.tabs[i].scene.bump_geometry();
+            self.tabs[i].scene.bump_geometry_no_blocks();
             self.command_line
                 .push_output(&format!("Viewport visual style: {label}"));
             return Task::none();
@@ -423,7 +428,7 @@ impl OpenCADStudio {
         self.tabs[i].visual_style = label.into();
         // Re-upload face3d fills on the next frame — the render
         // pipeline keys its upload cache off `geometry_epoch`.
-        self.tabs[i].scene.bump_geometry();
+        self.tabs[i].scene.bump_geometry_no_blocks();
         self.command_line
             .push_output(&format!("Visual style: {label}"));
         Task::none()
@@ -742,11 +747,11 @@ impl OpenCADStudio {
             // the whole model on every move.
             if self.grip_preview_handle != Some(grip.handle) {
                 if let Some(prev) = self.grip_preview_handle.take() {
-                    self.tabs[i].scene.hidden.remove(&prev);
+                    self.tabs[i].scene.preview_hidden.remove(&prev);
                 }
                 // Back up the original geometry so Esc can cancel the drag.
                 self.grip_original = self.tabs[i].scene.document.get_entity(grip.handle).cloned();
-                self.tabs[i].scene.hidden.insert(grip.handle);
+                self.tabs[i].scene.preview_hidden.insert(grip.handle);
                 // Hiding changes exactly one resident run. Publishing a full
                 // delta here made the first grip move rebuild every wire.
                 self.tabs[i]
@@ -860,6 +865,12 @@ impl OpenCADStudio {
             self.tabs[i]
                 .scene
                 .apply_grip(grip.handle, grip.grip_id, apply);
+            if matches!(
+                self.tabs[i].scene.document.get_entity(grip.handle),
+                Some(acadrust::EntityType::Hatch(_))
+            ) {
+                self.tabs[i].scene.set_preview_hatch(grip.handle);
+            }
             self.tabs[i].dirty = true;
             self.tabs[i].active_grip.as_mut().unwrap().last_world = snapped;
             let apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0;
@@ -962,15 +973,23 @@ impl OpenCADStudio {
             // content), so snap / hit-test / preview run exactly like the
             // main model view — no paper projection, tracks pan/zoom/twist.
             let cursor_world = self.cursor_model_point(i, &edit_cam, p, bounds);
-            let (view_rot, eye) = match &edit_cam {
-                Some(cam) => (cam.view_proj_rte(bounds), cam.eye()),
+            let (view_rot, eye, grid_spacing) = match &edit_cam {
+                Some(cam) => (
+                    cam.view_proj_rte(bounds),
+                    cam.eye(),
+                    crate::ui::overlay::compute_grid_step(cam.distance, cam.fov_y, bounds),
+                ),
                 None => {
                     let cam = self.tabs[i].scene.camera.borrow();
-                    (cam.view_proj_rte(bounds), cam.eye())
+                    (
+                        cam.view_proj_rte(bounds),
+                        cam.eye(),
+                        crate::ui::overlay::compute_grid_step(cam.distance, cam.fov_y, bounds),
+                    )
                 }
             };
             // Sync grid-snap spacing to the adaptive spacing of the visible grid.
-            self.snapper.grid_spacing = crate::ui::overlay::compute_grid_step(view_rot, bounds);
+            self.snapper.grid_spacing = grid_spacing;
             // Cursor and wires are model-space; the snap result is model.
             let snap_cursor = cursor_world;
 
@@ -1326,7 +1345,19 @@ impl OpenCADStudio {
                 }
                 p
             } else if needs_entity {
-                let hover_handle = scene::pick::hit_test::click_hit(
+                let include_fills = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|c| c.entity_pick_includes_fills())
+                    .unwrap_or(false);
+                let candidate_handles = if include_fills {
+                    self.tabs[i]
+                        .scene
+                        .interaction_candidate_handles(&snap_candidates)
+                } else {
+                    None
+                };
+                let hovered = scene::pick::hit_test::click_hit(
                     p,
                     &snap_candidates,
                     view_rot,
@@ -1335,7 +1366,53 @@ impl OpenCADStudio {
                     self.tabs[i].scene.document.header.lineweight_display,
                 )
                 .and_then(|s| Scene::handle_from_wire_name(s))
-                .unwrap_or(acadrust::Handle::NULL);
+                .or_else(|| {
+                    if !include_fills {
+                        return None;
+                    }
+                    scene::pick::hit_test::click_hit_hatch(
+                        p,
+                        &self.tabs[i]
+                            .scene
+                            .visible_hatches_for_click(candidate_handles.as_ref()),
+                        view_rot,
+                        eye,
+                        bounds,
+                        candidate_handles.as_ref(),
+                    )
+                })
+                .or_else(|| {
+                    include_fills.then(|| {
+                        scene::pick::hit_test::click_hit_insert_hatch(
+                            p,
+                            self.tabs[i].scene.insert_hatches_for_click().as_ref(),
+                            view_rot,
+                            eye,
+                            bounds,
+                            candidate_handles.as_ref(),
+                        )
+                    })?
+                })
+                .or_else(|| {
+                    include_fills.then(|| {
+                        self.tabs[i].scene.solid_hover_hit(
+                            p,
+                            view_rot,
+                            eye,
+                            bounds,
+                            candidate_handles.as_ref(),
+                        )
+                    })?
+                });
+                let highlights_hover = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|c| c.entity_pick_highlights_hover())
+                    .unwrap_or(false);
+                if highlights_hover {
+                    self.tabs[i].scene.set_hover_highlight(hovered);
+                }
+                let hover_handle = hovered.unwrap_or(acadrust::Handle::NULL);
                 let shift = self.shift_down;
                 let mut p = self.tabs[i]
                     .active_cmd
@@ -1480,7 +1557,7 @@ impl OpenCADStudio {
         Task::none()
     }
 
-    pub(super) fn on_viewport_exit(&mut self) -> Task<Message> {
+    pub(crate) fn on_viewport_exit(&mut self) -> Task<Message> {
         let i = self.active_tab;
         let mut sel = self.tabs[i].scene.selection.borrow_mut();
         sel.left_down = false;
@@ -1590,11 +1667,19 @@ impl OpenCADStudio {
         // Object/grid snap, same path as an entity grip or command drag: the
         // dragged UCS point sticks to endpoints/midpoints/grid under the cursor,
         // and the snap marker is published via `snap_result`.
-        let (view_rot, eye) = match &edit_cam {
-            Some(cam) => (cam.view_proj_rte(bounds), cam.eye()),
+        let (view_rot, eye, grid_spacing) = match &edit_cam {
+            Some(cam) => (
+                cam.view_proj_rte(bounds),
+                cam.eye(),
+                crate::ui::overlay::compute_grid_step(cam.distance, cam.fov_y, bounds),
+            ),
             None => {
                 let cam = self.tabs[i].scene.camera.borrow();
-                (cam.view_proj_rte(bounds), cam.eye())
+                (
+                    cam.view_proj_rte(bounds),
+                    cam.eye(),
+                    crate::ui::overlay::compute_grid_step(cam.distance, cam.fov_y, bounds),
+                )
             }
         };
         let all_wires = if let (Some(_), Some(h)) = (&edit_cam, self.tabs[i].scene.active_viewport)
@@ -1613,7 +1698,7 @@ impl OpenCADStudio {
             bounds,
             self.snapper.osnap_radius_px,
         );
-        self.snapper.grid_spacing = crate::ui::overlay::compute_grid_step(view_rot, bounds);
+        self.snapper.grid_spacing = grid_spacing;
         // No rubber-band origin (perp/extension feet don't apply to a free drag).
         self.snapper.from_point = None;
         let (go, gr) = self.tabs[i].ucs_grid_basis();
@@ -2000,7 +2085,7 @@ impl OpenCADStudio {
                 }
                 self.grip_text_verts = Vec::new();
                 self.grip_text_slide = false;
-                self.tabs[i].scene.hidden.remove(&h);
+                self.tabs[i].scene.preview_hidden.remove(&h);
                 self.tabs[i].scene.clear_preview_wire();
                 // Only the dragged entity changed — re-tessellate just it.
                 self.tabs[i]
@@ -2269,6 +2354,18 @@ impl OpenCADStudio {
                     bounds,
                     scene::pick::hit_test::CLICK_THRESHOLD_PX * 2.0,
                 );
+                let include_fills = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|c| c.entity_pick_includes_fills())
+                    .unwrap_or(false);
+                let candidate_handles = if include_fills {
+                    self.tabs[i]
+                        .scene
+                        .interaction_candidate_handles(&click_candidates)
+                } else {
+                    None
+                };
                 let hit = scene::pick::hit_test::click_hit(
                     p,
                     &click_candidates,
@@ -2277,7 +2374,45 @@ impl OpenCADStudio {
                     bounds,
                     self.tabs[i].scene.document.header.lineweight_display,
                 )
-                .and_then(|s| Scene::handle_from_wire_name(s));
+                .and_then(|s| Scene::handle_from_wire_name(s))
+                .or_else(|| {
+                    if !include_fills {
+                        return None;
+                    }
+                    scene::pick::hit_test::click_hit_hatch(
+                        p,
+                        &self.tabs[i]
+                            .scene
+                            .visible_hatches_for_click(candidate_handles.as_ref()),
+                        view_rot2,
+                        eye2,
+                        bounds,
+                        candidate_handles.as_ref(),
+                    )
+                })
+                .or_else(|| {
+                    include_fills.then(|| {
+                        scene::pick::hit_test::click_hit_insert_hatch(
+                            p,
+                            self.tabs[i].scene.insert_hatches_for_click().as_ref(),
+                            view_rot2,
+                            eye2,
+                            bounds,
+                            candidate_handles.as_ref(),
+                        )
+                    })?
+                })
+                .or_else(|| {
+                    include_fills.then(|| {
+                        self.tabs[i].scene.solid_click_hit(
+                            p,
+                            view_rot2,
+                            eye2,
+                            bounds,
+                            candidate_handles.as_ref(),
+                        )
+                    })?
+                });
                 if let Some(handle) = hit {
                     // Some commands (e.g. SS_CATCHMENT) need the entity
                     // body before `on_entity_pick` can advance.
@@ -2367,6 +2502,8 @@ impl OpenCADStudio {
                     self.command_line.push_info("Select a tangent object.");
                     None
                 }
+            } else if !self.command_point_allowed(i, world_pt) {
+                None
             } else {
                 // A scalar typed into the dynamic-input box but not
                 // yet confirmed with Enter is applied before the
@@ -3116,17 +3253,14 @@ impl OpenCADStudio {
                         self.tabs[i].scene.document.get_entity(handle),
                         Some(AcadEntityType::Insert(ins)) if !ins.attributes.is_empty()
                     );
-                    if insert_has_attrs {
+                    if insert_has_attrs && self.tabs[i].active_block_edit.is_none() {
                         return Task::done(Message::AttrEditorOpen(handle));
                     }
                     let is_insert = matches!(
                         self.tabs[i].scene.document.get_entity(handle),
                         Some(AcadEntityType::Insert(_))
                     );
-                    if is_insert
-                        && self.tabs[i].refedit_session.is_none()
-                        && self.tabs[i].block_edit.is_none()
-                    {
+                    if is_insert && self.tabs[i].refedit_session.is_none() {
                         return Task::done(Message::Command(format!(
                             "BEDIT_BEGIN:{}",
                             handle.value()
@@ -3657,19 +3791,129 @@ impl OpenCADStudio {
         ))
     }
 
-    pub(super) fn on_layout_switch(&mut self, name: String) -> Task<Message> {
+    pub(crate) fn on_layout_switch(&mut self, name: String) -> Task<Message> {
+        self.on_layout_switch_inner(name, false)
+    }
+
+    pub(crate) fn on_block_edit_switch(&mut self, name: String) -> Task<Message> {
         let i = self.active_tab;
-        // A BEDIT block editor locks the active space; finish it with
-        // Save Block or Discard before switching spaces. (#261)
-        if self.tabs[i].block_edit.is_some() {
-            self.command_line.push_info(
-                "Finish the block editor (Save Block or Discard) before switching spaces.",
-            );
+        if self.tabs[i].is_start {
+            return Task::none();
+        }
+        let Some(target_index) = self.tabs[i]
+            .block_edits
+            .iter()
+            .position(|session| session.block_name == name)
+        else {
+            self.command_line
+                .push_error(&format!("BEDIT: block tab \"{name}\" is not open."));
+            return Task::none();
+        };
+        if self.tabs[i].active_block_edit == Some(target_index) {
+            return Task::none();
+        }
+
+        let cancel_task = self.cancel_active_command_for_space_change();
+        let current_camera = self.tabs[i].scene.camera.borrow().clone();
+        if let Some(active_index) = self.tabs[i].active_block_edit {
+            if let Some(session) = self.tabs[i].block_edits.get_mut(active_index) {
+                session.editor_camera = current_camera;
+            }
+        } else {
+            self.tabs[i].scene.sync_camera_to_document();
+        }
+
+        let (br_handle, editor_camera) = {
+            let session = &self.tabs[i].block_edits[target_index];
+            (session.br_handle, session.editor_camera.clone())
+        };
+        self.layout_rename_state = None;
+        self.tabs[i].scene.active_viewport = None;
+        self.tabs[i].scene.set_current_layout("Model".to_string());
+        self.tabs[i].scene.block_edit_block = Some(br_handle);
+        self.tabs[i].active_block_edit = Some(target_index);
+        *self.tabs[i].scene.camera.borrow_mut() = editor_camera;
+        self.tabs[i].scene.camera_generation += 1;
+        self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
+        self.tabs[i].scene.deselect_all();
+        self.tabs[i].active_grip = None;
+        self.grip_hover = None;
+        self.grip_popup = None;
+        self.visibility_popup = None;
+        self.tabs[i].refresh_active_ucs();
+        self.tabs[i].scene.bump_geometry_no_blocks();
+        self.refresh_properties();
+        self.adopt_view_display(i);
+        self.sync_dyn_fields();
+        cancel_task
+    }
+
+    /// MVIEW's "Insert view > New" flow deliberately visits Model space to
+    /// define a view and then returns to its paper layout. This is the only
+    /// layout transition allowed to preserve an active command.
+    pub(crate) fn on_layout_switch_preserving_command(
+        &mut self,
+        name: String,
+    ) -> Task<Message> {
+        self.on_layout_switch_inner(name, true)
+    }
+
+    fn on_layout_switch_inner(
+        &mut self,
+        name: String,
+        preserve_active_command: bool,
+    ) -> Task<Message> {
+        let i = self.active_tab;
+        if self.tabs[i].is_start {
+            self.command_line
+                .push_info("Open or create a drawing to switch layouts.");
             return Task::none();
         }
         let perf = crate::perf::enabled();
         let perf_total = Instant::now();
-        let perf_from = self.tabs[i].scene.current_layout.clone();
+        let leaving_block_edit = self.tabs[i].active_block_edit.is_some();
+        let perf_from = self.tabs[i]
+            .active_block_edit_session()
+            .map(|session| session.block_name.clone())
+            .unwrap_or_else(|| self.tabs[i].scene.current_layout.clone());
+        let context_changed = leaving_block_edit
+            || self.tabs[i].scene.current_layout != name
+            || self.tabs[i].scene.active_viewport.is_some();
+        let preserve_active_command = preserve_active_command
+            && self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .is_some_and(|command| command.name() == "MVIEW");
+        if context_changed {
+            if preserve_active_command {
+                // MVIEW keeps its command-owned step data, but all host-owned
+                // cursor/snap/dynamic-input state belongs to the old space.
+                self.reset_space_interaction_state();
+            }
+        }
+        let cancel_task = if context_changed && !preserve_active_command {
+            self.cancel_active_command_for_space_change()
+        } else {
+            Task::none()
+        };
+        if let Some(active_index) = self.tabs[i].active_block_edit.take() {
+            let camera = self.tabs[i].scene.camera.borrow().clone();
+            let (return_layout, return_camera) = {
+                let session = &mut self.tabs[i].block_edits[active_index];
+                session.editor_camera = camera;
+                (session.return_layout.clone(), session.return_camera.clone())
+            };
+            let return_layout = if self.tabs[i].scene.layout_names().contains(&return_layout) {
+                return_layout
+            } else {
+                "Model".to_string()
+            };
+            self.tabs[i].scene.block_edit_block = None;
+            self.tabs[i].scene.set_current_layout(return_layout);
+            *self.tabs[i].scene.camera.borrow_mut() = return_camera;
+            self.tabs[i].scene.camera_generation += 1;
+            self.tabs[i].scene.bump_geometry_no_blocks();
+        }
         let going_to_paper = name != "Model";
         // Persist the camera of the layout we're leaving BEFORE switching
         // so returning to it restores where the user left off (the
@@ -3679,9 +3923,8 @@ impl OpenCADStudio {
         self.tabs[i].scene.sync_camera_to_document();
         self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
         let sync_ms = perf_phase.elapsed().as_secs_f64() * 1000.0;
-        // Cancel any pending rename/context-menu and active viewport when switching.
+        // Cancel any pending rename and active viewport when switching.
         self.layout_rename_state = None;
-        self.layout_context_menu = None;
         self.tabs[i].scene.active_viewport = None;
         let perf_phase = Instant::now();
         self.tabs[i].scene.set_current_layout(name.clone());
@@ -3693,6 +3936,9 @@ impl OpenCADStudio {
         self.tabs[i].refresh_active_ucs();
         self.tabs[i].scene.restore_saved_camera();
         self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
+        // `deselect_all` invalidates the scene highlight, but grips and the
+        // Properties panel are separate caches owned by the app.
+        self.refresh_properties();
         // Grid/snap are per-view: load the layout we just entered (its
         // sheet viewport in paper space, the model tile in model space)
         // so model and each layout keep independent grid state.
@@ -3722,11 +3968,20 @@ impl OpenCADStudio {
                 self.tabs[i].scene.geometry_epoch,
             );
         }
-        Task::none()
+        if context_changed {
+            self.sync_dyn_fields();
+        }
+        cancel_task
     }
 
     pub(super) fn on_layout_create(&mut self) -> Task<Message> {
         let i = self.active_tab;
+        if self.tabs[i].is_start {
+            self.command_line
+                .push_info("Open or create a drawing to add a layout.");
+            return Task::none();
+        }
+        let cancel_task = self.cancel_active_command_for_space_change();
         // Find a unique name (e.g. Layout2, Layout3, ...).
         let existing = self.tabs[i].scene.layout_names();
         let mut idx = existing.len();
@@ -3752,22 +4007,22 @@ impl OpenCADStudio {
                         }
                     }
                 }
-                self.tabs[i].scene.set_current_layout(new_name.clone());
                 // Safety net — `add_layout` already creates the overall
                 // sheet viewport; this covers any path that doesn't.
                 self.tabs[i].scene.ensure_sheet_viewport(&new_name);
-                self.tabs[i].scene.deselect_all();
+                let switch_task = self.on_layout_switch(new_name.clone());
                 self.tabs[i].scene.fit_all();
                 self.command_line.push_output(&format!(
                     "Layout \"{new_name}\" created — use MVIEW to add a viewport"
                 ));
                 self.tabs[i].dirty = true;
+                return Task::batch([cancel_task, switch_task]);
             }
             Err(e) => self
                 .command_line
                 .push_error(&format!("Failed to create layout: {e}")),
         }
-        Task::none()
+        cancel_task
     }
 
     pub(super) fn on_layout_rename_commit(&mut self) -> Task<Message> {
@@ -3778,10 +4033,8 @@ impl OpenCADStudio {
                 // BEDIT block tab: renaming it renames the BLOCK itself —
                 // its record, marker and every INSERT reference. (#261)
                 let is_block_tab = self.tabs[i]
-                    .block_edit
-                    .as_ref()
-                    .map(|be| be.block_name == orig)
-                    .unwrap_or(false);
+                    .active_block_edit_session()
+                    .is_some_and(|session| session.block_name == orig);
                 if is_block_tab {
                     if self.tabs[i]
                         .scene
@@ -3795,8 +4048,15 @@ impl OpenCADStudio {
                     } else {
                         self.push_undo_snapshot(i, "BLOCK RENAME");
                         if self.tabs[i].scene.rename_block(&orig, &new_name) {
-                            if let Some(be) = self.tabs[i].block_edit.as_mut() {
-                                be.block_name = new_name.clone();
+                            if let Some(session) =
+                                self.tabs[i].active_block_edit_session_mut()
+                            {
+                                session.block_name = new_name.clone();
+                            }
+                            for session in &mut self.tabs[i].block_edits {
+                                if session.return_block.as_deref() == Some(orig.as_str()) {
+                                    session.return_block = Some(new_name.clone());
+                                }
                             }
                             self.tabs[i].dirty = true;
                             self.command_line

@@ -17,6 +17,16 @@ impl Scene {
         self.bump_selection();
     }
 
+    /// Replace the complete selection and invalidate the GPU highlight overlay
+    /// only when its contents actually changed. History/file/command paths must
+    /// use this instead of assigning `selected` directly.
+    pub(crate) fn replace_selection(&mut self, selected: HashSet<Handle>) {
+        if self.selected != selected {
+            self.selected = selected;
+            self.bump_selection();
+        }
+    }
+
     /// Remove a single entity from the selection (Shift+click subtractive pick).
     pub fn deselect_entity(&mut self, handle: Handle) {
         if self.selected.remove(&handle) {
@@ -55,7 +65,7 @@ impl Scene {
         if self.selected.is_empty() {
             return 0;
         }
-        let pairs: rustc_hash::FxHashSet<(&'static str, String)> = self
+        let pairs: rustc_hash::FxHashSet<(&str, String)> = self
             .selected
             .iter()
             .filter_map(|h| self.document.get_entity(*h))
@@ -182,13 +192,13 @@ impl Scene {
     /// Returns the sorted set of entity-type names present in the active
     /// layout. Used to populate the Quick Select "Object type" dropdown
     /// with only the types that actually exist in the drawing.
-    pub fn entity_type_names_in_layout(&self) -> Vec<&'static str> {
+    pub fn entity_type_names_in_layout(&self) -> Vec<String> {
         use crate::entities::traits::entity_type_name;
-        let mut names: std::collections::BTreeSet<&'static str> =
+        let mut names: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
         for h in self.current_layout_entity_handles() {
             if let Some(e) = self.document.get_entity(h) {
-                names.insert(entity_type_name(e));
+                names.insert(entity_type_name(e).to_string());
             }
         }
         names.into_iter().collect()
@@ -311,6 +321,7 @@ impl Scene {
         use acadrust::types::Color;
         match c {
             Color::ByLayer => "ByLayer".to_string(),
+            Color::None => "None".to_string(),
             Color::ByBlock => "ByBlock".to_string(),
             Color::Index(i) => i.to_string(),
             Color::Rgb { r, g, b } => format!("{},{},{}", r, g, b),
@@ -330,8 +341,9 @@ impl Scene {
     // ── Erase ─────────────────────────────────────────────────────────────
 
     pub fn erase_entities(&mut self, handles: &[Handle]) {
-        let handle_set: HashSet<Handle> = handles.iter().copied().collect();
+        let mut handle_set: HashSet<Handle> = HashSet::default();
         let mut erased: Vec<(Handle, ChangeKind)> = Vec::new();
+        let mut highlight_changed = false;
         for &h in handles {
             // Objects on a locked layer can't be erased.
             if self.is_layer_locked(h) {
@@ -342,29 +354,68 @@ impl Scene {
                 let before = self.document.get_entity_arc(h);
                 self.record_undo_before(h, before);
             }
+            self.remember_removed_cache_categories(h);
             self.document.remove_entity_arc(h);
-            self.selected.remove(&h);
+            highlight_changed |= self.selected.remove(&h);
+            if self.hover_highlight == Some(h) {
+                self.hover_highlight = None;
+                highlight_changed = true;
+            }
             self.hatches.remove(&h);
             self.images.remove(&h);
             self.meshes.remove(&h);
             self.block_meshes.remove(&h);
             self.solid_models.remove(&h);
+            handle_set.insert(h);
             erased.push((h, ChangeKind::Removed));
+        }
+        if highlight_changed {
+            self.bump_selection();
+        }
+        // Capture exactly the group objects that this erase will rewrite, plus
+        // the group dictionary when an emptied group will be removed. Do this
+        // before taking mutable object-map borrows below.
+        if self.is_recording_undo() && !handle_set.is_empty() {
+            let affected_groups: Vec<(Handle, ObjectType)> = self
+                .document
+                .objects
+                .iter()
+                .filter_map(|(&handle, object)| match object {
+                    ObjectType::Group(group)
+                        if group.entities.iter().any(|h| handle_set.contains(h)) =>
+                    {
+                        Some((handle, object.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !affected_groups.is_empty() {
+                let removes_group = affected_groups.iter().any(|(_, object)| {
+                    matches!(
+                        object,
+                        ObjectType::Group(group)
+                            if group.entities.iter().all(|h| handle_set.contains(h))
+                    )
+                });
+                if removes_group {
+                    let dictionary = self.document.header.acad_group_dict_handle;
+                    let dictionary_before = self.document.objects.get(&dictionary).cloned();
+                    self.record_undo_object_before(dictionary, dictionary_before);
+                }
+                for (handle, object) in affected_groups {
+                    self.record_undo_object_before(handle, Some(object));
+                }
+            }
         }
         // Remove erased handles from all groups; delete groups that become empty.
         let group_dict_handle = self.document.header.acad_group_dict_handle;
-        let mut groups_changed = false;
         let to_remove: Vec<Handle> = self
             .document
             .objects
             .values_mut()
             .filter_map(|obj| match obj {
                 ObjectType::Group(g) => {
-                    let before = g.entities.len();
                     g.entities.retain(|h| !handle_set.contains(h));
-                    if g.entities.len() != before {
-                        groups_changed = true;
-                    }
                     if g.entities.is_empty() {
                         Some(g.handle)
                     } else {
@@ -374,11 +425,6 @@ impl Scene {
                 _ => None,
             })
             .collect();
-        // Delta-undo: editing a group (or deleting an emptied one) mutates
-        // document.objects — non-entity state a pure-entity delta can't restore.
-        if groups_changed {
-            self.poison_undo_recording();
-        }
         for gh in &to_remove {
             if let Some(ObjectType::Dictionary(dict)) =
                 self.document.objects.get_mut(&group_dict_handle)

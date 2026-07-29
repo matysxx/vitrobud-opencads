@@ -1,7 +1,7 @@
 mod alias;
 #[cfg(not(target_arch = "wasm32"))]
 mod automation;
-mod config;
+pub(crate) mod config;
 #[cfg(not(target_arch = "wasm32"))]
 pub use automation::{export_headless, serve};
 mod command_driver;
@@ -188,6 +188,10 @@ pub struct OpenProgress {
     pub size_bytes: u64,
     pub state: Arc<crate::io::OpenProgressState>,
     pub started: Instant,
+    /// Disk state captured before parsing starts. If another editor changes the
+    /// file while it loads, the first Save must not silently overwrite it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fingerprint: Option<crate::io::edit_lock::FileFingerprint>,
 }
 
 // ── Application state ──────────────────────────────────────────────────────
@@ -222,6 +226,7 @@ pub enum StartSection {
     Videos,
     #[default]
     Welcome,
+    Discussions,
     Supporters,
 }
 
@@ -255,6 +260,10 @@ pub(super) struct OpenCADStudio {
     video_thumbs: std::collections::HashMap<String, iced::widget::image::Handle>,
     /// True while the boot-time playlist fetch is still in flight.
     videos_loading: bool,
+    /// GitHub Discussions shown on the Start page, with pinned entries first.
+    discussions: Vec<crate::discussions::DiscussionEntry>,
+    /// True while the boot-time Discussions refresh is still in flight.
+    discussions_loading: bool,
     /// Block references whose properties panel shows per-axis Scale X/Y/Z even
     /// though the three factors are currently equal — the user unchecked the
     /// "Uniform scale" box for them (#427). Keyed by entity handle.
@@ -262,6 +271,9 @@ pub(super) struct OpenCADStudio {
     /// Which Start-page section is shown when the page is too narrow for all
     /// three side by side and falls back to a tab bar.
     start_section: StartSection,
+    /// Widest natural single-row width of the Start-page action buttons,
+    /// measured by `WrapFlow` so side lists collapse before those buttons wrap.
+    start_action_w: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// When the window is too narrow the properties panel collapses to a
     /// vertical bar; this is the user's toggle to expand it back out.
     props_expanded: bool,
@@ -291,6 +303,9 @@ pub(super) struct OpenCADStudio {
     isolate_popup_open: bool,
     /// True while the selection-filter type picker is open.
     selection_filter_popup_open: bool,
+    /// Hide a status-menu tooltip after its root is clicked; reset when the
+    /// pointer leaves the root for the opened menu.
+    status_menu_tooltip_hidden: bool,
     /// Clean-screen mode: hide ribbon and side panels for a full canvas.
     clean_screen: bool,
     /// Quick Properties: show a compact floating property panel on selection.
@@ -509,14 +524,31 @@ pub(super) struct OpenCADStudio {
     loaded_plugin_ids: rustc_hash::FxHashSet<String>,
     /// Curated plugin registry fetched from the OpenCADStudio repo.
     plugin_registry: Vec<crate::plugin::external::RegistryEntry>,
+    /// True while the curated registry request is in flight.
+    plugin_registry_loading: bool,
+    /// Last curated-registry request error. Kept separate from general
+    /// marketplace status so the UI can show a friendly retry card and retain
+    /// copyable technical details.
+    plugin_registry_error: Option<String>,
+    /// Whether the registry error card exposes its raw diagnostic text.
+    plugin_registry_error_details_open: bool,
     /// User-linked plugin source repos (`owner/repo`) beyond the curated list.
     plugin_repos: Vec<String>,
     /// Add-repository text field in the Plugin Manager.
     plugin_repo_input: String,
+    /// Live filter for installed and available plugin cards.
+    plugin_search_input: String,
     /// Installable release tags fetched per linked repo (for the dropdown).
     repo_release_tags: rustc_hash::FxHashMap<String, Vec<String>>,
     /// The release tag currently selected per linked repo.
     repo_selected_tag: rustc_hash::FxHashMap<String, String>,
+    /// Repository currently shown in the Plugin Manager detail pane.
+    selected_plugin_repo: Option<String>,
+    /// Parsed GitHub README content or the last fetch error, cached per repo.
+    plugin_readmes:
+        rustc_hash::FxHashMap<String, Result<iced::widget::markdown::Content, String>>,
+    /// README requests in flight, used to render a deterministic loading state.
+    plugin_readme_loading: rustc_hash::FxHashSet<String>,
     /// Last marketplace status / error line shown in the Plugin Manager.
     marketplace_status: String,
     /// PDSIZE text buffer for the Point Style (DDPTYPE) dialog.
@@ -566,8 +598,6 @@ pub(super) struct OpenCADStudio {
     mtext_editor: Option<mtext_editor::MTextEditorState>,
     /// Open in-place single-line TEXT editor (plain text-entry box), if any.
     text_inline: Option<text_inline::TextInlineState>,
-    /// Which layout tab has its context menu open (None = closed).
-    layout_context_menu: Option<String>,
     /// Cursor-anchored one-shot snap override menu (Shift+RMB): the canvas
     /// point it opened at, or `None` when closed (#337).
     snap_override_popup: Option<iced::Point>,
@@ -624,7 +654,6 @@ pub(super) struct OpenCADStudio {
     mls_line_color: String,
     mls_text_color: String,
     mls_description: String,
-    mls_line_weight: String,
     mls_align_space: String,
     mls_block_color: String,
     mls_block_rotation: String,
@@ -684,6 +713,8 @@ pub(super) struct OpenCADStudio {
 
     // ── Color Scheme ──────────────────────────────────────────────────────
     active_theme: Theme,
+    ui_theme: config::UiThemeConfig,
+    theme_color_inputs: [String; 6],
 
     // ── Keyboard Shortcut Editor ──────────────────────────────────────────
     /// User-defined function-key overrides: "F3" → command string.
@@ -753,12 +784,26 @@ pub(super) struct OpenCADStudio {
     // ── Unsaved-changes dialog ────────────────────────────────────────────
     /// Set when the user tries to close a tab or quit while there are unsaved changes.
     pending_close: Option<PendingClose>,
+    /// Stable document ids waiting to be closed by "Close All" or
+    /// "Close All Other Drawings". Dirty drawings pause this queue at the
+    /// existing unsaved-changes dialog and resume after Save or Discard.
+    pending_tab_closes: std::collections::VecDeque<u64>,
     /// Latest save job per stable tab id. Older completions may finish, but
     /// cannot mark a newer document state clean or redirect its path.
     #[cfg(not(target_arch = "wasm32"))]
     active_save_jobs: std::collections::HashMap<u64, u64>,
     #[cfg(not(target_arch = "wasm32"))]
     save_job_serial: u64,
+    /// Destination leases held while Save As workers are active.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_save_leases:
+        std::collections::HashMap<u64, crate::io::edit_lock::EditLease>,
+    /// Locked-file failure currently shown in the recovery dialog.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_save_failure: Option<PendingSaveFailure>,
+    /// Save stopped because the drawing changed outside this editor.
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_external_change: Option<PendingExternalChange>,
     /// OS window for the unsaved-changes confirmation dialog.
 
     // ── Custom Save-As dialog ─────────────────────────────────────────────
@@ -770,6 +815,8 @@ pub(super) struct OpenCADStudio {
     save_dialog_filename: String,
     /// True when triggered from the unsaved-changes flow.
     save_dialog_for_unsaved: bool,
+    /// User preference for the first save of a new/unsaved drawing.
+    default_save_format: String,
 
     // ── DimStyle Dialog ───────────────────────────────────────────────────
     /// Name of the style currently shown in the dialog.
@@ -883,6 +930,29 @@ pub(super) enum SaveContinuation {
     Quit,
 }
 
+#[derive(Debug, Clone)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct PendingSaveFailure {
+    tab_id: u64,
+    path: PathBuf,
+    version: acadrust::DxfVersion,
+    purpose: SavePurpose,
+    continuation: SaveContinuation,
+    set_current_path: bool,
+    error: String,
+}
+
+#[derive(Debug, Clone)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct PendingExternalChange {
+    tab_id: u64,
+    path: PathBuf,
+    version: acadrust::DxfVersion,
+    purpose: SavePurpose,
+    continuation: SaveContinuation,
+    set_current_path: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) struct ThumbnailCacheKey {
@@ -902,13 +972,14 @@ pub struct SaveOutcome {
     revision: u64,
     camera_generation: u64,
     path: PathBuf,
+    version: acadrust::DxfVersion,
     previous_autosave: Option<PathBuf>,
     set_current_path: bool,
     purpose: SavePurpose,
     continuation: SaveContinuation,
     thumbnail_key: Option<ThumbnailCacheKey>,
     refreshed_preview: Option<Option<acadrust::Preview>>,
-    result: Result<(), String>,
+    result: Result<(), crate::io::SaveFailure>,
 }
 
 /// Where a colour chosen in the standalone palette window should be applied.
@@ -1242,6 +1313,7 @@ impl ClipboardDeps {
 pub enum ModalKind {
     About,
     Shortcuts,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     PluginManager,
     UpdateNotice,
     Layers,
@@ -1255,7 +1327,12 @@ pub enum ModalKind {
     DimStyle,
     Unsaved,
     SaveDialog,
+    Options,
     AecDropWarning,
+    #[cfg(not(target_arch = "wasm32"))]
+    FileInUse,
+    #[cfg(not(target_arch = "wasm32"))]
+    ExternalChange,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     AssocPrompt,
     PointStyle,
@@ -1412,6 +1489,9 @@ pub enum Message {
     /// running but its result is discarded.
     OpenCancel,
     FileOpened(Result<(String, PathBuf, CadDocument, crate::scene::DerivedCaches), String>),
+    /// Web: an asynchronous OPFS copy written after Save is ready for recents.
+    #[cfg(target_arch = "wasm32")]
+    WebRecentStored(Result<PathBuf, String>),
     SaveFile,
     SaveAs,
     // ── Custom Save-As dialog ─────────────────────────────────────────────
@@ -1421,6 +1501,14 @@ pub enum Message {
     SaveDialogCancel,
     /// Destination picked in the native OS save dialog (`None` = cancelled).
     SaveDialogPathPicked(Option<std::path::PathBuf>),
+    /// Open the application-wide Options dialog.
+    OptionsOpen,
+    /// Set the default type/version used when first saving a new drawing.
+    DefaultSaveFormatChanged(String),
+    /// Select one of Iced's built-in themes or the editable Custom theme.
+    OptionsThemeChanged(String),
+    /// Edit one of Custom theme's six base colours as #RRGGBB.
+    OptionsThemeColorChanged(usize, String),
     ClearScene,
     SetWireframe(bool),
     /// Set the active tab's render mode (one of acadrust's seven visual
@@ -1450,8 +1538,24 @@ pub enum Message {
     TabNew,
     /// Switch to the given tab index.
     TabSwitch(usize),
+    /// Move a drawing tab before/after another drawing tab.
+    TabReorder {
+        from: usize,
+        to: usize,
+        after: bool,
+    },
     /// Close the given tab index.
     TabClose(usize),
+    /// Save every drawing that already has a file path.
+    DocTabSaveAll,
+    /// Close every non-Start drawing tab.
+    DocTabCloseAll,
+    /// Close every non-Start drawing tab except the given one.
+    DocTabCloseOthers(usize),
+    /// Copy the saved drawing's absolute path to the system clipboard.
+    DocTabCopyFullPath(usize),
+    /// Reveal the saved drawing in the platform file manager.
+    DocTabOpenFileLocation(usize),
     // ── Unsaved-changes confirmation dialog ───────────────────────────────
     /// User clicked "Save" in the unsaved-changes dialog.
     UnsavedDialogSave,
@@ -1471,6 +1575,27 @@ pub enum Message {
     /// Native background save/autosave completed.
     #[cfg(not(target_arch = "wasm32"))]
     SaveFinished(SaveOutcome),
+    /// Retry the failed save after the other application releases the file.
+    #[cfg(not(target_arch = "wasm32"))]
+    SaveFileInUseRetry,
+    /// Choose a different destination for the failed save.
+    #[cfg(not(target_arch = "wasm32"))]
+    SaveFileInUseSaveAs,
+    /// Cancel the failed save and any pending close/quit continuation.
+    #[cfg(not(target_arch = "wasm32"))]
+    SaveFileInUseCancel,
+    /// Reload the externally changed drawing and discard local edits.
+    #[cfg(not(target_arch = "wasm32"))]
+    ExternalChangeReload,
+    /// Keep local edits but choose a different destination.
+    #[cfg(not(target_arch = "wasm32"))]
+    ExternalChangeSaveAs,
+    /// Replace the externally changed disk copy with the local drawing.
+    #[cfg(not(target_arch = "wasm32"))]
+    ExternalChangeOverwrite,
+    /// Cancel the conflicted save and any pending close/quit continuation.
+    #[cfg(not(target_arch = "wasm32"))]
+    ExternalChangeCancel,
     // ─────────────────────────────────────────────────────────────────────
     CommandInput(String),
     CommandSubmit,
@@ -1802,6 +1927,16 @@ pub enum Message {
     PropVertexStep(i8),
     /// User selected a hatch pattern from the pattern pick_list in Properties.
     PropHatchPatternChanged(String),
+    /// Open or close the visual hatch-pattern picker.
+    PropHatchPatternPickerToggle(String),
+    /// Filter the visual hatch-pattern picker.
+    PropHatchPatternSearchChanged(String),
+    /// Move the visual pattern grid focus to a hovered card.
+    PropHatchPatternFocus(usize),
+    /// Move keyboard focus by one card or one two-column row.
+    PropHatchPatternNavigate(i8),
+    /// Select the keyboard-focused visual pattern card.
+    PropHatchPatternConfirm,
     /// User selected a generic choice field in the Properties panel.
     PropGeomChoiceChanged {
         field: &'static str,
@@ -1853,6 +1988,14 @@ pub enum Message {
     PspaceCommand,
     /// Switch to a named layout ("Model" or paper space layout name).
     LayoutSwitch(String),
+    /// Switch to an already-open BEDIT block tab.
+    BlockEditSwitch(String),
+    /// Move a paper layout before/after another paper layout.
+    LayoutReorder {
+        from: String,
+        to: String,
+        after: bool,
+    },
     /// Create a new paper space layout.
     LayoutCreate,
     /// Delete the named paper space layout (Model cannot be deleted).
@@ -1865,10 +2008,6 @@ pub enum Message {
     LayoutRenameCommit,
     /// Cancel an in-progress rename (Escape).
     LayoutRenameCancel,
-    /// Open the right-click context menu for the given layout tab.
-    LayoutContextMenu(String),
-    /// Close the layout context menu.
-    LayoutContextMenuClose,
     // ── Layout Manager Panel ────────────────────────────────────────────
     LayoutManagerOpen,
     #[allow(dead_code)]
@@ -1948,16 +2087,26 @@ pub enum Message {
     // ── Plugin marketplace (install from a linked repo's releases) ─────────
     /// Edit the add-repository text field.
     PluginRepoInput(String),
+    /// Filter installed and available plugin cards.
+    PluginSearchInput(String),
     /// Link the repository currently in the text field.
     PluginRepoAdd,
     /// Unlink a repository.
     PluginRepoRemove(String),
     /// The curated registry was fetched.
     PluginRegistryFetched(Result<Vec<crate::plugin::external::RegistryEntry>, String>),
+    /// Retry the curated registry request after a connection failure.
+    PluginRegistryRetry,
+    /// Expand or collapse raw registry error details.
+    PluginRegistryErrorDetailsToggle,
+    /// Copy registry URL, platform, version, and raw error details.
+    PluginRegistryCopyDiagnostics,
     /// Patreon supporters fetched at boot for the Start page (name, pledge cents).
     PatronsFetched(Result<Vec<(String, i64)>, String>),
     /// Tutorial-playlist videos fetched at boot for the Start page.
     VideosFetched(Result<Vec<crate::videos::VideoEntry>, String>),
+    /// GitHub Discussions fetched at boot for the Start page.
+    DiscussionsFetched(Result<Vec<crate::discussions::DiscussionEntry>, String>),
     /// Recent-file DWG preview thumbnails decoded on a background thread.
     RecentThumbsLoaded(
         Vec<(std::path::PathBuf, Option<iced::widget::image::Handle>)>,
@@ -1966,8 +2115,14 @@ pub enum Message {
     PluginReleasesFetched(String, Result<Vec<String>, String>),
     /// Choose a release tag for a repo (`repo`, `tag`).
     PluginReleaseSelect(String, String),
+    /// Select a plugin source and show its GitHub README in the detail pane.
+    PluginReadmeSelect(String),
+    /// A GitHub README fetch finished (`repo`, Markdown or error).
+    PluginReadmeFetched(String, Result<String, String>),
     /// Install the selected release of `owner/repo`.
     PluginInstall(String),
+    /// Install a specific newer release from an installed plugin card.
+    PluginUpdate(String, String),
     /// Result of an install: the plugin id, or an error message.
     PluginInstalled(Result<String, String>),
     /// Delete an installed plugin's folder (effective next restart).
@@ -2077,6 +2232,8 @@ pub enum Message {
     OsWindowClosed(window::Id),
     /// No-op — used as a fallback when a TabEvent has no host mapping.
     Noop,
+    /// Suppress menu-root tooltips between clicking the root and leaving it.
+    StatusMenuTooltipHidden(bool),
     /// GitHub releases API returned a result. `Some(version)` means a
     /// newer release exists; we open the update-notice window.
     UpdateCheckResult(Option<crate::io::update_check::UpdateInfo>),
@@ -2254,6 +2411,7 @@ pub enum Message {
         field: &'static str,
         value: String,
     },
+    MLeaderStyleLineWeightChanged(LineWeight),
     /// Set an Option<Handle> field (linetype / arrowhead / text style / block)
     /// from a dropdown of record names ("None" clears it).
     MLeaderStyleSetHandle {
@@ -2382,8 +2540,11 @@ impl OpenCADStudio {
             videos: Vec::new(),
             video_thumbs: std::collections::HashMap::new(),
             videos_loading: false,
+            discussions: Vec::new(),
+            discussions_loading: false,
             props_asym_scale: std::collections::HashSet::new(),
             start_section: StartSection::default(),
+            start_action_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             props_expanded: false,
             history_content: iced::widget::text_editor::Content::new(),
             status_bar: StatusBar::new(),
@@ -2400,6 +2561,7 @@ impl OpenCADStudio {
             units_popup_open: false,
             isolate_popup_open: false,
             selection_filter_popup_open: false,
+            status_menu_tooltip_hidden: false,
             statusbar_config: crate::ui::statusbar::statusbar_config::StatusBarConfig::default(),
             last_saved_config: None,
             otrack_active: None,
@@ -2472,10 +2634,17 @@ impl OpenCADStudio {
             external_plugins: Vec::new(),
             loaded_plugin_ids: rustc_hash::FxHashSet::default(),
             plugin_registry: Vec::new(),
+            plugin_registry_loading: false,
+            plugin_registry_error: None,
+            plugin_registry_error_details_open: false,
             plugin_repos: Vec::new(),
             plugin_repo_input: String::new(),
+            plugin_search_input: String::new(),
             repo_release_tags: rustc_hash::FxHashMap::default(),
             repo_selected_tag: rustc_hash::FxHashMap::default(),
+            selected_plugin_repo: None,
+            plugin_readmes: rustc_hash::FxHashMap::default(),
+            plugin_readme_loading: rustc_hash::FxHashSet::default(),
             marketplace_status: String::new(),
             point_size_buf: String::new(),
             point_size_relative: true,
@@ -2492,7 +2661,6 @@ impl OpenCADStudio {
             cont_anchor: None,
             mtext_editor: None,
             text_inline: None,
-            layout_context_menu: None,
             snap_override_popup: None,
             axis_lock_dir: None,
             layout_rename_state: None,
@@ -2512,17 +2680,27 @@ impl OpenCADStudio {
             active_interaction_index: None,
             queued_interaction_indices: std::collections::VecDeque::new(),
             pending_close: None,
+            pending_tab_closes: std::collections::VecDeque::new(),
             #[cfg(not(target_arch = "wasm32"))]
             active_save_jobs: std::collections::HashMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
             save_job_serial: 0,
-            save_dialog_format: "DWG 2018".to_string(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_save_leases: std::collections::HashMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_save_failure: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_change: None,
+            save_dialog_format: crate::io::DEFAULT_SAVE_FORMAT.to_string(),
             save_dialog_filename: "drawing.dwg".to_string(),
             save_dialog_for_unsaved: false,
+            default_save_format: crate::io::DEFAULT_SAVE_FORMAT.to_string(),
             // Plot style
             active_plot_style: None,
-            // Color scheme (default: dark CAD-style)
-            active_theme: Theme::Dark,
+            // Color scheme (default: Oxocarbon)
+            active_theme: Theme::Oxocarbon,
+            ui_theme: config::UiThemeConfig::default(),
+            theme_color_inputs: config::UiThemePalette::default().hex_values(),
             // Keyboard shortcuts
             shortcut_overrides: rustc_hash::FxHashMap::default(),
             // Command aliases (populated from ocad.pgp just after construction)
@@ -2587,7 +2765,6 @@ impl OpenCADStudio {
             mls_line_color: String::new(),
             mls_text_color: String::new(),
             mls_description: String::new(),
-            mls_line_weight: String::new(),
             mls_align_space: String::new(),
             mls_block_color: String::new(),
             mls_block_rotation: String::new(),
@@ -2837,6 +3014,26 @@ impl OpenCADStudio {
         };
         #[cfg(target_arch = "wasm32")]
         let videos_fetch = Task::none();
+        // GitHub Discussions: seed from the last successful fetch, then refresh
+        // the public feed and pinned section on a background thread.
+        #[cfg(not(target_arch = "wasm32"))]
+        let discussions_fetch = {
+            s.discussions = crate::discussions::load_cached();
+            s.discussions_loading = true;
+            let (tx, rx) = iced::futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::discussions::fetch_discussions());
+            });
+            Task::perform(
+                async move {
+                    rx.await
+                        .unwrap_or_else(|_| Err("discussion fetch thread died".into()))
+                },
+                Message::DiscussionsFetched,
+            )
+        };
+        #[cfg(target_arch = "wasm32")]
+        let discussions_fetch = Task::none();
         // Recent-file thumbnails: decoded off-thread — parsing every recent
         // DWG's preview on the boot path held the first frame back.
         let thumbs_fetch = s.refresh_recent_thumbs();
@@ -2851,6 +3048,7 @@ impl OpenCADStudio {
                 assoc_prompt,
                 patrons_fetch,
                 videos_fetch,
+                discussions_fetch,
                 thumbs_fetch,
             ]),
         )
@@ -2870,7 +3068,17 @@ impl OpenCADStudio {
             crate::patreon::fetch_patrons_web(),
             Message::PatronsFetched,
         );
-        (s, Task::batch([focus, patrons]))
+        s.videos_loading = true;
+        let videos = Task::perform(
+            crate::videos::fetch_playlist_web(),
+            Message::VideosFetched,
+        );
+        s.discussions_loading = true;
+        let discussions = Task::perform(
+            crate::discussions::fetch_discussions_web(),
+            Message::DiscussionsFetched,
+        );
+        (s, Task::batch([focus, patrons, videos, discussions]))
     }
 }
 
