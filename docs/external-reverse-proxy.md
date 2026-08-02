@@ -19,8 +19,9 @@ that in the external proxy/runtime override without committing certificates.
 
 - Set `OPENCADS_BIND_ADDRESS` privately to the Debian interface reachable by the
   reverse-proxy host; do not publish the private address in Git.
-- Restrict the published backend port to the reverse-proxy host and designated
-  administration network.
+- Apply one explicit private exposure model to the published backend port:
+  reverse-proxy/administration sources only (preferred), or trusted-LAN access
+  when direct IP use is an intentional requirement.
 - Forward the original host and scheme headers.
 - Preserve these response headers from the backend:
   - `Cross-Origin-Opener-Policy: same-origin`
@@ -28,6 +29,12 @@ that in the external proxy/runtime override without committing certificates.
   - `Cross-Origin-Resource-Policy: same-origin`
 - Allow WASM MIME types and large static responses without content rewriting.
 - Verify `/healthz` directly and the application root through final HTTPS.
+- Validate the host firewall configuration before reload and confirm the
+  effective backend-port rule after reload. Firewall commands and private
+  addresses belong in the host operations record, not this repository.
 
 No WebSocket, sticky session, or application upload route is required for the
 basic stateless web edition.
+
+See the [infrastructure runbook](infrastructure-runbook.md) for the complete
+network, firewall, autostart, and migration acceptance contract.

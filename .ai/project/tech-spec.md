@@ -65,3 +65,7 @@ README.md
 - Generated host units such as `container-*.service` remain untracked
 - Shell validation with `bash -n`; Compose validation with
   `podman compose config`; image checks include static headers and health/readiness
+
+The reusable infrastructure, firewall, reverse-proxy, autostart, migration, and
+acceptance boundary is defined in `docs/infrastructure-runbook.md`. Concrete
+deployment identifiers and acceptance records remain private and untracked.

@@ -34,6 +34,8 @@ See [container quick start](docs/container-quickstart.md),
 [deployment plan](docs/deployment-plan.md), and
 [upstream maintenance](docs/upstream-maintenance.md). Production-style private
 access is described in [external reverse proxy](docs/external-reverse-proxy.md).
+The complete host, firewall, proxy, autostart, and migration boundary is defined
+in the [infrastructure runbook](docs/infrastructure-runbook.md).
 
 ### Web limitations
 
