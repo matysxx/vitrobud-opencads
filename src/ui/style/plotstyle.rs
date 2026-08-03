@@ -2,11 +2,13 @@
 
 use crate::app::Message;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
-use iced::{Background, Border, Element, Fill, Theme};
+use iced::{Background, Border, Element, Theme};
+use crate::t;
+use std::borrow::Cow;
 
 fn btn_s(accent: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |theme: &Theme, st| {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let pair = match (accent, st) {
             (true, button::Status::Hovered | button::Status::Pressed) => palette.primary.strong,
             (false, button::Status::Hovered | button::Status::Pressed) => {
@@ -29,7 +31,7 @@ fn btn_s(accent: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 }
 
 fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let border = match status {
         text_input::Status::Focused { .. } => palette.primary.base.color,
         _ => palette.background.neutral.color,
@@ -50,30 +52,30 @@ fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
 
 fn muted_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
 }
 
-fn hdivider<'a>() -> Element<'a, Message> {
-    container(Space::new().width(Fill).height(1))
-        .width(Fill)
+fn hdivider<'a>(width: iced::Length) -> Element<'a, Message> {
+    container(Space::new().width(width).height(1))
+        .width(width)
         .height(1)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.neutral.color
+                theme.palette().background.neutral.color
             )),
             ..Default::default()
         })
         .into()
 }
 
-fn vsep<'a>() -> Element<'a, Message> {
-    container(Space::new().width(1).height(Fill))
+fn vsep<'a>(height: iced::Length) -> Element<'a, Message> {
+    container(Space::new().width(1).height(height))
         .width(1)
-        .height(Fill)
+        .height(height)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.neutral.color
+                theme.palette().background.neutral.color
             )),
             ..Default::default()
         })
@@ -86,27 +88,28 @@ pub fn view_window<'a>(
     color_buf: &'a str,
     lw_buf: &'a str,
     screen_buf: &'a str,
+    sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     let table_name = table
-        .map(|t| t.name.as_str())
-        .unwrap_or("(no table loaded)");
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| t!("(no table loaded)").into_owned());
 
     // ── Toolbar ───────────────────────────────────────────────────────────
     let toolbar = container(
         row![
-            button(text("Load CTB/STB").size(11))
+            button(text(t!("Load CTB/STB")).size(11))
                 .on_press(Message::PlotStyleLoad)
                 .style(btn_s(false))
                 .padding([4, 10]),
-            button(text("Save As…").size(11))
+            button(text(t!("Save As…")).size(11))
                 .on_press(Message::PlotStylePanelSave)
                 .style(btn_s(false))
                 .padding([4, 10]),
-            button(text("Clear Table").size(11))
+            button(text(t!("Clear Table")).size(11))
                 .on_press(Message::PlotStyleClear)
                 .style(btn_s(false))
                 .padding([4, 10]),
-            Space::new().width(Fill),
+            Space::new().width(sizing.width),
             text(table_name).size(10).style(muted_style),
         ]
         .spacing(4)
@@ -114,11 +117,11 @@ pub fn view_window<'a>(
     )
     .style(|theme: &Theme| container::Style {
         background: Some(Background::Color(
-            theme.extended_palette().background.weak.color
+            theme.palette().background.weak.color
         )),
         ..Default::default()
     })
-    .width(Fill)
+    .width(sizing.width)
     .padding([5, 8]);
 
     // ── Left: ACI list ────────────────────────────────────────────────────
@@ -148,12 +151,12 @@ pub fn view_window<'a>(
             let label = if has_override {
                 format!("{aci:>3}  {color_str:<9} {lw_str}")
             } else {
-                format!("{aci:>3}  (default)")
+                format!("{aci:>3}  {}", t!("(default)"))
             };
             button(text(label).size(10).font(iced::Font::MONOSPACE))
                 .on_press(Message::PlotStylePanelSelectAci(aci))
                 .style(move |theme: &Theme, st| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     let pair = match (is_sel, st) {
                         (true, _) => Some(palette.primary.strong),
                         (false, button::Status::Hovered | button::Status::Pressed) => {
@@ -170,17 +173,17 @@ pub fn view_window<'a>(
                     }
                 })
                 .padding([2, 8])
-                .width(Fill)
+                .width(sizing.width)
                 .into()
         })
         .collect();
 
     let aci_list = container(
         column![
-            text("ACI Color Index").size(10).style(muted_style),
-            container(scrollable(column(aci_items).spacing(1)).height(Fill))
+            text(t!("ACI Color Index")).size(10).style(muted_style),
+            container(scrollable(column(aci_items).spacing(1)).height(sizing.height))
                 .style(|theme: &Theme| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     container::Style {
                     background: Some(Background::Color(palette.background.weak.color)),
                     border: Border {
@@ -191,15 +194,15 @@ pub fn view_window<'a>(
                     ..Default::default()
                     }
                 })
-                .width(Fill)
-                .height(Fill)
+                .width(sizing.width)
+                .height(sizing.height)
                 .padding(2),
         ]
         .spacing(4)
-        .height(Fill),
+        .height(sizing.height),
     )
     .width(280)
-    .height(Fill)
+    .height(sizing.height)
     .padding(iced::Padding {
         top: 12.0,
         right: 8.0,
@@ -211,11 +214,11 @@ pub fn view_window<'a>(
     let entry = table.and_then(|t| t.aci_entries.get(selected_aci as usize));
     let cur_color = entry
         .and_then(|e| e.color.map(|[r, g, b]| format!("#{r:02X}{g:02X}{b:02X}")))
-        .unwrap_or_else(|| "(none)".into());
+        .unwrap_or_else(|| t!("(none)").into());
     let cur_lw = entry
         .map(|e| {
             if e.lineweight == 255 {
-                "object".into()
+                t!("object").into()
             } else {
                 crate::io::plot_style::LW_TABLE
                     .get(e.lineweight as usize)
@@ -228,62 +231,62 @@ pub fn view_window<'a>(
         .map(|e| format!("{}%", e.screening))
         .unwrap_or_else(|| "—".into());
 
-    let lbl = |s: &'static str| text(s).size(11).style(muted_style);
+    let lbl = |s: Cow<'static, str>| text(s).size(11).style(muted_style);
 
     let edit_panel = container(
         column![
             row![
-                text("ACI:").size(11).style(muted_style).width(100),
+                text(t!("ACI:")).size(11).style(muted_style).width(100),
                 text(format!("{selected_aci}")).size(11),
             ]
             .spacing(8)
             .align_y(iced::Center),
-            lbl("Color override (#RRGGBB):"),
-            text_input("#RRGGBB or blank", color_buf)
+            lbl(t!("Color override (#RRGGBB):")),
+            text_input(t!("#RRGGBB or blank").as_ref(), color_buf)
                 .on_input(Message::PlotStylePanelColorBuf)
                 .style(field_style)
                 .size(11)
                 .padding([4, 8]),
-            lbl("Lineweight index (0-24, 255=obj):"),
+            lbl(t!("Lineweight index (0-24, 255=obj):")),
             text_input("255", lw_buf)
                 .on_input(Message::PlotStylePanelLwBuf)
                 .style(field_style)
                 .size(11)
                 .padding([4, 8]),
-            lbl("Screening (0-100):"),
+            lbl(t!("Screening (0-100):")),
             text_input("100", screen_buf)
                 .on_input(Message::PlotStylePanelScreenBuf)
                 .style(field_style)
                 .size(11)
                 .padding([4, 8]),
             Space::new().height(8),
-            text("Current values:").size(10).style(muted_style),
-            text(format!("  Color: {cur_color}")).size(10),
-            text(format!("  Lineweight: {cur_lw}")).size(10),
-            text(format!("  Screening: {cur_scr}")).size(10),
-            Space::new().height(Fill),
-            button(text("Apply to ACI").size(11))
+            text(t!("Current values:")).size(10).style(muted_style),
+            text(t!("  Color: %{cur_color}", cur_color = cur_color)).size(10),
+            text(t!("  Lineweight: %{cur_lw}", cur_lw = cur_lw)).size(10),
+            text(t!("  Screening: %{cur_scr}", cur_scr = cur_scr)).size(10),
+            Space::new().height(sizing.height),
+            button(text(t!("Apply to ACI")).size(11))
                 .on_press(Message::PlotStylePanelApply)
                 .style(btn_s(true))
                 .padding([5, 10]),
         ]
         .spacing(8)
-        .height(Fill),
+        .height(sizing.height),
     )
-    .width(Fill)
-    .height(Fill)
+    .width(sizing.width)
+    .height(sizing.height)
     .padding([12, 12]);
 
-    let body = row![aci_list, vsep(), edit_panel].height(Fill);
+    let body = row![aci_list, vsep(sizing.height), edit_panel].height(sizing.height);
 
-    container(column![toolbar, hdivider(), body].spacing(0))
+    container(column![toolbar, hdivider(sizing.width), body].spacing(0))
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.base.color
+                theme.palette().background.base.color
             )),
             ..Default::default()
         })
-        .width(Fill)
-        .height(Fill)
+        .width(sizing.width)
+        .height(sizing.height)
         .into()
 }

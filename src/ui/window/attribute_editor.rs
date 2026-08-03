@@ -17,9 +17,12 @@ use crate::app::Message;
 use acadrust::entities::{HorizontalAlignment, VerticalAlignment};
 use acadrust::types::{Color as AcadColor, LineWeight};
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, text, text_input, Space,
+    button, checkbox, column, container, row, scrollable, text, text_input, Space,
 };
 use iced::{Background, Border, Element, Length, Theme};
+use crate::t;
+use std::borrow::Cow;
+use std::fmt;
 
 use crate::ui::properties::{lw_options, LwItem};
 
@@ -59,7 +62,8 @@ pub struct AttrRow {
 }
 
 /// Combined justification options (horizontal × vertical), matching the
-/// standard text-justification list.
+/// standard text-justification list. The stored labels are the English source
+/// texts; `justify_label` / `justify_from_label` translate both directions.
 pub const JUSTIFY: &[(&str, HorizontalAlignment, VerticalAlignment)] = &[
     ("Left", HorizontalAlignment::Left, VerticalAlignment::Baseline),
     ("Center", HorizontalAlignment::Center, VerticalAlignment::Baseline),
@@ -78,13 +82,15 @@ pub const JUSTIFY: &[(&str, HorizontalAlignment, VerticalAlignment)] = &[
     ("Bottom Right", HorizontalAlignment::Right, VerticalAlignment::Bottom),
 ];
 
-/// The justification label for an (h, v) pair (defaults to "Left").
-pub fn justify_label(h: HorizontalAlignment, v: VerticalAlignment) -> &'static str {
+/// The justification label for an (h, v) pair (defaults to "Left"). Kept in
+/// English (like the colour names) — the labels are standard CAD terms and
+/// their keys would collide with ribbon tool labels such as "Right".
+pub fn justify_label(h: HorizontalAlignment, v: VerticalAlignment) -> Cow<'static, str> {
     JUSTIFY
         .iter()
         .find(|(_, jh, jv)| *jh == h && *jv == v)
-        .map(|(l, _, _)| *l)
-        .unwrap_or("Left")
+        .map(|(l, _, _)| Cow::Borrowed(*l))
+        .unwrap_or(Cow::Borrowed("Left"))
 }
 
 /// Resolve a justification label back to its (h, v) pair.
@@ -135,12 +141,12 @@ pub fn color_from_label(label: &str) -> Option<AcadColor> {
 
 fn muted_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
 }
 
 fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let border = match status {
         text_input::Status::Focused { .. } => palette.primary.base.color,
         _ => palette.background.neutral.color,
@@ -156,13 +162,13 @@ fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
 }
 
 /// Horizontal 1px divider in the shared border colour (matches style windows).
-fn hdivider<'a>() -> Element<'a, Message> {
-    container(Space::new().width(Length::Fill).height(1))
-        .width(Length::Fill)
+fn hdivider<'a>(width: Length) -> Element<'a, Message> {
+    container(Space::new().width(width).height(1))
+        .width(width)
         .height(1)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.neutral.color
+                theme.palette().background.neutral.color
             )),
             ..Default::default()
         })
@@ -170,21 +176,27 @@ fn hdivider<'a>() -> Element<'a, Message> {
 }
 
 /// One `label : widget` row with a fixed-width label column.
-fn field_row<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<'a, Message> {
+fn field_row<'a>(
+    label: Cow<'static, str>,
+    widget: Element<'a, Message>,
+    width: Length,
+) -> Element<'a, Message> {
     row![
         container(text(label).size(12).style(muted_style)).width(LABEL_W),
         widget,
     ]
     .spacing(8)
     .align_y(iced::Center)
+    .width(width)
     .into()
 }
 
 /// A labelled editable text field for one of the selected row's string buffers.
 fn edit_field<'a>(
-    label: &'a str,
+    label: Cow<'static, str>,
     value: &'a str,
     on_input: impl Fn(String) -> Message + 'a,
+    width: Length,
 ) -> Element<'a, Message> {
     let ti = text_input("", value)
         .on_input(on_input)
@@ -192,31 +204,73 @@ fn edit_field<'a>(
         .style(field_style)
         .size(13)
         .padding([3, 6])
-        .width(Length::Fill);
-    field_row(label, ti.into())
+        .width(width);
+    field_row(label, ti.into(), width)
 }
 
 /// A labelled pick_list of owned string options.
 fn pick_field<'a>(
-    label: &'a str,
+    label: Cow<'static, str>,
     options: Vec<String>,
     selected: Option<String>,
     on_select: impl Fn(String) -> Message + 'a,
+    width: Length,
 ) -> Element<'a, Message> {
-    let pl = pick_list(options, selected, on_select)
+    let pl = iced::widget::pick_list(selected, options, |value| value.to_string())
+        .on_select(on_select)
         .text_size(13)
         .padding([3, 6])
-        .width(Length::Fill);
-    field_row(label, pl.into())
+        .width(width);
+    field_row(label, pl.into(), width)
 }
 
-fn tab_button<'a>(label: &'a str, this: AttrTab, active: AttrTab) -> Element<'a, Message> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LocalizedChoice {
+    raw: String,
+    label: String,
+}
+
+impl LocalizedChoice {
+    fn new(raw: String) -> Self {
+        let label = raw
+            .strip_prefix("Color ")
+            .map(|number| crate::tf!("Color {}", number).into_owned())
+            .unwrap_or_else(|| crate::i18n::translate(&raw).into_owned());
+        Self { raw, label }
+    }
+}
+
+impl fmt::Display for LocalizedChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// A translated pick list which keeps the stored and emitted value unchanged.
+fn localized_pick_field<'a>(
+    label: Cow<'static, str>,
+    options: Vec<String>,
+    selected: Option<String>,
+    on_select: impl Fn(String) -> Message + 'a,
+    width: Length,
+) -> Element<'a, Message> {
+    let options = options.into_iter().map(LocalizedChoice::new).collect::<Vec<_>>();
+    let selected = selected.map(LocalizedChoice::new);
+    let pl = iced::widget::pick_list(selected, options, |value| value.to_string())
+        .on_select(move |choice: LocalizedChoice| on_select(choice.raw))
+        .text_size(13)
+        .padding([3, 6])
+        .width(width);
+    field_row(label, pl.into(), width)
+}
+
+fn tab_button<'a>(label: Cow<'static, str>, this: AttrTab, active: AttrTab) -> Element<'a, Message> {
     let is_active = this == active;
     button(text(label).size(11))
         .padding([4, 12])
         .on_press(Message::AttrEditorTab(this))
         .style(move |theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let pair = match (is_active, status) {
                 (true, _) => palette.primary.strong,
                 (false, button::Status::Hovered | button::Status::Pressed) => {
@@ -250,72 +304,88 @@ pub fn view_window<'a>(
     layers: Vec<String>,
     linetypes: Vec<String>,
     styles: Vec<String>,
+    sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
+    let width = sizing.width;
+    let height = sizing.height;
     // ── Top toolbar: block name on the left, Apply on the right ───────────
     // Mirrors the style-manager windows (actions left, primary action right).
-    let apply = button(text("Apply").size(11))
+    let apply = button(text(t!("Apply")).size(11))
         .padding([4, 14])
         .on_press(Message::AttrEditorApply)
         .style(button::primary);
     let toolbar = container(
         row![
-            text(format!("Block:  {block}")).size(12).style(muted_style),
-            Space::new().width(Length::Fill),
+            text(t!("Block:  %{block}", block = block)).size(12).style(muted_style),
+            Space::new().width(width),
             apply,
         ]
         .align_y(iced::Center),
     )
     .style(|theme: &Theme| container::Style {
         background: Some(Background::Color(
-            theme.extended_palette().background.weak.color
+            theme.palette().background.weak.color
         )),
         ..Default::default()
     })
-    .width(Length::Fill)
+    .width(width)
     .padding([5, 8]);
 
     let tabs = row![
-        tab_button("Attribute", AttrTab::Attribute, tab),
-        tab_button("Text Options", AttrTab::TextOptions, tab),
-        tab_button("Properties", AttrTab::Properties, tab),
+        tab_button(t!("Attribute"), AttrTab::Attribute, tab),
+        tab_button(t!("Text Options"), AttrTab::TextOptions, tab),
+        tab_button(t!("Properties"), AttrTab::Properties, tab),
     ]
     .spacing(2);
 
     let body: Element<'_, Message> = if rows.is_empty() {
-        text("This block has no attributes.").size(13).style(muted_style).into()
+        text(t!("This block has no attributes.")).size(13).style(muted_style).into()
     } else {
         match tab {
-            AttrTab::Attribute => attribute_tab(rows, selected),
-            AttrTab::TextOptions => text_options_tab(&rows[selected.min(rows.len() - 1)], styles),
+            AttrTab::Attribute => attribute_tab(rows, selected, width, height),
+            AttrTab::TextOptions => {
+                text_options_tab(&rows[selected.min(rows.len() - 1)], styles, width, height)
+            }
             AttrTab::Properties => {
-                properties_tab(&rows[selected.min(rows.len() - 1)], layers, linetypes)
+                properties_tab(
+                    &rows[selected.min(rows.len() - 1)],
+                    layers,
+                    linetypes,
+                    width,
+                    height,
+                )
             }
         }
     };
 
     let content = container(column![tabs, body].spacing(8))
-        .width(Length::Fill)
-        .height(Length::Fill)
+        .width(width)
+        .height(height)
         .padding(12);
 
-    container(column![toolbar, hdivider(), content])
+    container(column![toolbar, hdivider(width), content])
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.base.color
+                theme.palette().background.base.color
             )),
             ..Default::default()
         })
-        .width(Length::Fill)
-        .height(Length::Fill)
+        .width(width)
+        .height(height)
         .into()
 }
 
 /// Attribute tab: tag / prompt / value list with row-select, plus a value box.
-fn attribute_tab<'a>(rows: &'a [AttrRow], selected: usize) -> Element<'a, Message> {
+fn attribute_tab<'a>(
+    rows: &'a [AttrRow],
+    selected: usize,
+    width: Length,
+    height: Length,
+) -> Element<'a, Message> {
     let head = row![
-        container(text("Tag").size(11).style(muted_style)).width(130),
-        container(text("Prompt").size(11).style(muted_style)).width(Length::Fill),
-        container(text("Value").size(11).style(muted_style)).width(140),
+        container(text(t!("Tag")).size(11).style(muted_style)).width(130),
+        container(text(t!("Prompt")).size(11).style(muted_style)).width(width),
+        container(text(t!("Value")).size(11).style(muted_style)).width(140),
     ]
     .spacing(6);
 
@@ -324,16 +394,16 @@ fn attribute_tab<'a>(rows: &'a [AttrRow], selected: usize) -> Element<'a, Messag
         let is_sel = idx == selected;
         let line = row![
             container(text(r.tag.as_str()).size(12)).width(130),
-            container(text(r.prompt.as_str()).size(12).style(muted_style)).width(Length::Fill),
+            container(text(r.prompt.as_str()).size(12).style(muted_style)).width(width),
             container(text(r.value.as_str()).size(12)).width(140),
         ]
         .spacing(6);
         let btn = button(line)
             .on_press(Message::AttrEditorSelect(idx))
             .padding([3, 4])
-            .width(Length::Fill)
+            .width(width)
             .style(move |theme: &Theme, status| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 let hovered = matches!(status, button::Status::Hovered);
                 let pair = if is_sel {
                     palette.primary.strong
@@ -359,59 +429,70 @@ fn attribute_tab<'a>(rows: &'a [AttrRow], selected: usize) -> Element<'a, Messag
         .style(field_style)
         .size(13)
         .padding([4, 6])
-        .width(Length::Fill);
+        .width(width);
 
     column![
         head,
-        scrollable(list).height(Length::Fill),
+        scrollable(list).width(width).height(height),
         Space::new().height(8),
-        field_row("Value:", value_box.into()),
+        field_row(t!("Value:"), value_box.into(), width),
     ]
     .spacing(6)
+    .width(width)
+    .height(height)
     .into()
 }
 
 /// Text Options tab: the selected attribute's text formatting.
-fn text_options_tab<'a>(r: &'a AttrRow, styles: Vec<String>) -> Element<'a, Message> {
+fn text_options_tab<'a>(
+    r: &'a AttrRow,
+    styles: Vec<String>,
+    width: Length,
+    height: Length,
+) -> Element<'a, Message> {
     let style_sel = if r.text_style.is_empty() {
         None
     } else {
         Some(r.text_style.clone())
     };
-    let justify_opts: Vec<String> = JUSTIFY.iter().map(|(l, _, _)| l.to_string()).collect();
+    let justify_opts: Vec<String> = JUSTIFY.iter().map(|(l, _, _)| (*l).to_string()).collect();
     let justify_sel = Some(justify_label(r.h_align, r.v_align).to_string());
 
     column![
-        pick_field("Text Style", styles, style_sel, |s| {
+        pick_field(t!("Text Style"), styles, style_sel, |s| {
             Message::AttrEditorTextStyle(s)
-        }),
-        pick_field("Justification", justify_opts, justify_sel, |s| {
+        }, width),
+        localized_pick_field(t!("Justification"), justify_opts, justify_sel, |s| {
             Message::AttrEditorJustify(s)
-        }),
-        edit_field("Height", &r.height, Message::AttrEditorHeight),
-        edit_field("Rotation", &r.rotation, Message::AttrEditorRotation),
-        edit_field("Width Factor", &r.width_factor, Message::AttrEditorWidth),
-        edit_field("Oblique Angle", &r.oblique, Message::AttrEditorOblique),
+        }, width),
+        edit_field(t!("Height"), &r.height, Message::AttrEditorHeight, width),
+        edit_field(t!("Rotation"), &r.rotation, Message::AttrEditorRotation, width),
+        edit_field(t!("Width Factor"), &r.width_factor, Message::AttrEditorWidth, width),
+        edit_field(t!("Oblique Angle"), &r.oblique, Message::AttrEditorOblique, width),
         field_row(
-            "",
+            Cow::Borrowed(""),
             checkbox(r.backwards)
-                .label("Backwards")
+                .label(t!("Backwards"))
                 .on_toggle(Message::AttrEditorBackwards)
                 .size(15)
                 .text_size(12)
                 .into(),
+            width,
         ),
         field_row(
-            "",
+            Cow::Borrowed(""),
             checkbox(r.upside_down)
-                .label("Upside down")
+                .label(t!("Upside down"))
                 .on_toggle(Message::AttrEditorUpsideDown)
                 .size(15)
                 .text_size(12)
                 .into(),
+            width,
         ),
     ]
     .spacing(8)
+    .width(width)
+    .height(height)
     .into()
 }
 
@@ -420,6 +501,8 @@ fn properties_tab<'a>(
     r: &'a AttrRow,
     layers: Vec<String>,
     linetypes: Vec<String>,
+    width: Length,
+    height: Length,
 ) -> Element<'a, Message> {
     let layer_sel = Some(r.layer.clone());
     let lt_sel = Some(if r.linetype.is_empty() {
@@ -439,21 +522,22 @@ fn properties_tab<'a>(
 
     let lw_opts = lw_options();
     let lw_sel = LwItem(r.line_weight);
-    let lw = pick_list(lw_opts, Some(lw_sel), |it: LwItem| {
-        Message::AttrEditorLineweight(it.0)
-    })
+    let lw = iced::widget::pick_list(Some(lw_sel), lw_opts, |value| value.to_string())
+    .on_select(|it: LwItem| Message::AttrEditorLineweight(it.0))
     .text_size(13)
     .padding([3, 6])
-    .width(Length::Fill);
+    .width(width);
 
     column![
-        pick_field("Layer", layers, layer_sel, Message::AttrEditorLayer),
-        pick_field("Linetype", linetypes, lt_sel, Message::AttrEditorLinetype),
-        pick_field("Color", color_opts, color_sel, |s| {
+        pick_field(t!("Layer"), layers, layer_sel, Message::AttrEditorLayer, width),
+        localized_pick_field(t!("Linetype"), linetypes, lt_sel, Message::AttrEditorLinetype, width),
+        localized_pick_field(t!("Color"), color_opts, color_sel, |s| {
             Message::AttrEditorColor(s)
-        }),
-        field_row("Lineweight", lw.into()),
+        }, width),
+        field_row(t!("Lineweight"), lw.into(), width),
     ]
     .spacing(8)
+    .width(width)
+    .height(height)
     .into()
 }

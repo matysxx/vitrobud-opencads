@@ -29,12 +29,8 @@ impl OpenCADStudio {
         // re-targeting it. A new/unsaved drawing has no source format, so it
         // uses the application-wide default chosen in Options (#529).
         self.save_dialog_format = if let Some(path) = &self.tabs[tab_idx].current_path {
-            let is_dxf = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("dxf"))
-                .unwrap_or(false);
             let document = &self.tabs[tab_idx].scene.document;
+            let is_dxf = crate::io::source_is_dxf(Some(path), document);
             let version = if is_dxf {
                 document.version
             } else {
@@ -55,6 +51,14 @@ impl OpenCADStudio {
             let (ext, _) = crate::io::parse_save_format(&self.save_dialog_format);
             self.save_dialog_filename = format!("{}.{ext}", self.tabs[tab_idx].tab_display_name());
         }
+        if self.tabs[tab_idx].recovery_save_as_required {
+            let (ext, _) = crate::io::parse_save_format(&self.save_dialog_format);
+            let stem = std::path::Path::new(&self.save_dialog_filename)
+                .file_stem()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.tabs[tab_idx].tab_display_name());
+            self.save_dialog_filename = format!("{stem}_recovered.{ext}");
+        }
         self.aec_drop_acknowledged = false;
         self.active_modal = Some(crate::app::ModalKind::SaveDialog);
         Task::none()
@@ -65,6 +69,7 @@ impl OpenCADStudio {
         self.aec_drop_acknowledged = false;
         if self.active_modal == Some(crate::app::ModalKind::SaveDialog) {
             self.active_modal = None;
+            self.reset_modal_geometry();
         }
         Task::none()
     }
@@ -94,6 +99,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn close_unsaved_dialog_window(&mut self) -> Task<Message> {
         if self.active_modal == Some(crate::app::ModalKind::Unsaved) {
             self.active_modal = None;
+            self.reset_modal_geometry();
         }
         Task::none()
     }
@@ -114,7 +120,7 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
                 if self.tabs[self.active_tab].is_start && !matches!(event, ModuleEvent::Command(_)) {
                     self.ribbon.close_dropdown();
                     self.command_line
-                        .push_info("No drawing open — use New or Open first.");
+                        .push_info(crate::t!("No drawing open — use New or Open first.").as_ref());
                     return Task::none();
                 }
                 // Dismiss any open dropdown / collapsed-panel flyout on tool use,
@@ -139,13 +145,13 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
                     }
                     ModuleEvent::OpenFileDialog => {
                         self.command_line
-                            .push_info("Open DWG/DXF: not yet implemented.");
+                            .push_info(crate::t!("Open DWG/DXF: not yet implemented.").as_ref());
                     }
                     ModuleEvent::ClearModels => {
                         let i = self.active_tab;
                         self.tabs[i].scene.clear();
                         self.tabs[i].properties = PropertiesPanel::empty();
-                        self.command_line.push_output("Scene cleared.");
+                        self.command_line.push_output(crate::t!("Scene cleared.").as_ref());
                     }
                     ModuleEvent::SetWireframe(w) => {
                         let i = self.active_tab;
@@ -263,24 +269,26 @@ pub(super) fn on_ribbon_tool_click(&mut self, tool_id: String, event: ModuleEven
 
             if self.active_save_jobs.contains_key(&self.tabs[idx].id) {
                 self.command_line
-                    .push_info("Save already running for this drawing.");
+                    .push_info(crate::t!("Save already running for this drawing.").as_ref());
                 return Task::none();
             }
 
-            if let Some(path) = self.tabs[idx].current_path.clone() {
-                let version = self.tabs[idx].scene.document.version;
-                self.prepare_native_save(idx);
-                let close = self.close_unsaved_dialog_window();
-                let save = self.queue_native_save(
-                    idx,
-                    path,
-                    version,
-                    crate::app::SavePurpose::Manual,
-                    continuation,
-                    false,
-                    true,
-                );
-                return Task::batch([close, save]);
+            if !self.tabs[idx].recovery_save_as_required {
+                if let Some(path) = self.tabs[idx].current_path.clone() {
+                    let version = self.tabs[idx].scene.document.version;
+                    self.prepare_native_save(idx);
+                    let close = self.close_unsaved_dialog_window();
+                    let save = self.queue_native_save(
+                        idx,
+                        path,
+                        version,
+                        crate::app::SavePurpose::Manual,
+                        continuation,
+                        false,
+                        true,
+                    );
+                    return Task::batch([close, save]);
+                }
             }
 
             self.active_tab = idx;

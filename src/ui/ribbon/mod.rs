@@ -26,6 +26,7 @@ mod collapse;
 use collapse::{CollapsePanels, Panel};
 pub use collapse::CollapseMode;
 use crate::ui::wrap_bar::{PosReport, WrapBar, WrapFlow};
+use crate::t;
 
 // ── Ribbon state ───────────────────────────────────────────────────────────
 
@@ -393,7 +394,7 @@ impl Ribbon {
         redo_count: usize,
     ) -> Element<'_, Message> {
         // ── Quick-access file commands + undo/redo, one merged flow ────────
-        let lead = WrapFlow::new(vec![
+        let lead = iced::widget::Row::with_children(vec![
             quick_access_btn(crate::ui::icons::DOC_NEW, "New", "NEW", is_start).into(),
             quick_access_btn(crate::ui::icons::FOLDER_OPEN, "Open", "OPEN", is_start).into(),
             quick_access_btn(crate::ui::icons::SAVE, "Save", "SAVE", is_start).into(),
@@ -402,8 +403,10 @@ impl Ribbon {
             render_history_control("Undo", UNDO_HISTORY_ID, undo_count, &self.open_dropdown).into(),
             render_history_control("Redo", REDO_HISTORY_ID, redo_count, &self.open_dropdown).into(),
         ])
-        .spacing_x(TOP_HIST_GAP)
-        .row_h(28.0);
+        .spacing(TOP_HIST_GAP)
+        .align_y(iced::Center)
+        .wrap()
+        .vertical_spacing(0.0);
 
         // The quick-access flow and the tabs flow each flex-wrap; WrapBar stacks
         // them so a wrapped tab never shares a row with a quick-access button.
@@ -420,10 +423,10 @@ impl Ribbon {
                 let is_active = i == self.active;
                 let is_contextual = module.id() == "layout";
                 let btn = container(
-                    button(text(module.title()).size(12))
+                    button(text(crate::i18n::ribbon_module_title(module.id(), module.title())).size(12))
                         .on_press(Message::RibbonSelectTab(i))
                         .style(move |theme: &Theme, status| {
-                            let palette = theme.extended_palette();
+                            let palette = theme.palette();
                             let accent = if is_contextual {
                                 palette.warning.base
                             } else {
@@ -470,9 +473,9 @@ impl Ribbon {
                     border: Border {
                         color: if is_active {
                             if is_contextual {
-                                theme.extended_palette().warning.base.color
+                                theme.palette().warning.base.color
                             } else {
-                                theme.extended_palette().primary.base.color
+                                theme.palette().primary.base.color
                             }
                         } else {
                             Color::TRANSPARENT
@@ -526,7 +529,7 @@ impl Ribbon {
         let tab_bar = container(tab_row)
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
-                    theme.extended_palette().background.base.color,
+                    theme.palette().background.base.color,
                 )),
                 ..Default::default()
             })
@@ -647,10 +650,10 @@ impl Ribbon {
                         ))
                         .style(|theme: &Theme| container::Style {
                             background: Some(Background::Color(
-                                theme.extended_palette().background.weakest.color,
+                                theme.palette().background.weakest.color,
                             )),
                             border: Border {
-                                color: theme.extended_palette().background.neutral.color,
+                                color: theme.palette().background.neutral.color,
                                 width: 1.0,
                                 radius: 0.0.into(),
                             },
@@ -672,10 +675,10 @@ impl Ribbon {
         let tool_bar = container(tool_area)
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
-                    theme.extended_palette().background.weakest.color,
+                    theme.palette().background.weakest.color,
                 )),
                 border: Border {
-                    color: theme.extended_palette().background.neutral.color,
+                    color: theme.palette().background.neutral.color,
                     width: 1.0,
                     radius: 0.0.into(),
                 },
@@ -740,7 +743,7 @@ impl Ribbon {
                     button(
                         row![
                             crate::ui::icons::themed_check_cell(m == current),
-                            text(m.label()).size(11),
+                            text(t!(m.label())).size(11),
                         ]
                         .spacing(4)
                         .align_y(iced::Center),
@@ -822,12 +825,12 @@ impl Ribbon {
                         .width(Length::Fixed(20.0))
                         .into();
                 let label_el =
-                    text(*label)
+                    text(t!(*label))
                         .size(11)
                         .style(move |theme: &Theme| iced::widget::text::Style {
                             color: (!is_current).then_some(
                                 theme
-                                    .extended_palette()
+                                    .palette()
                                     .background
                                     .base
                                     .text
@@ -895,7 +898,7 @@ impl Ribbon {
                     .style(move |theme: &Theme| container::Style {
                         background: Some(Background::Color(lc)),
                         border: Border {
-                            color: theme.extended_palette().background.strong.color,
+                            color: theme.palette().background.strong.color,
                             width: 1.0,
                             radius: 1.0.into(),
                         },
@@ -924,7 +927,7 @@ impl Ribbon {
                         .style(move |theme: &Theme| iced::widget::text::Style {
                             color: (!is_active).then_some(
                                 theme
-                                    .extended_palette()
+                                    .palette()
                                     .background
                                     .base
                                     .text
@@ -956,14 +959,37 @@ impl Ribbon {
         let row_count = rows.len().max(1);
         let list_h = (row_count as f32 * 26.0).min(420.0);
         // Search box (#343): filters the list live as the user types.
-        let search = iced::widget::text_input("Search layers…", &self.layer_filter)
+        let search = iced::widget::text_input(t!("Search layers…").as_ref(), &self.layer_filter)
             .on_input(Message::RibbonLayerFilterChanged)
             .size(11)
             .padding([4, 6]);
+        let state_manager = button(
+            row![
+                crate::ui::icons::themed_arrow_right(9.0),
+                text(t!("Layer State Manager…")).size(11),
+            ]
+            .spacing(7)
+            .align_y(iced::Center),
+        )
+        .on_press(Message::LayerStateManagerOpen)
+        .style(popup_row_style)
+        .width(Fill)
+        .padding([6, 10]);
         let panel = container(
             column![
                 container(search).padding([4, 4]),
                 scrollable(column(rows)).height(Length::Fixed(list_h)),
+                container(state_manager)
+                    .width(Fill)
+                    .padding([3, 4])
+                    .style(|theme: &Theme| container::Style {
+                        border: Border {
+                            color: theme.palette().background.neutral.color,
+                            width: 1.0,
+                            radius: 0.0.into(),
+                        },
+                        ..Default::default()
+                    }),
             ]
             .spacing(2),
         )
@@ -1032,7 +1058,7 @@ impl Ribbon {
                             .style(move |theme: &Theme| iced::widget::text::Style {
                                 color: (!is_sel).then_some(
                                     theme
-                                        .extended_palette()
+                                        .palette()
                                         .background
                                         .base
                                         .text
@@ -1056,7 +1082,7 @@ impl Ribbon {
 
         if let Some(mgr) = manager_cmd {
             rows.push(
-                button(text("Manage…").size(11))
+                button(text(t!("Manage…")).size(11))
                     .on_press(Message::Command(mgr.to_string()))
                     .style(popup_row_style)
                     .width(Fill)
@@ -1085,7 +1111,10 @@ impl Ribbon {
                 by_block: true,
             },
             Message::RibbonColorChanged,
-            Message::OpenColorWindow(crate::app::ColorPickTarget::Ribbon),
+            Message::OpenColorWindow(
+                crate::app::ColorPickTarget::Ribbon,
+                self.active_color,
+            ),
         );
 
         let panel = container(picker)
@@ -1131,7 +1160,7 @@ impl Ribbon {
                     .style(move |theme: &Theme| iced::widget::text::Style {
                         color: (!is_cur).then_some(
                             theme
-                                .extended_palette()
+                                .palette()
                                 .background
                                 .base
                                 .text
@@ -1184,7 +1213,7 @@ impl Ribbon {
                             .style(move |theme: &Theme| iced::widget::text::Style {
                                 color: (!is_cur).then_some(
                                     theme
-                                        .extended_palette()
+                                        .palette()
                                         .background
                                         .base
                                         .text
@@ -1295,7 +1324,7 @@ fn render_group<'a>(
 
     column![
         tools_el,
-        container(text(group.title).size(9).style(muted_text_style)).padding([1, 4]),
+        container(text(t!(group.title)).size(9).style(muted_text_style)).padding([1, 4]),
     ]
     .align_x(iced::Center)
     .spacing(0)
@@ -1382,7 +1411,7 @@ fn collapse_button<'a>(
             column![
                 icon,
                 row![
-                    text(title.to_string()).size(9).style(muted_text_style),
+                    text(t!(title)).size(9).style(muted_text_style),
                     crate::ui::icons::themed_secondary_arrow_down(8.0),
                 ]
                 .spacing(3)

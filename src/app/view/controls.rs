@@ -34,13 +34,13 @@ pub(super) fn viewport_controls<'a>(
                         | iced::widget::button::Status::Pressed
                 )
                 .then_some(Background::Color(
-                    theme.extended_palette().danger.weak.color
+                    theme.palette().danger.weak.color
                 )),
                 border: Border {
                     radius: 3.0.into(),
                     ..Default::default()
                 },
-                text_color: theme.extended_palette().danger.base.color,
+                text_color: theme.palette().danger.base.color,
                 ..Default::default()
             })
     };
@@ -56,7 +56,7 @@ pub(super) fn viewport_controls<'a>(
             .on_press(msg)
             .padding([4, 6])
             .style(move |theme: &Theme, status| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 let pair = match (active, status) {
                     (_, iced::widget::button::Status::Hovered) => {
                         Some(palette.background.strong)
@@ -80,14 +80,15 @@ pub(super) fn viewport_controls<'a>(
 
     // Render-mode picker, restyled borderless so the outer chip frames it.
     let picker = iced::widget::pick_list(
-        render_modes,
         Some(RenderModeChoice(render_mode)),
-        |c| Message::SetRenderMode(c.0),
+        render_modes,
+        |value| value.to_string(),
     )
+    .on_select(|c| Message::SetRenderMode(c.0))
     .text_size(11)
     .padding([4, 6])
     .style(move |theme: &Theme, _| {
-        let text = theme.extended_palette().background.base.text;
+        let text = theme.palette().background.base.text;
         iced::widget::pick_list::Style {
         background: Background::Color(iced::Color::TRANSPARENT),
         border: Border {
@@ -105,7 +106,7 @@ pub(super) fn viewport_controls<'a>(
         container(iced::widget::Space::new().width(1.0).height(16.0)).style(|theme: &Theme| {
             iced::widget::container::Style {
                 background: Some(Background::Color(
-                    theme.extended_palette().background.neutral.color.scale_alpha(0.7)
+                    theme.palette().background.neutral.color.scale_alpha(0.7)
                 )),
                 ..Default::default()
             }
@@ -156,7 +157,7 @@ pub(super) fn viewport_controls<'a>(
     container(bar)
         .padding(2)
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             iced::widget::container::Style {
             background: Some(Background::Color(
                 palette.background.weak.color.scale_alpha(0.92)
@@ -184,11 +185,13 @@ pub(super) fn dyn_component_value(
     base: Option<glam::DVec3>,
     xf: &super::super::helpers::UcsXform,
     comma_cartesian: bool,
+    absolute: bool,
 ) -> String {
     if let Some(b) = &f.buffer {
         return b.clone();
     }
     let b = base.unwrap_or(glam::DVec3::ZERO);
+    let p = xf.to_ucs(w);
     // Relative deltas and the polar angle read in the active UCS plane. The
     // delta is offset-invariant, so only the axis rotation matters (identity
     // xf reproduces the world-frame deltas).
@@ -199,21 +202,22 @@ pub(super) fn dyn_component_value(
     // fields show relative deltas — matching the typed-value convention
     // in `dyn_resolve_point` so the live preview and the committed
     // coordinate use the same frame. See #35.
-    let has_base = base.is_some();
+    let relative = base.is_some() && !absolute;
     // Width / Height read as unsigned magnitudes (the sign is taken from the
     // cursor side on commit), matching the rectangle's two-edge entry. But once
     // the user separates the values with `,` the entry is a cartesian
     // coordinate pair, so the fields read as signed X/Y deltas to match the
     // committed point (#269).
     let wh = matches!(f.role, crate::command::DynRole::Width | crate::command::DynRole::Height)
+        && relative
         && !comma_cartesian;
     match f.component {
-        DynComponent::X if has_base => format!("{:.4}", if wh { dx.abs() } else { dx }),
-        DynComponent::Y if has_base => format!("{:.4}", if wh { dy.abs() } else { dy }),
-        DynComponent::Z if has_base => "0.0000".to_string(),
-        DynComponent::X => format!("{:.4}", w.x),
-        DynComponent::Y => format!("{:.4}", w.y),
-        DynComponent::Z => format!("{:.4}", b.z),
+        DynComponent::X if relative => format!("{:.4}", if wh { dx.abs() } else { dx }),
+        DynComponent::Y if relative => format!("{:.4}", if wh { dy.abs() } else { dy }),
+        DynComponent::Z if relative => "0.0000".to_string(),
+        DynComponent::X => format!("{:.4}", p.x),
+        DynComponent::Y => format!("{:.4}", p.y),
+        DynComponent::Z => format!("{:.4}", p.z),
         // Scaled by the role so a diameter box reads twice the radius.
         DynComponent::Distance => {
             format!("{:.4}", (dx * dx + dy * dy).sqrt() * f.role.value_scale() as f64)

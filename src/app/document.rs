@@ -10,6 +10,7 @@ use crate::ui::{LayerPanel, PropertiesPanel};
 use acadrust::tables::Ucs;
 use acadrust::{CadDocument, EntityType, Handle};
 use iced;
+use crate::t;
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -102,60 +103,6 @@ fn default_role_for(component: DynComponent) -> crate::command::DynRole {
 
 // ── Per-document tab state ─────────────────────────────────────────────────
 
-/// One layer's display state, captured and restored by LAYERSTATE.
-#[derive(Clone)]
-pub(super) struct LayerSnap {
-    pub name: String,
-    pub off: bool,
-    pub frozen: bool,
-    pub locked: bool,
-    pub color: acadrust::types::Color,
-    pub line_type: String,
-    pub line_weight: acadrust::types::LineWeight,
-}
-
-impl DocumentTab {
-    /// Snapshot every layer's current display state under `name` (overwrites
-    /// any existing state of that name).
-    pub(super) fn save_layer_state(&mut self, name: &str) {
-        let snaps: Vec<LayerSnap> = self
-            .scene
-            .document
-            .layers
-            .iter()
-            .map(|l| LayerSnap {
-                name: l.name.clone(),
-                off: l.flags.off,
-                frozen: l.flags.frozen,
-                locked: l.flags.locked,
-                color: l.color.clone(),
-                line_type: l.line_type.clone(),
-                line_weight: l.line_weight.clone(),
-            })
-            .collect();
-        self.layer_states.insert(name.to_string(), snaps);
-    }
-
-    /// Reapply the saved state `name` to the matching layers; returns the number
-    /// of layers updated, or `None` if no such state exists.
-    pub(super) fn restore_layer_state(&mut self, name: &str) -> Option<usize> {
-        let snaps = self.layer_states.get(name)?.clone();
-        let mut applied = 0usize;
-        for s in &snaps {
-            if let Some(l) = self.scene.document.layers.get_mut(&s.name) {
-                l.flags.off = s.off;
-                l.flags.frozen = s.frozen;
-                l.flags.locked = s.locked;
-                l.color = s.color.clone();
-                l.line_type = s.line_type.clone();
-                l.line_weight = s.line_weight.clone();
-                applied += 1;
-            }
-        }
-        Some(applied)
-    }
-}
-
 pub(super) struct DocumentTab {
     /// Stable identity across tab insert/remove operations. Background work
     /// must never target a tab by its transient vector index.
@@ -174,6 +121,9 @@ pub(super) struct DocumentTab {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) disk_fingerprint: Option<crate::io::edit_lock::FileFingerprint>,
     pub(super) dirty: bool,
+    /// Direct Save is redirected to Save As after open-time repairs so the
+    /// source drawing cannot be overwritten accidentally.
+    pub(super) recovery_save_as_required: bool,
     /// Monotonic committed-edit/undo/redo revision. Background save completion
     /// uses it with scene epochs so an older snapshot never clears newer work.
     pub(super) edit_revision: u64,
@@ -186,9 +136,16 @@ pub(super) struct DocumentTab {
     /// "Previous" keyword at any Select objects prompt (#426).
     pub(super) prev_selection: Vec<acadrust::Handle>,
     pub(super) last_cmd: Option<String>,
+    /// Most recently created path drawable. A fresh LINE/PLINE can accept its
+    /// current final endpoint with Enter before the first click.
+    pub(super) last_draw_anchor: Option<Handle>,
     pub(super) snap_result: Option<SnapResult>,
     pub(super) active_grip: Option<GripEdit>,
     pub(super) selected_grips: Vec<GripDef>,
+    /// Entity handle for each entry in `selected_grips`.
+    pub(super) selected_grip_handles: Vec<Handle>,
+    /// Shift-selected grips, keyed by entity and object-local grip id.
+    pub(super) hot_grips: rustc_hash::FxHashSet<(Handle, usize)>,
     pub(super) selected_handle: Option<Handle>,
     /// Dynamic-block visibility grip for the current single selection.
     pub(super) visibility_grip: Option<super::visibility::VisibilityGrip>,
@@ -221,8 +178,6 @@ pub(super) struct DocumentTab {
     pub(super) dyn_active: usize,
     pub(super) history: HistoryState,
     pub(super) active_layer: String,
-    /// Named layer-state snapshots saved by LAYERSTATE (name → per-layer state).
-    pub(super) layer_states: std::collections::HashMap<String, Vec<LayerSnap>>,
     /// Currently active UCS. `None` means WCS (identity transform).
     pub(super) active_ucs: Option<Ucs>,
     /// Custom model-space background color.  `None` = default dark grey.
@@ -297,7 +252,7 @@ impl DocumentTab {
 
     /// The document's saved model-space UCS (header), as a `Ucs`. `None` when it
     /// is identity (plain WCS).
-    fn model_ucs_from_header(&self) -> Option<Ucs> {
+    pub(super) fn model_ucs_from_header(&self) -> Option<Ucs> {
         let h = &self.scene.document.header;
         let mut u = Ucs::new(h.model_space_ucs_name.clone());
         u.origin = h.model_space_ucs_origin;
@@ -337,7 +292,9 @@ impl DocumentTab {
     /// change (enter/exit viewport, layout / tab switch, load) so one field
     /// drives all UCS-aware systems regardless of where editing happens.
     pub(super) fn refresh_active_ucs(&mut self) {
-        self.active_ucs = if let Some(h) = self.scene.active_viewport {
+        self.active_ucs = if let Some(session) = self.active_block_edit_session() {
+            session.editor_ucs.clone()
+        } else if let Some(h) = self.scene.active_viewport {
             self.ucs_from_viewport(h)
         } else if self.scene.current_layout == "Model" {
             self.model_ucs_from_header()
@@ -353,16 +310,28 @@ impl DocumentTab {
     /// any UCS change.
     pub(super) fn persist_active_ucs(&mut self) {
         use acadrust::types::Vector3;
-        if let Some(h) = self.scene.active_viewport {
-            let (o, x, y, per) = match &self.active_ucs {
-                Some(u) => (u.origin, u.x_axis, u.y_axis, true),
-                None => (Vector3::ZERO, Vector3::UNIT_X, Vector3::UNIT_Y, false),
+        if let Some(index) = self.active_block_edit {
+            let active_ucs = self.active_ucs.clone();
+            if let Some(session) = self.block_edits.get_mut(index) {
+                session.editor_ucs = active_ucs;
+            }
+        } else if let Some(h) = self.scene.active_viewport {
+            let (o, x, y, handle, per) = match &self.active_ucs {
+                Some(u) => (u.origin, u.x_axis, u.y_axis, u.handle, true),
+                None => (
+                    Vector3::ZERO,
+                    Vector3::UNIT_X,
+                    Vector3::UNIT_Y,
+                    Handle::NULL,
+                    false,
+                ),
             };
             if let Some(acadrust::EntityType::Viewport(vp)) = self.scene.document.get_entity_mut(h)
             {
                 vp.ucs_origin = o;
                 vp.ucs_x_axis = x;
                 vp.ucs_y_axis = y;
+                vp.ucs_handle = handle;
                 vp.ucs_per_viewport = per;
             }
         } else if self.scene.current_layout == "Model" {
@@ -372,11 +341,13 @@ impl DocumentTab {
                     h.model_space_ucs_origin = u.origin;
                     h.model_space_ucs_x_axis = u.x_axis;
                     h.model_space_ucs_y_axis = u.y_axis;
+                    h.model_space_ucs_name = u.name.clone();
                 }
                 None => {
                     h.model_space_ucs_origin = Vector3::ZERO;
                     h.model_space_ucs_x_axis = Vector3::UNIT_X;
                     h.model_space_ucs_y_axis = Vector3::UNIT_Y;
+                    h.model_space_ucs_name.clear();
                 }
             }
         }
@@ -438,7 +409,7 @@ impl DocumentTab {
     pub(super) fn new_drawing(n: usize) -> Self {
         let mut scene = Scene::new();
         linetypes::populate_document(&mut scene.document);
-        // Override acadrust's imperial default limits (12×9) with A4 landscape.
+        // Paper layouts start as A4 landscape.
         for obj in scene.document.objects.values_mut() {
             if let acadrust::objects::ObjectType::Layout(l) = obj {
                 if l.name != "Model" {
@@ -446,6 +417,12 @@ impl DocumentTab {
                     l.max_limits = (297.0, 210.0);
                     l.min_extents = (0.0, 0.0, 0.0);
                     l.max_extents = (297.0, 210.0, 0.0);
+                    l.paper_width = 297.0;
+                    l.paper_height = 210.0;
+                    l.plot_paper_units = 1;
+                    l.plot_scale_numerator = 1.0;
+                    l.plot_scale_denominator = 1.0;
+                    l.paper_size = "ISO_A4_(297.00_x_210.00_MM)".into();
                 }
             }
         }
@@ -460,6 +437,7 @@ impl DocumentTab {
             #[cfg(not(target_arch = "wasm32"))]
             disk_fingerprint: None,
             dirty: false,
+            recovery_save_as_required: false,
             edit_revision: 0,
             prev_selection: Vec::new(),
             tab_title: format!("Drawing{}", n),
@@ -467,9 +445,12 @@ impl DocumentTab {
             layers: LayerPanel::default(),
             active_cmd: None,
             last_cmd: None,
+            last_draw_anchor: None,
             snap_result: None,
             active_grip: None,
             selected_grips: vec![],
+            selected_grip_handles: vec![],
+            hot_grips: rustc_hash::FxHashSet::default(),
             selected_handle: None,
             visibility_grip: None,
             wireframe: false,
@@ -486,7 +467,6 @@ impl DocumentTab {
             dyn_active: 0,
             history: HistoryState::default(),
             active_layer: "0".to_string(),
-            layer_states: std::collections::HashMap::new(),
             active_ucs: None,
             bg_color: None,
             paper_bg_color: None,
@@ -521,7 +501,13 @@ impl DocumentTab {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string(),
-            None => self.tab_title.clone(),
+            None => {
+                if self.is_start {
+                    t!("Start").into_owned()
+                } else {
+                    self.tab_title.clone()
+                }
+            }
         }
     }
 }

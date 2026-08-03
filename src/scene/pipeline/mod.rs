@@ -272,6 +272,7 @@ pub struct Pipeline {
     pub cached_wipeout_source: Option<std::sync::Arc<Vec<HatchModel>>>,
     pub cached_image_source: Option<std::sync::Arc<Vec<ImageModel>>>,
     pub cached_text_source: Option<std::sync::Arc<Vec<text_gpu::TextVertex>>>,
+    pub cached_annotation_highlight_source: Option<std::sync::Arc<Vec<WireModel>>>,
     pub cached_mesh_source: Option<std::sync::Arc<Vec<MeshLodSet>>>,
     pub cached_face3d_source: Option<std::sync::Arc<Vec<WireModel>>>,
     pub cached_face3d_depth_source:
@@ -380,14 +381,14 @@ impl Pipeline {
         let wire_const_bgl = wire_mode
             .uses_storage()
             .then(|| wire_gpu::WireConst::bind_group_layout(device));
-        let mut wire_bgls: Vec<&wgpu::BindGroupLayout> = vec![&frame_bgl];
+        let mut wire_bgls: Vec<Option<&wgpu::BindGroupLayout>> = vec![Some(&frame_bgl)];
         if let Some(bgl) = &wire_const_bgl {
-            wire_bgls.push(bgl);
+            wire_bgls.push(Some(bgl));
         }
         let wire_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wire.pipeline_layout"),
             bind_group_layouts: &wire_bgls,
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let depth_tex = create_depth_texture(device, Size::new(1, 1));
@@ -438,8 +439,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -458,7 +459,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -476,7 +477,7 @@ impl Pipeline {
         let clip_mask_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("clip_mask.pipeline_layout"),
             bind_group_layouts: &[],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
         let clip_mask_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("clip_mask.pipeline"),
@@ -502,8 +503,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState {
                     front: wgpu::StencilFaceState {
                         compare: wgpu::CompareFunction::Always,
@@ -537,7 +538,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -559,8 +560,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -579,7 +580,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -602,8 +603,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -622,7 +623,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -654,8 +655,8 @@ impl Pipeline {
 
         let wipeout_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wipeout.pipeline_layout"),
-            bind_group_layouts: &[&frame_bgl, &wipeout_bgl1],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[&frame_bgl, &wipeout_bgl1].map(Some),
+            immediate_size: 0,
         });
 
         let wipeout_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -681,8 +682,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 // Bias TOWARD the camera: a wipeout must win against geometry at
                 // its own depth (a block's wipeout + shapes are coincident at
@@ -710,7 +711,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -850,8 +851,8 @@ impl Pipeline {
                 let layout =
                     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some("mesh.cull.layout"),
-                        bind_group_layouts: &[&bgl],
-                        push_constant_ranges: &[],
+                        bind_group_layouts: &[&bgl].map(Some),
+                        immediate_size: 0,
                     });
                 let pipeline =
                     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1027,8 +1028,8 @@ impl Pipeline {
 
         let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh.pipeline_layout"),
-            bind_group_layouts: &[&frame_bgl, &mesh_material_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[&frame_bgl, &mesh_material_bgl].map(Some),
+            immediate_size: 0,
         });
 
         let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1047,8 +1048,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState {
                     constant: 1,
@@ -1071,7 +1072,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1096,8 +1097,8 @@ impl Pipeline {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: false,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: content_stencil.clone(),
                     bias: wgpu::DepthBiasState {
                         constant: 1,
@@ -1120,7 +1121,7 @@ impl Pipeline {
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
 
@@ -1144,8 +1145,8 @@ impl Pipeline {
                     },
                     depth_stencil: Some(wgpu::DepthStencilState {
                         format: wgpu::TextureFormat::Depth24PlusStencil8,
-                        depth_write_enabled: false,
-                        depth_compare: wgpu::CompareFunction::Always,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
                         stencil: content_stencil.clone(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
@@ -1164,7 +1165,7 @@ impl Pipeline {
                         })],
                         compilation_options: wgpu::PipelineCompilationOptions::default(),
                     }),
-                    multiview: None,
+                    multiview_mask: None,
                     cache: None,
                 })
             };
@@ -1199,8 +1200,8 @@ impl Pipeline {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: content_stencil.clone(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
@@ -1219,7 +1220,7 @@ impl Pipeline {
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 }),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -1246,8 +1247,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState {
                     constant: 1,
@@ -1270,7 +1271,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1284,8 +1285,8 @@ impl Pipeline {
 
         let face3d_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("face3d.pipeline_layout"),
-            bind_group_layouts: &[&frame_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[&frame_bgl].map(Some),
+            immediate_size: 0,
         });
 
         let face3d_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1304,8 +1305,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState {
                     constant: 1,
@@ -1328,7 +1329,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1351,8 +1352,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState {
                     constant: 1,
@@ -1375,7 +1376,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1418,8 +1419,8 @@ impl Pipeline {
 
         let image_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("image.pipeline_layout"),
-            bind_group_layouts: &[&frame_bgl, &image_bgl1],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[&frame_bgl, &image_bgl1].map(Some),
+            immediate_size: 0,
         });
 
         let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1445,8 +1446,8 @@ impl Pipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: content_stencil.clone(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -1465,7 +1466,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1533,8 +1534,8 @@ impl Pipeline {
 
         let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blit.pipeline_layout"),
-            bind_group_layouts: &[&blit_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[&blit_bgl].map(Some),
+            immediate_size: 0,
         });
 
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1572,7 +1573,7 @@ impl Pipeline {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1694,6 +1695,7 @@ impl Pipeline {
             cached_wipeout_source: None,
             cached_image_source: None,
             cached_text_source: None,
+            cached_annotation_highlight_source: None,
             cached_mesh_source: None,
             cached_face3d_source: None,
             cached_face3d_depth_source: None,
@@ -1785,11 +1787,12 @@ impl Pipeline {
         wires: &[WireModel],
         selected: &rustc_hash::FxHashSet<acadrust::Handle>,
         hover: Option<acadrust::Handle>,
+        annotation_context_wires: &[WireModel],
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
     ) {
         let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
         let hover = hover.filter(|h| !selected.contains(h));
-        if selected.is_empty() && hover.is_none() {
+        if selected.is_empty() && hover.is_none() && annotation_context_wires.is_empty() {
             self.gpu_selected_wires = vec![];
             return;
         }
@@ -1817,6 +1820,13 @@ impl Pipeline {
                         hover_wires.push(w);
                     }
                 }
+            }
+        }
+        for wire in annotation_context_wires {
+            if wire.selected {
+                selected_wires.push(wire);
+            } else {
+                hover_wires.push(wire);
             }
         }
         let mut gpu = WireGpu::from_highlight_refs(
@@ -1857,10 +1867,11 @@ impl Pipeline {
         wires: &[WireModel],
         selected: &rustc_hash::FxHashSet<acadrust::Handle>,
         hover: Option<acadrust::Handle>,
+        annotation_context_wires: &[WireModel],
     ) {
         let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
         let hover = hover.filter(|h| !selected.contains(h));
-        if selected.is_empty() && hover.is_none() {
+        if selected.is_empty() && hover.is_none() && annotation_context_wires.is_empty() {
             self.text_highlight_vbuf = None;
             self.text_highlight_vcount = 0;
             return;
@@ -1886,6 +1897,19 @@ impl Pipeline {
         }
         if let Some(h) = hover {
             push(h.value(), WireModel::HOVER, wires, &mut out);
+        }
+        for wire in annotation_context_wires {
+            let tint = if wire.selected {
+                WireModel::SELECTED
+            } else {
+                WireModel::HOVER
+            };
+            for vertex in &wire.text_verts {
+                out.push(text_gpu::TextVertex {
+                    color: [tint[0], tint[1], tint[2], vertex.color[3]],
+                    ..*vertex
+                });
+            }
         }
         self.text_highlight_vcount = out.len() as u32;
         self.text_highlight_vbuf = text_gpu::upload_vertices(device, &out);
@@ -2874,6 +2898,7 @@ impl Pipeline {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             // MSAA texture is clip-bounds-sized, so viewport starts at (0, 0).
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
@@ -2918,6 +2943,7 @@ impl Pipeline {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
             pass.set_pipeline(&self.image_pipeline);
@@ -2968,6 +2994,7 @@ impl Pipeline {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -3043,6 +3070,7 @@ impl Pipeline {
                     }
                 }
                 pass.set_pipeline(&self.mesh_wireframe_pipeline);
+                pass.set_bind_group(1, &self.mesh_default_material_bind_group, &[]);
                 for (mesh_command, c) in self.active_mesh_chunks_indexed() {
                     if !c.visible {
                         continue;
@@ -3101,6 +3129,7 @@ impl Pipeline {
             } else {
                 if mesh_wireframe {
                     pass.set_pipeline(&self.mesh_wireframe_pipeline);
+                    pass.set_bind_group(1, &self.mesh_default_material_bind_group, &[]);
                     for (mesh_command, c) in self.active_mesh_chunks_indexed() {
                         if !c.visible {
                             continue;
@@ -3373,6 +3402,7 @@ impl Pipeline {
                     }),
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -3423,6 +3453,7 @@ impl Pipeline {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
             pass.set_pipeline(&self.wire_pipeline);
@@ -3465,6 +3496,7 @@ impl Pipeline {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
             pass.set_pipeline(&self.wire_pipeline);
@@ -3559,6 +3591,7 @@ impl Pipeline {
                     }),
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
                 pass.set_pipeline(&self.text_pipeline);
@@ -3604,6 +3637,7 @@ impl Pipeline {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
             pass.set_pipeline(&self.wipeout_pipeline);
@@ -3646,6 +3680,7 @@ impl Pipeline {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_viewport(0.0, 0.0, vp.width as f32, vp.height as f32, 0.0, 1.0);
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -3697,6 +3732,7 @@ impl Pipeline {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             // No draw calls — the pass itself triggers the MSAA resolve.
         }
@@ -3722,6 +3758,7 @@ impl Pipeline {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_viewport(
                 surface_dest.x as f32,

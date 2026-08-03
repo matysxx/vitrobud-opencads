@@ -19,6 +19,7 @@ use iced::widget::{
 use iced::{
     mouse, Background, Border, Color, Element, Length, Padding, Point, Rectangle, Size, Theme,
 };
+use crate::t;
 
 // ── Row-height-derived constants ─────────────────────────────────────────
 const FONT_SZ: f32 = ROW_H * 0.42; // ≈11 px
@@ -26,6 +27,8 @@ const COMBO_PAD_V: f32 = (ROW_H - FONT_SZ * 1.3 - 2.0) / 2.0; // fills combo to 
 const SWATCH_SZ: f32 = ROW_H * 0.54; // ≈14 px color swatch
 const PATTERN_CARD_W: f32 = 158.0;
 const PATTERN_PREVIEW_H: f32 = 58.0;
+const PATTERN_PICKER_W: f32 = 348.0;
+const PATTERN_PICKER_H: f32 = 720.0;
 
 use crate::app::Message;
 use crate::scene::model::object::{PropSection, PropValue};
@@ -58,9 +61,9 @@ pub struct LwItem(pub LineWeight);
 impl fmt::Display for LwItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            LineWeight::ByLayer => write!(f, "ByLayer"),
-            LineWeight::ByBlock => write!(f, "ByBlock"),
-            LineWeight::Default => write!(f, "Default"),
+            LineWeight::ByLayer => write!(f, "{}", crate::t!("ByLayer")),
+            LineWeight::ByBlock => write!(f, "{}", crate::t!("ByBlock")),
+            LineWeight::Default => write!(f, "{}", crate::t!("Default")),
             LineWeight::Value(v) => write!(f, "{:.2} mm", v as f64 / 100.0),
         }
     }
@@ -97,7 +100,7 @@ impl canvas::Program<Message> for HatchPatternPreview {
         use crate::scene::model::hatch_model::{HatchModel, HatchPattern};
 
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let pad = 4.0;
         let sample = canvas::Path::rectangle(
             Point::new(pad, pad),
@@ -128,6 +131,8 @@ impl canvas::Program<Message> for HatchPatternPreview {
                     pattern: self.pattern.clone(),
                     name: String::new(),
                     color: [1.0; 4],
+                    aci: 0,
+                    line_weight_px: 1.0,
                     angle_offset: 0.0,
                     scale: hatch_preview_scale(&self.pattern),
                     draw_depth: 0.0,
@@ -240,6 +245,27 @@ pub fn attr_edit_key(tag: &str) -> String {
     format!("\x01attr\x01{tag}")
 }
 
+/// A translated choice label paired with the unchanged value stored in the
+/// drawing and emitted by the properties panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalizedChoice {
+    pub raw: String,
+    label: String,
+}
+
+impl LocalizedChoice {
+    pub fn new(raw: String) -> Self {
+        let label = crate::i18n::translate(&raw).into_owned();
+        Self { raw, label }
+    }
+}
+
+impl fmt::Display for LocalizedChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
 // ── PropertiesPanel ───────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -251,7 +277,7 @@ pub struct PropertiesPanel {
     /// Linetype items (name + ASCII art) from the document — used for combo_box options.
     pub linetype_items: Vec<LinetypeItem>,
     pub selection_group_combo: combo_box::State<SelectionGroup>,
-    pub choice_combos: HashMap<String, combo_box::State<String>>,
+    pub choice_combos: HashMap<String, combo_box::State<LocalizedChoice>>,
     pub layer_combo: combo_box::State<String>,
     pub lineweight_combo: combo_box::State<LwItem>,
     pub linetype_combo: combo_box::State<LinetypeItem>,
@@ -284,6 +310,9 @@ pub struct PropertiesPanel {
     /// Which vertex a multi-vertex entity (polyline) is focused on — driven by
     /// the Current Vertex ◀ / ▶ stepper. Reset to 0 when the selection changes.
     pub prop_vertex: usize,
+    /// Draw the Current Vertex indicator only after the user changes the
+    /// stepper for the current selection.
+    pub prop_vertex_indicator_active: bool,
     /// Coordinate groups ("Position", "Scale", …) the user expanded into their
     /// component X/Y/Z rows. Collapsed by default; keyed `section:base` and
     /// carried across panel rebuilds so the state survives edits and selection
@@ -316,6 +345,7 @@ impl Default for PropertiesPanel {
             bg_color_picker_open: false,
             open_color_field: None,
             prop_vertex: 0,
+            prop_vertex_indicator_active: false,
             expanded_groups: HashSet::default(),
             edit_choice_open: false,
         }
@@ -325,7 +355,7 @@ impl Default for PropertiesPanel {
 impl PropertiesPanel {
     pub fn empty() -> Self {
         Self {
-            title: "No Selection".into(),
+            title: t!("No selection").into_owned(),
             ..Default::default()
         }
     }
@@ -339,10 +369,10 @@ impl PropertiesPanel {
 
     pub fn view(&self) -> Element<'_, Message> {
         // ── Header ──────────────────────────────────────────────────────────
-        let header = container(text("Properties").size(12))
+        let header = container(text(t!("Properties")).size(12))
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
-                    theme.extended_palette().background.weak.color,
+                    theme.palette().background.weak.color,
                 )),
                 ..Default::default()
             })
@@ -372,7 +402,7 @@ impl PropertiesPanel {
 
         let title_bar = container(title_content)
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                 background: Some(Background::Color(palette.background.weakest.color)),
                 border: Border {
@@ -389,7 +419,7 @@ impl PropertiesPanel {
         // ── Content ─────────────────────────────────────────────────────────
         let content: Element<'_, Message> = if self.sections.is_empty() {
             container(
-                text("Select an object to view properties")
+                text(t!("Select an object to view properties"))
                     .size(10)
                     .style(hint_text_style),
             )
@@ -405,7 +435,7 @@ impl PropertiesPanel {
 
         container(column![header, title_bar, content])
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                 background: Some(Background::Color(palette.background.base.color)),
                 border: Border {
@@ -434,7 +464,7 @@ impl PropertiesPanel {
                 .style(muted_text_style),
         )
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                 background: Some(Background::Color(palette.background.weakest.color)),
                 border: Border {
@@ -456,7 +486,7 @@ impl PropertiesPanel {
         Some(
             container(col)
                 .style(|theme: &Theme| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     container::Style {
                     background: Some(Background::Color(palette.background.base.color)),
                     border: Border {
@@ -478,7 +508,7 @@ impl PropertiesPanel {
         // Section header
         let hdr = container(text(&section.title).size(10))
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                 background: Some(Background::Color(palette.background.weak.color)),
                 border: Border {
@@ -611,7 +641,10 @@ impl PropertiesPanel {
                 // "More Colors…" opens the full palette window targeting the
                 // background colour — this used to just close the picker
                 // (#415).
-                Message::OpenColorWindow(crate::app::ColorPickTarget::PropertiesBg),
+                Message::OpenColorWindow(
+                    crate::app::ColorPickTarget::PropertiesBg,
+                    color,
+                ),
             );
             return prop_row_widget(label, selector);
         }
@@ -655,7 +688,10 @@ impl PropertiesPanel {
             },
             Message::PropColorChanged,
             Message::PropColorPickerToggle,
-            Message::OpenColorWindow(crate::app::ColorPickTarget::Properties),
+            Message::OpenColorWindow(
+                crate::app::ColorPickTarget::Properties,
+                color,
+            ),
         );
         prop_row_widget(label, selector)
     }
@@ -665,7 +701,7 @@ impl PropertiesPanel {
             row![
                 container(text("?").size(10))
                     .style(move |theme: &Theme| {
-                        let palette = theme.extended_palette();
+                        let palette = theme.palette();
                         container::Style {
                         background: Some(Background::Color(palette.background.strong.color)),
                         border: Border {
@@ -809,10 +845,13 @@ impl PropertiesPanel {
         let selected = if current == VARIES_LABEL {
             None
         } else {
-            Some(current.to_string())
+            Some(LocalizedChoice::new(current.to_string()))
         };
-        let combo = combo_box(state, VARIES_LABEL, selected.as_ref(), move |value| {
-            Message::PropGeomChoiceChanged { field, value }
+        let combo = combo_box(state, VARIES_LABEL, selected.as_ref(), move |choice| {
+            Message::PropGeomChoiceChanged {
+                field,
+                value: choice.raw,
+            }
         })
         .size(FONT_SZ)
         .padding(Padding {
@@ -856,8 +895,7 @@ impl PropertiesPanel {
     /// Editable dropdown row (block reference Name): a text field with a caret
     /// button in one bordered control. Typing + Enter commits through the
     /// normal PropGeomCommit path (existing name → re-point, new name →
-    /// rename); the caret opens a floating list of the definitions (always
-    /// downward, via the shared `floating_below` mechanic) and picking one
+    /// rename); the caret opens a dropdown list of the definitions and picking one
     /// applies through PropGeomChoiceChanged. Typed text filters the list.
     fn render_edit_choice_row<'a>(
         &'a self,
@@ -896,7 +934,7 @@ impl PropertiesPanel {
         )
         .on_press(Message::PropEditChoiceToggle)
         .style(|theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let pair = match status {
                 button::Status::Hovered | button::Status::Pressed => palette.background.weak,
                 _ => palette.background.base,
@@ -917,7 +955,7 @@ impl PropertiesPanel {
         .height(Length::Fixed(ROW_H - 6.0));
         let head = container(row![input, caret].align_y(iced::Center))
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                 background: Some(Background::Color(palette.background.base.color)),
                 border: Border {
@@ -956,11 +994,17 @@ impl PropertiesPanel {
             .style(container::bordered_box)
             .padding(2)
             .width(200)
-            .max_height(220.0);
+            .height(Length::Fit.max(220.0));
 
         prop_row_widget(
             label,
-            crate::ui::color_select::floating_below(head.into(), popup.into()),
+            crate::ui::color_select::drop_down_below(
+                head.into(),
+                popup.into(),
+                Length::Fixed(200.0),
+                Length::Shrink,
+                Message::PropEditChoiceToggle,
+            ),
         )
     }
 
@@ -1011,7 +1055,7 @@ impl PropertiesPanel {
         )
         .on_press(Message::PropHatchPatternPickerToggle(current.to_string()))
         .style(move |theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
                 background: Some(Background::Color(if hovered {
@@ -1039,7 +1083,7 @@ impl PropertiesPanel {
             return prop_row_widget(label, head.into());
         }
 
-        let search = text_input("Search patterns…", &self.hatch_pattern_search)
+        let search = text_input(t!("Search patterns…").as_ref(), &self.hatch_pattern_search)
             .id(iced::widget::Id::new("hatch-pattern-search"))
             .on_input(Message::PropHatchPatternSearchChanged)
             .on_submit(Message::PropHatchPatternConfirm)
@@ -1072,7 +1116,7 @@ impl PropertiesPanel {
                 )
                 .on_press(Message::PropHatchPatternChanged(name))
                 .style(move |theme: &Theme, status| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     let hovered =
                         matches!(status, button::Status::Hovered | button::Status::Pressed);
                     let pair = if selected {
@@ -1108,7 +1152,7 @@ impl PropertiesPanel {
 
         let results: Element<'_, Message> = if visible.is_empty() {
             container(
-                text("No matching patterns")
+                text(t!("No matching patterns"))
                     .size(FONT_SZ)
                     .style(hint_text_style),
             )
@@ -1118,19 +1162,25 @@ impl PropertiesPanel {
             .into()
         } else {
             scrollable(grid)
-                .height(Length::Fixed(300.0))
+                .height(Length::Fill)
                 .width(Length::Fill)
                 .into()
         };
         let popup = container(column![search, results].spacing(7))
             .style(container::bordered_box)
             .padding(8)
-            .width(348)
-            .max_height(360.0);
+            .width(PATTERN_PICKER_W)
+            .height(Length::Fixed(PATTERN_PICKER_H));
 
         prop_row_widget(
             label,
-            crate::ui::color_select::floating_below(head.into(), popup.into()),
+            crate::ui::color_select::drop_down_below(
+                head.into(),
+                popup.into(),
+                Length::Fixed(PATTERN_PICKER_W),
+                Length::Fixed(PATTERN_PICKER_H),
+                Message::PropHatchPatternPickerToggle(current.to_string()),
+            ),
         )
     }
 }
@@ -1175,9 +1225,9 @@ pub fn color_picker_dropdown<'a>(
                         background: Some(Background::Color(bg)),
                         border: Border {
                             color: if matches!(status, button::Status::Hovered) {
-                                theme.extended_palette().primary.base.color
+                                theme.palette().primary.base.color
                             } else {
-                                theme.extended_palette().background.neutral.color
+                                theme.palette().background.neutral.color
                             },
                             width: if matches!(status, button::Status::Hovered) {
                                 1.5
@@ -1186,7 +1236,7 @@ pub fn color_picker_dropdown<'a>(
                             },
                             radius: 2.0.into(),
                         },
-                        text_color: theme.extended_palette().background.base.text,
+                        text_color: theme.palette().background.base.text,
                         ..Default::default()
                     })
                     .padding(0),
@@ -1202,9 +1252,13 @@ pub fn color_picker_dropdown<'a>(
             } else {
                 crate::ui::icons::themed_arrow_down(9.0)
             },
-            text(if palette_open { "Less" } else { "More Colors…" })
-                .size(10)
-                .style(hint_text_style),
+            text(if palette_open {
+                t!("Less").into_owned()
+            } else {
+                t!("More Colors…").into_owned()
+            })
+            .size(10)
+            .style(hint_text_style),
         ]
         .spacing(4)
         .align_y(iced::Center),
@@ -1222,7 +1276,7 @@ pub fn color_picker_dropdown<'a>(
 
     let mut col = column![container(inner)
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
             background: Some(Background::Color(palette.background.base.color)),
             border: Border {
@@ -1258,9 +1312,9 @@ pub fn color_picker_dropdown<'a>(
                             background: Some(Background::Color(bg)),
                             border: Border {
                                 color: if matches!(status, button::Status::Hovered) {
-                                    theme.extended_palette().primary.base.color
+                                    theme.palette().primary.base.color
                                 } else {
-                                    theme.extended_palette().background.neutral.color
+                                    theme.palette().background.neutral.color
                                 },
                                 width: if matches!(status, button::Status::Hovered) {
                                     1.5
@@ -1269,7 +1323,7 @@ pub fn color_picker_dropdown<'a>(
                                 },
                                 radius: 1.0.into(),
                             },
-                            text_color: theme.extended_palette().background.base.text,
+                            text_color: theme.palette().background.base.text,
                             ..Default::default()
                         })
                         .padding(0),
@@ -1281,7 +1335,7 @@ pub fn color_picker_dropdown<'a>(
         col = col.push(
             container(scrollable(rows).height(160))
                 .style(|theme: &Theme| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     container::Style {
                     background: Some(Background::Color(palette.background.base.color)),
                     border: Border {
@@ -1309,7 +1363,7 @@ fn render_stepper_row<'a>(label: &'a str, display: &'a str) -> Element<'a, Messa
             .on_press(Message::PropVertexStep(delta))
             .padding([0, 6])
             .style(|theme: &Theme, status| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 let pair = match status {
                     button::Status::Hovered | button::Status::Pressed => palette.background.weak,
                     _ => palette.background.base,
@@ -1340,18 +1394,22 @@ fn render_stepper_row<'a>(label: &'a str, display: &'a str) -> Element<'a, Messa
 }
 
 fn render_bool_row<'a>(label: &'a str, field: &'static str, value: bool) -> Element<'a, Message> {
-    let btn_label = if value { "Yes" } else { "No" };
+    let btn_label = if value {
+        t!("Yes").into_owned()
+    } else {
+        t!("No").into_owned()
+    };
     let btn =
         button(
             text(btn_label)
                 .size(FONT_SZ)
                 .style(move |theme: &Theme| iced::widget::text::Style {
-                    color: value.then_some(theme.extended_palette().warning.base.color),
+                    color: value.then_some(theme.palette().warning.base.color),
                 }),
         )
         .on_press(Message::PropBoolToggle(field))
         .style(move |theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let pair = match status {
                 button::Status::Hovered | button::Status::Pressed => palette.background.weak,
                 _ => palette.background.base,
@@ -1480,7 +1538,7 @@ fn render_group_row(
     let label_col = container(label_btn)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.weakest.color,
+                theme.palette().background.weakest.color,
             )),
             ..Default::default()
         })
@@ -1498,7 +1556,7 @@ fn render_group_row(
     let value_col = container(value_field)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.base.color,
+                theme.palette().background.base.color,
             )),
             ..Default::default()
         })
@@ -1516,7 +1574,7 @@ fn render_group_row(
         .height(Length::Fixed(ROW_H))
         .style(|theme: &Theme| container::Style {
             border: Border {
-                color: theme.extended_palette().background.neutral.color,
+                color: theme.palette().background.neutral.color,
                 width: 1.0,
                 radius: 0.0.into(),
             },
@@ -1548,7 +1606,7 @@ fn prop_row_widget<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<
     )
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.weakest.color,
+                theme.palette().background.weakest.color,
             )),
             ..Default::default()
         })
@@ -1564,7 +1622,7 @@ fn prop_row_widget<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<
     let value_col = container(widget)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.base.color,
+                theme.palette().background.base.color,
             )),
             ..Default::default()
         })
@@ -1581,7 +1639,7 @@ fn prop_row_widget<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<
         .height(Length::Fixed(ROW_H))
         .style(|theme: &Theme| container::Style {
             border: Border {
-                color: theme.extended_palette().background.neutral.color,
+                color: theme.palette().background.neutral.color,
                 width: 1.0,
                 radius: 0.0.into(),
             },
@@ -1592,7 +1650,7 @@ fn prop_row_widget<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<
 
 /// A plain text button used inside the color picker for ByLayer / ByBlock.
 fn picker_text_btn(label: &str, msg: Message) -> Element<'_, Message> {
-    button(text(label).size(FONT_SZ))
+    button(text(t!(label)).size(FONT_SZ))
         .on_press(msg)
         .style(button::secondary)
         .padding([2, 8])
@@ -1655,7 +1713,7 @@ fn aci_label(idx: u8) -> &'static str {
 // ── Widget style helpers ──────────────────────────────────────────────────
 
 fn combo_btn_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let pair = match status {
         button::Status::Hovered | button::Status::Pressed => palette.background.weak,
         _ => palette.background.base,
@@ -1673,7 +1731,7 @@ fn combo_btn_style(theme: &Theme, status: button::Status) -> button::Style {
 }
 
 fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let border_color = match status {
         text_input::Status::Focused { .. } => palette.primary.base.color,
         _ => palette.background.neutral.color,
@@ -1700,7 +1758,7 @@ fn combo_input_style(theme: &Theme, status: text_input::Status) -> text_input::S
 /// focus highlight, so it reads as plain text, unlike the bordered editable
 /// fields) yet with a visible selection colour so Ctrl+C copy is discoverable.
 fn ro_input_style(theme: &Theme, _status: text_input::Status) -> text_input::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     text_input::Style {
         background: Background::Color(palette.background.base.color),
         border: Border {
@@ -1717,13 +1775,13 @@ fn ro_input_style(theme: &Theme, _status: text_input::Status) -> text_input::Sty
 
 fn muted_text_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.72)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.72)),
     }
 }
 
 fn hint_text_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.48)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.48)),
     }
 }
 

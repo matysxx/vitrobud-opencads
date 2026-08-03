@@ -220,6 +220,7 @@ pub fn selection_overlay<'a>(
     pan_mode: bool,
     suppressed: bool,
     hover_locked: bool,
+    crosshair_bg: [f32; 4],
 ) -> Element<'a, Message> {
     canvas(SelectionCanvas {
         selection,
@@ -239,6 +240,7 @@ pub fn selection_overlay<'a>(
         pan_mode,
         suppressed,
         hover_locked,
+        crosshair_bg,
     })
     .width(Length::Fill)
     .height(Length::Fill)
@@ -290,6 +292,9 @@ struct SelectionCanvas {
     /// The entity under the crosshair is on a locked layer — draw a small lock
     /// badge by the cursor so the user knows it can't be selected/edited.
     hover_locked: bool,
+    /// Background of the active drawing space. Crosshair contrast follows this
+    /// rather than the UI theme, which may be light over a dark model viewport.
+    crosshair_bg: [f32; 4],
 }
 
 fn draw_grip_marker(frame: &mut canvas::Frame, grip: &GripMarker, theme: &Theme) {
@@ -332,9 +337,9 @@ fn draw_grip_marker(frame: &mut canvas::Frame, grip: &GripMarker, theme: &Theme)
     };
 
     if grip.is_hot {
-        frame.fill(&path, theme.extended_palette().danger.base.color);
+        frame.fill(&path, theme.palette().danger.base.color);
     } else {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let color = palette.primary.base.color;
         frame.fill(
             &path,
@@ -435,7 +440,7 @@ impl canvas::Program<Message> for SelectionCanvas {
         // Filled bars in the pane_grid spacing gaps, so adjacent panes read as
         // distinct viewports. Drawn first so all other overlays sit on top.
         if !self.dividers.is_empty() {
-            let divider = theme.extended_palette().background.neutral.color;
+            let divider = theme.palette().background.neutral.color;
             for d in &self.dividers {
                 let bar = canvas::Path::rectangle(
                     Point::new(d.x, d.y),
@@ -450,13 +455,13 @@ impl canvas::Program<Message> for SelectionCanvas {
         // under the cursor, and drag a translucent ghost card along the cursor
         // so the pane is visibly "moving".
         if let Some(src) = self.pane_move_rect {
-            let accent = theme.extended_palette().primary.base.color;
+            let accent = theme.palette().primary.base.color;
             // Source pane: dimmed + dashed-feel outline (it has been lifted).
             let src_path =
                 canvas::Path::rectangle(Point::new(src.x, src.y), iced::Size::new(src.width, src.height));
             frame.fill(
                 &src_path,
-                theme.extended_palette().background.strong.color.scale_alpha(0.28),
+                theme.palette().background.strong.color.scale_alpha(0.28),
             );
             frame.stroke(
                 &src_path,
@@ -515,9 +520,9 @@ impl canvas::Program<Message> for SelectionCanvas {
             theme: &Theme,
         ) {
             let base = if crossing {
-                theme.extended_palette().success.base.color
+                theme.palette().success.base.color
             } else {
-                theme.extended_palette().primary.base.color
+                theme.palette().primary.base.color
             };
             let fill = base.scale_alpha(0.12);
             let stroke = base.scale_alpha(0.9);
@@ -547,9 +552,9 @@ impl canvas::Program<Message> for SelectionCanvas {
 
         if self.selection.poly_active && self.selection.poly_points.len() > 1 {
             let base = if self.selection.poly_crossing {
-                theme.extended_palette().success.base.color
+                theme.palette().success.base.color
             } else {
-                theme.extended_palette().primary.base.color
+                theme.palette().primary.base.color
             };
             let fill = base.scale_alpha(0.12);
             let stroke = base.scale_alpha(0.9);
@@ -908,12 +913,11 @@ impl canvas::Program<Message> for SelectionCanvas {
         // PAN mode replaces the crosshair with a hand cursor.
         if !over_viewcube && !over_divider && !self.pan_mode && !self.suppressed {
             if let Some(cp) = self.selection.last_move_pos {
-                let color = theme
-                    .extended_palette()
-                    .background
-                    .base
-                    .text
-                    .scale_alpha(0.90);
+                let [r, g, b, a] = crate::scene::view::render::adapt_to_bg(
+                    [1.0, 1.0, 1.0, 0.90],
+                    self.crosshair_bg,
+                );
+                let color = Color { r, g, b, a };
                 let stroke = canvas::Stroke {
                     width: 1.0,
                     style: canvas::Style::Solid(color),
@@ -956,7 +960,7 @@ impl canvas::Program<Message> for SelectionCanvas {
                 // the hovered object sits on a locked layer (issue: locked
                 // objects are visible + snappable but not selectable/editable).
                 if self.hover_locked {
-                    let warning = theme.extended_palette().warning.base;
+                    let warning = theme.palette().warning.base;
                     let amber = warning.color.scale_alpha(0.98);
                     let dark = warning.text;
                     let bx = cp.x + sq + 7.0;
@@ -1005,7 +1009,7 @@ impl canvas::Program<Message> for SelectionCanvas {
         }
 
         // ── Object Snap Tracking ─────────────────────────────────────────────
-        let track_color = theme.extended_palette().primary.base.color.scale_alpha(0.7);
+        let track_color = theme.palette().primary.base.color.scale_alpha(0.7);
         // The alignment line the cursor is currently locked to — drawn at its
         // real angle from the acquired point through the lock and a little
         // beyond, dashed so it reads as a construction guide. This covers the
@@ -1589,6 +1593,28 @@ fn draw_grid(
             }
         }
         draw_segments(frame, &segments);
+
+        // LIMITS bounds the grid, not the UCS axes. Size the axes from the
+        // visible grid plane so X/Y/Z still span the viewport even when the
+        // finite grid rectangle is small or currently off-screen.
+        let axis_extent = samples.iter().fold(0.0_f32, |extent, (_, world)| {
+            let delta = (*world - grid_origin).as_vec3();
+            extent
+                .max(delta.dot(axis1).abs())
+                .max(delta.dot(axis2).abs())
+        });
+        if axis_extent > 0.0 {
+            let extent = (axis_extent + s) * 1.5;
+            draw_axes(
+                frame,
+                view_rot,
+                eye,
+                bounds,
+                extent.max(10.0),
+                grid_origin,
+                (gx, gy, gz),
+            );
+        }
         return;
     }
 
@@ -2088,7 +2114,7 @@ impl DynInputCanvas {
         canvas::Stroke {
             width: 1.0,
             style: canvas::Style::Solid(
-                theme.extended_palette().background.neutral.color.scale_alpha(0.9)
+                theme.palette().background.neutral.color.scale_alpha(0.9)
             ),
             line_dash: canvas::LineDash { segments: &[2.0, 3.0], offset: 0 },
             ..Default::default()
@@ -2139,7 +2165,7 @@ impl DynInputCanvas {
     }
 
     fn box_colors(b: &DynBox, theme: &Theme) -> (Color, Color, Color) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         if b.active {
             (
                 palette.primary.weak.color,
@@ -2166,7 +2192,7 @@ impl DynInputCanvas {
         if self.prompt.is_empty() {
             return;
         }
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let pw = (self.prompt.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
         let rect = canvas::Path::rectangle(pos, Size { width: pw, height: DYN_BOX_H });
         frame.fill(&rect, palette.background.strong.color);

@@ -29,6 +29,7 @@ pub fn item<'a>(
     on_select: Message,
     rename_active: Option<&str>,
     rename_buf: &'a str,
+    can_rename: bool,
 ) -> Element<'a, Message> {
     if rename_active == Some(name) {
         text_input("", rename_buf)
@@ -49,16 +50,19 @@ pub fn item<'a>(
             .padding([4, 8])
             .width(Fill)
             .style(move |theme: &Theme| {
-                let pair = theme.extended_palette().primary.strong;
+                let pair = theme.palette().primary.strong;
                 container::Style {
                 background: is_selected.then_some(Background::Color(pair.color)),
                 text_color: is_selected.then_some(pair.text),
                 ..Default::default()
                 }
             });
-        mouse_area(cell)
-            .on_press(on_select)
-            .on_double_click(Message::StyleRenameStart(kind, name.to_string()))
-            .into()
+        let area = mouse_area(cell).on_press(on_select);
+        if can_rename {
+            area.on_double_click(Message::StyleRenameStart(kind, name.to_string()))
+                .into()
+        } else {
+            area.into()
+        }
     }
 }

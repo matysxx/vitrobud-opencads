@@ -33,6 +33,9 @@ pub enum EntityTransform {
     Scale { center: DVec3, factor: f64 },
     /// Mirror across the line through `p1`→`p2` in the world XY plane.
     Mirror { p1: DVec3, p2: DVec3 },
+    /// General affine transform. Used when a complete UCS basis must be baked
+    /// into block-local geometry instead of stored as drawing UCS state.
+    Affine(acadrust::types::Transform),
 }
 
 // ── Tangent object ─────────────────────────────────────────────────────────
@@ -103,7 +106,7 @@ impl CadCommand for ValuePromptCommand {
     }
 
     fn prompt(&self) -> String {
-        self.prompt.to_string()
+        crate::t!(self.prompt).into_owned()
     }
 
     fn wants_text_input(&self) -> bool {
@@ -174,9 +177,18 @@ impl CadCommand for RenameCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            RenameStep::Type => "RENAME  Select the object type to rename:".to_string(),
-            RenameStep::Old { ty } => format!("RENAME {ty}  Enter the current name:"),
-            RenameStep::New { ty, old } => format!("RENAME {ty}  Rename \"{old}\" to:"),
+            RenameStep::Type => crate::t!("RENAME  Select the object type to rename:").into_owned(),
+            RenameStep::Old { ty } => crate::t!(
+                "RENAME %{type}  Enter the current name:",
+                type = ty
+            )
+            .into_owned(),
+            RenameStep::New { ty, old } => crate::t!(
+                "RENAME %{type}  Rename \"%{old}\" to:",
+                type = ty,
+                old = old
+            )
+            .into_owned(),
         }
     }
 
@@ -271,8 +283,10 @@ impl CadCommand for UserRegCommand {
 
     fn prompt(&self) -> String {
         match self.slot {
-            None => format!("{}  which register?  [1-5]:", self.name),
-            Some(n) => format!("{}{n}  new value:", self.name),
+            None => crate::t!("%{name}  which register?  [1-5]:", name = self.name)
+                .into_owned(),
+            Some(n) => crate::t!("%{name}%{slot}  new value:", name = self.name, slot = n)
+                .into_owned(),
         }
     }
 
@@ -366,8 +380,8 @@ impl CadCommand for KeywordCommand {
 
     fn prompt(&self) -> String {
         match self.pending {
-            Some((_, value_prompt)) => value_prompt.to_string(),
-            None => self.prompt.to_string(),
+            Some((_, value_prompt)) => crate::t!(value_prompt).into_owned(),
+            None => crate::t!(self.prompt).into_owned(),
         }
     }
 
@@ -461,8 +475,8 @@ impl CadCommand for TwoValuePromptCommand {
 
     fn prompt(&self) -> String {
         match &self.first {
-            None => self.prompt1.to_string(),
-            Some(_) => self.prompt2.to_string(),
+            None => crate::t!(self.prompt1).into_owned(),
+            Some(_) => crate::t!(self.prompt2).into_owned(),
         }
     }
 
@@ -545,11 +559,15 @@ impl CadCommand for SelectThenKeywordCommand {
 
     fn prompt(&self) -> String {
         if self.gathering {
-            return format!("{}  select objects, then press Enter:", self.name);
+            return crate::t!(
+                "%{name}  select objects, then press Enter:",
+                name = self.name
+            )
+            .into_owned();
         }
         match self.pending {
-            Some((_, value_prompt)) => value_prompt.to_string(),
-            None => self.prompt.to_string(),
+            Some((_, value_prompt)) => crate::t!(value_prompt).into_owned(),
+            None => crate::t!(self.prompt).into_owned(),
         }
     }
 
@@ -652,9 +670,13 @@ impl CadCommand for SelectThenValueCommand {
 
     fn prompt(&self) -> String {
         if self.gathering {
-            format!("{}  select objects, then press Enter:", self.name)
+            crate::t!(
+                "%{name}  select objects, then press Enter:",
+                name = self.name
+            )
+            .into_owned()
         } else {
-            self.value_prompt.to_string()
+            crate::t!(self.value_prompt).into_owned()
         }
     }
 
@@ -737,11 +759,15 @@ impl CadCommand for SelectThenTwoValueCommand {
 
     fn prompt(&self) -> String {
         if self.gathering {
-            format!("{}  select objects, then press Enter:", self.name)
+            crate::t!(
+                "%{name}  select objects, then press Enter:",
+                name = self.name
+            )
+            .into_owned()
         } else if self.first.is_none() {
-            self.prompt1.to_string()
+            crate::t!(self.prompt1).into_owned()
         } else {
-            self.prompt2.to_string()
+            crate::t!(self.prompt2).into_owned()
         }
     }
 
@@ -1217,14 +1243,14 @@ impl CmdOption {
     /// Button whose keyword is typed on click, e.g. `("Ttr", "TTR")`.
     pub fn new(label: &str, keyword: &str) -> Self {
         Self {
-            label: label.to_string(),
+            label: crate::t!(label).into_owned(),
             keyword: keyword.to_string(),
         }
     }
     /// A "finish" button that submits the step like Enter.
     pub fn enter(label: &str) -> Self {
         Self {
-            label: label.to_string(),
+            label: crate::t!(label).into_owned(),
             keyword: String::new(),
         }
     }
@@ -1275,6 +1301,14 @@ pub trait CadCommand: Send {
 
     /// Called when the user presses Enter (finalize / next option).
     fn on_enter(&mut self) -> CmdResult;
+
+    /// Whether a bare Enter should supply the drawing's continuation point as
+    /// this command's first point instead of calling [`Self::on_enter`]. Draw
+    /// commands opt in only while their first point is still unset; later
+    /// Enter presses retain their normal finish/cancel meaning.
+    fn enter_accepts_default_start(&self) -> bool {
+        false
+    }
 
     /// Called when the user presses Escape (cancel).
     #[allow(dead_code)]
@@ -1387,6 +1421,13 @@ pub trait CadCommand: Send {
     /// Default: forwards to `on_mouse_move` for backwards compatibility.
     fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> {
         self.on_mouse_move(pt).into_iter().collect()
+    }
+
+    /// Source entities replaced by the current live preview. The host removes
+    /// these from the resident render until the command commits or cancels.
+    /// Commands such as COPY keep their sources visible and use the default.
+    fn preview_hidden_handles(&self) -> &[Handle] {
+        &[]
     }
 
     /// Returns `true` when the command is waiting for text typed in the command line.

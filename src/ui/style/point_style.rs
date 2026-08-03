@@ -8,6 +8,8 @@
 use crate::app::Message;
 use iced::widget::{button, canvas, column, container, radio, row, text, text_input, Space};
 use iced::{mouse, Background, Border, Element, Length, Point, Rectangle, Size, Theme};
+use crate::t;
+use std::borrow::Cow;
 
 const CELL_PX: f32 = 44.0;
 
@@ -34,7 +36,7 @@ impl canvas::Program<Message> for GlyphCanvas {
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let glyph = theme.extended_palette().background.base.text;
+        let glyph = theme.palette().background.base.text;
         let (cx, cy) = (bounds.width * 0.5, bounds.height * 0.5);
         let r = bounds.width.min(bounds.height) * 0.30;
         let stroke = canvas::Stroke {
@@ -83,7 +85,7 @@ fn cell<'a>(value: i16, selected: bool) -> Element<'a, Message> {
         .padding(0)
         .on_press(Message::PointStyleSetMode(value))
         .style(move |theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let pair = if selected {
                 palette.primary.strong
             } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
@@ -106,7 +108,7 @@ fn cell<'a>(value: i16, selected: bool) -> Element<'a, Message> {
 }
 
 fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let border = match status {
         text_input::Status::Focused { .. } => palette.primary.base.color,
         _ => palette.background.neutral.color,
@@ -127,11 +129,18 @@ fn field_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
 
 fn muted_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
 }
 
-pub fn view_window<'a>(pdmode: i16, relative: bool, size_buf: &str) -> Element<'a, Message> {
+pub fn view_window<'a>(
+    pdmode: i16,
+    relative: bool,
+    size_buf: &str,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'a, Message> {
+    let width = sizing.width;
+    let height = sizing.height;
     // Glyph grid: a row per enclosure, a cell per shape.
     let mut grid = column![].spacing(6);
     for enc in ENCLOSURES {
@@ -144,7 +153,7 @@ pub fn view_window<'a>(pdmode: i16, relative: bool, size_buf: &str) -> Element<'
     }
 
     let size_row = row![
-        text("Point Size:").size(13),
+        text(t!("Point Size:")).size(13),
         Space::new().width(10),
         text_input("0", size_buf)
             .on_input(Message::PointStyleSizeInput)
@@ -153,13 +162,13 @@ pub fn view_window<'a>(pdmode: i16, relative: bool, size_buf: &str) -> Element<'
             .size(13)
             .width(110),
         Space::new().width(6),
-        text(if relative { "%" } else { "units" }).size(12).style(muted_style),
+        text(if relative { Cow::Borrowed("%") } else { t!("units") }).size(12).style(muted_style),
     ]
     .align_y(iced::Center);
 
     let radios = column![
         radio(
-            "Set Size Relative to Screen",
+            t!("Set Size Relative to Screen"),
             true,
             Some(relative),
             Message::PointStyleSizeRelative,
@@ -167,7 +176,7 @@ pub fn view_window<'a>(pdmode: i16, relative: bool, size_buf: &str) -> Element<'
         .size(15)
         .text_size(13),
         radio(
-            "Set Size in Absolute Units",
+            t!("Set Size in Absolute Units"),
             false,
             Some(relative),
             Message::PointStyleSizeRelative,
@@ -177,14 +186,14 @@ pub fn view_window<'a>(pdmode: i16, relative: bool, size_buf: &str) -> Element<'
     ]
     .spacing(6);
 
-    let ok = button(text("OK").size(13))
+    let ok = button(text(t!("OK")).size(13))
         .padding([5, 22])
         .on_press(Message::PointStyleOk)
         .style(button::primary);
 
     container(
         column![
-            text("Point Style").size(18),
+            text(t!("Point Style")).size(18),
             Space::new().height(6),
             grid,
             Space::new().height(12),
@@ -192,16 +201,20 @@ pub fn view_window<'a>(pdmode: i16, relative: bool, size_buf: &str) -> Element<'
             Space::new().height(8),
             radios,
             Space::new().height(12),
-            row![Space::new().width(Length::Fill), ok],
+            row![Space::new().width(width), ok].width(width),
         ]
         .spacing(4)
-        .padding(20),
+        .padding(20)
+        .width(width)
+        .height(height),
     )
     .style(|theme: &Theme| container::Style {
         background: Some(Background::Color(
-            theme.extended_palette().background.base.color
+            theme.palette().background.base.color
         )),
         ..Default::default()
     })
+    .width(width)
+    .height(height)
     .into()
 }

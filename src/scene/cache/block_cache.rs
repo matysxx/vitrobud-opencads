@@ -28,7 +28,7 @@ const MAX_NESTING_DEPTH: usize = 32;
 /// Skip wires whose world-AABB projects to fewer than this many pixels in
 /// the active view. Picks up tiny detail at zoom-out so the tessellator
 /// doesn't waste time on geometry that contributes a few sub-pixel marks
-/// to the final image. 2 px is the AutoCAD-default "small element" floor
+/// to the final image. Two pixels is a practical small-element floor:
 /// — visibly the same image, dramatically fewer wires.
 const MIN_PIXEL_SIZE: f32 = 2.0;
 
@@ -78,6 +78,7 @@ pub struct LocalWire {
     /// *layer* (the layer-0 inheritance rule) instead of the cached layer-0
     /// value baked here.
     pub color_l0: bool,
+    pub transparency_l0: bool,
     pub lt_l0: bool,
     pub lw_l0: bool,
     /// XY bounding box of this wire in block-local coordinates.
@@ -195,6 +196,8 @@ impl BlockCache {
     pub fn build(
         doc: &CadDocument,
         anno_scale: f32,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
         bg_color: [f32; 4],
         // Scene draw-depth map ([depth, half] per handle) — source of each
         // block child's in-block rank, so band depth composition agrees with
@@ -227,7 +230,15 @@ impl BlockCache {
             .map(|name| {
                 (
                     name.clone(),
-                    Arc::new(build_defn(doc, name, anno_scale, bg_color, depth_map)),
+                    Arc::new(build_defn(
+                        doc,
+                        name,
+                        anno_scale,
+                        annotation_scale_handle,
+                        all_visible,
+                        bg_color,
+                        depth_map,
+                    )),
                 )
             })
             .collect();
@@ -344,6 +355,8 @@ fn build_defn(
     doc: &CadDocument,
     block_name: &str,
     anno_scale: f32,
+    annotation_scale_handle: Option<Handle>,
+    all_visible: bool,
     bg_color: [f32; 4],
     depth_map: &HashMap<u64, [f32; 2]>,
 ) -> BlockDefn {
@@ -361,8 +374,11 @@ fn build_defn(
         let Some(source_entity) = doc.get_entity(eh) else {
             continue;
         };
-        let contextual =
-            crate::scene::annotative::entity_for_active_context(doc, source_entity);
+        let contextual = crate::scene::annotative::entity_for_annotation_context(
+            doc,
+            source_entity,
+            annotation_scale_handle,
+        );
         let entity = contextual.as_ref();
         // Skip entities flagged invisible. Dynamic blocks (e.g. a visibility-
         // state parametric block) keep the geometry for every state in one
@@ -382,7 +398,12 @@ fn build_defn(
         // Annotative scale representation: bake only the current scale's copy
         // into the defn so off-scale representations don't stack (e.g. a 1×
         // copy under a 10×). See `annotative::annotative_offscale`.
-        if crate::scene::annotative::annotative_offscale(doc, entity.common()) {
+        if crate::scene::annotative::annotative_offscale_for(
+            doc,
+            entity.common(),
+            annotation_scale_handle,
+            all_visible,
+        ) {
             continue;
         }
         match entity {
@@ -405,58 +426,16 @@ fn build_defn(
                     nested_ins, doc, bg_color, depth_map,
                 )));
             }
-            // A dimension nested in a block bakes its geometry (extension /
-            // dim lines, arrows, text) into a per-instance `*D` block, exactly
-            // like a top-level dimension. The top-level path expands that block
-            // in `tessellate_entity`; the block-expand path calls the plain
-            // `tessellate::tessellate`, which does NOT, so nested dimensions
-            // drew nothing. Expand the `*D` block's entities here as block-local
-            // subs so they transform with the parent insert. (Empty block_name
-            // — a non-baked dimension — falls through to the default arm.)
-            EntityType::Dimension(dim) if !dim.base().block_name.trim().is_empty() => {
-                let dblk = doc
-                    .block_records
-                    .iter()
-                    .find(|br| br.name.eq_ignore_ascii_case(&dim.base().block_name));
-                if let Some(dblk) = dblk {
-                    // The `*D` block content is baked in the coordinate space it
-                    // occupied when the dimension was created — for a dimension
-                    // inside a block that is often the ORIGINAL WCS, not the
-                    // block-local space. The dimension's insertion_point (DXF
-                    // 12) is the offset that maps the baked content into the
-                    // dimension's own (block-local) space; it is zero for
-                    // dimensions baked in place, so this is a no-op there.
-                    let ins = dim.base().insertion_point;
-                    for &deh in &dblk.entity_handles {
-                        let Some(dsub) = doc.get_entity(deh) else {
-                            continue;
-                        };
-                        // Definition points are baked as POINTs on Defpoints —
-                        // grip markers, never drawn (matches the top-level path).
-                        if matches!(dsub, EntityType::Point(_)) {
-                            continue;
-                        }
-                        if dsub.common().invisible || layer_hidden(doc, &dsub.common().layer) {
-                            continue;
-                        }
-                        let mut placed = dsub.clone();
-                        placed.as_entity_mut().translate(ins);
-                        // An arrowhead is baked as a nested INSERT of an arrow
-                        // block — route it through the nested-ref machinery so
-                        // the arrow block expands (tessellate_sub_local doesn't
-                        // expand inserts).
-                        if let EntityType::Insert(arrow) = &placed {
-                            subs.push(LocalSub::Nested(build_nested_ref(
-                                arrow, doc, bg_color, depth_map,
-                            )));
-                        } else {
-                            for lw in tessellate_sub_local(
-                                doc, &placed, anno_scale, bg_color, depth_map,
-                            ) {
-                                subs.push(LocalSub::Wire(lw));
-                            }
-                        }
-                    }
+            EntityType::Dimension(_) => {
+                for wire in tessellate_sub_local(
+                    doc,
+                    entity,
+                    anno_scale,
+                    annotation_scale_handle,
+                    bg_color,
+                    depth_map,
+                ) {
+                    subs.push(LocalSub::Wire(wire));
                 }
             }
             // A table nested in a block bakes its geometry (gridlines, cell
@@ -503,7 +482,14 @@ fn build_defn(
                             )));
                         } else {
                             for lw in
-                                tessellate_sub_local(doc, &placed, anno_scale, bg_color, depth_map)
+                                tessellate_sub_local(
+                                    doc,
+                                    &placed,
+                                    anno_scale,
+                                    annotation_scale_handle,
+                                    bg_color,
+                                    depth_map,
+                                )
                             {
                                 subs.push(LocalSub::Wire(lw));
                             }
@@ -512,7 +498,14 @@ fn build_defn(
                 }
                 if !used_baked {
                     for lw in
-                        tessellate_sub_local(doc, entity, anno_scale, bg_color, depth_map)
+                        tessellate_sub_local(
+                            doc,
+                            entity,
+                            anno_scale,
+                            annotation_scale_handle,
+                            bg_color,
+                            depth_map,
+                        )
                     {
                         subs.push(LocalSub::Wire(lw));
                     }
@@ -535,7 +528,14 @@ fn build_defn(
                 // the LocalWire; `emit_wire` scales it by the insert transform
                 // so the shader band matches the scaled geometry (same band the
                 // top-level path draws — depth-tested + linetype-dashed).
-                for lw in tessellate_sub_local(doc, entity, anno_scale, bg_color, depth_map) {
+                for lw in tessellate_sub_local(
+                    doc,
+                    entity,
+                    anno_scale,
+                    annotation_scale_handle,
+                    bg_color,
+                    depth_map,
+                ) {
                     subs.push(LocalSub::Wire(lw));
                 }
             }
@@ -608,6 +608,7 @@ fn tessellate_sub_local(
     doc: &CadDocument,
     sub: &EntityType,
     anno_scale: f32,
+    annotation_scale_handle: Option<Handle>,
     bg_color: [f32; 4],
     depth_map: &HashMap<u64, [f32; 2]>,
 ) -> Vec<LocalWire> {
@@ -641,6 +642,7 @@ fn tessellate_sub_local(
     let on_l0 = crate::scene::view::render::is_effective_layer_zero(&sub.common().layer);
     let color_l0 =
         !has_book_color && on_l0 && sub.common().color == AcadColor::ByLayer;
+    let transparency_l0 = on_l0 && sub.common().transparency.alpha() == 0;
     let lt_l0 = on_l0 && {
         let lt = &sub.common().linetype;
         lt.is_empty() || lt.eq_ignore_ascii_case("bylayer")
@@ -654,9 +656,38 @@ fn tessellate_sub_local(
     // Pass `local_offset` as the f64 world-offset so tessellate subtracts it
     // before casting to f32 — same precision-preservation trick used for
     // top-level entities, applied per-defn.
-    let wires_out = tessellate::tessellate(
-        doc, h, sub, false, sub_color, pat_len, pat, lw_px, anno_scale, None, bg_color, false,
-    );
+    let wires_out = if let EntityType::Dimension(dimension) = sub {
+        use crate::entities::dimension::DimensionTess;
+        dimension.tessellate(
+            doc,
+            h,
+            false,
+            sub_color,
+            lw_px,
+            anno_scale,
+            &HashSet::default(),
+            None,
+            bg_color,
+            None,
+            None,
+        )
+    } else {
+        tessellate::tessellate(
+            doc,
+            h,
+            sub,
+            false,
+            sub_color,
+            pat_len,
+            pat,
+            lw_px,
+            anno_scale,
+            annotation_scale_handle,
+            None,
+            bg_color,
+            false,
+        )
+    };
     if wires_out.is_empty() {
         return vec![];
     }
@@ -719,6 +750,7 @@ fn tessellate_sub_local(
             lt_is_byblock,
             lw_is_byblock,
             color_l0: color_l0 && wire_on_base_color,
+            transparency_l0: transparency_l0 && wire_on_base_color,
             lt_l0,
             lw_l0,
             aabb_local,
@@ -1542,8 +1574,12 @@ fn resolve_wire_color(lw: &LocalWire, ctx: &ExpandCtx) -> [f32; 4] {
     } else if lw.color_is_byblock {
         ctx.ins_color
     } else if lw.color_l0 {
-        // Inherit the insert layer's RGB but keep the child's own transparency.
-        [ctx.l0.color[0], ctx.l0.color[1], ctx.l0.color[2], lw.color[3]]
+        let alpha = if lw.transparency_l0 {
+            ctx.l0.color[3]
+        } else {
+            lw.color[3]
+        };
+        [ctx.l0.color[0], ctx.l0.color[1], ctx.l0.color[2], alpha]
     } else {
         lw.color
     };

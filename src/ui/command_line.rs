@@ -4,8 +4,9 @@ use iced::time::Instant;
 
 use crate::app::Message;
 use crate::command::CmdOption;
+use crate::t;
 use iced::widget::{
-    button, column, container, opaque, row, text, text_editor, text_input, tooltip, Space,
+    button, column, container, opaque, row, rule, text, text_editor, text_input, tooltip, Space,
 };
 use iced::{Background, Border, Color, Element, Length, Theme};
 
@@ -111,8 +112,8 @@ pub enum EntryKind {
 impl CommandLine {
     pub fn new() -> Self {
         let mut cl = Self::default();
-        cl.push_info("Open CAD Studio ready.");
-        cl.push_info("Type a command or use the ribbon. Open OBJ: INSERT tab.");
+        cl.push_info(&crate::tr!("command-line-ready"));
+        cl.push_info(&crate::tr!("command-line-hint"));
         cl
     }
 
@@ -194,20 +195,20 @@ impl CommandLine {
     }
 
     pub fn push_command(&mut self, cmd: &str) {
-        self.push(EntryKind::Command, format!("Command: {cmd}"));
+        self.push(EntryKind::Command, format!("{} {cmd}", t!("Command:")));
     }
     pub fn push_output(&mut self, msg: &str) {
         self.push(EntryKind::Output, msg.to_string());
     }
     pub fn push_error(&mut self, msg: &str) {
-        self.push(EntryKind::Error, format!("*Invalid*  {msg}"));
+        self.push(EntryKind::Error, format!("*{}*  {msg}", t!("Invalid")));
     }
     /// Append an error unless it is already the latest history line. Repeated
     /// retry failures should refresh the concise message, not flood history
     /// with identical copies (#498).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn push_error_once(&mut self, msg: &str) {
-        let text = format!("*Invalid*  {msg}");
+        let text = format!("*{}*  {msg}", t!("Invalid"));
         if let Some(last) = self
             .history
             .last_mut()
@@ -361,11 +362,18 @@ impl CommandLine {
         // Only the most recent entries pushed within the last few
         // seconds show on the overlay. The dropdown button keeps the
         // full backlog reachable when the user actually wants it.
-        let visible: Vec<&HistoryEntry> = self
+        let mut visible: Vec<&HistoryEntry> = self
             .history
             .iter()
             .filter(|e| e.pinned || e.created_at.elapsed().as_secs_f32() < HISTORY_VISIBLE_SECS)
             .collect();
+        // Keep the active prompt/options immediately above the input. Commands
+        // may emit informational lines while waiting for the next option; those
+        // lines belong above the pinned interaction row, not below it.
+        if let Some(index) = visible.iter().position(|entry| entry.pinned) {
+            let pinned = visible.remove(index);
+            visible.push(pinned);
+        }
         let start = visible.len().saturating_sub(4);
         let history_rows = visible[start..]
             .iter()
@@ -395,7 +403,7 @@ impl CommandLine {
                         .on_press(Message::CommandOptionPick(opt.keyword.clone()))
                         .padding([1, 6])
                         .style(|theme: &Theme, status| {
-                            let palette = theme.extended_palette();
+                            let palette = theme.palette();
                             let pair = if matches!(
                                 status,
                                 button::Status::Hovered | button::Status::Pressed
@@ -423,8 +431,8 @@ impl CommandLine {
                 }
             });
         let prompt = container(
-            text("Command:").size(11).style(|theme: &Theme| iced::widget::text::Style {
-                color: Some(theme.extended_palette().success.base.color),
+            text(crate::tr!("command-line-label")).size(11).style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(theme.palette().success.base.color),
             }),
         )
         .padding([5, 8]);
@@ -438,7 +446,7 @@ impl CommandLine {
         .on_press(Message::CommandLiteralToggle)
         .padding([2, 6])
         .style(move |theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let pair = if literal_active {
                 palette.primary.weak
             } else if matches!(
@@ -460,10 +468,7 @@ impl CommandLine {
                 ..Default::default()
             }
         });
-        let literal_tip = container(
-            text("Literal spaces: Space stays in the line instead of running the command (same as typing a leading '>'). Stays on until toggled off.")
-                .size(11),
-        )
+        let literal_tip = container(text(crate::tr!("command-line-literal-spaces")).size(11))
         .padding([3, 6])
         .style(container::bordered_box);
         let literal_btn = tooltip(literal_btn, literal_tip, tooltip::Position::Top).gap(4);
@@ -501,7 +506,7 @@ impl CommandLine {
                         .width(Length::Fill)
                         .padding([2, 8])
                         .style(move |theme: &Theme, status| {
-                            let palette = theme.extended_palette();
+                            let palette = theme.palette();
                             let pair = if is_selected {
                                 palette.primary.weak
                             } else if matches!(
@@ -560,9 +565,9 @@ impl CommandLine {
                 .on_action(Message::CommandHistoryEdit)
                 .size(11)
                 .padding([2, 8])
-                .max_height(180.0)
+                .height(Length::Fit.max(180.0))
                 .style(|theme: &Theme, _status| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     text_editor::Style {
                         background: Background::Color(palette.background.base.color),
                         border: Border::default(),
@@ -575,7 +580,7 @@ impl CommandLine {
             let copy_btn = button(
                 row![
                     crate::ui::icons::themed_success(crate::ui::icons::COPY, 11.0),
-                    text("Copy").size(11),
+                    text(t!("Copy")).size(11),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -586,7 +591,7 @@ impl CommandLine {
             let clear_btn = button(
                 row![
                     crate::ui::icons::themed_warning(crate::ui::icons::TRASH, 11.0),
-                    text("Clear").size(11),
+                    text(t!("Clear")).size(11),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -602,7 +607,6 @@ impl CommandLine {
             .width(Length::Fill)
             .padding([2, 6]);
             let panel = container(column![header, log])
-                .style(container::bordered_box)
                 .width(Length::Fill)
                 .padding([4, 0]);
             opaque(panel).into()
@@ -610,28 +614,39 @@ impl CommandLine {
             container(column![]).height(0).into()
         };
 
-        container(column![
-            autocomplete,
-            dropdown,
+        // The transient recent lines and the full archive are two views of the
+        // same history. Showing both while the archive is open creates a fake
+        // second history region and visually disconnects the input row (#555).
+        let recent_history: Element<'a, Message> = if self.history_open {
+            container(column![]).height(0).into()
+        } else {
             container(history_rows)
                 .style(|theme: &Theme| container::Style {
                     background: Some(Background::Color(
-                        theme.extended_palette().background.base.color,
+                        theme.palette().background.base.color,
                     )),
                     ..Default::default()
                 })
                 .width(Length::Fill)
-                .padding([2, 0]),
+                .padding([2, 0])
+                .into()
+        };
+        let history_divider: Element<'a, Message> = if self.history_open {
+            rule::horizontal(1).into()
+        } else {
+            container(column![]).height(0).into()
+        };
+
+        container(column![
+            autocomplete,
+            dropdown,
+            recent_history,
+            history_divider,
             container(input_row)
                 .style(|theme: &Theme| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     container::Style {
                     background: Some(Background::Color(palette.background.weakest.color)),
-                    border: Border {
-                        color: palette.background.neutral.color,
-                        width: 1.0,
-                        radius: 3.0.into()
-                    },
                     ..Default::default()
                     }
                 })
@@ -641,7 +656,7 @@ impl CommandLine {
                 .center_y(Length::Fixed(30.0)),
         ])
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
             background: Some(Background::Color(palette.background.base.color)),
             border: Border {
@@ -652,7 +667,7 @@ impl CommandLine {
             ..Default::default()
             }
         })
-        .width(Length::Fixed(720.0))
+        .width(Length::Fill.max(720.0))
         .into()
     }
 }
@@ -715,7 +730,7 @@ pub fn ranked_matches(
 /// Flat button style for the history dropdown's Copy / Clear strip: a subtle
 /// filled pill that brightens on hover.
 fn header_btn_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let pair = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
         palette.background.weak
     } else {
@@ -734,7 +749,7 @@ fn header_btn_style(theme: &Theme, status: button::Status) -> button::Style {
 }
 
 fn history_color(theme: &Theme, kind: &EntryKind) -> Color {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     match kind {
         EntryKind::Command => palette.background.base.text,
         EntryKind::Output => palette.background.base.text.scale_alpha(0.72),
@@ -800,8 +815,8 @@ mod tests {
     fn issue_498_repeated_save_error_is_not_duplicated() {
         let mut line = CommandLine::new();
         let initial_len = line.history.len();
-        line.push_error_once("Unable to save: file is in use.");
-        line.push_error_once("Unable to save: file is in use.");
+        line.push_error_once(t!("Unable to save: file is in use.").as_ref());
+        line.push_error_once(t!("Unable to save: file is in use.").as_ref());
         assert_eq!(line.history.len(), initial_len + 1);
     }
 }

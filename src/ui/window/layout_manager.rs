@@ -2,17 +2,18 @@
 
 use crate::app::Message;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
-use iced::{Background, Element, Fill, Theme};
+use iced::{Background, Element, Theme};
+use crate::t;
 
 fn muted_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
 }
 
 fn primary_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().primary.base.color),
+        color: Some(theme.palette().primary.base.color),
     }
 }
 
@@ -36,26 +37,26 @@ fn list_item(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 
-fn hdivider<'a>() -> Element<'a, Message> {
-    container(Space::new().width(Fill).height(1))
-        .width(Fill)
+fn hdivider<'a>(width: iced::Length) -> Element<'a, Message> {
+    container(Space::new().width(width).height(1))
+        .width(width)
         .height(1)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.neutral.color,
+                theme.palette().background.neutral.color,
             )),
             ..Default::default()
         })
         .into()
 }
 
-fn vsep<'a>() -> Element<'a, Message> {
-    container(Space::new().width(1).height(Fill))
+fn vsep<'a>(height: iced::Length) -> Element<'a, Message> {
+    container(Space::new().width(1).height(height))
         .width(1)
-        .height(Fill)
+        .height(height)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.neutral.color,
+                theme.palette().background.neutral.color,
             )),
             ..Default::default()
         })
@@ -67,17 +68,18 @@ pub fn view_window<'a>(
     selected: &'a str,
     rename_buf: &'a str,
     current: String,
+    sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     let is_model = selected == "Model";
 
     // ── Toolbar ───────────────────────────────────────────────────────────
     let toolbar = container(
         row![
-            button(text("New Layout").size(11))
+            button(text(t!("New Layout")).size(11))
                 .on_press(Message::LayoutManagerNew)
                 .style(btn_s(false))
                 .padding([4, 10]),
-            button(text("Delete").size(11))
+            button(text(t!("Delete")).size(11))
                 .on_press(Message::LayoutManagerDelete)
                 .style(move |theme: &Theme, status| {
                     if is_model {
@@ -87,11 +89,11 @@ pub fn view_window<'a>(
                     }
                 })
                 .padding([4, 10]),
-            Space::new().width(Fill),
+            Space::new().width(sizing.width),
             button(
                 row![
                     crate::ui::icons::themed_arrow_left(9.0),
-                    text("Move Left").size(11),
+                    text(t!("Move Left")).size(11),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -101,7 +103,7 @@ pub fn view_window<'a>(
             .padding([4, 8]),
             button(
                 row![
-                    text("Move Right").size(11),
+                    text(t!("Move Right")).size(11),
                     crate::ui::icons::themed_arrow_right(9.0),
                 ]
                 .spacing(4)
@@ -110,7 +112,7 @@ pub fn view_window<'a>(
             .on_press(Message::LayoutManagerMoveRight)
             .style(btn_s(false))
             .padding([4, 8]),
-            button(text("Set Current").size(11))
+            button(text(t!("Set Current")).size(11))
                 .on_press(Message::LayoutManagerSetCurrent)
                 .style(btn_s(true))
                 .padding([4, 10]),
@@ -120,11 +122,11 @@ pub fn view_window<'a>(
     )
     .style(|theme: &Theme| container::Style {
         background: Some(Background::Color(
-            theme.extended_palette().background.weakest.color,
+            theme.palette().background.weakest.color,
         )),
         ..Default::default()
     })
-    .width(Fill)
+    .width(sizing.width)
     .padding([5, 8]);
 
     // ── Left: Layout list ─────────────────────────────────────────────────
@@ -143,25 +145,25 @@ pub fn view_window<'a>(
                 .on_press(Message::LayoutManagerSelect(name.clone()))
                 .style(list_item(is_sel))
                 .padding([5, 10])
-                .width(Fill)
+                .width(sizing.width)
                 .into()
         })
         .collect();
 
     let layout_list = container(
         column![
-            text("Layouts").size(10).style(muted_style),
-            container(scrollable(column(list_items).spacing(2)).height(Fill))
+            text(t!("Layouts")).size(10).style(muted_style),
+            container(scrollable(column(list_items).spacing(2)).height(sizing.height))
                 .style(container::bordered_box)
-                .width(Fill)
-                .height(Fill)
+                .width(sizing.width)
+                .height(sizing.height)
                 .padding(2),
         ]
         .spacing(4)
-        .height(Fill),
+        .height(sizing.height),
     )
     .width(220)
-    .height(Fill)
+    .height(sizing.height)
     .padding(iced::Padding {
         top: 12.0,
         right: 8.0,
@@ -173,24 +175,24 @@ pub fn view_window<'a>(
     let details = container(
         column![
             text(if is_model {
-                "Model Space"
+                t!("Model Space")
             } else {
-                "Paper Space Layout"
+                t!("Paper Space Layout")
             })
             .size(13),
             Space::new().height(8),
             row![
-                text("Name:").size(11).style(muted_style).width(80),
+                text(t!("Name:")).size(11).style(muted_style).width(80),
                 text(selected).size(11),
             ]
             .spacing(8)
             .align_y(iced::Center),
             row![
-                text("Status:").size(11).style(muted_style).width(80),
+                text(t!("Status:")).size(11).style(muted_style).width(80),
                 text(if selected == current.as_str() {
-                    "Active"
+                    t!("Active")
                 } else {
-                    "Inactive"
+                    t!("Inactive")
                 })
                 .size(11)
                 .style(move |theme: &Theme| {
@@ -204,14 +206,14 @@ pub fn view_window<'a>(
             .spacing(8)
             .align_y(iced::Center),
             Space::new().height(16),
-            text("Rename").size(10).style(muted_style),
+            text(t!("Rename")).size(10).style(muted_style),
             row![
-                text_input("New name…", rename_buf)
+                text_input(t!("New name…").as_ref(), rename_buf)
                     .on_input(Message::LayoutManagerRenameBuf)
                     .on_submit(Message::LayoutManagerRenameCommit)
                     .size(11)
                     .padding([4, 8]),
-                button(text("OK").size(11))
+                button(text(t!("OK")).size(11))
                     .on_press(Message::LayoutManagerRenameCommit)
                     .style(btn_s(true))
                     .padding([4, 10]),
@@ -221,19 +223,19 @@ pub fn view_window<'a>(
         ]
         .spacing(8),
     )
-    .width(Fill)
+    .width(sizing.width)
     .padding([12, 12]);
 
-    let body = row![layout_list, vsep(), details].height(Fill);
+    let body = row![layout_list, vsep(sizing.height), details].height(sizing.height);
 
-    container(column![toolbar, hdivider(), body].spacing(0))
+    container(column![toolbar, hdivider(sizing.width), body].spacing(0))
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.base.color,
+                theme.palette().background.base.color,
             )),
             ..Default::default()
         })
-        .width(Fill)
-        .height(Fill)
+        .width(sizing.width)
+        .height(sizing.height)
         .into()
 }

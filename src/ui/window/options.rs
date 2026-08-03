@@ -1,14 +1,29 @@
 use crate::app::config::UiThemeConfig;
 use crate::app::Message;
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, text, text_input, Space,
+    button, column, container, row, scrollable, text, text_input, Space,
 };
-use iced::{Background, Border, Element, Fill, Theme};
+use iced::{Background, Border, Element, Theme};
+use std::fmt;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Labelled<T> {
+    value: T,
+    label: String,
+}
+
+impl<T> fmt::Display for Labelled<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
+}
 
 pub fn view_window<'a>(
     default_save_format: &'a str,
     ui_theme: &'a UiThemeConfig,
     theme_color_inputs: &'a [String; 6],
+    language: crate::i18n::Language,
+    sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     let selected_format = crate::io::SAVE_FORMAT_OPTIONS
         .iter()
@@ -19,17 +34,41 @@ pub fn view_window<'a>(
         .iter()
         .map(ToString::to_string)
         .chain(std::iter::once("Custom".to_string()))
+        .map(|value| Labelled {
+            label: match value.as_str() {
+                "Light" => crate::t!("Light").into_owned(),
+                "Dark" => crate::t!("Dark").into_owned(),
+                "Custom" => crate::t!("Custom").into_owned(),
+                _ => value.clone(),
+            },
+            value,
+        })
         .collect::<Vec<_>>();
-    let selected_theme = Some(ui_theme.name.clone());
+    let selected_theme = theme_options
+        .iter()
+        .find(|choice| choice.value == ui_theme.name)
+        .cloned();
+
+    let language_options = crate::i18n::Language::ALL
+        .into_iter()
+        .map(|value| Labelled {
+            label: value.label(),
+            value,
+        })
+        .collect::<Vec<_>>();
+    let selected_language = language_options
+        .iter()
+        .find(|choice| choice.value == language)
+        .cloned();
 
     let palette = ui_theme.palette.to_iced();
     let colors = [
-        ("Background", palette.background),
-        ("Text", palette.text),
-        ("Primary", palette.primary),
-        ("Success", palette.success),
-        ("Warning", palette.warning),
-        ("Danger", palette.danger),
+        (crate::tr!("options-color-background"), palette.background),
+        (crate::tr!("options-color-text"), palette.text),
+        (crate::tr!("options-color-primary"), palette.primary),
+        (crate::tr!("options-color-success"), palette.success),
+        (crate::tr!("options-color-warning"), palette.warning),
+        (crate::tr!("options-color-danger"), palette.danger),
     ];
 
     let mut color_controls = column![].spacing(8);
@@ -40,7 +79,7 @@ pub fn view_window<'a>(
             .style(move |theme: &Theme| container::Style {
                 background: Some(Background::Color(color)),
                 border: Border {
-                    color: theme.extended_palette().background.strong.color,
+                    color: theme.palette().background.strong.color,
                     width: 1.0,
                     radius: 3.0.into(),
                 },
@@ -59,67 +98,84 @@ pub fn view_window<'a>(
         );
     }
 
-    let close = button(text("Close").size(12))
+    let close = button(text(crate::tr!("action-close")).size(12))
         .on_press(Message::CloseModal)
         .padding([6, 18])
         .style(button::secondary);
 
     let content = column![
-        text("Open and Save").size(15),
+        text(crate::tr!("options-language-section")).size(15),
         Space::new().height(10),
         row![
-            text("Default save format:").size(12).width(150),
-            pick_list(
-                crate::io::SAVE_FORMAT_OPTIONS,
-                selected_format,
-                |format: &str| Message::DefaultSaveFormatChanged(format.to_string())
+            text(crate::tr!("options-language-label")).size(12).width(150),
+            iced::widget::pick_list(
+                selected_language,
+                language_options,
+                |choice| choice.label.clone(),
             )
-            .width(Fill),
+            .on_select(|choice| Message::LanguageChanged(choice.value))
+            .width(sizing.width),
         ]
         .spacing(12)
         .align_y(iced::Center),
-        Space::new().height(8),
-        text(
-            "Used for the first save of a new drawing. Existing drawings keep their file type and version."
-        )
-        .size(11),
         Space::new().height(22),
-        text("Theme").size(15),
+        text(crate::tr!("options-open-save-section")).size(15),
         Space::new().height(10),
         row![
-            text("Iced theme:").size(12).width(150),
-            pick_list(
-                theme_options,
-                selected_theme,
-                Message::OptionsThemeChanged,
+            text(crate::tr!("options-default-save-format-label")).size(12).width(150),
+            iced::widget::pick_list(
+                selected_format,
+                crate::io::SAVE_FORMAT_OPTIONS,
+                |value| value.to_string(),
             )
-            .width(Fill),
+            .on_select(|format: &str| Message::DefaultSaveFormatChanged(format.to_string()))
+            .width(sizing.width),
         ]
         .spacing(12)
         .align_y(iced::Center),
         Space::new().height(8),
-        text(
-            "Changing a base colour switches to Custom. Iced generates every component shade from these six colours."
-        )
-        .size(11),
+        text(crate::tr!("options-default-save-format-help"))
+        .size(11)
+        .width(sizing.width),
+        Space::new().height(22),
+        text(crate::tr!("options-theme-section")).size(15),
+        Space::new().height(10),
+        row![
+            text(crate::tr!("options-theme-label")).size(12).width(150),
+            iced::widget::pick_list(
+                selected_theme,
+                theme_options,
+                |choice| choice.label.clone(),
+            )
+            .on_select(|choice| Message::OptionsThemeChanged(choice.value))
+            .width(sizing.width),
+        ]
+        .spacing(12)
+        .align_y(iced::Center),
+        Space::new().height(8),
+        text(crate::tr!("options-theme-help"))
+        .size(11)
+        .width(sizing.width),
         Space::new().height(12),
         color_controls,
     ]
     .spacing(0)
-    .width(Fill);
+    .width(sizing.width);
 
     let body = column![
-        scrollable(content).height(Fill),
+        // Keep the scrollbar in its own lane instead of floating over the
+        // controls at the trailing edge of the Options content.
+        scrollable(content).spacing(8).height(sizing.height),
         Space::new().height(12),
-        row![Space::new().width(Fill), close],
+        row![Space::new().width(sizing.width), close],
     ]
-    .width(Fill)
-    .height(Fill);
+    .width(sizing.width)
+    .height(sizing.height);
 
     container(body)
         .style(container::rounded_box)
         .padding([16, 18])
-        .width(Fill)
-        .height(Fill)
+        .width(sizing.width)
+        .height(sizing.height)
         .into()
 }

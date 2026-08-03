@@ -2,7 +2,8 @@
 
 use crate::app::Message;
 use iced::widget::{column, container, row, scrollable, text, Space};
-use iced::{Background, Element, Fill, Theme};
+use iced::{Background, Element, Theme};
+use crate::t;
 use std::borrow::Cow;
 
 /// Display name of the primary accelerator modifier on this platform.
@@ -16,23 +17,23 @@ const MOD: &str = "Ctrl";
 
 fn muted_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
 }
 
 fn primary_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().primary.base.color),
+        color: Some(theme.palette().primary.base.color),
     }
 }
 
-fn hdivider<'a>() -> Element<'a, Message> {
-    container(Space::new().width(Fill).height(1))
-        .width(Fill)
+fn hdivider<'a>(width: iced::Length) -> Element<'a, Message> {
+    container(Space::new().width(width).height(1))
+        .width(width)
         .height(1)
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.neutral.color,
+                theme.palette().background.neutral.color,
             )),
             ..Default::default()
         })
@@ -41,7 +42,7 @@ fn hdivider<'a>() -> Element<'a, Message> {
 
 fn shortcut_row<'a>(
     key: impl Into<Cow<'static, str>>,
-    action: &'static str,
+    action: Cow<'static, str>,
 ) -> Element<'a, Message> {
     row![
         text(key.into())
@@ -70,11 +71,12 @@ fn section<'a>(title: impl Into<Cow<'static, str>>) -> Element<'a, Message> {
 
 pub fn view_window<'a>(
     overrides: &'a rustc_hash::FxHashMap<String, String>,
+    sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     // ── Toolbar ───────────────────────────────────────────────────────────
     let toolbar = container(
         row![
-            text("Type  SHORTCUTS SET <key> <cmd>  to add custom shortcuts.")
+            text(t!("Type  SHORTCUTS SET <key> <cmd>  to add custom shortcuts."))
                 .size(10)
                 .style(muted_style),
         ]
@@ -82,49 +84,51 @@ pub fn view_window<'a>(
     )
     .style(|theme: &Theme| container::Style {
         background: Some(Background::Color(
-            theme.extended_palette().background.weakest.color,
+            theme.palette().background.weakest.color,
         )),
         ..Default::default()
     })
-    .width(Fill)
+    .width(sizing.width)
     .padding([5, 10]);
 
     // ── Shortcut entries ──────────────────────────────────────────────────
     let mut rows: Vec<Element<'_, Message>> = vec![
-        section("── Function Keys ──────────────────────────────────────"),
-        shortcut_row("F3", "Toggle Object Snap"),
-        shortcut_row("F7", "Toggle Grid"),
-        shortcut_row("F8", "Toggle Ortho"),
-        shortcut_row("F9", "Toggle Grid Snap"),
-        shortcut_row("F10", "Toggle Polar Tracking"),
-        shortcut_row("F11", "Toggle Object Snap Tracking"),
-        shortcut_row("F12", "Toggle Dynamic Input"),
-        section(format!(
-            "── {MOD} Shortcuts ──────────────────────────────────────"
+        section(t!("── Function Keys ──────────────────────────────────────")),
+        shortcut_row("F3", t!("Toggle Object Snap")),
+        shortcut_row("F7", t!("Toggle Grid")),
+        shortcut_row("F8", t!("Toggle Ortho")),
+        shortcut_row("F9", t!("Toggle Grid Snap")),
+        shortcut_row("F10", t!("Toggle Polar Tracking")),
+        shortcut_row("F11", t!("Toggle Object Snap Tracking")),
+        shortcut_row("F12", t!("Toggle Dynamic Input")),
+        section(t!(
+            "── %{MOD} Shortcuts ──────────────────────────────────────",
+            MOD = MOD
         )),
-        shortcut_row(format!("{MOD}+N"), "New Drawing"),
-        shortcut_row(format!("{MOD}+O"), "Open File"),
-        shortcut_row(format!("{MOD}+S"), "Save"),
-        shortcut_row(format!("{MOD}+Shift+S"), "Save As"),
-        shortcut_row(format!("{MOD}+Z"), "Undo"),
-        shortcut_row(format!("{MOD}+Shift+Z / {MOD}+Y"), "Redo"),
-        shortcut_row(format!("{MOD}+C"), "Copy to Clipboard"),
-        shortcut_row(format!("{MOD}+X"), "Cut to Clipboard"),
-        shortcut_row(format!("{MOD}+V"), "Paste from Clipboard"),
-        section("── Other Keys ──────────────────────────────────────────"),
-        shortcut_row("Enter / Space", "Finalize command / Repeat last"),
-        shortcut_row("Escape", "Cancel active command"),
-        shortcut_row("Delete", "Delete selected entities"),
-        shortcut_row("↑ / ↓", "Command history navigation"),
+        shortcut_row(format!("{MOD}+N"), t!("New Drawing")),
+        shortcut_row(format!("{MOD}+O"), t!("Open File")),
+        shortcut_row(format!("{MOD}+S"), t!("Save")),
+        shortcut_row(format!("{MOD}+Shift+S"), t!("Save As")),
+        shortcut_row(format!("{MOD}+Z"), t!("Undo")),
+        shortcut_row(format!("{MOD}+Shift+Z / {MOD}+Y"), t!("Redo")),
+        shortcut_row(format!("{MOD}+F / {MOD}+H"), t!("Find and Replace")),
+        shortcut_row(format!("{MOD}+C"), t!("Copy to Clipboard")),
+        shortcut_row(format!("{MOD}+X"), t!("Cut to Clipboard")),
+        shortcut_row(format!("{MOD}+V"), t!("Paste from Clipboard")),
+        section(t!("── Other Keys ──────────────────────────────────────────")),
+        shortcut_row("Enter / Space", t!("Finalize command / Repeat last")),
+        shortcut_row("Escape", t!("Cancel active command")),
+        shortcut_row("Delete", t!("Delete selected entities")),
+        shortcut_row("↑ / ↓", t!("Command history navigation")),
     ];
 
     // Custom overrides section
     rows.push(section(
-        "── Custom Overrides (SHORTCUTS SET) ──────────────────",
+        t!("── Custom Overrides (SHORTCUTS SET) ──────────────────"),
     ));
     if overrides.is_empty() {
         rows.push(
-            text("  (none — use: SHORTCUTS SET <key> <command>)")
+            text(t!("  (none — use: SHORTCUTS SET <key> <command>)"))
                 .size(11)
                 .style(muted_style)
                 .into(),
@@ -152,34 +156,43 @@ pub fn view_window<'a>(
 
     // ── Section headers styled separately ────────────────────────────────
     let content = scrollable(column(rows).spacing(3).padding([12, 16]))
-        .width(Fill)
-        .height(Fill);
+        .width(sizing.width)
+        .height(sizing.height);
 
     // ── Header row with accent ────────────────────────────────────────────
     let header = container(
         row![
-            text("Key").size(10).style(primary_style).width(160),
-            text("Action").size(10).style(primary_style),
+            text(t!("Key")).size(10).style(primary_style).width(160),
+            text(t!("Action")).size(10).style(primary_style),
         ]
         .spacing(8)
         .padding([4, 16]),
     )
     .style(|theme: &Theme| container::Style {
         background: Some(Background::Color(
-            theme.extended_palette().primary.weak.color,
+            theme.palette().primary.weak.color,
         )),
         ..Default::default()
     })
-    .width(Fill);
+    .width(sizing.width);
 
-    container(column![toolbar, hdivider(), header, hdivider(), content].spacing(0))
+    container(
+        column![
+            toolbar,
+            hdivider(sizing.width),
+            header,
+            hdivider(sizing.width),
+            content
+        ]
+        .spacing(0),
+    )
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.base.color,
+                theme.palette().background.base.color,
             )),
             ..Default::default()
         })
-        .width(Fill)
-        .height(Fill)
+        .width(sizing.width)
+        .height(sizing.height)
         .into()
 }

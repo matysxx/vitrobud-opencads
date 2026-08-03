@@ -1,15 +1,18 @@
 use super::super::Message;
 use iced::widget::{
-    button, column, container, mouse_area, pick_list, row, stack, text, text_input,
+    button, column, container, mouse_area, row, stack, text, text_input,
     Space,
 };
 use iced::{Background, Border, Color, Element, Fill, Theme};
+use crate::t;
 
 pub(super) fn position_canvas_overlay<'a>(
     anchor: iced::Point,
     panel: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    crate::ui::pin_at(anchor, iced::widget::opaque(panel))
+    iced::widget::pin(iced::widget::opaque(panel))
+        .position(iced::Point::new(anchor.x.max(0.0), anchor.y.max(0.0)))
+        .into()
 }
 
 // ── In-place MText editor overlay ───────────────────────────────────────────
@@ -26,7 +29,7 @@ pub(super) fn text_inline_overlay(
     ed: &super::super::text_inline::TextInlineState,
     canvas: (f32, f32),
 ) -> Element<'_, Message> {
-    let field = text_input("Text", &ed.value)
+    let field = text_input(t!("Text").as_ref(), &ed.value)
         .id(iced::widget::Id::new(TEXT_INLINE_ID))
         .on_input(Message::TextInlineInput)
         .on_submit(Message::TextInlineOk)
@@ -36,7 +39,7 @@ pub(super) fn text_inline_overlay(
 
     let panel = container(field)
         .style(move |theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
             background: Some(Background::Color(palette.background.weak.color)),
             border: Border {
@@ -77,7 +80,12 @@ const MTEXT_FONTS: [&str; 10] = [
 /// Canvas program that renders the tessellated MText strokes inside the
 /// editor's own preview area (never on the drawing). Strokes lie in the
 /// world XY plane; the program fits + vertically flips them into the box.
-const MTEXT_PREVIEW_PAD: f32 = 12.0;
+pub(in crate::app) const MTEXT_PREVIEW_PAD: f32 = 12.0;
+pub(in crate::app) const MTEXT_PREVIEW_EM_PX: f32 = 15.0;
+// Used only until the shared modal sensor reports the first real layout width.
+const MTEXT_EDITOR_FALLBACK_WIDTH: f32 = 660.0;
+pub(in crate::app) const MTEXT_EDITOR_WRITING_WIDTH: f32 =
+    MTEXT_EDITOR_FALLBACK_WIDTH - 2.0 * MTEXT_PREVIEW_PAD;
 
 struct MTextPreview {
     /// Disconnected polylines as (x, y) world points + colour (NaN-split done).
@@ -95,6 +103,8 @@ struct MTextPreview {
     miny: f32,
     scale: f32,
     content_h: f32,
+    /// On-screen width of the MText wrapping rectangle.
+    wrap_width_px: f32,
 }
 
 impl MTextPreview {
@@ -199,6 +209,18 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
                 self.content_h - (pad + (y - self.miny) * self.scale),
             )
         };
+        // Wrap ruler: same screen-space position as the width slider handle.
+        let wrap_x = (pad + self.wrap_width_px).clamp(pad, bounds.width.max(pad));
+        let wrap_line = Path::new(|path| {
+            path.move_to(iced::Point::new(wrap_x, 0.0));
+            path.line_to(iced::Point::new(wrap_x, self.content_h));
+        });
+        frame.stroke(
+            &wrap_line,
+            Stroke::default()
+                .with_color(theme.palette().primary.base.color.scale_alpha(0.65))
+                .with_width(1.0),
+        );
         // Selection highlight behind the glyphs.
         if let Some((a, b)) = self.sel {
             for bx in &self.boxes {
@@ -211,7 +233,7 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
                     );
                     frame.fill(
                         &rect,
-                        theme.extended_palette().primary.base.color.scale_alpha(0.45),
+                        theme.palette().primary.base.color.scale_alpha(0.45),
                     );
                 }
             }
@@ -247,7 +269,7 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
             frame.stroke(
                 &path,
                 Stroke::default()
-                    .with_color(theme.extended_palette().warning.base.color)
+                    .with_color(theme.palette().warning.base.color)
                     .with_width(1.5),
             );
         } else if collapsed {
@@ -271,7 +293,7 @@ impl iced::widget::canvas::Program<Message> for MTextPreview {
                 frame.stroke(
                     &path,
                     Stroke::default()
-                        .with_color(theme.extended_palette().warning.base.color)
+                        .with_color(theme.palette().warning.base.color)
                         .with_width(1.5),
                 );
             }
@@ -314,15 +336,64 @@ fn mtext_preview_segments(
 pub(super) fn mtext_editor_overlay<'a>(
     ed: &'a super::super::mtext_editor::MTextEditorState,
     styles: Vec<String>,
-    canvas_size: (f32, f32),
     modal_offset: iced::Vector,
     modal_resize: iced::Vector,
+    modal_content_size: Option<iced::Size>,
 ) -> Element<'a, Message> {
+    let writing_area_px = modal_content_size
+        .map(|size| size.width - 2.0 * MTEXT_PREVIEW_PAD)
+        .unwrap_or(MTEXT_EDITOR_WRITING_WIDTH)
+        .max(80.0);
+    let measurement = mtext_editor_content(
+        ed,
+        &styles,
+        crate::ui::modal::ModalSizing::INTRINSIC,
+        writing_area_px,
+        (writing_area_px * 0.5).max(1.0),
+    );
+    let content = mtext_editor_content(
+        ed,
+        &styles,
+        crate::ui::modal::ModalSizing::FILL,
+        writing_area_px,
+        (writing_area_px * 0.5).max(1.0),
+    );
+    let content = crate::ui::modal::intrinsic(
+        measurement,
+        content,
+        iced::Size::INFINITE,
+        modal_resize,
+    );
+
+    crate::ui::modal::modal(
+        iced::widget::Space::new().width(Fill).height(Fill),
+        t!("Text Editor"),
+        content,
+        Message::MTextCancel,
+        modal_offset,
+        crate::ui::modal::ModalOptions::STANDARD,
+    )
+}
+
+fn mtext_editor_content<'a>(
+    ed: &'a super::super::mtext_editor::MTextEditorState,
+    styles: &[String],
+    sizing: crate::ui::modal::ModalSizing,
+    writing_area_px: f32,
+    intrinsic_preview_height: f32,
+) -> Element<'a, Message> {
+    let width = sizing.width;
+    let height = sizing.height;
+    let preview_height = if matches!(height, iced::Length::Fill) {
+        iced::Length::Fill
+    } else {
+        iced::Length::Fixed(intrinsic_preview_height)
+    };
     use super::super::mtext_editor::{JustifyChoice, MTextFmt, ParaAlign};
     use iced::widget::canvas;
 
     let btn_style = |theme: &Theme, status: button::Status| {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let pair = match status {
             button::Status::Hovered | button::Status::Pressed => palette.background.strong,
             _ => palette.background.weak,
@@ -364,9 +435,14 @@ pub(super) fn mtext_editor_overlay<'a>(
     let style_opts: Vec<String> = if styles.is_empty() {
         vec!["Standard".to_string()]
     } else {
-        styles
+        styles.to_vec()
     };
-    let style_pl = pick_list(style_opts, Some(ed.style.clone()), Message::MTextStyle)
+    let style_pl = iced::widget::pick_list(
+        Some(ed.style.clone()),
+        style_opts,
+        |value| value.to_string(),
+    )
+        .on_select(Message::MTextStyle)
         .text_size(11)
         .width(iced::Length::Fixed(96.0));
     let font_sel = if ed.font.trim().is_empty() {
@@ -374,14 +450,15 @@ pub(super) fn mtext_editor_overlay<'a>(
     } else {
         ed.font.clone()
     };
-    let font_pl = pick_list(
+    let font_pl = iced::widget::pick_list(
+        Some(font_sel),
         MTEXT_FONTS
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>(),
-        Some(font_sel),
-        Message::MTextFont,
+        |value| value.to_string(),
     )
+    .on_select(Message::MTextFont)
     .text_size(11)
     .width(iced::Length::Fixed(120.0));
     // Same colour picker as the Properties panel (named swatches + "More…" full
@@ -395,7 +472,10 @@ pub(super) fn mtext_editor_overlay<'a>(
         },
         Message::MTextColorChanged,
         Message::MTextColorPickerToggle,
-        Message::OpenColorWindow(crate::app::ColorPickTarget::MText),
+        Message::OpenColorWindow(
+            crate::app::ColorPickTarget::MText,
+            acadrust::types::Color::from_index(ed.color_aci as i16),
+        ),
     ))
     .width(iced::Length::Fixed(150.0));
 
@@ -432,18 +512,20 @@ pub(super) fn mtext_editor_overlay<'a>(
             include_bytes!("../../../assets/icons/mt_lower.svg"),
             Message::MTextFmt(MTextFmt::Lowercase)
         ),
-        iced::widget::Space::new().width(Fill),
+        iced::widget::Space::new().width(width),
         color_pl,
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center);
+    .align_y(iced::Alignment::Center)
+    .width(width);
 
     // ── Row 2: oblique / width / char-spacing · align · line spacing · OK ─
-    let justify = pick_list(
-        JustifyChoice::ALL,
+    let justify = iced::widget::pick_list(
         Some(JustifyChoice(ed.attachment)),
-        |c| Message::MTextJustify(c.0),
+        JustifyChoice::ALL,
+        |value| value.to_string(),
     )
+    .on_select(|c| Message::MTextJustify(c.0))
     .text_size(11)
     .width(iced::Length::Fixed(112.0));
     let row2 = row![
@@ -487,12 +569,61 @@ pub(super) fn mtext_editor_overlay<'a>(
             .style(btn_style),
     ]
     .spacing(4)
-    .align_y(iced::Alignment::Center);
+    .align_y(iced::Alignment::Center)
+    .width(width);
+
+    let preview_scale = ed.preview_scale();
+    let slider_min = 1e-6_f64;
+    let slider_max =
+        f64::from(writing_area_px / preview_scale).max(slider_min * 2.0);
+    let width_slider = column![
+        row![
+            text(t!("Width: %{value}", value = format!("{:.3}", ed.rect_width))).size(11),
+            Space::new().width(width),
+            text(format!("{:.0}%", ed.rect_width / slider_max * 100.0)).size(11),
+        ]
+        .width(width),
+        container(
+            iced::widget::slider(
+                slider_min..=slider_max,
+                ed.rect_width.clamp(slider_min, slider_max),
+                Message::MTextRectWidth,
+            )
+            .step((slider_max * 0.01).max(1e-6))
+            .width(width),
+        )
+        .padding([0.0, MTEXT_PREVIEW_PAD])
+        .width(width),
+    ]
+    .spacing(2)
+    .width(width);
 
     // ── Body: the rendered preview (the editor is preview-only). It fills the
     // space left by the toolbars, so the resizable modal's extra height flows
     // into the text area. ─────────────────────────────────────────────────
-    let body: Element<'a, Message> = {
+    let body: Element<'a, Message> = if !matches!(height, iced::Length::Fill) {
+        // The preview is a flexible scroll viewport. Measuring its real canvas
+        // would make long/wide MText dictate the dialog size, so the intrinsic
+        // pass uses an empty viewport proxy. The toolbars alone determine its
+        // width; the preview height follows that measured writing width.
+        container(Space::new())
+            .style(move |theme: &Theme| {
+                let palette = theme.palette();
+                container::Style {
+                background: Some(Background::Color(palette.background.base.color)),
+                border: Border {
+                    color: palette.background.neutral.color,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                ..Default::default()
+                }
+            })
+            .padding(2)
+            .width(width)
+            .height(preview_height)
+            .into()
+    } else {
         let segments = mtext_preview_segments(ed);
         let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for (seg, _, _) in &segments {
@@ -511,45 +642,7 @@ pub(super) fn mtext_editor_overlay<'a>(
             maxx = maxx.max(b.xmax);
             maxy = maxy.max(b.ymax);
         }
-        // Normalize the display by the DOMINANT rendered text height — the run
-        // height the most glyphs share (the body) — NOT the entity's base height
-        // field. That field can be many times the visible text: `\H…x;` runs
-        // compound, so an entity of height 1 whose body is `\H0.2x` renders at
-        // 0.2, and normalizing by 1 would shrink everything 5×. The mode lands
-        // the body at EM_PX while headings / fine print keep their proportions
-        // (one uniform factor, so no height is distorted). Zero-width boxes —
-        // the empty-line caret slots, which carry the raw entity height — are
-        // skipped so they can't skew it.
-        let h_unit = {
-            let mut heights: Vec<f32> = ed
-                .glyph_boxes
-                .iter()
-                .filter(|b| b.xmax - b.xmin > 1e-6)
-                .map(|b| b.ymax - b.ymin)
-                .filter(|h| h.is_finite() && *h > 1e-6)
-                .collect();
-            if heights.is_empty() {
-                ed.height_value() as f32
-            } else {
-                heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                // Largest cluster of near-equal heights (within 5%) = the body.
-                let (mut best_h, mut best_n, mut i) = (heights[0], 0usize, 0usize);
-                while i < heights.len() {
-                    let mut j = i;
-                    while j < heights.len() && heights[j] <= heights[i] * 1.05 {
-                        j += 1;
-                    }
-                    if j - i > best_n {
-                        best_n = j - i;
-                        best_h = heights[(i + j - 1) / 2];
-                    }
-                    i = j;
-                }
-                best_h
-            }
-        };
-        const EM_PX: f32 = 15.0;
-        let scale = (EM_PX / h_unit.max(1e-6)).clamp(1e-4, 1e6);
+        let scale = preview_scale;
         let content_h = if maxx >= minx {
             ((maxy - miny) * scale + 2.0 * MTEXT_PREVIEW_PAD).max(40.0)
         } else {
@@ -559,9 +652,11 @@ pub(super) fn mtext_editor_overlay<'a>(
         // can be wider than the editor; size the canvas to the real content
         // width and let the scroll area pan horizontally to reach later columns.
         let content_w = if maxx >= minx {
-            (maxx - minx) * scale + 2.0 * MTEXT_PREVIEW_PAD
+            ((maxx - minx).max(ed.rect_width as f32) * scale
+                + 2.0 * MTEXT_PREVIEW_PAD)
+                .max(40.0)
         } else {
-            40.0
+            ed.rect_width as f32 * scale + 2.0 * MTEXT_PREVIEW_PAD
         };
         let prog = MTextPreview {
             segments,
@@ -573,6 +668,7 @@ pub(super) fn mtext_editor_overlay<'a>(
             miny,
             scale,
             content_h,
+            wrap_width_px: ed.rect_width as f32 * scale,
         };
         let cv = canvas(prog)
             .width(iced::Length::Fixed(content_w))
@@ -587,11 +683,11 @@ pub(super) fn mtext_editor_overlay<'a>(
                     vertical: Scrollbar::default(),
                     horizontal: Scrollbar::default(),
                 })
-                .width(Fill)
-                .height(Fill),
+                .width(width)
+                .height(preview_height),
         )
             .style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                 background: Some(Background::Color(palette.background.base.color)),
                 border: Border {
@@ -603,8 +699,8 @@ pub(super) fn mtext_editor_overlay<'a>(
                 }
             })
             .padding(2)
-            .width(Fill)
-            .height(Fill)
+            .width(width)
+            .height(preview_height)
             .into()
     };
 
@@ -613,46 +709,29 @@ pub(super) fn mtext_editor_overlay<'a>(
     // buffer, so there is no separate Cancel.
     let action_bar = container(
         row![
-            iced::widget::Space::new().width(Fill),
-            crate::ui::style::style_manager::tb_button("Apply", Message::MTextApply, true),
+            iced::widget::Space::new().width(width),
+            crate::ui::style::style_manager::tb_button(t!("Apply"), Message::MTextApply, true),
         ]
         .align_y(iced::Alignment::Center),
     )
     .style(|theme: &Theme| container::Style {
         background: Some(Background::Color(
-            theme.extended_palette().background.weak.color
+            theme.palette().background.weak.color
         )),
         ..Default::default()
     })
-    .width(Fill)
+    .width(width)
     .padding([5, 8]);
 
-    // The shared modal frame supplies the panel background, drag title bar,
-    // ✕ (which also cancels) and the resize grip. The content is a Fill column
-    // wrapped here in a fixed box (natural 660×480, grown by the shared resize
-    // delta) so the modal frame shrinks to it and the corner grip can drag it.
-    let content = container(
-        column![action_bar, row1, row2, body]
+    container(
+        column![action_bar, row1, row2, width_slider, body]
             .spacing(6)
-            .width(Fill)
-            .height(Fill),
+            .width(width)
+            .height(height),
     )
-    .width(iced::Length::Fixed(660.0 + modal_resize.x))
-    .height(iced::Length::Fixed(480.0 + modal_resize.y));
-
-    let _ = canvas_size; // positioned & sized by the modal frame now
-    // `modal` sizes its stack from the base layer, so the base must fill the
-    // area (a zero-size base collapses the whole overlay to nothing). The
-    // transparent fill lets the dimmed viewport show through beneath.
-    crate::ui::modal::modal(
-        iced::widget::Space::new().width(Fill).height(Fill),
-        "Text Editor",
-        660.0 + modal_resize.x,
-        content,
-        Message::MTextCancel,
-        modal_offset,
-        true,
-    )
+    .width(width)
+    .height(height)
+    .into()
 }
 
 // ── Viewport right-click context menu ──────────────────────────────────────
@@ -678,7 +757,7 @@ pub(super) fn viewport_context_menu_overlay(
         container(iced::widget::Space::new().width(Fill).height(1))
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
-                    theme.extended_palette().background.weak.color,
+                    theme.palette().background.weak.color,
                 )),
                 ..Default::default()
             })
@@ -706,13 +785,13 @@ pub(super) fn viewport_context_menu_overlay(
     let mut items: Vec<Element<'static, Message>> = Vec::new();
 
     if has_cmd {
-        items.push(item("Cancel".to_string(), Message::CommandEscape));
-        items.push(item("Enter".to_string(), Message::CommandFinalize));
+        items.push(item(t!("Cancel").into_owned(), Message::CommandEscape));
+        items.push(item(t!("Enter").into_owned(), Message::CommandFinalize));
     } else {
         if !last_cmds.is_empty() {
             let last = last_cmds[0].clone();
             items.push(item(
-                format!("Repeat {last}"),
+                t!("Repeat %{last}", last = last).into_owned(),
                 Message::Command(last.to_uppercase()),
             ));
             if last_cmds.len() > 1 {
@@ -724,13 +803,13 @@ pub(super) fn viewport_context_menu_overlay(
             items.push(sep());
         }
         if has_selection {
-            items.push(item("Delete".to_string(), Message::DeleteSelected));
+            items.push(item(t!("Delete").into_owned(), Message::DeleteSelected));
             items.push(item(
-                "Move".to_string(),
+                t!("Move").into_owned(),
                 Message::Command("MOVE".to_string()),
             ));
             items.push(item(
-                "Copy".to_string(),
+                t!("Copy").into_owned(),
                 Message::Command("COPY".to_string()),
             ));
             items.push(sep());
@@ -742,7 +821,7 @@ pub(super) fn viewport_context_menu_overlay(
             items.push(
                 button(
                     row![
-                        text("Draw Order").size(12),
+                        text(t!("Draw Order").into_owned()).size(12),
                         iced::widget::Space::new().width(Fill),
                         do_caret,
                     ]
@@ -756,51 +835,51 @@ pub(super) fn viewport_context_menu_overlay(
             );
             if draworder_open {
                 items.push(subitem(
-                    "Bring to Front".to_string(),
+                    t!("Bring to Front").into_owned(),
                     Message::Command("DRAWORDER F".to_string()),
                 ));
                 items.push(subitem(
-                    "Send to Back".to_string(),
+                    t!("Send to Back").into_owned(),
                     Message::Command("DRAWORDER B".to_string()),
                 ));
                 items.push(subitem(
-                    "Bring Above Object".to_string(),
+                    t!("Bring Above Object").into_owned(),
                     Message::DrawOrderPickRef(true),
                 ));
                 items.push(subitem(
-                    "Send Under Object".to_string(),
+                    t!("Send Under Object").into_owned(),
                     Message::DrawOrderPickRef(false),
                 ));
             }
             items.push(sep());
             items.push(item(
-                "Isolate Objects".to_string(),
+                t!("Isolate Objects").into_owned(),
                 Message::Command("ISOLATEOBJECTS".to_string()),
             ));
             items.push(item(
-                "Hide Objects".to_string(),
+                t!("Hide Objects").into_owned(),
                 Message::Command("HIDEOBJECTS".to_string()),
             ));
             items.push(sep());
-            items.push(item("Select Similar".to_string(), Message::SelectSimilar));
+            items.push(item(t!("Select Similar").into_owned(), Message::SelectSimilar));
             items.push(item(
-                "Invert Selection".to_string(),
+                t!("Invert Selection").into_owned(),
                 Message::InvertSelection,
             ));
         }
         if isolation_active {
             items.push(item(
-                "End Object Isolation".to_string(),
+                t!("End Object Isolation").into_owned(),
                 Message::Command("UNISOLATEOBJECTS".to_string()),
             ));
         }
         items.push(item(
-            "Select All".to_string(),
+            t!("Select All").into_owned(),
             Message::Command("SELECTALL".to_string()),
         ));
-        items.push(item("Quick Select...".to_string(), Message::QSelectOpen));
+        items.push(item(t!("Quick Select...").into_owned(), Message::QSelectOpen));
         items.push(item(
-            "Zoom Extents".to_string(),
+            t!("Zoom Extents").into_owned(),
             Message::Command("ZOOM EXTENTS".to_string()),
         ));
     }
@@ -838,10 +917,10 @@ pub(super) fn snap_override_overlay(pos: iced::Point) -> Element<'static, Messag
                     button::Status::Hovered | button::Status::Pressed
                 )
                 .then_some(Background::Color(
-                    theme.extended_palette().primary.weak.color
+                    theme.palette().primary.weak.color
                 )),
                 border: Border::default(),
-                text_color: theme.extended_palette().background.base.text,
+                text_color: theme.palette().background.base.text,
                 ..Default::default()
             })
             .padding(2);
@@ -849,7 +928,7 @@ pub(super) fn snap_override_overlay(pos: iced::Point) -> Element<'static, Messag
             btn,
             container(text(label).size(11))
                 .style(|theme: &Theme| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     container::Style {
                     background: Some(Background::Color(palette.background.strong.color)),
                     border: Border {
@@ -878,7 +957,7 @@ pub(super) fn snap_override_overlay(pos: iced::Point) -> Element<'static, Messag
 
     let panel = container(grid)
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
             background: Some(Background::Color(palette.background.weak.color)),
             border: Border {
@@ -918,8 +997,45 @@ pub(super) fn qselect_overlay<'a>(
     state: &'a crate::app::QSelectState,
     types: &[String],
     properties: &[(String, String)],
+    modal_offset: iced::Vector,
+    modal_resize: iced::Vector,
 ) -> Element<'a, Message> {
-    use iced::widget::{checkbox, pick_list};
+    let measurement = qselect_content(
+        state,
+        types,
+        properties,
+        crate::ui::modal::ModalSizing::INTRINSIC,
+    );
+    let content = qselect_content(
+        state,
+        types,
+        properties,
+        crate::ui::modal::ModalSizing::FILL,
+    );
+    let content = crate::ui::modal::intrinsic(
+        measurement,
+        content,
+        iced::Size::INFINITE,
+        modal_resize,
+    );
+
+    crate::ui::modal::modal(
+        Space::new().width(Fill).height(Fill),
+        t!("Quick Select"),
+        content,
+        Message::QSelectClose,
+        modal_offset,
+        crate::ui::modal::ModalOptions::STANDARD,
+    )
+}
+
+fn qselect_content<'a>(
+    state: &'a crate::app::QSelectState,
+    types: &[String],
+    properties: &[(String, String)],
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'a, Message> {
+    use iced::widget::{checkbox};
     let mut type_options: Vec<String> = vec![QSELECT_ANY_TYPE.to_string()];
     type_options.extend(types.iter().cloned());
 
@@ -960,18 +1076,23 @@ pub(super) fn qselect_overlay<'a>(
     // operator is "*Any value" — both of those skip the value test.
     let value_enabled =
         state.property.is_some() && !matches!(state.operator, crate::app::QSelectOp::Any);
+    let field_width = if matches!(sizing.width, iced::Length::Fill) {
+        Fill
+    } else {
+        iced::Length::Shrink
+    };
 
-    let label = |s: &'static str| {
+    let label = |s: std::borrow::Cow<'static, str>| {
         text(s)
             .size(12)
             .width(iced::Length::Fixed(90.0))
     };
 
-    let btn = |lbl: &'static str, msg: Message, primary: bool| {
+    let btn = |lbl: std::borrow::Cow<'static, str>, msg: Message, primary: bool| {
         button(text(lbl).size(12))
             .on_press(msg)
             .style(move |theme: &Theme, st| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 let pair = match (
                     primary,
                     matches!(st, button::Status::Hovered | button::Status::Pressed),
@@ -995,86 +1116,100 @@ pub(super) fn qselect_overlay<'a>(
             .padding([4, 14])
     };
 
-    let mut value_input = text_input("", &state.value).size(12);
+    let mut value_input = text_input("", &state.value)
+        .size(12)
+        .width(field_width);
     if value_enabled {
         value_input = value_input.on_input(Message::QSelectSetValue);
     }
 
     let panel_body = column![
-        text("Quick Select").size(14),
-        Space::new().height(10),
         row![
-            label("Object type:"),
-            pick_list(type_options, Some(type_sel), |s: String| {
+            label(t!("Object type:")),
+            iced::widget::pick_list(
+                Some(type_sel),
+                type_options,
+                |value| value.to_string(),
+            )
+            .on_select(|s: String| {
                 if s == QSELECT_ANY_TYPE {
                     Message::QSelectSetType(None)
                 } else {
                     Message::QSelectSetType(Some(s))
                 }
             })
-            .width(Fill),
+            .width(field_width),
         ]
         .align_y(iced::Alignment::Center)
-        .spacing(8),
+        .spacing(8)
+        .width(sizing.width),
         Space::new().height(6),
         row![
-            label("Property:"),
-            pick_list(
-                prop_options,
+            label(t!("Property:")),
+            iced::widget::pick_list(
                 Some(prop_sel),
-                |p: crate::app::QSelectPropertyChoice| {
+                prop_options,
+                |value| value.to_string(),
+            )
+            .on_select(|p: crate::app::QSelectPropertyChoice| {
                     if p.field.is_empty() {
                         Message::QSelectSetProperty(None)
                     } else {
                         Message::QSelectSetProperty(Some(p))
                     }
-                }
-            )
-            .width(Fill),
+                })
+            .width(field_width),
         ]
         .align_y(iced::Alignment::Center)
-        .spacing(8),
+        .spacing(8)
+        .width(sizing.width),
         Space::new().height(6),
         row![
-            label("Operator:"),
-            pick_list(
-                op_options,
+            label(t!("Operator:")),
+            iced::widget::pick_list(
                 Some(state.operator),
-                Message::QSelectSetOperator
+                op_options,
+                |value| value.to_string(),
             )
-            .width(Fill),
+            .on_select(Message::QSelectSetOperator)
+            .width(field_width),
         ]
         .align_y(iced::Alignment::Center)
-        .spacing(8),
+        .spacing(8)
+        .width(sizing.width),
         Space::new().height(6),
-        row![label("Value:"), value_input,]
+        row![label(t!("Value:")), value_input,]
             .align_y(iced::Alignment::Center)
-            .spacing(8),
+            .spacing(8)
+            .width(sizing.width),
         Space::new().height(10),
         row![
             checkbox(state.append)
                 .on_toggle(Message::QSelectSetAppend)
                 .size(14),
             Space::new().width(6),
-            text("Append to current selection").size(12),
+            text(t!("Append to current selection")).size(12),
         ]
         .align_y(iced::Alignment::Center),
         Space::new().height(14),
         row![
-            Space::new().width(Fill),
-            btn("Cancel", Message::QSelectClose, false),
+            Space::new().width(field_width),
+            btn(t!("Cancel"), Message::QSelectClose, false),
             Space::new().width(8),
-            btn("Apply", Message::QSelectApply, true),
+            btn(t!("Apply"), Message::QSelectApply, true),
         ]
         .align_y(iced::Alignment::Center),
     ]
-    .spacing(0);
+    .spacing(0)
+    .width(sizing.width)
+    .height(sizing.height);
 
     let panel = container(panel_body)
         .padding(16)
-        .width(iced::Length::Fixed(400.0))
+        .width(sizing.width)
+        .height(sizing.height)
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
             background: Some(Background::Color(palette.background.weak.color)),
             border: Border {
@@ -1086,18 +1221,5 @@ pub(super) fn qselect_overlay<'a>(
             }
         });
 
-    // Outside-click catcher — fills the whole screen, sits below the
-    // panel. The panel itself is rendered above and absorbs its own
-    // clicks via standard widget event handling.
-    let catcher = mouse_area(
-        container(iced::widget::Space::new().width(Fill).height(Fill))
-            .width(Fill)
-            .height(Fill),
-    )
-    .on_press(Message::QSelectClose)
-    .on_right_press(Message::QSelectClose);
-
-    let centered = container(iced::widget::opaque(panel)).center(Fill);
-
-    stack![catcher, centered].into()
+    panel.into()
 }

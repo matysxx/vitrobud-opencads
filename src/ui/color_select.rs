@@ -6,11 +6,9 @@
 use crate::app::Message;
 use crate::ui::properties::acad_color_display;
 use acadrust::types::Color as AcadColor;
-use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::{self, Widget};
-use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
-use iced::widget::{button, column, container, row, scrollable, text};
-use iced::{Background, Border, Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector};
+use iced::widget::{button, column, container, row, text};
+use iced::{Background, Border, Color, Element, Length, Theme};
+use crate::t;
 
 /// Which "logical" entries the colour list offers besides the standard ACI
 /// colours.
@@ -21,15 +19,45 @@ pub struct ColorExtras {
 }
 
 /// Encode a colour as the ACI integer string the style editors store
-/// (ByBlock=0, ByLayer=256, indexed 1-255; RGB has no ACI slot → ByLayer).
+/// (ByBlock=0, ByLayer=256, indexed 1-255). True colours are mapped to the
+/// closest ACI entry because these fields cannot store RGB values.
 pub fn color_to_aci_string(c: AcadColor) -> String {
     match c {
         AcadColor::ByBlock => "0".to_string(),
         AcadColor::ByLayer => "256".to_string(),
         AcadColor::None => "257".to_string(),
         AcadColor::Index(i) => i.to_string(),
-        AcadColor::Rgb { .. } => "256".to_string(),
+        AcadColor::Rgb { r, g, b } => nearest_aci(r, g, b).to_string(),
     }
+}
+
+/// Convert an Iced colour chosen by `iced_aw::ColorPicker` into a DWG true
+/// colour. ACI-only destinations map it to their closest indexed colour later.
+pub fn iced_to_acad_color(color: Color) -> AcadColor {
+    let [r, g, b, _] = color.into_rgba8();
+    AcadColor::Rgb { r, g, b }
+}
+
+/// Return the closest AutoCAD Color Index for an RGB colour.
+pub fn nearest_aci(r: u8, g: u8, b: u8) -> u8 {
+    let mut best = 7;
+    let mut best_distance = u32::MAX;
+
+    for index in 1..=255 {
+        let Some((ar, ag, ab)) = acadrust::types::aci_table::aci_to_rgb(index) else {
+            continue;
+        };
+        let dr = i32::from(r) - i32::from(ar);
+        let dg = i32::from(g) - i32::from(ag);
+        let db = i32::from(b) - i32::from(ab);
+        let distance = (dr * dr + dg * dg + db * db) as u32;
+        if distance < best_distance {
+            best = index;
+            best_distance = distance;
+        }
+    }
+
+    best
 }
 
 /// Decode an ACI integer string back into an `AcadColor`.
@@ -59,7 +87,7 @@ pub fn color_display_name(c: AcadColor) -> String {
             _ => label.to_string(),
         }
     } else {
-        label.to_string()
+        t!(label).into_owned()
     }
 }
 
@@ -69,7 +97,7 @@ fn swatch<'a>(bg: Color) -> Element<'a, Message> {
         .style(move |theme: &Theme| container::Style {
             background: Some(Background::Color(bg)),
             border: Border {
-                color: theme.extended_palette().background.neutral.color,
+                color: theme.palette().background.neutral.color,
                 width: 1.0,
                 radius: 2.0.into(),
             },
@@ -97,6 +125,7 @@ pub fn color_selector<'a>(
 ) -> Element<'a, Message> {
     let (cur_bg, _) = acad_color_display(current);
     let cur_name = color_display_name(current);
+    let on_dismiss = on_toggle.clone();
 
     // Closed button: current swatch + name + caret.
     let head = button(
@@ -118,7 +147,7 @@ pub fn color_selector<'a>(
 
     let popup = container(color_list(extras, on_select, on_more))
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
             background: Some(Background::Color(palette.background.weak.color)),
             border: Border {
@@ -132,16 +161,18 @@ pub fn color_selector<'a>(
         .padding(5)
         .width(220);
 
-    // The popup is shown as a floating overlay (anchored below the button) so
-    // it doesn't push the surrounding form down.
-    Element::new(Floating {
-        base: head.into(),
-        popup: popup.into(),
-    })
+    // `DropDown` keeps the popup outside the surrounding form layout and
+    // handles viewport placement, Escape, and outside-click dismissal.
+    iced_aw::DropDown::new(head, popup, true)
+        .width(220)
+        .alignment(iced_aw::drop_down::Alignment::Bottom)
+        .offset(2.0)
+        .on_dismiss(on_dismiss)
+        .into()
 }
 
 fn list_row_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let hovered = matches!(status, button::Status::Hovered);
     let text_color = if hovered {
         palette.background.strong.text
@@ -166,7 +197,7 @@ pub fn color_list<'a>(
     let named_row = |color: AcadColor| -> Element<'a, Message> {
         let (bg, name) = acad_color_display(color);
         button(
-            row![swatch(bg), text(name).size(11)]
+            row![swatch(bg), text(t!(name)).size(11)]
                 .spacing(5)
                 .align_y(iced::Center),
         )
@@ -188,7 +219,7 @@ pub fn color_list<'a>(
         list = list.push(named_row(AcadColor::Index(i)));
     }
     list = list.push(
-        button(text("More…").size(11))
+        button(text(t!("More…")).size(11))
             .on_press(on_more)
             .style(list_row_style)
             .padding([2, 4])
@@ -197,309 +228,19 @@ pub fn color_list<'a>(
     list.into()
 }
 
-/// Full ACI palette as a standalone window body: ByLayer / ByBlock plus the
-/// 256-colour grid. `on_pick` is called with the chosen colour.
-pub fn color_grid_window(on_pick: impl Fn(AcadColor) -> Message) -> Element<'static, Message> {
-    let chip = |color: AcadColor, label: &'static str| -> Element<'static, Message> {
-        let (bg, _) = acad_color_display(color);
-        button(
-            row![swatch(bg), text(label).size(11)]
-                .spacing(5)
-                .align_y(iced::Center),
-        )
-        .on_press(on_pick(color))
-        .padding([3, 6])
-        .into()
-    };
-
-    const COLS: u16 = 16;
-    let mut grid = column![].spacing(2);
-    let mut idx: u16 = 1;
-    while idx <= 255 {
-        let mut r = row![].spacing(2);
-        for _ in 0..COLS {
-            if idx > 255 {
-                break;
-            }
-            let ci = idx as u8;
-            let (bg, _) = acad_color_display(AcadColor::Index(ci));
-            r = r.push(
-                button(text("").width(18).height(18))
-                    .on_press(on_pick(AcadColor::Index(ci)))
-                    .style(move |theme: &Theme, status| button::Style {
-                        background: Some(Background::Color(bg)),
-                        border: Border {
-                            color: if matches!(status, button::Status::Hovered) {
-                                theme.extended_palette().primary.base.color
-                            } else {
-                                theme.extended_palette().background.neutral.color
-                            },
-                            width: if matches!(status, button::Status::Hovered) {
-                                1.5
-                            } else {
-                                1.0
-                            },
-                            radius: 1.0.into(),
-                        },
-                        text_color: theme.extended_palette().background.base.text,
-                        ..Default::default()
-                    })
-                    .padding(0),
-            );
-            idx += 1;
-        }
-        grid = grid.push(r);
-    }
-
-    container(
-        column![
-            text("Select Color").size(13),
-            row![chip(AcadColor::ByLayer, "ByLayer"), chip(AcadColor::ByBlock, "ByBlock")].spacing(6),
-            scrollable(grid).height(Length::Fill),
-        ]
-        .spacing(8),
-    )
-    .style(|theme: &Theme| container::Style {
-        background: Some(Background::Color(
-            theme.extended_palette().background.weak.color
-        )),
-        ..Default::default()
-    })
-    .padding(10)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
-}
-
-/// Render `base` inline with `popup` floating just below it — the shared
-/// dropdown mechanic for the panel's custom dropdowns (colour picker, block
-/// Name). Unlike iced's menu overlay it always opens downward.
-pub fn floating_below<'a>(
+/// Render `base` inline with `popup` in an `iced_aw` dropdown.
+pub fn drop_down_below<'a>(
     base: Element<'a, Message>,
     popup: Element<'a, Message>,
+    popup_width: Length,
+    popup_height: Length,
+    on_dismiss: Message,
 ) -> Element<'a, Message> {
-    Element::new(Floating { base, popup })
-}
-
-/// A widget that renders `base` inline and `popup` as a floating overlay
-/// anchored just below it.
-struct Floating<'a> {
-    base: Element<'a, Message>,
-    popup: Element<'a, Message>,
-}
-
-impl<'a> Widget<Message, Theme, Renderer> for Floating<'a> {
-    fn children(&self) -> Vec<widget::Tree> {
-        vec![widget::Tree::new(&self.base), widget::Tree::new(&self.popup)]
-    }
-
-    fn diff(&self, tree: &mut widget::Tree) {
-        tree.diff_children(&[self.base.as_widget(), self.popup.as_widget()]);
-    }
-
-    fn size(&self) -> Size<Length> {
-        self.base.as_widget().size()
-    }
-
-    fn size_hint(&self) -> Size<Length> {
-        self.base.as_widget().size_hint()
-    }
-
-    fn layout(
-        &mut self,
-        tree: &mut widget::Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        self.base
-            .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
-    }
-
-    fn update(
-        &mut self,
-        tree: &mut widget::Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
-    ) {
-        self.base.as_widget_mut().update(
-            &mut tree.children[0],
-            event,
-            layout,
-            cursor,
-            renderer,
-            clipboard,
-            shell,
-            viewport,
-        );
-    }
-
-    fn mouse_interaction(
-        &self,
-        tree: &widget::Tree,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        self.base.as_widget().mouse_interaction(
-            &tree.children[0],
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
-    }
-
-    fn operate(
-        &mut self,
-        tree: &mut widget::Tree,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn widget::Operation,
-    ) {
-        self.base
-            .as_widget_mut()
-            .operate(&mut tree.children[0], layout, renderer, operation);
-    }
-
-    fn draw(
-        &self,
-        tree: &widget::Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
-        self.base.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
-    }
-
-    fn overlay<'b>(
-        &'b mut self,
-        tree: &'b mut widget::Tree,
-        layout: Layout<'b>,
-        _renderer: &Renderer,
-        _viewport: &Rectangle,
-        translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        let bounds = layout.bounds();
-        let anchor = Point::new(
-            bounds.x + translation.x,
-            bounds.y + bounds.height + translation.y + 2.0,
-        );
-        Some(overlay::Element::new(Box::new(FloatingOverlay {
-            popup: &mut self.popup,
-            tree: &mut tree.children[1],
-            anchor,
-        })))
-    }
-}
-
-impl<'a> From<Floating<'a>> for Element<'a, Message> {
-    fn from(f: Floating<'a>) -> Self {
-        Element::new(f)
-    }
-}
-
-struct FloatingOverlay<'a, 'b> {
-    popup: &'b mut Element<'a, Message>,
-    tree: &'b mut widget::Tree,
-    anchor: Point,
-}
-
-impl overlay::Overlay<Message, Theme, Renderer> for FloatingOverlay<'_, '_> {
-    fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let viewport = Rectangle::with_size(bounds);
-        let limits = layout::Limits::new(Size::ZERO, viewport.size());
-        let node = self
-            .popup
-            .as_widget_mut()
-            .layout(self.tree, renderer, &limits);
-        let size = node.size();
-        let mut x = self.anchor.x;
-        let mut y = self.anchor.y;
-        if x + size.width > viewport.width {
-            x = (viewport.width - size.width).max(0.0);
-        }
-        if y + size.height > viewport.height {
-            // Not enough room below — flip above the anchor.
-            y = (self.anchor.y - bounds.height.min(0.0) - size.height).max(0.0);
-        }
-        layout::Node::with_children(size, vec![node]).translate(Vector::new(x, y))
-    }
-
-    fn draw(
-        &self,
-        renderer: &mut Renderer,
-        theme: &Theme,
-        style: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-    ) {
-        let child = layout.children().next().unwrap();
-        self.popup.as_widget().draw(
-            self.tree,
-            renderer,
-            theme,
-            style,
-            child,
-            cursor,
-            &child.bounds(),
-        );
-    }
-
-    fn update(
-        &mut self,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-    ) {
-        let child = layout.children().next().unwrap();
-        let vp = child.bounds();
-        self.popup.as_widget_mut().update(
-            self.tree, event, child, cursor, renderer, clipboard, shell, &vp,
-        );
-    }
-
-    fn operate(
-        &mut self,
-        layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn widget::Operation,
-    ) {
-        let child = layout.children().next().unwrap();
-        self.popup
-            .as_widget_mut()
-            .operate(self.tree, child, renderer, operation);
-    }
-
-    fn mouse_interaction(
-        &self,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
-        let child = layout.children().next().unwrap();
-        self.popup
-            .as_widget()
-            .mouse_interaction(self.tree, child, cursor, &child.bounds(), renderer)
-    }
+    iced_aw::DropDown::new(base, popup, true)
+        .width(popup_width)
+        .height(popup_height)
+        .alignment(iced_aw::drop_down::Alignment::Bottom)
+        .offset(2.0)
+        .on_dismiss(on_dismiss)
+        .into()
 }

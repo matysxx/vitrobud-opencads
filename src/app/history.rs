@@ -184,21 +184,27 @@ impl OpenCADStudio {
         );
     }
 
-    pub(super) fn push_single_entity_history(
+    pub(super) fn push_entity_group_history(
         &mut self,
         i: usize,
         label: impl Into<String>,
-        handle: Handle,
-        before: Arc<EntityType>,
+        before: Vec<(Handle, Arc<EntityType>)>,
+        dirty_before: bool,
     ) {
         self.finish_pending_history(i);
-        let Some(after) = self.tabs[i].scene.document.get_entity_arc(handle) else {
+        let entities: Vec<_> = before
+            .into_iter()
+            .filter_map(|(handle, original)| {
+                let after = self.tabs[i].scene.document.get_entity_arc(handle)?;
+                Some((handle, Some(original), Some(after)))
+            })
+            .collect();
+        if entities.is_empty() {
             return;
-        };
+        }
         let selected: Vec<Handle> = self.tabs[i].scene.selected.iter().copied().collect();
-        let dirty_before = self.tabs[i].dirty;
         let delta = DeltaSnapshot {
-            entities: vec![(handle, Some(before), Some(after))],
+            entities,
             current_layout_before: self.tabs[i].scene.current_layout.clone(),
             current_layout_after: self.tabs[i].scene.current_layout.clone(),
             selected_before: selected.clone(),
@@ -969,11 +975,23 @@ impl OpenCADStudio {
                     scene.reseed_derived_caches(handle);
                 }
                 if !final_changes.is_empty() {
-                    scene.bump_entities(&final_changes);
+                    if scene.changes_touch_block_definition(&final_changes) {
+                        // A block-local delta changes the assembled definition
+                        // consumed by every INSERT (including nested blocks).
+                        // Replaying only the child handle leaves those cached
+                        // references visually stale after BEDIT closes.
+                        scene.bump_geometry();
+                    } else {
+                        scene.bump_entities(&final_changes);
+                    }
                 }
             }
             scene.clear_preview_wire();
         }
+        // UCS state is cached separately from its persisted header/viewport
+        // fields. History may just have restored those fields, so adopt them
+        // before drawing the icon/grid or accepting the next coordinate.
+        self.tabs[i].refresh_active_ucs();
         self.tabs[i].active_cmd = None;
         self.tabs[i].snap_result = None;
         self.tabs[i].active_grip = None;
@@ -1002,7 +1020,7 @@ impl OpenCADStudio {
         let available = self.tabs[i].history.undo_stack.len();
         let steps = steps.min(available);
         if steps == 0 {
-            self.command_line.push_info("Nothing to undo.");
+            self.command_line.push_info(crate::t!("Nothing to undo.").as_ref());
             return;
         }
 
@@ -1051,7 +1069,7 @@ impl OpenCADStudio {
         }
         self.finish_history_apply(i, had_full, layer_panel_changed, &changes);
         self.command_line
-            .push_output(&format!("Undo: {last_label}"));
+            .push_output(crate::tf!("Undo: {last_label}").as_ref());
     }
 
     pub(super) fn redo_steps(&mut self, steps: usize) {
@@ -1060,7 +1078,7 @@ impl OpenCADStudio {
         let available = self.tabs[i].history.redo_stack.len();
         let steps = steps.min(available);
         if steps == 0 {
-            self.command_line.push_info("Nothing to redo.");
+            self.command_line.push_info(crate::t!("Nothing to redo.").as_ref());
             return;
         }
 
@@ -1106,7 +1124,7 @@ impl OpenCADStudio {
         }
         self.finish_history_apply(i, had_full, layer_panel_changed, &changes);
         self.command_line
-            .push_output(&format!("Redo: {last_label}"));
+            .push_output(crate::tf!("Redo: {last_label}").as_ref());
     }
 }
 

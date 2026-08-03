@@ -14,6 +14,7 @@ use crate::modules::IconKind;
 use crate::scene::model::hatch_model::{HatchModel, HatchPattern, PatFamily};
 use crate::scene::model::wire_model::WireModel;
 use glam::DVec3;
+use crate::t;
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 
@@ -238,6 +239,8 @@ impl HatchCommand {
             pattern: HatchPattern::Pattern(families),
             name: pat_name.into(),
             color: [0.75, 0.75, 0.75, 0.85],
+            aci: 0,
+            line_weight_px: 1.0,
             angle_offset: 0.0,
             scale: 1.0,
             world_origin: origin,
@@ -256,17 +259,18 @@ impl CadCommand for HatchCommand {
         match &self.mode {
             Mode::PickInside => {
                 let miss = if self.missed {
-                    "  ⚠ No closed boundary found."
+                    t!("  ⚠ No closed boundary found.").into_owned()
                 } else {
-                    ""
+                    String::new()
                 };
-                format!("HATCH  Pick internal point:{miss}")
+                t!("HATCH  Pick internal point:%{miss}", miss = miss).into_owned()
             }
             Mode::Manual => {
                 if self.manual_pts.is_empty() {
-                    "HATCH  Boundary point 1:".into()
+                    t!("HATCH  Boundary point 1:").into_owned()
                 } else {
-                    format!("HATCH  Point {}:", self.manual_pts.len() + 1)
+                    let n = self.manual_pts.len() + 1;
+                    t!("HATCH  Point %{n}:", n = n).into_owned()
                 }
             }
         }
@@ -275,11 +279,11 @@ impl CadCommand for HatchCommand {
     fn options(&self) -> Vec<crate::command::CmdOption> {
         use crate::command::CmdOption;
         match &self.mode {
-            Mode::PickInside => vec![CmdOption::new("Draw manually", "S")],
+            Mode::PickInside => vec![CmdOption::new(t!("Draw manually").as_ref(), "S")],
             Mode::Manual => {
                 // Enter accepts the boundary once at least 3 points are picked.
                 if self.manual_pts.len() >= 3 {
-                    vec![CmdOption::enter("Accept")]
+                    vec![CmdOption::enter(t!("Accept").as_ref())]
                 } else {
                     vec![]
                 }
@@ -405,6 +409,8 @@ impl GradientCommand {
             },
             name: self.kind.dxf_name(self.invert).into(),
             color: [0.30, 0.60, 0.95, 0.80],
+            aci: 0,
+            line_weight_px: 1.0,
             angle_offset: 0.0,
             scale: 1.0,
             world_origin: origin,
@@ -423,21 +429,28 @@ impl CadCommand for GradientCommand {
         match &self.mode {
             Mode::PickInside => {
                 let miss = if self.missed {
-                    "  ⚠ No closed boundary found."
+                    t!("  ⚠ No closed boundary found.")
                 } else {
-                    ""
+                    std::borrow::Cow::Borrowed("")
                 };
-                format!(
-                    "GRADIENT ({}{})  Pick internal point:{miss}",
-                    self.kind.label(),
-                    if self.invert { ", inverted" } else { "" }
+                let invert = if self.invert {
+                    t!(", inverted")
+                } else {
+                    std::borrow::Cow::Borrowed("")
+                };
+                t!(
+                    "GRADIENT (%{kind}%{invert})  Pick internal point:%{miss}",
+                    kind = t!(self.kind.label()),
+                    invert = invert,
+                    miss = miss
                 )
+                .into_owned()
             }
             Mode::Manual => {
                 if self.manual_pts.is_empty() {
-                    "GRADIENT  Boundary point 1:".into()
+                    t!("GRADIENT  Boundary point 1:").into_owned()
                 } else {
-                    format!("GRADIENT  Point {}:", self.manual_pts.len() + 1)
+                    t!("GRADIENT  Point %{n}:", n = self.manual_pts.len() + 1).into_owned()
                 }
             }
         }
@@ -588,11 +601,11 @@ impl CadCommand for BoundaryCommand {
 
     fn prompt(&self) -> String {
         let miss = if self.missed {
-            "  ⚠ No closed boundary found."
+            t!("  ⚠ No closed boundary found.").into_owned()
         } else {
-            ""
+            String::new()
         };
-        format!("BOUNDARY  Pick internal point:{miss}")
+        t!("BOUNDARY  Pick internal point:%{miss}", miss = miss).into_owned()
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
@@ -608,6 +621,8 @@ impl CadCommand for BoundaryCommand {
                     pattern: HatchPattern::Solid,
                     name: "SOLID".into(),
                     color: [0.45, 0.45, 0.45, 0.60],
+                    aci: 0,
+                    line_weight_px: 1.0,
                     angle_offset: 0.0,
                     scale: 1.0,
                     world_origin: origin,

@@ -118,6 +118,9 @@ impl Scene {
                 }
             }
         }
+        self.paper_viewport_cache
+            .borrow_mut()
+            .remove(&self.current_layout);
     }
 
     /// ZOOM All frames the configured drawing limits. Object-only framing
@@ -137,9 +140,8 @@ impl Scene {
             return;
         }
 
-        self.camera
-            .borrow_mut()
-            .fit_to_bounds(min, max, self.last_render_aspect.get().max(0.01));
+        let aspect = self.active_camera_aspect();
+        self.camera.borrow_mut().fit_to_bounds(min, max, aspect);
         self.camera_generation += 1;
     }
 }

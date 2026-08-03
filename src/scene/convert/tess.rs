@@ -321,6 +321,7 @@ pub(crate) fn tessellate_entity_dim_text(
         active_viewport,
         bg_color,
         anno_scale,
+        None,
         e,
         None,
         view_aabb,
@@ -345,6 +346,7 @@ pub(crate) fn tessellate_entity(
     active_viewport: Option<Handle>,
     bg_color: [f32; 4],
     anno_scale: f32,
+    annotation_scale_handle: Option<Handle>,
     e: &EntityType,
     block_cache: Option<&cache::block_cache::BlockCache>,
     // World-space XY view AABB (post `world_offset` subtraction). When
@@ -357,10 +359,33 @@ pub(crate) fn tessellate_entity(
     // by the viewport's GPU uniform so it never changes resident wire content.
     paper_space: bool,
 ) -> Vec<WireModel> {
-    let contextual = crate::scene::annotative::entity_for_active_context(document, e);
+    let contextual = crate::scene::annotative::entity_for_annotation_context(
+        document,
+        e,
+        annotation_scale_handle,
+    );
     let e = contextual.as_ref();
     let h = e.common().handle;
     let sel = selected.contains(&h);
+    // Per-object annotation contexts store each representation relative to the
+    // native/default scale. Resolve that ratio once before TEXT/MTEXT,
+    // DIMENSION, and MULTILEADER reach their independent tessellation paths.
+    let anno_scale = if matches!(
+        e,
+        EntityType::Text(_)
+            | EntityType::MText(_)
+            | EntityType::Dimension(_)
+            | EntityType::MultiLeader(_)
+    ) {
+        crate::scene::annotative::effective_annotation_scale_for(
+            document,
+            e,
+            anno_scale,
+            annotation_scale_handle,
+        )
+    } else {
+        anno_scale
+    };
 
     // Frustum + LOD cull for non-Insert, non-Viewport entities. Insert is
     // handled separately (its WCS bbox depends on the block defn AABB ×
@@ -491,6 +516,7 @@ pub(crate) fn tessellate_entity(
             pattern,
             1.5,
             1.0,
+            annotation_scale_handle,
             world_per_pixel,
             bg_color,
             false,
@@ -517,8 +543,8 @@ pub(crate) fn tessellate_entity(
     // An entity from an application we have no reader for (e.g. an Autodesk
     // Raster Design embedded raster image) arrives as `Unknown`. Its own data is
     // a private format we cannot decode — but it usually ships a proxy-graphics
-    // blob, the vector preview its author cached for exactly this case. AutoCAD
-    // draws that when the object enabler is missing; draw it too, so the entity
+    // blob, the vector preview its author cached for exactly this case. Draw it
+    // when the object enabler is missing, so the entity
     // occupies its real place instead of silently disappearing.
     let proxy_blob: Option<std::borrow::Cow<'_, [u8]>> = match e {
         EntityType::Unknown(_) => e
@@ -639,7 +665,7 @@ pub(crate) fn tessellate_entity(
     //
     // The DWG reader decodes the two cut-line endpoints, the signed end ticks
     // and the identifier. Synthesize the end ticks + arrowheads + label glyphs
-    // so the mark is visible on the layout, the way AutoCAD draws it. The raw
+    // so the mark is visible on the layout. The raw
     // record is still preserved for lossless write-back.
     if let EntityType::SectionSymbol(s) = e {
         return section_symbol_wires(
@@ -710,115 +736,6 @@ pub(crate) fn tessellate_entity(
         }];
     }
 
-    // ── Dimension baked-block fast path ─────────────────────────────────────
-    //
-    // AutoCAD bakes each dimension's final geometry (extension lines, dim
-    // line, arrows, text MText) into a per-instance block — usually
-    // `*D<n>`, but custom names like `DIMBLOCK###-4NP` also occur. When the
-    // block exists we render its contents through `tessellate_entity` so
-    // sub-Text/MText get the standard baseline/greek/full LOD ladder, and
-    // DIMTXT × DIMSCALE isn't re-applied on already-baked geometry.
-    if let EntityType::Dimension(dim) = e {
-        let block_name = &dim.base().block_name;
-        if !block_name.trim().is_empty() {
-            if let Some(br) = document
-                .block_records
-                .iter()
-                .find(|br| br.name.eq_ignore_ascii_case(block_name))
-            {
-                if !br.entity_handles.is_empty() {
-                    let mut wires: Vec<WireModel> = Vec::with_capacity(br.entity_handles.len());
-                    // The Dimension's own layer style — layer-0 inheritance
-                    // target for baked sub-entities on layer "0" (#221).
-                    let dim_l0_color = view::render::adapt_to_bg(
-                        view::render::layer_render_style(document, &e.common().layer).color,
-                        bg_color,
-                    );
-                    let dim_l0_aci = document
-                        .layers
-                        .get(&e.common().layer)
-                        .map(|l| match &l.color {
-                            acadrust::types::Color::Index(i) => *i,
-                            _ => 0,
-                        })
-                        .unwrap_or(0);
-                    for &eh in &br.entity_handles {
-                        let Some(sub) = document.get_entity(eh) else {
-                            continue;
-                        };
-                        // A dimension's definition points are baked into the
-                        // block as POINTs on the Defpoints layer. AutoCAD never
-                        // draws them as PDMODE glyphs — they're grip markers, not
-                        // geometry — so rendering them adds a stray tick at each
-                        // measured point that makes the extension lines look like
-                        // they run past the geometry. Skip them.
-                        if matches!(sub, EntityType::Point(_)) {
-                            continue;
-                        }
-                        // Sub-entities inside *D### / DIMBLOCK## blocks
-                        // typically use ByBlock color/linetype/lineweight —
-                        // they should inherit from the Dimension entity.
-                        let has_book_color =
-                            view::render::has_resolved_book_color(document, sub);
-                        let sub_color_is_byblock = !has_book_color
-                            && sub.common().color == acadrust::types::Color::ByBlock;
-                        let sub_is_l0_bylayer =
-                            !has_book_color
-                            && view::render::is_effective_layer_zero(&sub.common().layer)
-                            && sub.common().color == acadrust::types::Color::ByLayer;
-                        let sub_wires = tessellate_entity(
-                            document,
-                            selected,
-                            active_viewport,
-                            bg_color,
-                            // Block contents are baked at the final WCS size —
-                            // don't let downstream paths re-apply anno_scale.
-                            1.0,
-                            sub,
-                            block_cache,
-                            view_aabb,
-                            world_per_pixel,
-                            paper_space,
-                        );
-                        for mut w in sub_wires {
-                            w.name = h.value().to_string();
-                            // Override ByBlock colour with the dim's resolved
-                            // colour so text matches `DIMCLRT`-style behaviour
-                            // (or layer colour) instead of the raw ByBlock
-                            // fallback that render_style_for produces. A layer-0
-                            // sub inherits the dim's layer colour instead.
-                            if sub_color_is_byblock {
-                                w.color = if sel {
-                                    WireModel::SELECTED
-                                } else {
-                                    entity_color
-                                };
-                                w.aci = aci;
-                            } else if sub_is_l0_bylayer && !sel {
-                                w.color = dim_l0_color;
-                                w.aci = dim_l0_aci;
-                            }
-                            wires.push(w);
-                        }
-                    }
-                    if !wires.is_empty() {
-                        let aabb = entity_aabb(e);
-                        for w in &mut wires {
-                            // Empty SDF-text cells keep their tight glyph-box
-                            // AABB; only stroke/fill wires take the whole-block
-                            // box as a broad-phase pick hint.
-                            if !w.points.is_empty() || !w.fill_tris.is_empty() {
-                                set_wire_aabb(w, aabb);
-                            }
-                        }
-                        return wires;
-                    }
-                }
-            }
-        }
-        // Fall through to the synthesis path below when no block is attached.
-    }
-
     if let EntityType::Dimension(dim) = e {
         let aabb = entity_aabb(e);
         use crate::entities::dimension::DimensionTess;
@@ -875,7 +792,7 @@ pub(crate) fn tessellate_entity(
 
     // ── Table baked-block fast path ─────────────────────────────────────────
     //
-    // AutoCAD bakes a Table's final rendered geometry (cell text, gridlines,
+    // A table may store final rendered geometry (cell text, gridlines,
     // fill) into a per-instance block (usually `*T###`) referenced through
     // `table.block_record_handle`. The block's text uses the *displayed*
     // height; synthesising cells from `self.rows + TableStyle` instead would
@@ -940,6 +857,7 @@ pub(crate) fn tessellate_entity(
                             active_viewport,
                             bg_color,
                             anno_scale,
+                            annotation_scale_handle,
                             &placed,
                             block_cache,
                             view_aabb,
@@ -980,14 +898,7 @@ pub(crate) fn tessellate_entity(
         // No baked block (e.g. a table created in-app) — synthesise coloured
         // geometry from the rows + TableStyle so fills/colours/borders/margins
         // are honoured instead of the monochrome fallback.
-        // Annotative tables scale with the current annotation scale (their
-        // stored geometry is at paper size); non-annotative tables are already
-        // model-size, so pass 1.0.
-        let table_anno = if crate::scene::annotative::is_annotative(document, e) {
-            anno_scale
-        } else {
-            1.0
-        };
+        let table_anno = 1.0;
         let mut wires = crate::entities::table::tessellate_table(
             tab,
             document,
@@ -1005,6 +916,7 @@ pub(crate) fn tessellate_entity(
                 active_viewport,
                 bg_color,
                 1.0,
+                None,
                 &EntityType::Insert(insert),
                 block_cache,
                 view_aabb,
@@ -1184,6 +1096,7 @@ pub(crate) fn tessellate_entity(
                     sub_pattern,
                     sub_line_weight_px,
                     anno_scale,
+                    annotation_scale_handle,
                     world_per_pixel,
                     bg_color,
                     false,
@@ -1246,6 +1159,7 @@ pub(crate) fn tessellate_entity(
         pattern,
         line_weight_px,
         anno_scale,
+        annotation_scale_handle,
         world_per_pixel,
         bg_color,
         false,
@@ -1329,46 +1243,45 @@ pub(crate) fn tessellate_entity(
 
     // DGN line-style: the linetype's real pattern lives in DGN line-style objects
     // (empty standard LTYPE), so `resolve_complex_lt` sees nothing. Render its
-    // symbol blocks (e.g. a pipe's end circles) at the polyline endpoints. First
-    // pass — exact dash pattern / placement need the undecoded leaf data.
+    // symbol blocks (e.g. a pipe's end circles) at the polyline endpoints and
+    // apply the typed DGN stroke pattern to its parallel walls.
     let dgn_syms = convert::dgn_linestyle::symbol_blocks(document, lt_name);
     if !dgn_syms.is_empty() {
         let verts = convert::dgn_linestyle::polyline_points(e);
         if verts.len() >= 2 {
+            let display_scale = lt_scale.max(1.0e-4) as f64;
             // The pipe body is drawn as two parallel walls, not a single centre
             // line: offset the host polyline by ±(symbol radius) so each wall
             // sits tangent to the end circles, and replace the centre line with
-            // them. The radius is the rendered symbol extent (block / scale).
+            // them. The radius is the rendered symbol extent after applying the
+            // entity/global linetype display scale.
             let radius = dgn_syms
                 .iter()
-                .map(|s| convert::dgn_linestyle::symbol_radius(document, s.block, s.scale))
+                .map(|s| {
+                    convert::dgn_linestyle::symbol_radius(
+                        document,
+                        s.block,
+                        s.scale / display_scale,
+                    )
+                })
                 .fold(0.0_f64, f64::max);
             if radius > 1e-6 {
-                // The walls carry the line style's dash pattern. Its native
-                // lengths scale to drawing units by f = radius / symbol-scale
-                // (the same factor that turns the compound's native offset into
-                // the measured wall offset). Sign-alternate: dash, gap, dash…
-                let scale = dgn_syms
-                    .iter()
-                    .map(|s| s.scale)
-                    .find(|s| *s > 1e-9)
-                    .unwrap_or(1.0);
-                let f = radius / scale;
-                // The wall stroke's dash length (`wall_dashes[0]`) renders as an
-                // equal dash/gap: dash-first `[+dash, -dash]`. Combined with the
-                // `dash_from_start` flag set below, each wall tiles from its own
-                // start vertex with a dash, no A-type end alignment.
+                // Preserve the typed stroke's signed dash/gap sequence and scale
+                // every element by the linetype display scale. Combined with the
+                // `dash_from_start` flag below, each wall tiles from its own start
+                // vertex with no A-type end alignment.
                 let native = convert::dgn_linestyle::wall_dashes(document, lt_name);
-                let (wall_pat, wall_pat_len) = if f > 1e-9 && !native.is_empty() {
-                    let dash = (native[0] * f) as f32;
-                    if dash > 1e-6 {
-                        let mut pat = [0.0_f32; 8];
-                        pat[0] = dash;
-                        pat[1] = -dash;
-                        (pat, 2.0 * dash)
-                    } else {
-                        ([0.0_f32; 8], 0.0)
+                let (wall_pat, wall_pat_len) = if !native.is_empty() {
+                    let mut pat = [0.0_f32; 8];
+                    let mut length = 0.0_f32;
+                    for (slot, value) in pat.iter_mut().zip(native.iter().take(8)) {
+                        let scaled = (*value * display_scale) as f32;
+                        if scaled.is_finite() && scaled.abs() > 1.0e-6 {
+                            *slot = scaled;
+                            length += scaled.abs();
+                        }
                     }
+                    (pat, length)
                 } else {
                     ([0.0_f32; 8], 0.0)
                 };
@@ -1385,6 +1298,7 @@ pub(crate) fn tessellate_entity(
                             pattern,
                             line_weight_px,
                             anno_scale,
+                            annotation_scale_handle,
                             world_per_pixel,
                             bg_color,
                             false,
@@ -1414,7 +1328,7 @@ pub(crate) fn tessellate_entity(
                 let mut wires = convert::dgn_linestyle::place_block_wires(
                     document,
                     sym.block,
-                    sym.scale,
+                    sym.scale / display_scale,
                     at,
                     entity_color,
                     line_weight_px,

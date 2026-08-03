@@ -13,6 +13,8 @@ use iced::widget::{
 };
 use iced::Padding;
 use iced::{Background, Border, Color, Element, Fill, Length, Theme};
+use crate::t;
+use std::borrow::Cow;
 
 // ── Per-viewport column descriptor ───────────────────────────────────────────
 
@@ -49,7 +51,7 @@ pub const LAYER_TABLE_SCROLL_ID: &str = "layer-manager-table-scroll";
 
 fn muted_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.68)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
 }
 
@@ -57,7 +59,7 @@ fn table_input_style(
     theme: &Theme,
     status: iced::widget::text_input::Status,
 ) -> iced::widget::text_input::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let border = match status {
         iced::widget::text_input::Status::Focused { .. } => palette.primary.base.color,
         _ => palette.background.neutral.color,
@@ -84,7 +86,7 @@ pub struct Layer {
     pub visible: bool,
     pub frozen: bool,
     pub locked: bool,
-    pub color: Color,
+    pub color: AcadColor,
     pub linetype: String,
     pub lineweight: LineWeight,
     pub transparency: i32,
@@ -93,7 +95,7 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn new(name: &str, color: Color) -> Self {
+    pub fn new(name: &str, color: AcadColor) -> Self {
         Self {
             name: name.to_string(),
             visible: true,
@@ -143,7 +145,7 @@ impl Default for LayerPanel {
     fn default() -> Self {
         Self {
             visible: false,
-            layers: vec![Layer::new("0", Color::WHITE)],
+            layers: vec![Layer::new("0", AcadColor::Index(7))],
             selected: None,
             selected_multi: Vec::new(),
             editing: None,
@@ -212,14 +214,14 @@ impl LayerPanel {
                     visible: !l.flags.off,
                     frozen: l.flags.frozen,
                     locked: l.flags.locked,
-                    color: iced_color_from_acad(&l.color),
+                    color: l.color,
                     linetype: if l.line_type.is_empty() {
                         "Continuous".to_string()
                     } else {
                         l.line_type.clone()
                     },
                     lineweight: l.line_weight,
-                    transparency: 0,
+                    transparency: (l.transparency.as_percent() * 100.0).round() as i32,
                     vp_frozen,
                 }
             })
@@ -308,11 +310,19 @@ impl LayerPanel {
     }
 
     /// Render the layer panel as the full content of its own OS window.
-    pub fn view_window(&self, name_col_w: f32) -> Element<'_, Message> {
-        self.view_content(name_col_w)
+    pub fn view_window(
+        &self,
+        name_col_w: f32,
+        sizing: crate::ui::modal::ModalSizing,
+    ) -> Element<'_, Message> {
+        self.view_content(name_col_w, sizing)
     }
 
-    fn view_content(&self, name_col_w: f32) -> Element<'_, Message> {
+    fn view_content(
+        &self,
+        name_col_w: f32,
+        sizing: crate::ui::modal::ModalSizing,
+    ) -> Element<'_, Message> {
         let has_sel = self.selected.is_some();
         let sel_is_zero = self
             .selected
@@ -322,22 +332,22 @@ impl LayerPanel {
         // ── Toolbar ───────────────────────────────────────────────────────
         let toolbar = container(
             row![
-                toolbar_btn(crate::ui::icons::PLUS, "New", Message::LayerNew),
+                toolbar_btn(crate::ui::icons::PLUS, t!("New"), Message::LayerNew),
                 toolbar_btn_cond(
                     crate::ui::icons::TRASH,
-                    "Delete",
+                    t!("Delete"),
                     Message::LayerDelete,
                     has_sel && !sel_is_zero,
                 ),
                 toolbar_btn_cond(
                     crate::ui::icons::CHECK,
-                    "Set Current",
+                    t!("Set Current"),
                     Message::LayerSetCurrent,
                     has_sel,
                 ),
-                iced::widget::Space::new().width(Fill),
+                iced::widget::Space::new().width(sizing.width),
                 // Search box: filters rows by name as the user types (#343).
-                text_input("Search…", &self.filter)
+                text_input(t!("Search…").as_ref(), &self.filter)
                     .on_input(Message::LayerManagerFilterChanged)
                     .size(FONT_SZ)
                     .padding([3, 6])
@@ -349,25 +359,25 @@ impl LayerPanel {
         )
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
-                theme.extended_palette().background.weak.color
+                theme.palette().background.weak.color
             )),
             ..Default::default()
         })
-        .width(Fill)
+        .width(sizing.width)
         .padding([4, 8]);
 
         // ── Column header ─────────────────────────────────────────────────
         let sc = self.sort_col;
         let sa = self.sort_asc;
         let mut header_row = row![
-            text("Status").size(10).style(muted_style).width(50),
-            sortable_header("Name", LayerSortCol::Name, Length::Fixed(name_col_w), sc, sa),
+            text(t!("Status")).size(10).style(muted_style).width(50),
+            sortable_header(t!("Name"), LayerSortCol::Name, Length::Fixed(name_col_w), sc, sa),
             // Draggable divider: adjusts the Name column width (#359).
             iced::widget::mouse_area(
                 container(iced::widget::Space::new().width(2).height(14)).style(
                     |theme: &Theme| container::Style {
                         background: Some(Background::Color(
-                            theme.extended_palette().background.neutral.color
+                            theme.palette().background.neutral.color
                         )),
                         ..Default::default()
                     },
@@ -375,14 +385,14 @@ impl LayerPanel {
             )
             .on_press(Message::LayerNameColGrab)
             .interaction(iced::mouse::Interaction::ResizingHorizontally),
-            sortable_header("On", LayerSortCol::On, Length::Fixed(COL_ICON), sc, sa),
-            sortable_header("Freeze", LayerSortCol::Freeze, Length::Fixed(COL_ICON), sc, sa),
-            sortable_header("Lock", LayerSortCol::Lock, Length::Fixed(COL_ICON), sc, sa),
-            sortable_header("Color", LayerSortCol::Color, Length::Fixed(COL_COLOR), sc, sa),
-            sortable_header("Linetype", LayerSortCol::Linetype, Length::Fixed(COL_LT), sc, sa),
-            sortable_header("Lineweight", LayerSortCol::Lineweight, Length::Fixed(COL_LW), sc, sa),
+            sortable_header(t!("On"), LayerSortCol::On, Length::Fixed(COL_ICON), sc, sa),
+            sortable_header(t!("Freeze"), LayerSortCol::Freeze, Length::Fixed(COL_ICON), sc, sa),
+            sortable_header(t!("Lock"), LayerSortCol::Lock, Length::Fixed(COL_ICON), sc, sa),
+            sortable_header(t!("Color"), LayerSortCol::Color, Length::Fixed(COL_COLOR), sc, sa),
+            sortable_header(t!("Linetype"), LayerSortCol::Linetype, Length::Fixed(COL_LT), sc, sa),
+            sortable_header(t!("Lineweight"), LayerSortCol::Lineweight, Length::Fixed(COL_LW), sc, sa),
             sortable_header(
-                "Transparency",
+                t!("Transparency"),
                 LayerSortCol::Transparency,
                 Length::Fixed(COL_TRANS),
                 sc,
@@ -390,7 +400,7 @@ impl LayerPanel {
             ),
         ]
         .spacing(4)
-        .width(Fill)
+        .width(sizing.width)
         .align_y(iced::Center);
 
         for vp in &self.vp_cols {
@@ -404,7 +414,7 @@ impl LayerPanel {
 
         let col_header = container(header_row)
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                 background: Some(Background::Color(palette.background.weak.color)),
                 border: Border {
@@ -416,7 +426,7 @@ impl LayerPanel {
                 }
             })
             .padding([4, 8])
-            .width(Fill);
+            .width(sizing.width);
 
         // ── Layer rows ────────────────────────────────────────────────────
         let mut rows_col = column![].spacing(0);
@@ -457,18 +467,18 @@ impl LayerPanel {
 
         let table = scrollable(rows_col)
             .id(iced::advanced::widget::Id::new(LAYER_TABLE_SCROLL_ID))
-            .height(Fill);
+            .height(sizing.height.min(240.0));
 
         // ── Full-window frame ─────────────────────────────────────────────
         container(column![toolbar, col_header, table].spacing(0))
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
-                    theme.extended_palette().background.base.color
+                    theme.palette().background.base.color
                 )),
                 ..Default::default()
             })
-            .width(Fill)
-            .height(Fill)
+            .width(sizing.width)
+            .height(sizing.height)
             .into()
     }
 }
@@ -481,7 +491,7 @@ fn layer_cell_button_style(
     is_selected: bool,
     index: usize,
 ) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let highlighted = matches!(status, button::Status::Hovered);
     let pair = if highlighted {
         palette.background.strong
@@ -500,7 +510,7 @@ fn layer_cell_button_style(
 }
 
 fn layer_header_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let highlighted = matches!(
         status,
         button::Status::Hovered | button::Status::Pressed
@@ -518,7 +528,8 @@ fn layer_header_button_style(theme: &Theme, status: button::Status) -> button::S
 }
 
 /// Packed RGB key for ordering colours deterministically by hue-ish bytes.
-fn color_sort_key(c: Color) -> u32 {
+fn color_sort_key(c: AcadColor) -> u32 {
+    let c = iced_color_from_acad(&c);
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
     (q(c.r) << 16) | (q(c.g) << 8) | q(c.b)
 }
@@ -526,7 +537,7 @@ fn color_sort_key(c: Color) -> u32 {
 /// A clickable column header that sorts the table by `col`. Shows an up/down
 /// SVG arrow when it is the active sort column (#133).
 fn sortable_header<'a>(
-    label: &'a str,
+    label: Cow<'static, str>,
     col: LayerSortCol,
     width: Length,
     active: Option<LayerSortCol>,
@@ -557,7 +568,7 @@ fn sortable_header<'a>(
 
 // ── Toolbar buttons ───────────────────────────────────────────────────────
 
-fn toolbar_btn<'a>(icon: &'static [u8], label: &'a str, msg: Message) -> Element<'a, Message> {
+fn toolbar_btn<'a>(icon: &'static [u8], label: Cow<'static, str>, msg: Message) -> Element<'a, Message> {
     button(
         row![
             crate::ui::icons::themed(icon, 12.0),
@@ -568,7 +579,7 @@ fn toolbar_btn<'a>(icon: &'static [u8], label: &'a str, msg: Message) -> Element
     )
     .on_press(msg)
         .style(|theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let pair = match status {
                 button::Status::Hovered | button::Status::Pressed => {
                     palette.background.strong
@@ -592,7 +603,7 @@ fn toolbar_btn<'a>(icon: &'static [u8], label: &'a str, msg: Message) -> Element
 
 fn toolbar_btn_cond<'a>(
     icon: &'static [u8],
-    label: &'a str,
+    label: Cow<'static, str>,
     msg: Message,
     enabled: bool,
 ) -> Element<'a, Message> {
@@ -608,7 +619,7 @@ fn toolbar_btn_cond<'a>(
             } else {
                 text(label).size(11).style(|theme: &Theme| iced::widget::text::Style {
                     color: Some(
-                        theme.extended_palette().background.base.text.scale_alpha(0.42)
+                        theme.palette().background.base.text.scale_alpha(0.42)
                     ),
                 })
             },
@@ -617,7 +628,7 @@ fn toolbar_btn_cond<'a>(
         .align_y(iced::Center),
     )
     .style(move |theme: &Theme, status| {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let pair = match status {
             button::Status::Hovered if enabled => palette.background.strong,
             _ => palette.background.weak,
@@ -657,7 +668,7 @@ fn name_tip<'a>(name: &'a str) -> Element<'a, Message> {
             right: 7.0,
         })
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
             background: Some(Background::Color(palette.background.strong.color)),
             border: Border {
@@ -755,24 +766,21 @@ fn layer_row<'a>(
     };
 
     // Color cell — looks like a combo_box input; click opens swatch dropdown below row.
-    let aci = iced_to_aci(layer.color);
-    let cur_color_name = color_label_aci(aci).to_string();
-    let _ = cur_color_name;
     // Shared colour selector. Layers carry a concrete colour (no ByLayer /
-    // ByBlock); the chosen index is applied to this row.
+    // ByBlock); true colours stay RGB instead of being collapsed to ACI 7.
     let color_cell: Element<'_, Message> = container(crate::ui::color_select::color_selector(
-        acadrust::types::Color::Index(aci),
+        layer.color,
         color_picker_open,
         crate::ui::color_select::ColorExtras {
             by_layer: false,
             by_block: false,
         },
-        |c| match c {
-            acadrust::types::Color::Index(i) => Message::LayerColorSet(i),
-            _ => Message::LayerColorSet(7),
-        },
+        Message::LayerColorSet,
         Message::LayerColorPickerToggle(index),
-        Message::OpenColorWindow(crate::app::ColorPickTarget::Layer(index)),
+        Message::OpenColorWindow(
+            crate::app::ColorPickTarget::Layer(index),
+            layer.color,
+        ),
     ))
     .width(Length::Fixed(COL_COLOR))
     .into();
@@ -785,7 +793,7 @@ fn layer_row<'a>(
     let lt_cell: Element<'_, Message> = if let Some(state) = lt_combo {
         combo_box(
             state,
-            "linetype",
+            t!("linetype").as_ref(),
             Some(&cur_lt_item),
             |item: LinetypeItem| Message::LayerLinetypeSet(item.name),
         )
@@ -810,7 +818,7 @@ fn layer_row<'a>(
     // Lineweight cell
     let cur_lw_item = LwItem(layer.lineweight);
     let lw_cell: Element<'_, Message> = if let Some(state) = lw_combo_state {
-        combo_box(state, "lineweight", Some(&cur_lw_item), |item: LwItem| {
+        combo_box(state, t!("lineweight").as_ref(), Some(&cur_lw_item), |item: LwItem| {
             Message::LayerLineweightSet(item.0)
         })
         .size(FONT_SZ)
@@ -891,7 +899,7 @@ fn layer_row<'a>(
     mouse_area(
         container(row_content)
             .style(move |theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 let pair = if is_selected {
                     palette.primary.weak
                 } else if index % 2 == 0 {
@@ -928,44 +936,6 @@ fn combo_input_style(
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────
-
-#[allow(dead_code)]
-fn aci_color_display(i: u8) -> (Color, &'static str) {
-    let (r, g, b) = aci_to_rgb(i).unwrap_or((200, 200, 200));
-    (
-        Color::from_rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0),
-        "",
-    )
-}
-
-fn iced_to_aci(c: Color) -> u8 {
-    let r = (c.r * 255.0) as u8;
-    let g = (c.g * 255.0) as u8;
-    let b = (c.b * 255.0) as u8;
-    for i in 1u8..=255 {
-        if let Some((ar, ag, ab)) = aci_to_rgb(i) {
-            if ar == r && ag == g && ab == b {
-                return i;
-            }
-        }
-    }
-    7
-}
-
-fn color_label_aci(i: u8) -> &'static str {
-    match i {
-        1 => "red",
-        2 => "yellow",
-        3 => "green",
-        4 => "cyan",
-        5 => "blue",
-        6 => "magenta",
-        7 => "white",
-        8 => "dark gray",
-        9 => "gray",
-        _ => "white",
-    }
-}
 
 pub fn iced_color_from_acad(c: &AcadColor) -> Color {
     match c {

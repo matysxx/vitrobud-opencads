@@ -3,6 +3,97 @@
 // hit-testing lives in `scene::pick::hit_test`.)
 use super::*;
 
+fn rendered_wire_center(wires: &[WireModel], fallback_z: f64) -> Option<glam::DVec3> {
+    let mut min = glam::DVec3::splat(f64::INFINITY);
+    let mut max = glam::DVec3::splat(f64::NEG_INFINITY);
+    let mut include = |point: glam::DVec3| {
+        if point.is_finite() {
+            min = min.min(point);
+            max = max.max(point);
+        }
+    };
+
+    for wire in wires {
+        let mut has_precise_position = false;
+        for (index, &[x, y, z]) in wire.points.iter().enumerate() {
+            let low = wire.points_low.get(index).copied().unwrap_or([0.0; 3]);
+            include(glam::DVec3::new(
+                x as f64 + low[0] as f64,
+                y as f64 + low[1] as f64,
+                z as f64 + low[2] as f64,
+            ));
+            has_precise_position = true;
+        }
+        for vertex in &wire.text_verts {
+            include(glam::DVec3::new(
+                vertex.pos[0] as f64 + vertex.pos_low[0] as f64,
+                vertex.pos[1] as f64 + vertex.pos_low[1] as f64,
+                vertex.pos[2] as f64 + vertex.pos_low[2] as f64,
+            ));
+            has_precise_position = true;
+        }
+        for &[x, y, z] in &wire.key_vertices {
+            include(glam::DVec3::new(x, y, z));
+            has_precise_position = true;
+        }
+        for &(point, _) in &wire.snap_pts {
+            include(point);
+            has_precise_position = true;
+        }
+
+        if !has_precise_position {
+            let [x0, y0, x1, y1] = wire.aabb;
+            if wire.aabb != WireModel::UNBOUNDED_AABB
+                && [x0, y0, x1, y1].iter().all(|value| value.is_finite())
+                && x0 <= x1
+                && y0 <= y1
+            {
+                include(glam::DVec3::new(x0 as f64, y0 as f64, fallback_z));
+                include(glam::DVec3::new(x1 as f64, y1 as f64, fallback_z));
+            }
+        }
+    }
+
+    if min.is_finite() && max.is_finite() {
+        Some((min + max) * 0.5)
+    } else {
+        None
+    }
+}
+
+fn block_entity_transform(
+    document: &CadDocument,
+    block_name: &str,
+    target: Handle,
+    visited: &mut Vec<String>,
+) -> Option<acadrust::types::Transform> {
+    if visited
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(block_name))
+    {
+        return None;
+    }
+    let record = document
+        .block_records
+        .iter()
+        .find(|record| record.name.eq_ignore_ascii_case(block_name))?;
+    if record.entity_handles.contains(&target) {
+        return Some(acadrust::types::Transform::identity());
+    }
+
+    visited.push(record.name.clone());
+    let transform = record.entity_handles.iter().find_map(|handle| {
+        let EntityType::Insert(insert) = document.get_entity(*handle)? else {
+            return None;
+        };
+        let inner =
+            block_entity_transform(document, &insert.block_name, target, visited)?;
+        Some(inner.then(&insert.get_transform()))
+    });
+    visited.pop();
+    transform
+}
+
 /// The model-space active viewport is reserved as `*Active`, but that name is
 /// case-insensitive in DXF/DWG — a file may store it as `*ACTIVE`. Match it
 /// accordingly, otherwise an uppercased record reads as a *distinct* viewport:
@@ -98,6 +189,25 @@ impl Scene {
         self.camera_generation += 1;
     }
 
+    /// Aspect ratio of the active camera's actual render rectangle. Model
+    /// panes are separate shader widgets, so the full-canvas render aspect is
+    /// wrong whenever a tiled viewport is active.
+    pub(super) fn active_camera_aspect(&self) -> f32 {
+        if self.current_layout == "Model" {
+            let (canvas_w, canvas_h) = self.selection.borrow().vp_size;
+            let tiles = self.model_tiles.borrow();
+            let active = self.active_model_tile.get().min(tiles.len().saturating_sub(1));
+            if let Some(tile) = tiles.get(active) {
+                let width = tile.rect.width * canvas_w;
+                let height = tile.rect.height * canvas_h;
+                if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 {
+                    return width / height;
+                }
+            }
+        }
+        self.last_render_aspect.get().max(0.01)
+    }
+
     /// Fit the camera to a world-space bounding box (corners p1, p2).
     pub fn zoom_to_window(&mut self, p1: glam::Vec3, p2: glam::Vec3) {
         let min = p1.min(p2);
@@ -105,10 +215,136 @@ impl Scene {
         if min == max {
             return;
         }
+        let aspect = self.active_camera_aspect();
         self.camera
             .borrow_mut()
-            .fit_to_bounds(min, max, self.last_render_aspect.get().max(0.01));
+            .fit_to_bounds(min, max, aspect);
         self.camera_generation += 1;
+    }
+
+    /// Centre the active camera on one rendered entity without changing zoom
+    /// distance, orientation, or viewport scale.
+    pub fn center_camera_on_entity(&mut self, handle: Handle) -> bool {
+        let fallback_z = self.active_camera_target().z;
+        let wires = self.wire_models_for(&[handle]);
+        let Some(center) = rendered_wire_center(&wires, fallback_z) else {
+            return false;
+        };
+        self.center_active_camera_on(center)
+    }
+
+    /// Centre on one concrete attribute value attached to an INSERT rather
+    /// than on the complete block extents.
+    pub fn center_camera_on_insert_attribute(&mut self, insert: Handle, index: usize) -> bool {
+        let (attribute, fallback) = {
+            let Some(EntityType::Insert(entity)) = self.document.get_entity(insert) else {
+                return false;
+            };
+            let Some(attribute) = entity.attributes.get(index) else {
+                return false;
+            };
+            (
+                EntityType::AttributeEntity(attribute.clone()),
+                glam::DVec3::new(
+                    attribute.insertion_point.x,
+                    attribute.insertion_point.y,
+                    attribute.insertion_point.z,
+                ),
+            )
+        };
+        let wires = self.tessellate_one(&attribute);
+        let center = rendered_wire_center(&wires, fallback.z).unwrap_or(fallback);
+        self.center_active_camera_on(center)
+    }
+
+    /// Centre on a text entity stored in a block definition, transformed
+    /// through the concrete visible INSERT occurrence that FIND is visiting.
+    pub fn center_camera_on_block_entity(&mut self, insert: Handle, entity: Handle) -> bool {
+        let (source, mut transform) = {
+            let Some(EntityType::Insert(insert_entity)) = self.document.get_entity(insert) else {
+                return false;
+            };
+            let Some(source) = self.document.get_entity(entity) else {
+                return false;
+            };
+            let mut visited = Vec::new();
+            let Some(inner) = block_entity_transform(
+                &self.document,
+                &insert_entity.block_name,
+                entity,
+                &mut visited,
+            ) else {
+                return false;
+            };
+            (
+                source.clone(),
+                inner.then(&insert_entity.get_transform()),
+            )
+        };
+
+        if (self.annotation_scale - 1.0).abs() > 1e-6 {
+            let Some(EntityType::Insert(insert_entity)) = self.document.get_entity(insert) else {
+                return false;
+            };
+            if insert_entity
+                .common
+                .extended_data
+                .get_record("AcAnnotativeData")
+                .is_some()
+            {
+                let point = insert_entity.insert_point;
+                let scale_about =
+                    acadrust::types::Transform::from_translation(acadrust::types::Vector3::new(
+                        -point.x, -point.y, -point.z,
+                    ))
+                    .then(&acadrust::types::Transform::from_scale(
+                        self.annotation_scale as f64,
+                    ))
+                    .then(&acadrust::types::Transform::from_translation(
+                        acadrust::types::Vector3::new(point.x, point.y, point.z),
+                    ));
+                transform = transform.then(&scale_about);
+            }
+        }
+
+        let fallback_z = self.active_camera_target().z;
+        let wires = self.tessellate_one(&source);
+        let Some(local_center) = rendered_wire_center(&wires, fallback_z) else {
+            return false;
+        };
+        let world = transform.apply(acadrust::types::Vector3::new(
+            local_center.x,
+            local_center.y,
+            local_center.z,
+        ));
+        self.center_active_camera_on(glam::DVec3::new(world.x, world.y, world.z))
+    }
+
+    fn active_camera_target(&self) -> glam::DVec3 {
+        self.active_viewport
+            .and_then(|handle| self.camera_for_viewport(handle))
+            .map_or_else(|| self.camera.borrow().target, |camera| camera.target)
+    }
+
+    fn center_active_camera_on(&mut self, center: glam::DVec3) -> bool {
+        if !center.is_finite() {
+            return false;
+        }
+        if let Some(handle) = self.active_viewport {
+            let Some(EntityType::Viewport(viewport)) = self.document.get_entity_mut(handle) else {
+                return false;
+            };
+            if viewport.status.locked {
+                return false;
+            }
+            viewport.view_target.x = center.x;
+            viewport.view_target.y = center.y;
+            viewport.view_target.z = center.z;
+        } else {
+            self.camera.borrow_mut().target = center;
+        }
+        self.camera_generation += 1;
+        true
     }
 
     /// Apply camera state from an acadrust View table entry, through the shared
@@ -684,7 +920,23 @@ impl Scene {
 
             // Paper entities and viewport borders belong to the sheet. Model
             // content projected through those viewports deliberately does not.
-            for wire in self.wires_for_block_culled(layout_block, None, None, None, None) {
+            let scale = if self.current_layout == "Model" {
+                crate::scene::annotative::scale_handle_by_name(
+                    &self.document,
+                    &self.document.header.current_annotation_scale,
+                )
+            } else {
+                self.paper_annotation_scale_handle()
+            };
+            for wire in self.wires_for_block_culled(
+                layout_block,
+                None,
+                None,
+                None,
+                None,
+                scale,
+                self.annotation_all_visible(),
+            ) {
                 let is_infinite = Self::handle_from_wire_name(&wire.name)
                     .and_then(|handle| self.document.get_entity(handle))
                     .is_some_and(|entity| {
@@ -764,7 +1016,23 @@ impl Scene {
         // (issue #51). `wpp = None` also tessellates at a fixed tolerance so
         // the bounds don't drift with zoom-adaptive curve sampling.
         let layout_block = self.current_layout_block_handle();
-        let mut wires = self.wires_for_block_culled(layout_block, None, None, None, None);
+        let scale = if self.current_layout == "Model" {
+            crate::scene::annotative::scale_handle_by_name(
+                &self.document,
+                &self.document.header.current_annotation_scale,
+            )
+        } else {
+            self.paper_annotation_scale_handle()
+        };
+        let mut wires = self.wires_for_block_culled(
+            layout_block,
+            None,
+            None,
+            None,
+            None,
+            scale,
+            self.annotation_all_visible(),
+        );
         // Ray / XLine tessellate as ±DISPLAY_EXTENT display segments
         // (entities/ray.rs) — their endpoints are rendering artifacts, not
         // drawing extent. A construction line through the drawing defeats
@@ -925,9 +1193,61 @@ impl Scene {
         if min == max {
             max += glam::Vec3::splat(1.0);
         }
-        self.camera
-            .borrow_mut()
-            .fit_to_bounds(min, max, self.last_render_aspect.get().max(0.01));
+        let aspect = self.active_camera_aspect();
+        self.camera.borrow_mut().fit_to_bounds(min, max, aspect);
+        self.camera_generation += 1;
+    }
+
+    /// Fit every tiled Model viewport independently. The drawing bounds are
+    /// shared, but each tile keeps its own orientation and uses its own screen
+    /// aspect when calculating the required zoom.
+    pub fn fit_all_model_viewports(&mut self) {
+        if self.current_layout != "Model" || self.model_tiles.borrow().len() <= 1 {
+            self.fit_all();
+            return;
+        }
+        let generation_before = self.camera_generation;
+        self.fit_all();
+        if self.camera_generation == generation_before {
+            return;
+        }
+        let Some((min, max)) = self.camera.borrow().fitted_model_bounds() else {
+            return;
+        };
+
+        let (canvas_w, canvas_h) = self.selection.borrow().vp_size;
+        let fallback = self.last_render_aspect.get().max(0.01);
+        let aspects: Vec<f32> = self
+            .model_tiles
+            .borrow()
+            .iter()
+            .map(|tile| {
+                let width = tile.rect.width * canvas_w;
+                let height = tile.rect.height * canvas_h;
+                if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 {
+                    width / height
+                } else {
+                    fallback
+                }
+            })
+            .collect();
+        let active = self
+            .active_model_tile
+            .get()
+            .min(aspects.len().saturating_sub(1));
+        let live_camera = self.camera.borrow_mut();
+        let mut tiles = self.model_tiles.borrow_mut();
+        for (index, tile) in tiles.iter_mut().enumerate() {
+            let aspect = aspects.get(index).copied().unwrap_or(fallback);
+            if index == active {
+                tile.camera = live_camera.clone();
+            } else {
+                tile.camera.fit_to_bounds(min, max, aspect);
+            }
+        }
+        if let Some(aspect) = aspects.get(active) {
+            self.last_render_aspect.set(*aspect);
+        }
         self.camera_generation += 1;
     }
 

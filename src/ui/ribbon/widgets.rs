@@ -16,6 +16,7 @@ use crate::modules::{IconKind, ModuleEvent, RibbonItem, StyleKey, ToolDef};
 use crate::ui::wrap_bar::PosReport;
 use crate::ui::icons;
 use crate::ui::properties::{acad_color_display, LwItem};
+use crate::t;
 
 use super::LayerInfo;
 
@@ -146,7 +147,7 @@ pub(super) fn make_icon_dim(icon: IconKind, size: f32, dim: bool) -> Element<'st
         IconKind::Glyph(s) => text(s)
             .size(size * 0.7)
             .style(|theme: &Theme| iced::widget::text::Style {
-                color: Some(theme.extended_palette().background.base.text.scale_alpha(0.42)),
+                color: Some(theme.palette().background.base.text.scale_alpha(0.42)),
             })
             .into(),
         IconKind::Svg(bytes) => icons::semantic_disabled(bytes, size),
@@ -179,7 +180,7 @@ pub(super) fn tool_btn_style(
     is_active: bool,
     status: button::Status,
 ) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let pair = match (is_active, status) {
         (true, _) => palette.primary.weak,
         (_, button::Status::Hovered) => palette.background.weak,
@@ -208,7 +209,7 @@ pub(super) fn combo_btn_style(
     status: button::Status,
     radius: f32,
 ) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let pair = if is_open {
         palette.primary.weak
     } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
@@ -233,7 +234,7 @@ pub(super) fn combo_btn_style(
 }
 
 pub(super) fn popup_row_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let pair = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
         palette.background.weak
     } else {
@@ -247,7 +248,7 @@ pub(super) fn popup_row_style(theme: &Theme, status: button::Status) -> button::
 }
 
 pub(super) fn popup_panel_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     container::Style {
         background: Some(Background::Color(palette.background.base.color)),
         border: Border {
@@ -261,14 +262,14 @@ pub(super) fn popup_panel_style(theme: &Theme) -> container::Style {
 
 pub(super) fn muted_text_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.extended_palette().background.base.text.scale_alpha(0.72)),
+        color: Some(theme.palette().background.base.text.scale_alpha(0.72)),
     }
 }
 
 pub(super) fn tool_label_style(theme: &Theme, dim: bool) -> iced::widget::text::Style {
     iced::widget::text::Style {
         color: dim.then_some(
-            theme.extended_palette().background.base.text.scale_alpha(0.42),
+            theme.palette().background.base.text.scale_alpha(0.42),
         ),
     }
 }
@@ -280,7 +281,7 @@ pub(super) fn make_tip(tip: String) -> Element<'static, Message> {
 }
 
 pub(super) fn tip_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     container::Style {
         background: Some(Background::Color(palette.background.strong.color)),
         border: Border {
@@ -311,7 +312,7 @@ pub(super) fn render_small<'a>(
             let dim = start_dimmed(&state, &t.event);
             let event = t.event.clone();
             let tool_id = t.id.to_string();
-            let tip_text = format!("{}\nCommand: {}", t.label, t.id);
+            let tip_text = format!("{}\n{} {}", t!(t.label), t!("Command:"), t.id);
             let btn = button(make_icon_dim(t.icon, SMALL_ICON, dim))
                 .on_press(Message::RibbonToolClick { tool_id, event })
                 .style(move |theme: &Theme, status| tool_btn_style(theme, active, status))
@@ -373,7 +374,7 @@ pub(super) fn render_small<'a>(
                 })
                 .or_else(|| items.first().map(|(_, lbl, _)| *lbl))
                 .unwrap_or(*id);
-            let tip_text = format!("{}\nCommand: {}", cur_label, last);
+            let tip_text = format!("{}\n{} {}", t!(cur_label), t!("Command:"), last);
 
             let icon_btn = button(make_icon_dim(cur_icon, SMALL_ICON, dim))
                 .on_press(Message::RibbonToolClick {
@@ -385,7 +386,7 @@ pub(super) fn render_small<'a>(
                 .height(ROW_H)
                 .padding([4, 4]);
 
-            let arr_tip = format!("{} options", cur_label);
+            let arr_tip = format!("{} {}", t!(cur_label), t!("options"));
             let arr_btn = button(
                 container(icons::themed_arrow_down(8.0))
                     .width(Fill)
@@ -431,7 +432,7 @@ pub(super) fn render_small<'a>(
 pub(super) fn render_large_dropdown<'a>(
     id: &'static str,
     icon: IconKind,
-    explicit_label: Option<&str>,
+    explicit_label: Option<&'a str>,
     items: &[(&'static str, &'static str, IconKind)],
     default: &'static str,
     active_tool: &Option<String>,
@@ -459,14 +460,14 @@ pub(super) fn render_large_dropdown<'a>(
         .or_else(|| items.first().map(|(_, lbl, _)| *lbl))
         .unwrap_or(id);
     let label = explicit_label.unwrap_or(cur_label);
-    let tip_text = format!("{}\nCommand: {}", cur_label, last);
-    let arr_tip = format!("{} options", label);
+    let tip_text = format!("{}\n{} {}", t!(cur_label), t!("Command:"), last);
+    let arr_tip = format!("{} {}", t!(label), t!("options"));
 
     // Icon on top with the label beneath it, then the ▾ strip at the very bottom.
     let top_btn = button(
         column![
             make_icon_dim(cur_icon, LARGE_ICON, dim),
-            text(label.to_string())
+            text(t!(label))
                 .size(10)
                 .style(move |theme: &Theme| tool_label_style(theme, dim)),
         ]
@@ -545,11 +546,11 @@ pub(super) fn render_large<'a>(
             let dim = start_dimmed(&state, &t.event);
             let event = t.event.clone();
             let tool_id = t.id.to_string();
-            let tip_text = format!("{}\nCommand: {}", t.label, t.id);
+            let tip_text = format!("{}\n{} {}", t!(t.label), t!("Command:"), t.id);
             let btn = button(
                 column![
                     make_icon_dim(t.icon, LARGE_ICON, dim),
-                    text(t.label)
+                    text(t!(t.label))
                         .size(10)
                         .style(move |theme: &Theme| tool_label_style(theme, dim)),
                 ]
@@ -613,10 +614,17 @@ pub(super) fn render_large<'a>(
                     *id, *icon, None, items, *default, active_tool, open_dd, last_cmd,
                     dim,
                 )
-            }
+        }
 
         RibbonItem::LayerComboGroup { row2, row3 } => {
-            const COMBO_W: f32 = LARGE_W * 2.5;
+            const TOOL_BUTTON_W: f32 = 26.0;
+            const TOOL_SPACING: f32 = 2.0;
+            const GROUP_PADDING: f32 = 8.0;
+            let tool_count = row2.len().max(row3.len()) as f32;
+            let tools_w = tool_count * TOOL_BUTTON_W
+                + (tool_count - 1.0).max(0.0) * TOOL_SPACING
+                + GROUP_PADDING;
+            let combo_w = (LARGE_W * 2.5).max(tools_w);
 
             let info = layer_infos.iter().find(|l| l.name == active_layer);
             let lc = info.map(|l| l.color).unwrap_or(Color::WHITE);
@@ -632,7 +640,7 @@ pub(super) fn render_large<'a>(
                 .style(move |theme: &Theme| container::Style {
                     background: Some(Background::Color(lc)),
                     border: Border {
-                        color: theme.extended_palette().background.strong.color,
+                        color: theme.palette().background.strong.color,
                         width: 1.0,
                         radius: 1.0.into(),
                     },
@@ -641,8 +649,15 @@ pub(super) fn render_large<'a>(
                 .width(12)
                 .height(12);
 
-            const ICONS_USED: f32 = 14.0 + 14.0 + 14.0 + 12.0 + 10.0 + 5.0 * 4.0 + 16.0 + 16.0;
-            let name_w = (COMBO_W - ICONS_USED).max(40.0);
+            const FIXED_COMBO_W: f32 =
+                14.0 * 3.0 + 12.0 + 9.0 + 4.0 * 4.0 + 8.0 * 2.0;
+            let name_w = (combo_w - FIXED_COMBO_W).max(24.0);
+            // About 6 px per glyph at 11 px. The dropdown itself keeps the
+            // complete layer name available; only its closed ribbon label is
+            // shortened to preserve the fixed row height.
+            let name_budget = ((name_w / 6.0) as usize).max(4);
+            let active_layer_label =
+                crate::ui::text_util::elide(active_layer, name_budget);
 
             let combo_btn = button(
                 row![
@@ -650,7 +665,7 @@ pub(super) fn render_large<'a>(
                     freeze_icon,
                     lock_icon,
                     swatch,
-                    container(text(active_layer).size(11))
+                    container(text(active_layer_label).size(11))
                         .width(name_w)
                         .clip(true),
                     icons::themed_arrow_down(9.0),
@@ -671,7 +686,7 @@ pub(super) fn render_large<'a>(
                     .map(|t| {
                         let is_active = active_tool.as_deref() == Some(t.id);
                         let dim = start_dimmed(&state, &t.event);
-                        let tip = t.label;
+                        let tip = t!(t.label);
                         let event = t.event.clone();
                         let icon_el: Element<Message> = if dim {
                             make_icon_dim(t.icon, 16.0, true)
@@ -710,7 +725,7 @@ pub(super) fn render_large<'a>(
                 .spacing(3)
                 .align_x(iced::Left),
             )
-            .width(Length::Fixed(COMBO_W))
+            .width(Length::Fixed(combo_w))
             .height(Fill)
             .align_y(iced::Center)
             .padding(Padding {
@@ -738,11 +753,16 @@ pub(super) fn render_large<'a>(
                 let mp_dim = start_dimmed(&state, &match_prop.event);
                 let mp_event = match_prop.event.clone();
                 let mp_id = match_prop.id.to_string();
-                let mp_tip = format!("{}\nCommand: {}", match_prop.label, match_prop.id);
+                let mp_tip = format!(
+                    "{}\n{} {}",
+                    t!(match_prop.label),
+                    t!("Command:"),
+                    match_prop.id
+                );
                 let mp_btn = button(
                     column![
                         make_icon_dim(match_prop.icon, LARGE_ICON, mp_dim),
-                        text(match_prop.label)
+                        text(t!(match_prop.label))
                             .size(10)
                             .style(move |theme: &Theme| tool_label_style(theme, mp_dim)),
                     ]
@@ -778,7 +798,7 @@ pub(super) fn render_large<'a>(
                         .style(move |theme: &Theme| container::Style {
                             background: Some(Background::Color(c)),
                             border: Border {
-                                color: theme.extended_palette().background.strong.color,
+                                color: theme.palette().background.strong.color,
                                 width: 1.0,
                                 radius: 1.0.into(),
                             },
@@ -892,7 +912,7 @@ pub(super) fn render_large<'a>(
                     .map(|t| {
                         let is_active = active_tool.as_deref() == Some(t.id);
                         let dim = start_dimmed(&state, &t.event);
-                        let tip = t.label;
+                        let tip = t!(t.label);
                         let event = t.event.clone();
                         let icon_el: Element<Message> = if dim {
                             make_icon_dim(t.icon, 16.0, true)
@@ -992,7 +1012,7 @@ pub(super) fn quick_access_btn<'a>(
     .width(Length::Fixed(TOP_HIST_W))
     .height(24)
     .padding([2, 0]);
-    tooltip(btn, make_tip(label.to_string()), TipPos::Bottom)
+    tooltip(btn, make_tip(t!(label).into_owned()), TipPos::Bottom)
         .gap(6.0)
         .delay(Duration::from_millis(400))
         .style(tip_style)
@@ -1038,7 +1058,11 @@ pub(super) fn render_history_control<'a>(
         };
         tooltip(
             btn,
-            make_tip(format!("{label}\n{count} steps available")),
+            make_tip(format!(
+                "{}\n{}",
+                t!(label),
+                t!("%{count} steps available", count = count)
+            )),
             TipPos::Right,
         )
         .gap(6.0)
@@ -1071,7 +1095,10 @@ pub(super) fn render_history_control<'a>(
         };
         tooltip(
             btn,
-            make_tip(format!("Choose {label} history")),
+            make_tip(format!(
+                "{}",
+                t!("%{label} history", label = t!(label))
+            )),
             TipPos::Right,
         )
         .gap(6.0)
@@ -1088,7 +1115,7 @@ pub(super) fn top_hist_btn_style(
     open: bool,
     status: button::Status,
 ) -> button::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let pair = match (active, open, status) {
         (false, _, _) => palette.background.weakest,
         (_, true, _) => palette.primary.weak,

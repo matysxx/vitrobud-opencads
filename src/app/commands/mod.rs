@@ -96,6 +96,7 @@ impl OpenCADStudio {
         // default (LIMITS then compares an unintended lower-left point with
         // the displayed default upper-right).
         self.dyn_user_reshaped = false;
+        self.dyn_coord_absolute = false;
         self.tabs[i].dyn_fields.clear();
         self.tabs[i].dyn_active = 0;
 
@@ -116,7 +117,7 @@ impl OpenCADStudio {
         // rather than keeping a second, blunter copy (#388, #389).
         if self.tabs[i].is_start && !start_allowed(cmd) {
             self.command_line
-                .push_info("No drawing open. Use NEW or OPEN to start a drawing.");
+                .push_info(crate::t!("No drawing open. Use NEW or OPEN to start a drawing.").as_ref());
             return Task::none();
         }
 
@@ -164,7 +165,7 @@ impl OpenCADStudio {
             }
         }
         self.command_line
-            .push_error(&format!("Unknown command: {cmd}"));
+            .push_error(crate::tf!("Unknown command: {cmd}").as_ref());
         self.finish_dispatch(cmd)
     }
 
@@ -236,6 +237,8 @@ pub fn start_allowed(cmd: &str) -> bool {
             | "REPORT"
             | "CHANGELOG"
             | "ABOUT"
+            | "PLUGINS"
+            | "PLUGINMANAGER"
             | "DONATE"
             | "WEBVERSION"
             | "HELP"
@@ -245,8 +248,6 @@ pub fn start_allowed(cmd: &str) -> bool {
             | "CUILOAD"
             | "CUIIMPORT"
     )
-        || (!cfg!(target_arch = "wasm32")
-            && matches!(cmd, "PLUGINS" | "PLUGINMANAGER"))
 }
 
 // ── Autocomplete registry — one-shot commands ──────────────────────────────
@@ -336,6 +337,9 @@ inventory::submit!(crate::command::CommandRegistration {
         // Annotation scale.
         "ANNOSCALE",
         "CANNOSCALE",
+        "ANNOALLVISIBLE",
+        "ANNOAUTOSCALE",
+        "ANNOUPDATE",
         "SCALELISTEDIT",
         "OBJECTSCALE",
         // Import CSV into a table + LandXML survey points.

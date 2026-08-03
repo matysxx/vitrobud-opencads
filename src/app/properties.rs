@@ -4,6 +4,7 @@ use crate::io::linetypes;
 use crate::scene::view::dispatch;
 use crate::ui;
 use acadrust::{EntityType, Handle};
+use crate::t;
 
 /// Above this many selected objects the Properties panel skips per-entity
 /// property aggregation (which is O(n) per row, plus an O(n²) group filter) and
@@ -136,8 +137,29 @@ impl OpenCADStudio {
         } else {
             0
         };
+        let prop_vertex = if cur_handles.len() == 1 {
+            let vertex_count = self.tabs[i]
+                .scene
+                .document
+                .get_entity(cur_handles[0])
+                .and_then(|entity| match entity {
+                    acadrust::EntityType::LwPolyline(polyline) => Some(polyline.vertices.len()),
+                    acadrust::EntityType::Polyline2D(polyline) => Some(polyline.vertices.len()),
+                    acadrust::EntityType::Leader(leader) => Some(leader.vertices.len()),
+                    _ => None,
+                });
+            vertex_count.map_or(prop_vertex, |count| prop_vertex.min(count.saturating_sub(1)))
+        } else {
+            prop_vertex
+        };
+        let prop_vertex_indicator_active = if cur_handles == prev_handles {
+            self.tabs[i].properties.prop_vertex_indicator_active
+        } else {
+            false
+        };
         crate::scene::view::dispatch::set_prop_current_vertex(prop_vertex);
 
+        let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
         let new_panel = {
             let selected = self.tabs[i].scene.selected_entities();
             let mut panel = match selected.len() {
@@ -238,30 +260,30 @@ impl OpenCADStudio {
                     };
                     let sections = vec![
                         PropSection {
-                            title: "General".to_string(),
+                            title: t!("General").into_owned(),
                             props: vec![
-                                read_only("AC Version", doc.version.as_str().to_string()),
+                                read_only(t!("AC Version").as_ref(), doc.version.as_str().to_string()),
                                 Property {
-                                    label: "Color".to_string(),
+                                    label: t!("Color").into_owned(),
                                     field: "color",
                                     value: PropValue::ColorChoice(header.current_entity_color),
                                 },
                                 Property {
-                                    label: "Layer".to_string(),
+                                    label: t!("Layer").into_owned(),
                                     field: "layer",
                                     value: PropValue::LayerChoice(current_layer),
                                 },
                                 Property {
-                                    label: "Linetype".to_string(),
+                                    label: t!("Linetype").into_owned(),
                                     field: "linetype",
                                     value: PropValue::LinetypeChoice(current_linetype),
                                 },
                                 read_only(
-                                    "Linetype scale",
+                                    t!("Linetype scale").as_ref(),
                                     format_length(header.current_entity_linetype_scale),
                                 ),
                                 Property {
-                                    label: "Lineweight".to_string(),
+                                    label: t!("Lineweight").into_owned(),
                                     field: "line_weight",
                                     value: PropValue::LwChoice(
                                         acadrust::types::LineWeight::from_value(
@@ -269,21 +291,21 @@ impl OpenCADStudio {
                                         ),
                                     ),
                                 },
-                                read_only("Transparency", "ByLayer".to_string()),
-                                read_only("Thickness", format_length(header.thickness)),
+                                read_only(t!("Transparency").as_ref(), "ByLayer".to_string()),
+                                read_only(t!("Thickness").as_ref(), format_length(header.thickness)),
                             ],
                         },
                         PropSection {
-                            title: "3D Visualization".to_string(),
-                            props: vec![read_only("Material", material)],
+                            title: t!("3D Visualization").into_owned(),
+                            props: vec![read_only(t!("Material").as_ref(), material)],
                         },
                         PropSection {
-                            title: "Plot style".to_string(),
+                            title: t!("Plot style").into_owned(),
                             props: vec![
-                                read_only("Plot style", plot_style.to_string()),
-                                read_only("Plot style table", plot_table.clone()),
+                                read_only(t!("Plot style").as_ref(), plot_style.to_string()),
+                                read_only(t!("Plot style table").as_ref(), plot_table.clone()),
                                 read_only(
-                                    "Plot table attached to",
+                                    t!("Plot table attached to").as_ref(),
                                     if plot_table == "None" {
                                         "None".to_string()
                                     } else {
@@ -291,7 +313,7 @@ impl OpenCADStudio {
                                     },
                                 ),
                                 read_only(
-                                    "Plot table type",
+                                    t!("Plot table type").as_ref(),
                                     if header.plotstyle_mode {
                                         "Named plot styles".to_string()
                                     } else {
@@ -301,39 +323,39 @@ impl OpenCADStudio {
                             ],
                         },
                         PropSection {
-                            title: "View".to_string(),
+                            title: t!("View").into_owned(),
                             props: vec![
-                                read_only("Center X", format_length(camera.target.x)),
-                                read_only("Center Y", format_length(camera.target.y)),
-                                read_only("Center Z", format_length(camera.target.z)),
-                                read_only("Height", format_length(view_height)),
-                                read_only("Width", format_length(view_width)),
+                                read_only(t!("Center X").as_ref(), format_length(camera.target.x)),
+                                read_only(t!("Center Y").as_ref(), format_length(camera.target.y)),
+                                read_only(t!("Center Z").as_ref(), format_length(camera.target.z)),
+                                read_only(t!("Height").as_ref(), format_length(view_height)),
+                                read_only(t!("Width").as_ref(), format_length(view_width)),
                             ],
                         },
                         PropSection {
-                            title: "Misc".to_string(),
+                            title: t!("Misc").into_owned(),
                             props: vec![
-                                read_only("Annotation scale", annotation_scale),
+                                read_only(t!("Annotation scale").as_ref(), annotation_scale),
                                 read_only(
-                                    "UCS icon On",
+                                    t!("UCS icon On").as_ref(),
                                     if self.show_ucs_icon { "Yes" } else { "No" }.to_string(),
                                 ),
                                 read_only(
-                                    "UCS icon at origin",
+                                    t!("UCS icon at origin").as_ref(),
                                     if self.ucs_icon_at_origin { "Yes" } else { "No" }
                                         .to_string(),
                                 ),
                                 read_only(
-                                    "UCS per viewport",
+                                    t!("UCS per viewport").as_ref(),
                                     if ucs_per_viewport { "Yes" } else { "No" }.to_string(),
                                 ),
-                                read_only("UCS Name", ucs_name),
-                                read_only("Visual Style", tab.visual_style.clone()),
+                                read_only(t!("UCS Name").as_ref(), ucs_name),
+                                read_only(t!("Visual Style").as_ref(), tab.visual_style.clone()),
                             ],
                         },
                     ];
                     ui::PropertiesPanel {
-                        title: "No selection".to_string(),
+                        title: t!("No selection").into_owned(),
                         sections,
                         layer_combo: iced::widget::combo_box::State::new(layer_names.clone()),
                         linetype_combo: iced::widget::combo_box::State::new(
@@ -348,9 +370,10 @@ impl OpenCADStudio {
                 }
                 1 => {
                     let (handle, source_entity) = selected[0];
-                    let contextual = crate::scene::annotative::entity_for_active_context(
+                    let contextual = crate::scene::annotative::entity_for_annotation_context(
                         &self.tabs[i].scene.document,
                         source_entity,
+                        annotation_scale_handle,
                     );
                     let entity = contextual.as_ref();
                     let group_names = self.tabs[i].scene.group_names_for_entity(handle);
@@ -413,61 +436,61 @@ impl OpenCADStudio {
                         {
                             use crate::entities::common::ro_prop;
                             sections.push(crate::scene::model::object::PropSection {
-                                title: "Material Details".to_string(),
+                                title: t!("Material Details").into_owned(),
                                 props: vec![
-                                    ro_prop("Name", "mat_name", material.name.clone()),
+                                    ro_prop(t!("Name").as_ref(), "mat_name", material.name.clone()),
                                     ro_prop(
-                                        "Description",
+                                        t!("Description").as_ref(),
                                         "mat_description",
                                         material.description.clone(),
                                     ),
                                     ro_prop(
-                                        "Ambient",
+                                        t!("Ambient").as_ref(),
                                         "mat_ambient",
                                         material_color_text(&material.ambient_color),
                                     ),
                                     ro_prop(
-                                        "Diffuse",
+                                        t!("Diffuse").as_ref(),
                                         "mat_diffuse",
                                         material_color_text(&material.diffuse_color),
                                     ),
                                     ro_prop(
-                                        "Specular",
+                                        t!("Specular").as_ref(),
                                         "mat_specular",
                                         material_color_text(&material.specular_color),
                                     ),
                                     ro_prop(
-                                        "Gloss",
+                                        t!("Gloss").as_ref(),
                                         "mat_gloss",
                                         format!("{:.3}", material.specular_gloss_factor),
                                     ),
                                     ro_prop(
-                                        "Opacity",
+                                        t!("Opacity").as_ref(),
                                         "mat_opacity",
                                         format!("{:.3}", material.opacity_percent),
                                     ),
                                     ro_prop(
-                                        "Reflectivity",
+                                        t!("Reflectivity").as_ref(),
                                         "mat_reflectivity",
                                         format!("{:.3}", material.reflectivity),
                                     ),
                                     ro_prop(
-                                        "Translucence",
+                                        t!("Translucence").as_ref(),
                                         "mat_translucence",
                                         format!("{:.3}", material.translucence),
                                     ),
                                     ro_prop(
-                                        "Refraction",
+                                        t!("Refraction").as_ref(),
                                         "mat_refraction",
                                         format!("{:.3}", material.refraction_index),
                                     ),
                                     ro_prop(
-                                        "Self Illumination",
+                                        t!("Self Illumination").as_ref(),
                                         "mat_self_illumination",
                                         format!("{:.3}", material.self_illumination),
                                     ),
                                     ro_prop(
-                                        "Luminance",
+                                        t!("Luminance").as_ref(),
                                         "mat_luminance",
                                         format!(
                                             "{:.3} (mode {})",
@@ -475,42 +498,42 @@ impl OpenCADStudio {
                                         ),
                                     ),
                                     ro_prop(
-                                        "Diffuse Map",
+                                        t!("Diffuse Map").as_ref(),
                                         "mat_diffuse_map",
                                         material_map_text(&material.diffuse_map),
                                     ),
                                     ro_prop(
-                                        "Specular Map",
+                                        t!("Specular Map").as_ref(),
                                         "mat_specular_map",
                                         material_map_text(&material.specular_map),
                                     ),
                                     ro_prop(
-                                        "Reflection Map",
+                                        t!("Reflection Map").as_ref(),
                                         "mat_reflection_map",
                                         material_map_text(&material.reflection_map),
                                     ),
                                     ro_prop(
-                                        "Opacity Map",
+                                        t!("Opacity Map").as_ref(),
                                         "mat_opacity_map",
                                         material_map_text(&material.opacity_map),
                                     ),
                                     ro_prop(
-                                        "Bump Map",
+                                        t!("Bump Map").as_ref(),
                                         "mat_bump_map",
                                         material_map_text(&material.bump_map),
                                     ),
                                     ro_prop(
-                                        "Refraction Map",
+                                        t!("Refraction Map").as_ref(),
                                         "mat_refraction_map",
                                         material_map_text(&material.refraction_map),
                                     ),
                                     ro_prop(
-                                        "Normal Map",
+                                        t!("Normal Map").as_ref(),
                                         "mat_normal_map",
                                         material_map_text(&material.normal_map),
                                     ),
                                     ro_prop(
-                                        "Render Flags",
+                                        t!("Render Flags").as_ref(),
                                         "mat_render_flags",
                                         format!(
                                             "illumination {}; channels {}; mode {}; two-sided {}",
@@ -521,7 +544,7 @@ impl OpenCADStudio {
                                         ),
                                     ),
                                     ro_prop(
-                                        "Advanced",
+                                        t!("Advanced").as_ref(),
                                         "mat_advanced",
                                         format!(
                                             "normal {:.3}; bump {:.3}; reflect {:.3}; transmit {:.3}",
@@ -556,16 +579,16 @@ impl OpenCADStudio {
                             }
                             use crate::entities::common::ro_prop;
                             sections.push(crate::scene::model::object::PropSection {
-                                title: "Color Book".to_string(),
+                                title: t!("Color Book").into_owned(),
                                 props: vec![
-                                    ro_prop("Book", "book_color_book", book.book_name.clone()),
+                                    ro_prop(t!("Book").as_ref(), "book_color_book", book.book_name.clone()),
                                     ro_prop(
-                                        "Color Name",
+                                        t!("Color Name").as_ref(),
                                         "book_color_name",
                                         book.color_name.clone(),
                                     ),
                                     ro_prop(
-                                        "Color",
+                                        t!("Color").as_ref(),
                                         "book_color_value",
                                         format!("{:?}", book.color),
                                     ),
@@ -594,25 +617,25 @@ impl OpenCADStudio {
                             };
                             use crate::entities::common::ro_prop;
                             sections.push(crate::scene::model::object::PropSection {
-                                title: format!("{scope} Visual Style"),
+                                title: t!("%{scope} Visual Style", scope = scope).into_owned(),
                                 props: vec![
                                     ro_prop(
-                                        "Handle",
+                                        t!("Handle").as_ref(),
                                         "vs_handle",
                                         format!("{:X}", handle.value()),
                                     ),
                                     ro_prop(
-                                        "Description",
+                                        t!("Description").as_ref(),
                                         "vs_description",
                                         style.description.clone(),
                                     ),
                                     ro_prop(
-                                        "Type",
+                                        t!("Type").as_ref(),
                                         "vs_type",
                                         style.style_type.to_string(),
                                     ),
                                     ro_prop(
-                                        "Face",
+                                        t!("Face").as_ref(),
                                         "vs_face",
                                         format!(
                                             "lighting {}; quality {}; color {}; modifiers {}",
@@ -623,7 +646,7 @@ impl OpenCADStudio {
                                         ),
                                     ),
                                     ro_prop(
-                                        "Edges",
+                                        t!("Edges").as_ref(),
                                         "vs_edges",
                                         format!(
                                             "model {}; style {}",
@@ -631,17 +654,17 @@ impl OpenCADStudio {
                                         ),
                                     ),
                                     ro_prop(
-                                        "Extended Lighting",
+                                        t!("Extended Lighting").as_ref(),
                                         "vs_extended_lighting",
                                         style.extended_lighting_model.to_string(),
                                     ),
                                     ro_prop(
-                                        "Internal",
+                                        t!("Internal").as_ref(),
                                         "vs_internal",
                                         style.internal_use_only.to_string(),
                                     ),
                                     ro_prop(
-                                        "Property Bag",
+                                        t!("Property Bag").as_ref(),
                                         "vs_properties",
                                         visual_style_properties_text(style),
                                     ),
@@ -670,22 +693,22 @@ impl OpenCADStudio {
                             let metrics = mesh.metrics;
                             let mut props = vec![
                                 ro_prop(
-                                    "Vertices",
+                                    t!("Vertices").as_ref(),
                                     "mesh_vertices",
                                     metrics.vertices.to_string(),
                                 ),
                                 ro_prop(
-                                    "Triangles",
+                                    t!("Triangles").as_ref(),
                                     "mesh_triangles",
                                     metrics.triangles.to_string(),
                                 ),
                                 ro_prop(
-                                    "Surface Area",
+                                    t!("Surface Area").as_ref(),
                                     "mesh_surface_area",
                                     format!("{:.6}", metrics.surface_area),
                                 ),
                                 ro_prop(
-                                    "Centroid",
+                                    t!("Centroid").as_ref(),
                                     "mesh_centroid",
                                     format!(
                                         "{:.6}, {:.6}, {:.6}",
@@ -695,7 +718,7 @@ impl OpenCADStudio {
                                     ),
                                 ),
                                 ro_prop(
-                                    "Tessellation",
+                                    t!("Tessellation").as_ref(),
                                     "mesh_complete",
                                     if mesh.complete { "Complete" } else { "Partial" },
                                 ),
@@ -711,14 +734,14 @@ impl OpenCADStudio {
                                 props.insert(
                                     3,
                                     ro_prop(
-                                        "Volume",
+                                        t!("Volume").as_ref(),
                                         "mesh_volume",
                                         format!("{:.6}", metrics.volume),
                                     ),
                                 );
                             }
                             sections.push(crate::scene::model::object::PropSection {
-                                title: "Mass Properties".to_string(),
+                                title: t!("Mass Properties").into_owned(),
                                 props,
                             });
                         }
@@ -748,7 +771,7 @@ impl OpenCADStudio {
                                 continue;
                             };
                             let toggle = crate::scene::model::object::Property {
-                                label: "Uniform scale".into(),
+                                label: t!("Uniform scale").into_owned(),
                                 field: "ins_uniform",
                                 value: crate::scene::model::object::PropValue::BoolToggle {
                                     field: "ins_uniform",
@@ -765,7 +788,7 @@ impl OpenCADStudio {
                                     .position(|p| p.field == "x_scale")
                                     .unwrap_or(xi.min(section.props.len()));
                                 section.props[xi] = crate::entities::common::edit_prop(
-                                    "Scale",
+                                    t!("Scale").as_ref(),
                                     "u_scale",
                                     ins.x_scale(),
                                 );
@@ -953,7 +976,7 @@ impl OpenCADStudio {
 
                         if let Some(geom) = sections.last_mut() {
                             geom.props.push(crate::scene::model::object::Property {
-                                label: "Frozen Layers".to_string(),
+                                label: t!("Frozen Layers").into_owned(),
                                 field: "frozen_layers",
                                 value: crate::scene::model::object::PropValue::EditText(
                                     frozen_names.join(", "),
@@ -961,7 +984,7 @@ impl OpenCADStudio {
                             });
                             if !ucs_names.is_empty() {
                                 geom.props.push(crate::scene::model::object::Property {
-                                    label: "UCS Name".to_string(),
+                                    label: t!("UCS Name").into_owned(),
                                     field: "vp_ucs_name",
                                     value: crate::scene::model::object::PropValue::Choice {
                                         selected: current_ucs,
@@ -971,7 +994,7 @@ impl OpenCADStudio {
                             }
                             if !view_names.is_empty() {
                                 geom.props.push(crate::scene::model::object::Property {
-                                    label: "Named View".to_string(),
+                                    label: t!("Named View").into_owned(),
                                     field: "vp_named_view",
                                     value: crate::scene::model::object::PropValue::Choice {
                                         selected: String::new(),
@@ -1363,7 +1386,7 @@ impl OpenCADStudio {
                                     &mut sections,
                                     anchor,
                                     crate::entities::common::ro_prop(
-                                        "Annotative",
+                                        t!("Annotative").as_ref(),
                                         "annotative",
                                         "No",
                                     ),
@@ -1408,7 +1431,7 @@ impl OpenCADStudio {
                                     &mut sections,
                                     anno_field,
                                     crate::entities::common::ro_prop(
-                                        "Annotative scale",
+                                        t!("Annotative scale").as_ref(),
                                         "annotative_scale",
                                         doc.header.current_annotation_scale.clone(),
                                     ),
@@ -1421,7 +1444,7 @@ impl OpenCADStudio {
                         let label = group_names.join(", ");
                         if let Some(general) = sections.first_mut() {
                             general.props.push(crate::scene::model::object::Property {
-                                label: "Group".to_string(),
+                                label: t!("Group").into_owned(),
                                 field: "group",
                                 value: crate::scene::model::object::PropValue::ReadOnly(label),
                             });
@@ -1438,7 +1461,7 @@ impl OpenCADStudio {
                                 .map(|br| br.flags.is_xref || br.flags.is_xref_overlay)
                                 .unwrap_or(false);
                             if is_xref {
-                                "External Reference".to_string()
+                                t!("External Reference").into_owned()
                             } else {
                                 entity_type_label(entity)
                             }
@@ -1452,7 +1475,13 @@ impl OpenCADStudio {
                             .filter_map(|prop| match &prop.value {
                                 crate::scene::model::object::PropValue::Choice { options, .. } => Some((
                                     prop.field.to_string(),
-                                    iced::widget::combo_box::State::new(options.clone()),
+                                    iced::widget::combo_box::State::new(
+                                        options
+                                            .iter()
+                                            .cloned()
+                                            .map(ui::properties::LocalizedChoice::new)
+                                            .collect(),
+                                    ),
                                 )),
                                 _ => None,
                             })
@@ -1473,7 +1502,7 @@ impl OpenCADStudio {
                 // for seconds at tens of thousands of objects. Above the cap show a
                 // count-only panel; bulk edits still go through the ribbon.
                 n if n > MAX_PROP_AGGREGATE => ui::PropertiesPanel {
-                    title: format!("{} objects selected", n),
+                    title: t!("%{count} objects selected", count = n).into_owned(),
                     layer_combo: iced::widget::combo_box::State::new(layer_names.clone()),
                     linetype_combo: iced::widget::combo_box::State::new(linetype_items.clone()),
                     lineweight_combo: iced::widget::combo_box::State::new(
@@ -1507,13 +1536,19 @@ impl OpenCADStudio {
                             .filter_map(|prop| match &prop.value {
                                 crate::scene::model::object::PropValue::Choice { options, .. } => Some((
                                     prop.field.to_string(),
-                                    iced::widget::combo_box::State::new(options.clone()),
+                                    iced::widget::combo_box::State::new(
+                                        options
+                                            .iter()
+                                            .cloned()
+                                            .map(ui::properties::LocalizedChoice::new)
+                                            .collect(),
+                                    ),
                                 )),
                                 _ => None,
                             })
                             .collect(),
                         sections,
-                        title: format!("{} objects selected", selected.len()),
+                        title: t!("%{count} objects selected", count = selected.len()).into_owned(),
                         selection_group_combo: iced::widget::combo_box::State::new(groups.clone()),
                         selection_groups: groups,
                         selected_group: active_group,
@@ -1540,6 +1575,7 @@ impl OpenCADStudio {
             panel.expanded_groups = expanded_groups;
             panel.source_handles = new_handles;
             panel.prop_vertex = prop_vertex;
+            panel.prop_vertex_indicator_active = prop_vertex_indicator_active;
             panel
         };
 
@@ -1666,33 +1702,42 @@ impl OpenCADStudio {
         } else {
             [0.0_f64; 3]
         };
-        let (new_handle, new_grips) = {
+        let (new_handle, new_grips, new_grip_handles) = {
+            let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
             let selected = self.tabs[i].scene.selected_entities();
-            if selected.len() == 1 {
-                let (handle, entity) = selected[0];
-                let contextual = crate::scene::annotative::entity_for_active_context(
+            let single_handle = (selected.len() == 1).then(|| selected[0].0);
+            let mut grips = Vec::new();
+            let mut handles = Vec::new();
+            for (handle, entity) in selected {
+                let contextual = crate::scene::annotative::entity_for_annotation_context(
                     &self.tabs[i].scene.document,
                     entity,
+                    annotation_scale_handle,
                 );
-                let grips = dispatch::grips(contextual.as_ref())
-                    .into_iter()
-                    .map(|mut g| {
-                        // Subtract in f64: at UTM magnitudes an f32 cast before
-                        // the offset costs ~1 unit and draws the grip off the
-                        // wire.
-                        g.world.x -= wo[0];
-                        g.world.y -= wo[1];
-                        g.world.z -= wo[2];
-                        g
-                    })
-                    .collect();
-                (Some(handle), grips)
-            } else {
-                (None, vec![])
+                for mut grip in dispatch::grips(contextual.as_ref()) {
+                    // Subtract in f64: at UTM magnitudes an f32 cast before
+                    // the offset costs ~1 unit and draws the grip off the wire.
+                    grip.world.x -= wo[0];
+                    grip.world.y -= wo[1];
+                    grip.world.z -= wo[2];
+                    handles.push(handle);
+                    grips.push(grip);
+                }
             }
+            (single_handle, grips, handles)
         };
         self.tabs[i].selected_handle = new_handle;
         self.tabs[i].selected_grips = new_grips;
+        self.tabs[i].selected_grip_handles = new_grip_handles;
+        let available: rustc_hash::FxHashSet<_> = self.tabs[i]
+            .selected_grip_handles
+            .iter()
+            .copied()
+            .zip(self.tabs[i].selected_grips.iter().map(|grip| grip.id))
+            .collect();
+        self.tabs[i]
+            .hot_grips
+            .retain(|key| available.contains(key));
         // Append the dynamic-block visibility (lookup) grip, if the lone
         // selection is a visibility-parametric block reference.
         self.refresh_visibility_grip(wo);
@@ -1710,11 +1755,9 @@ impl OpenCADStudio {
     pub(super) fn invalidate_property_targets(&mut self, i: usize, handles: &[Handle]) {
         let mut context_object_changed = false;
         for &handle in handles {
-            context_object_changed |=
-                crate::scene::annotative::sync_active_context_from_entity(
-                    &mut self.tabs[i].scene.document,
-                    handle,
-                );
+            context_object_changed |= self.tabs[i]
+                .scene
+                .sync_displayed_annotation_context(handle);
             // Hatch / SOLID fills render from prebuilt cached models; rebuild
             // them or pattern edits (scale, background, …) stay invisible
             // (#415).
@@ -1747,25 +1790,19 @@ impl OpenCADStudio {
         mut entity: acadrust::EntityType,
     ) -> Option<Handle> {
         let i = self.active_tab;
+        let tracks_draw_anchor = self.tabs[i].active_cmd.is_some()
+            && matches!(
+                &entity,
+                acadrust::EntityType::Line(_)
+                    | acadrust::EntityType::Arc(_)
+                    | acadrust::EntityType::LwPolyline(_)
+                    | acadrust::EntityType::Polyline(_)
+                    | acadrust::EntityType::Polyline2D(_)
+                    | acadrust::EntityType::Polyline3D(_)
+            );
         let layer = &self.tabs[i].active_layer;
         if layer != "0" || entity.as_entity().layer().is_empty() {
             entity.as_entity_mut().set_layer(layer.clone());
-        }
-
-        // A new dimension adopts the current dimension style (DIMSTYLE), like
-        // AutoCAD — the DIM commands leave the default "Standard" on the entity,
-        // so stamp the header's current style here. ADDSELECTED sets DIMSTYLE to
-        // the template's first, so a cloned dimension keeps its style (#239).
-        if let acadrust::EntityType::Dimension(ref mut d) = entity {
-            let cur = self.tabs[i]
-                .scene
-                .document
-                .header
-                .current_dimstyle_name
-                .clone();
-            if !cur.trim().is_empty() {
-                d.base_mut().style_name = cur;
-            }
         }
 
         // INSUNITS: when inserting a block whose BlockRecord.units differ
@@ -1851,45 +1888,8 @@ impl OpenCADStudio {
                             _ => None,
                         });
                     if let Some((h, s)) = found {
-                        ml.style_handle = Some(h);
-                        // Inherit the style's settings so a new multileader
-                        // reflects the current MLeaderStyle (the renderer reads
-                        // these entity fields). See #94.
-                        // The entity and style enums are distinct types with
-                        // matching discriminants — round-trip through i16.
-                        ml.content_type = (s.content_type as i16).into();
-                        ml.path_type = (s.path_type as i16).into();
-                        ml.line_color = s.line_color;
-                        ml.line_type_handle = s.line_type_handle;
-                        ml.line_weight = s.line_weight;
-                        ml.enable_landing = s.enable_landing;
-                        ml.enable_dogleg = s.enable_dogleg;
-                        ml.dogleg_length = s.landing_distance;
-                        ml.arrowhead_handle = s.arrowhead_handle;
-                        ml.arrowhead_size = s.arrowhead_size;
-                        ml.text_style_handle = s.text_style_handle;
-                        ml.text_color = s.text_color;
-                        ml.text_frame = s.text_frame;
-                        ml.text_height = s.text_height;
-                        ml.context.text_height = s.text_height;
-                        ml.text_left_attachment = (s.text_left_attachment as i16).into();
-                        ml.text_right_attachment = (s.text_right_attachment as i16).into();
-                        ml.text_top_attachment = (s.text_top_attachment as i16).into();
-                        ml.text_bottom_attachment = (s.text_bottom_attachment as i16).into();
-                        ml.text_attachment_direction =
-                            (s.text_attachment_direction as i16).into();
-                        ml.text_alignment = (s.text_alignment as i16).into();
-                        ml.text_angle_type = (s.text_angle_type as i16).into();
-                        ml.block_content_handle = s.block_content_handle;
-                        ml.block_content_color = s.block_content_color;
-                        ml.block_connection_type = (s.block_content_connection as i16).into();
-                        ml.block_rotation = s.block_content_rotation;
-                        ml.block_scale = acadrust::types::Vector3::new(
-                            s.block_content_scale_x,
-                            s.block_content_scale_y,
-                            s.block_content_scale_z,
-                        );
-                        ml.scale_factor = s.scale_factor;
+                        debug_assert_eq!(h, s.handle);
+                        crate::scene::annotative::apply_mleader_style(ml, &s);
                     }
                 }
             }
@@ -1917,8 +1917,54 @@ impl OpenCADStudio {
             _ => {}
         }
 
+        let text_style_annotative = match &entity {
+            acadrust::EntityType::Text(text) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &text.style,
+                )
+            }
+            acadrust::EntityType::MText(text) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &text.style,
+                )
+            }
+            acadrust::EntityType::AttributeEntity(attribute) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &attribute.text_style,
+                )
+            }
+            acadrust::EntityType::AttributeDefinition(attribute) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &attribute.text_style,
+                )
+            }
+            _ => false,
+        };
+        if text_style_annotative {
+            match &mut entity {
+                acadrust::EntityType::MText(text) => text.is_annotative = true,
+                acadrust::EntityType::AttributeEntity(attribute) => {
+                    attribute.flags.annotative = true
+                }
+                acadrust::EntityType::AttributeDefinition(attribute) => {
+                    attribute.flags.annotative = true
+                }
+                _ => {}
+            }
+        }
+        let needs_annotation_context = crate::scene::annotative::is_annotative(
+            &self.tabs[i].scene.document,
+            &entity,
+        ) || crate::scene::annotative::annotation_style_is_annotative(
+            &self.tabs[i].scene.document,
+            &entity,
+        );
 
-        if matches!(&entity, acadrust::EntityType::Viewport(_))
+        let new_handle = if matches!(&entity, acadrust::EntityType::Viewport(_))
             && self.tabs[i].scene.current_layout != "Model"
         {
             // Assign a unique viewport ID (max existing id + 1, min 2).
@@ -1965,13 +2011,36 @@ impl OpenCADStudio {
                 }
                 Err(e) => {
                     self.command_line
-                        .push_error(&format!("Viewport could not be added: {e}"));
+                        .push_error(crate::tf!("Viewport could not be added: {e}").as_ref());
                     None
                 }
             }
         } else {
             Some(self.tabs[i].scene.add_entity(entity))
+        };
+
+        if needs_annotation_context {
+            if let (Some(handle), Some(scale)) = (
+                new_handle,
+                self.tabs[i].scene.creation_annotation_scale_handle(),
+            ) {
+                crate::scene::annotative::create_annotation_context(
+                    &mut self.tabs[i].scene.document,
+                    handle,
+                    scale,
+                );
+                self.tabs[i]
+                    .scene
+                    .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
+            }
         }
+
+        if tracks_draw_anchor {
+            if let Some(handle) = new_handle {
+                self.tabs[i].last_draw_anchor = Some(handle);
+            }
+        }
+        new_handle
     }
 }
 
@@ -1981,7 +2050,7 @@ pub(super) fn build_selection_groups(
     selected: &[(Handle, &EntityType)],
 ) -> Vec<ui::properties::SelectionGroup> {
     let mut groups = vec![ui::properties::SelectionGroup {
-        label: format!("All({})", selected.len()),
+        label: format!("{} ({})", t!("All").into_owned(), selected.len()),
         handles: selected.iter().map(|(handle, _)| *handle).collect(),
     }];
 
@@ -1996,7 +2065,7 @@ pub(super) fn build_selection_groups(
 
     for (kind, handles) in by_type {
         groups.push(ui::properties::SelectionGroup {
-            label: format!("{}({})", title_case_word(&kind), handles.len()),
+            label: format!("{}({})", t!(title_case_word(&kind)), handles.len()),
             handles,
         });
     }
