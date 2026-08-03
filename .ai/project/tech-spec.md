@@ -11,9 +11,10 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The reviewed upstream revision was
-`b32a9b4083d61f85fcd2015cf346056f90fc2b4d` (2026-07-22). It is an analysis
-baseline, not yet the selected production version.
+The current reviewed upstream rollout baseline is Open CAD Studio `v0.9.2`,
+revision `8dc642d40c78247dba2d29b40dd9cc259d0fe66b` (2026-08-02). The container
+builder must install the exact `wasm-bindgen-cli` version selected in
+`Cargo.lock`; for this baseline that version is `0.2.108`.
 
 ## Recommended runtime model
 

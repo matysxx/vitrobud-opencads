@@ -3,7 +3,7 @@ ARG CADDY_IMAGE=docker.io/library/caddy:2.10.0-alpine
 
 FROM ${RUST_IMAGE} AS builder
 ARG TRUNK_VERSION=0.21.14
-ARG WASM_BINDGEN_CLI_VERSION=0.2.126
+ARG WASM_BINDGEN_CLI_VERSION=0.2.108
 RUN rustup target add wasm32-unknown-unknown \
     && cargo install trunk --version "${TRUNK_VERSION}" --locked \
     && cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_CLI_VERSION}" --locked
