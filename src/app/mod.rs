@@ -2691,6 +2691,13 @@ pub enum Message {
     /// Callback after the user picks (or cancels) the STEP save path.
     StepExportPath(Option<std::path::PathBuf>),
     StepExportFinished(std::path::PathBuf, Result<(), String>),
+    /// Binary DXF R12 machine-compatibility export (`EXPORTDXFR12` / `EXPORTR12`).
+    DxfR12Export,
+    DxfR12ExportPath(Option<std::path::PathBuf>),
+    DxfR12ExportFinished(
+        std::path::PathBuf,
+        Result<crate::io::export_dxf_r12::ExportReport, String>,
+    ),
     // ── OBJ import ────────────────────────────────────────────────────────
     /// Trigger OBJ import: show open-file dialog.
     ObjImport,

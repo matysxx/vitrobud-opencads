@@ -10,6 +10,7 @@ pub mod obj;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod single_instance;
 pub mod pdf_export;
+pub mod export_dxf_r12;
 pub mod plot_style;
 pub mod print_to_printer;
 pub mod recovery;
@@ -1508,12 +1509,12 @@ fn save_temp_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn replace_save_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
+pub(crate) fn replace_save_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
     std::fs::rename(temp_path, path)
 }
 
 #[cfg(target_os = "windows")]
-fn replace_save_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
+pub(crate) fn replace_save_file(temp_path: &Path, path: &Path) -> std::io::Result<()> {
     if !path.exists() {
         return std::fs::rename(temp_path, path);
     }

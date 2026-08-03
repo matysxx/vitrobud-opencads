@@ -9,3 +9,5 @@
 ## Current tasks
 
 - `OCSSTACK-1` — Scaffold maintained fork and rootless Podman runtime
+- `OCSSTACK-2` — Add machine-compatible binary DXF R12 export
+  (`2-export-dxf-r12/`)
