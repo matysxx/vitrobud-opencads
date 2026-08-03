@@ -437,6 +437,12 @@ impl OpenCADStudio {
                 return Some(Task::done(Message::StepExport));
             }
 
+            // Dedicated, fail-safe machine export. This intentionally does not
+            // alter SAVE/SAVEAS or the normal DXF writer path.
+            "EXPORTDXFR12" | "EXPORTR12" => {
+                return Some(Task::done(Message::DxfR12Export));
+            }
+
             // ── Plot Style Editor GUI ─────────────────────────────────────
             "PLOTSTYLEPANEL" | "PLOTSTYLEEDITOR" | "STYLESMANAGER" => {
                 return Some(Task::done(Message::PlotStylePanelOpen));
