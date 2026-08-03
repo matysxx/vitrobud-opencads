@@ -14,7 +14,9 @@
 The current reviewed upstream rollout baseline is Open CAD Studio `v0.9.2`,
 revision `8dc642d40c78247dba2d29b40dd9cc259d0fe66b` (2026-08-02). The container
 builder must install the exact `wasm-bindgen-cli` version selected in
-`Cargo.lock`; for this baseline that version is `0.2.108`.
+`Cargo.lock`; for this baseline that version is `0.2.108`. Its Iced dependency
+requires Rust `1.92`, so the verified builder baseline is the official
+`rust:1.92.0-bookworm` image.
 
 ## Recommended runtime model
 

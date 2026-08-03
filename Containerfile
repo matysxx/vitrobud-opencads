@@ -1,4 +1,4 @@
-ARG RUST_IMAGE=docker.io/library/rust:1.88.0-bookworm
+ARG RUST_IMAGE=docker.io/library/rust:1.92.0-bookworm
 ARG CADDY_IMAGE=docker.io/library/caddy:2.10.0-alpine
 
 FROM ${RUST_IMAGE} AS builder
