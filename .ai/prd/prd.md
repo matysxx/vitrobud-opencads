@@ -11,3 +11,5 @@
 - `OCSSTACK-1` — Scaffold maintained fork and rootless Podman runtime
 - `OCSSTACK-2` — Add machine-compatible binary DXF R12 export
   (`2-export-dxf-r12/`)
+- `OCSSTACK-3` — Sync reviewed upstream revision `2c5b7e76`
+  (`3-upstream-sync-2c5b7e76/`)
