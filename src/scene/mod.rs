@@ -8,6 +8,7 @@
 pub mod annotative;
 pub mod cache;
 pub mod convert;
+pub mod creation_style;
 pub mod model;
 pub mod pick;
 pub mod pipeline;
@@ -130,7 +131,7 @@ pub use pick::selection_state::SelectionState;
 pub use pipeline::uniforms::Uniforms;
 pub use pipeline::viewcube::{
     hit_test, hit_test_cardinal, hover_id, CubeRegion, NudgeDir, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD,
-    VIEWCUBE_PX, VIEWCUBE_REGION_PX,
+    VIEWCUBE_PX, VIEWCUBE_REGION_PX, VIEWCUBE_RENDER_PX,
 };
 use view::camera::Camera;
 pub use view::camera::Projection;
@@ -3798,6 +3799,28 @@ impl Scene {
             return Some(scale);
         }
         self.scale_handle_ensuring("1:1")
+    }
+
+    pub(crate) fn creation_annotation_multiplier(&self) -> f64 {
+        if self.current_layout == "Model" {
+            return self.annotation_scale.max(1.0e-9) as f64;
+        }
+        let Some(handle) = self.active_viewport else {
+            return 1.0;
+        };
+        let Some(EntityType::Viewport(viewport)) = self.document.get_entity(handle) else {
+            return 1.0;
+        };
+        let paper_to_model = vp_effective_scale(
+            viewport.custom_scale,
+            viewport.view_height,
+            viewport.height,
+        );
+        if paper_to_model.is_finite() && paper_to_model > 1.0e-9 {
+            1.0 / paper_to_model
+        } else {
+            1.0
+        }
     }
 
     pub fn set_annotation_scale_named(&mut self, name: &str) -> Option<Handle> {
