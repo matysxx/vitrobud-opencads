@@ -14,6 +14,8 @@ stack and the isolated binary DXF R12 exporter.
   and public documentation.
 - [ ] Review the new `acadrust` pin and confirm the existing Rust,
   wasm-bindgen, Trunk, and container builder pins remain compatible.
+- [ ] Repair any upstream regression that prevents the supported web build with
+  `--no-default-features`, keeping the fix minimal and suitable for upstream.
 - [ ] Update the documented reviewed upstream baseline without introducing a
   second source of truth for runtime revision or image tag.
 - [ ] Verify the merged tree with static checks, the targeted R12 regression
@@ -36,5 +38,7 @@ other stacks, global Podman changes, and functional changes to the R12 exporter.
 - [ ] Synthetic and real merge complete without unresolved conflicts.
 - [ ] Both R12 command names and exporter integration remain present.
 - [ ] Targeted exporter tests pass 3/3 and the web image builds successfully.
+- [ ] Shared ACIS boundary helpers required by the web renderer compile without
+  the native-only `solid3d` feature.
 - [ ] Disposable runtime passes `/healthz` before production activation.
 - [ ] Local, GitHub, and server revisions are recorded exactly at each boundary.

@@ -14,14 +14,17 @@ then deliver it through `local -> anonymized GitHub -> server`.
    `2c5b7e76` with `--no-ff --no-commit` for review.
 3. Review shared application integration points and confirm `EXPORTDXFR12` /
    `EXPORTR12`, exporter module, tests, and normal save isolation remain intact.
-4. Update the reviewed upstream baseline in `.ai/project/tech-spec.md` and run
+4. Run the supported web build and, if upstream gates a helper still required
+   by the no-default-features path, remove only the invalid feature gate and
+   rerun the exact-revision verification.
+5. Update the reviewed upstream baseline in `.ai/project/tech-spec.md` and run
    privacy, whitespace, shell, Compose/static, ancestry, and command audits.
-5. After separate approval, create a Conventional Commit merge and push the
+6. After separate approval, create a Conventional Commit merge and push the
    branch; verify the exact public GitHub revision and merge it to `main`.
-6. With a separately displayed and approved SSH command, build/test the exact
+7. With a separately displayed and approved SSH command, build/test the exact
    GitHub revision in isolation: targeted exporter tests, web OCI build, and
    disposable `/healthz` smoke test.
-7. After a final separately approved SSH command, update only this stack,
+8. After a final separately approved SSH command, update only this stack,
    retain the prior image/private `.env`, and verify health and user systemd.
 
 ## Rollback
