@@ -21,3 +21,5 @@
   (`7-strict-binary-dxf-r12/`)
 - `OCSSTACK-8` — Sync reviewed upstream revision `b0806679`
   (`8-upstream-sync-b0806679/`)
+- `OCSSTACK-9` — Sync reviewed upstream revision `d1f90559`
+  (`9-upstream-sync-d1f90559/`)
