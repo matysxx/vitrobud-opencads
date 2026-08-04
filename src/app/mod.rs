@@ -352,6 +352,8 @@ pub(super) struct OpenCADStudio {
     clean_screen: bool,
     /// Quick Properties: show a compact floating property panel on selection.
     quick_properties: bool,
+    /// Canvas-space cursor position where Quick Properties was last opened.
+    quick_properties_anchor: Point,
     /// Selection cycling: clicking where objects overlap opens a list box
     /// to pick which one; the pick is added to the current selection.
     selection_cycling: bool,
@@ -1891,8 +1893,12 @@ pub enum Message {
     LayerStateEditorFilter(String),
     LayerStateEditorSave,
     LayerStateEditorCancel,
-    CursorMoved(Point),
-    ViewportClick,
+    /// ViewCube-local cursor movement, tagged with the floating viewport that
+    /// owned the overlay when the event was produced (`None` = Model layout).
+    CursorMoved(Point, Option<acadrust::Handle>),
+    /// ViewCube press with the same owner tag, so a stale overlay event can
+    /// never fall through and rotate a different camera.
+    ViewportClick(Option<acadrust::Handle>),
     ViewportMove(Point),
     ViewportLeftPress,
     ViewportLeftRelease,
@@ -2876,6 +2882,7 @@ impl OpenCADStudio {
             otrack_active: None,
             clean_screen: false,
             quick_properties: false,
+            quick_properties_anchor: Point::new(12.0, 12.0),
             selection_cycling: false,
             pick_add: true,
             pick_drag_rect: false,

@@ -2495,7 +2495,7 @@ impl OpenCADStudio {
             }
 
             // ── Cursor / viewport messages ─────────────────────────────────
-            Message::CursorMoved(p) => self.on_cursor_moved(p),
+            Message::CursorMoved(p, viewport) => self.on_cursor_moved(p, viewport),
 
             Message::ViewportMove(p) => self.on_viewport_move(p),
 
@@ -2662,7 +2662,7 @@ impl OpenCADStudio {
 
             Message::ViewportScroll(delta) => self.on_viewport_scroll(delta),
 
-            Message::ViewportClick => self.on_viewport_click(),
+            Message::ViewportClick(viewport) => self.on_viewport_click(viewport),
 
             Message::WindowResized(w, h) => {
                 self.vp_size = ((w - 440.0).max(200.0), h);
@@ -3291,6 +3291,11 @@ impl OpenCADStudio {
             }
             Message::ToggleQuickProperties => {
                 self.quick_properties ^= true;
+                if self.quick_properties {
+                    self.quick_properties_anchor =
+                        self.tabs[self.active_tab].last_cursor_screen;
+                }
+                self.save_config();
                 Task::none()
             }
             Message::ToggleSelectionCycling => {
@@ -3301,12 +3306,19 @@ impl OpenCADStudio {
             }
             Message::CycleSelect(handle) => {
                 // Add the picked object to the current selection (accumulate).
+                let quick_properties_anchor = self
+                    .cycle_candidates
+                    .as_ref()
+                    .map(|(point, _)| *point);
                 self.cycle_candidates = None;
                 let i = self.active_tab;
                 self.tabs[i].scene.set_hover_highlight(None);
                 self.tabs[i].scene.select_entity(handle, false);
                 self.tabs[i].scene.expand_selection_for_groups(&[handle]);
                 self.refresh_properties();
+                if let Some(point) = quick_properties_anchor {
+                    self.quick_properties_anchor = point;
+                }
                 Task::none()
             }
             Message::CycleHover(handle) => {
