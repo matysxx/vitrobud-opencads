@@ -1,8 +1,7 @@
 # DXF R12 Binary Machine Export
 
 `EXPORTDXFR12` writes a separate binary DXF R12 (`AC1009`) file intended for
-legacy machine controllers and strict CAD importers. `EXPORTR12` is an alias for
-the same operation.
+legacy machine controllers and strict CAD importers.
 
 This is a compatibility export, not a replacement for `SAVE` or `SAVEAS`. It
 does not modify the open drawing, its path, dirty state, layouts, or undo

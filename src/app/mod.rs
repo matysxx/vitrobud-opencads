@@ -2698,7 +2698,7 @@ pub enum Message {
     /// Callback after the user picks (or cancels) the STEP save path.
     StepExportPath(Option<std::path::PathBuf>),
     StepExportFinished(std::path::PathBuf, Result<(), String>),
-    /// Binary DXF R12 machine-compatibility export (`EXPORTDXFR12` / `EXPORTR12`).
+    /// Binary DXF R12 machine-compatibility export (`EXPORTDXFR12`).
     DxfR12Export,
     DxfR12ExportPath(Option<std::path::PathBuf>),
     DxfR12ExportFinished(
