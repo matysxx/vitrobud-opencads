@@ -12,7 +12,7 @@ use iced::widget::{
     stack, text, Row, Space,
 };
 use iced::window;
-use iced::{keyboard, Background, Border, Color, Element, Fill, Subscription, Task, Theme};
+use iced::{keyboard, Background, Border, Color, Element, Fill, Length, Subscription, Task, Theme};
 use iced_aw::ContextMenu;
 use crate::t;
 
@@ -23,8 +23,8 @@ mod viewcube;
 
 use controls::{dyn_component_value, viewport_controls};
 use overlay::{
-    mtext_editor_overlay, position_canvas_overlay, qselect_overlay, text_inline_overlay,
-    viewport_context_menu_overlay,
+    mtext_editor_overlay, position_canvas_overlay, position_canvas_overlay_near_cursor,
+    qselect_overlay, text_inline_overlay, viewport_context_menu_overlay,
 };
 use viewcube::{viewcube_nav_controls, viewcube_ucs_picker, UCS_PICKER_W};
 
@@ -112,6 +112,47 @@ fn hatch_pattern_key_event(
         }
         _ => None,
     }
+}
+
+fn shortcut_key_name(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> Option<String> {
+    let key = match key {
+        keyboard::Key::Character(value) if !value.is_empty() => value.to_uppercase(),
+        keyboard::Key::Named(named) => {
+            let name = format!("{named:?}");
+            match name.as_str() {
+                "ArrowUp" => "UP".to_string(),
+                "ArrowDown" => "DOWN".to_string(),
+                "ArrowLeft" => "LEFT".to_string(),
+                "ArrowRight" => "RIGHT".to_string(),
+                "PageUp" => "PAGEUP".to_string(),
+                "PageDown" => "PAGEDOWN".to_string(),
+                "Enter" | "Space" | "Escape" | "Delete" | "Backspace" | "Tab" | "Home"
+                | "End" | "Insert" => name.to_uppercase(),
+                _ if name.starts_with('F')
+                    && name[1..].chars().all(|ch| ch.is_ascii_digit()) =>
+                {
+                    name
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let mut parts = Vec::with_capacity(5);
+    if modifiers.control() {
+        parts.push("CTRL".to_string());
+    }
+    if modifiers.logo() {
+        parts.push("CMD".to_string());
+    }
+    if modifiers.alt() {
+        parts.push("ALT".to_string());
+    }
+    if modifiers.shift() {
+        parts.push("SHIFT".to_string());
+    }
+    parts.push(key);
+    Some(parts.join("+"))
 }
 
 /// `ViewportRenderMode` enum carries the raw DXF integers, not a label,
@@ -410,10 +451,16 @@ impl OpenCADStudio {
                                     || (Some(handle) == sel_h
                                         && Some(grip_id) == current_vertex_grip)
                             });
+                            let is_hovered = owner.is_some_and(|handle| {
+                                self.grip_hover.as_ref().is_some_and(|hover| {
+                                    hover.handle == handle && hover.grip_id == grip_id
+                                })
+                            });
                             crate::ui::overlay::GripMarker {
                                 pos: screen,
                                 shape,
                                 is_hot,
+                                is_hovered,
                                 dir,
                             }
                         })
@@ -624,7 +671,7 @@ impl OpenCADStudio {
                 dividers,
                 pane_move_rect,
                 pane_drop_rect,
-                tab.pan_mode,
+                tab.pan_mode || tab.orbit_mode,
                 self.ribbon.open_dropdown.is_some(),
                 hover_locked,
                 crosshair_background(tab, is_paper),
@@ -839,15 +886,18 @@ impl OpenCADStudio {
         // both layered ABOVE the viewport mouse_area so they receive
         // clicks (the shader viewport sits below it). Positioned with
         // leading Spaces sized to the viewport's screen rectangle.
-        let active_vp_rect: Option<iced::Rectangle> = if is_paper && !tab.is_start {
-            tab.scene.active_viewport.and_then(|h| {
-                let (cw, ch) = tab.scene.selection.borrow().vp_size;
-                tab.scene.viewport_screen_rect(h, (cw, ch))
-            })
-        } else {
-            None
-        };
-        if let Some(rect) = active_vp_rect {
+        let active_vp_rect: Option<(acadrust::Handle, iced::Rectangle)> =
+            if is_paper && !tab.is_start {
+                tab.scene.active_viewport.and_then(|h| {
+                    let (cw, ch) = tab.scene.selection.borrow().vp_size;
+                    tab.scene
+                        .viewport_screen_rect(h, (cw, ch))
+                        .map(|rect| (h, rect))
+                })
+            } else {
+                None
+            };
+        if let Some((active_vp, rect)) = active_vp_rect {
             // Clip the outline to the visible canvas. Clamping only the origin
             // (max(0.0)) while keeping the full width/height shifted the whole
             // outline inward when the viewport ran off the top/left edge, so
@@ -917,7 +967,7 @@ impl OpenCADStudio {
                 let cube_x = (rect.x + rect.width - VIEWCUBE_HIT_SIZE - VIEWCUBE_PAD).max(0.0);
                 let cube_y = (rect.y + VIEWCUBE_PAD).max(0.0);
 
-                let controls = iced::widget::pin(viewcube_nav_controls())
+                let controls = iced::widget::pin(viewcube_nav_controls(Some(active_vp)))
                     .position(iced::Point::new(cube_x, cube_y));
                 viewport_stack = viewport_stack.push(controls);
 
@@ -956,7 +1006,7 @@ impl OpenCADStudio {
             let cube_y = (rect.y + VIEWCUBE_PAD).max(0.0);
 
             // Cube hit area + nav controls (home / roll / nudge) as one layer.
-            let controls = iced::widget::pin(viewcube_nav_controls())
+            let controls = iced::widget::pin(viewcube_nav_controls(None))
                 .position(iced::Point::new(cube_x, cube_y));
             viewport_stack = viewport_stack.push(controls);
 
@@ -1161,12 +1211,25 @@ impl OpenCADStudio {
             }
         }
 
-        // Quick Properties: compact floating property panel on selection,
-        // anchored at the canvas top-left so it doesn't track the cursor.
+        // Reserve the overlaid command line when placing cursor-anchored panels.
+        let command_line_inset = if self.command_line.history_open {
+            self.command_line.history_height.clamp(
+                crate::ui::command_line::HISTORY_HEIGHT_MIN,
+                crate::ui::command_line::history_max_height(self.win_size.1),
+            ) + 72.0
+        } else {
+            34.0
+        };
+
+        // Quick Properties: stay near the selection cursor, flipping around
+        // it as needed to remain inside the visible drawing area.
         if self.quick_properties && !tab.is_start {
             if let Some(panel) = tab.properties.quick_view() {
-                viewport_stack = viewport_stack
-                    .push(position_canvas_overlay(iced::Point::new(12.0, 12.0), panel));
+                viewport_stack = viewport_stack.push(position_canvas_overlay_near_cursor(
+                    self.quick_properties_anchor,
+                    command_line_inset,
+                    panel,
+                ));
             }
         }
 
@@ -1308,6 +1371,7 @@ impl OpenCADStudio {
                     .collect();
                 viewport_stack = viewport_stack.push(viewport_context_menu_overlay(
                     p,
+                    command_line_inset,
                     has_cmd,
                     has_selection,
                     isolation_active,
@@ -1342,26 +1406,42 @@ impl OpenCADStudio {
             }
         }
 
-        // The Start tab shows its own three-panel page (Recent · Welcome ·
-        // Supporters) in place of the viewport, so the left properties slot is
-        // empty there.
-        let properties_el: Element<'_, Message> = if tab.is_start {
-            Space::new().into()
-        } else if self.show_properties && !self.clean_screen {
-            // On a narrow window the panel collapses to a vertical "Properties"
-            // bar to free width for the viewport; clicking the bar expands it.
-            let narrow = self.win_size.0 < 1000.0;
-            let bar = || collapse_bar("Properties", Message::TogglePropertiesBar);
-            if narrow && !self.props_expanded {
-                bar()
-            } else if narrow {
-                row![bar(), tab.properties.view()].into()
+        // Docked Properties panel. It keeps its pixel width when moved between
+        // edges; auto-collapse swaps the full panel for a hoverable rail.
+        let show_properties = !tab.is_start && self.show_properties && !self.clean_screen;
+        let properties_width = self
+            .properties_width
+            .min((self.win_size.0 * 0.45).clamp(220.0, 600.0));
+        let properties_el: Option<Element<'_, Message>> = show_properties.then(|| {
+            let narrow_collapsed = self.win_size.0 < 1000.0
+                && !self.props_expanded
+                && !self.properties_hovered;
+            let auto_collapsed = self.properties_auto_collapse
+                && !self.properties_hovered
+                && !self.properties_dragging
+                && !self.properties_resizing;
+            if narrow_collapsed || auto_collapsed {
+                collapse_bar(
+                    "Properties",
+                    self.properties_side,
+                    Message::TogglePropertiesBar,
+                    Message::PropertiesHover(true),
+                )
             } else {
-                tab.properties.view()
+                let panel = tab
+                    .properties
+                    .view(properties_width, self.properties_auto_collapse);
+                let divider = properties_divider();
+                let group: Element<'_, Message> = match self.properties_side {
+                    crate::app::config::DockSide::Left => row![panel, divider].into(),
+                    crate::app::config::DockSide::Right => row![divider, panel].into(),
+                };
+                mouse_area(group)
+                    .on_enter(Message::PropertiesHover(true))
+                    .on_exit(Message::PropertiesHover(false))
+                    .into()
             }
-        } else {
-            Space::new().into()
-        };
+        });
 
         // Drawing viewports keep the command line as a bottom-centre overlay so
         // the input stays close to the cursor. The Start page gives it a real
@@ -1378,11 +1458,65 @@ impl OpenCADStudio {
             (self.dyn_input && tab.active_cmd.is_some() && !tab.dyn_fields.is_empty())
                 || self.mtext_editor.as_ref().is_some_and(|e| e.show_preview)
                 || self.text_inline.is_some();
-        let workspace = row![properties_el, viewport_stack].width(Fill).height(Fill);
+        let workspace: Element<'_, Message> = match (properties_el, self.properties_side) {
+            (Some(properties), crate::app::config::DockSide::Left) => {
+                row![properties, viewport_stack].width(Fill).height(Fill).into()
+            }
+            (Some(properties), crate::app::config::DockSide::Right) => {
+                row![viewport_stack, properties].width(Fill).height(Fill).into()
+            }
+            (None, _) => container(viewport_stack).width(Fill).height(Fill).into(),
+        };
+        let workspace: Element<'_, Message> = if self.properties_dragging {
+            let preview_side = self.properties_dock_preview.unwrap_or(self.properties_side);
+            let preview = container(Space::new())
+                .width(Length::Fixed(properties_width))
+                .height(Fill)
+                .style(|theme: &Theme| {
+                    let palette = theme.palette();
+                    container::Style {
+                        background: Some(Background::Color(
+                            palette.primary.weak.color.scale_alpha(0.72),
+                        )),
+                        border: Border {
+                            color: palette.primary.base.color,
+                            width: 2.0,
+                            radius: 0.0.into(),
+                        },
+                        ..Default::default()
+                    }
+                });
+            let preview = container(preview)
+                .width(Fill)
+                .height(Fill)
+                .align_x(match preview_side {
+                    crate::app::config::DockSide::Left => iced::alignment::Horizontal::Left,
+                    crate::app::config::DockSide::Right => iced::alignment::Horizontal::Right,
+                });
+            stack![workspace, preview].width(Fill).height(Fill).into()
+        } else {
+            workspace
+        };
+        let workspace: Element<'_, Message> = if self.properties_dragging
+            || self.properties_resizing
+        {
+            mouse_area(workspace)
+                .on_move(Message::PropertiesDragMove)
+                .on_release(Message::PropertiesDragRelease)
+                .interaction(if self.properties_resizing {
+                    iced::mouse::Interaction::ResizingHorizontally
+                } else {
+                    iced::mouse::Interaction::Grabbing
+                })
+                .into()
+        } else {
+            workspace
+        };
         let command_line = self.command_line.view(
             allow_autocomplete,
             dyn_capturing,
             &self.history_content,
+            self.win_size.1,
         );
         let center_stack: Element<'_, Message> = if tab.is_start {
             column![
@@ -1416,6 +1550,16 @@ impl OpenCADStudio {
                 .width(Fill)
                 .height(Fill)
                 .into()
+        };
+
+        let center_stack: Element<'_, Message> = if self.command_history_resizing {
+            mouse_area(center_stack)
+                .on_move(Message::CommandHistoryResizeMove)
+                .on_release(Message::CommandHistoryResizeRelease)
+                .interaction(iced::mouse::Interaction::ResizingVertically)
+                .into()
+        } else {
+            center_stack
         };
 
         let main_ui = container({
@@ -1773,12 +1917,10 @@ impl OpenCADStudio {
                         text,
                         ..
                     }) => {
-                        // Platform-aware accelerator modifier: Cmd on macOS,
-                        // Ctrl on Windows/Linux. Using `command()` rather than
-                        // `control()` makes Cmd+C/V/S/Z etc. work on Mac, per
-                        // the platform's keyboard conventions.
+                        #[cfg(target_arch = "wasm32")]
                         let accel = modifiers.command();
-                        let shift = modifiers.shift();
+                        let shortcut_modifier =
+                            modifiers.control() || modifiers.alt() || modifiers.logo();
                         // Any key that produces a printable glyph types it,
                         // even when its logical key resolves to navigation
                         // (NumLock-on Numpad8 / Numpad2 arrive as
@@ -1791,7 +1933,7 @@ impl OpenCADStudio {
                         // (a comma on German/European layouts), which the
                         // coordinate parser rejects. Force it to a decimal point
                         // from the physical key, independent of layout.
-                        if !accel
+                        if !shortcut_modifier
                             && status == Status::Ignored
                             && matches!(
                                 physical_key,
@@ -1803,7 +1945,7 @@ impl OpenCADStudio {
                         {
                             return Some(Message::CommandAppendChar(".".to_string()));
                         }
-                        if !accel && status == Status::Ignored {
+                        if !shortcut_modifier && status == Status::Ignored {
                             if let Some(t) = text.as_deref() {
                                 if !t.is_empty()
                                     && t.chars().all(|c| !c.is_control() && !c.is_whitespace())
@@ -1812,125 +1954,23 @@ impl OpenCADStudio {
                                 }
                             }
                         }
-                        match key {
-                            // Space is a literal space inside the MText preview
-                            // but finalises a command otherwise; the handler
-                            // decides based on editor state.
-                            keyboard::Key::Named(keyboard::key::Named::Space)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::CommandSpace)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::Enter)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::CommandFinalize)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                                Some(Message::CommandEscape)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::Delete)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::DeleteSelected)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::Backspace)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::CommandBackspace)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::Tab)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::DynTabNext)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowUp)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::CommandHistoryPrev)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowDown)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::CommandHistoryNext)
-                            }
-                            // Caret movement in the MText preview (no-op
-                            // otherwise; these arrows are unused elsewhere).
-                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::MTextCaretMove(-1))
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowRight)
-                                if status == Status::Ignored =>
-                            {
-                                Some(Message::MTextCaretMove(1))
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F3) => {
-                                Some(Message::ToggleSnapEnabled)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F7) => {
-                                Some(Message::ToggleGrid)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F8) => {
-                                Some(Message::ToggleOrtho)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F9) => {
-                                Some(Message::ToggleGridSnap)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F10) => {
-                                Some(Message::TogglePolar)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F11) => {
-                                Some(Message::ToggleOTrack)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::F12) => {
-                                Some(Message::ToggleDynInput)
-                            }
-                            keyboard::Key::Character(c) if accel => match c.as_str() {
-                                "n" => Some(Message::TabNew),
-                                "o" => Some(Message::OpenFile),
-                                "s" if !shift => Some(Message::SaveFile),
-                                "s" if shift => Some(Message::SaveAs),
-                                "z" if !shift => Some(Message::Undo),
-                                "z" if shift => Some(Message::Redo),
-                                "y" => Some(Message::Redo),
-                                "f" | "h" => Some(Message::FindReplaceOpen),
-                                // Ctrl/Cmd+A: select all layer rows when the
-                                // Layer Manager is open, else all objects. The
-                                // update handler branches on the active modal.
-                                "a" if status == Status::Ignored => {
-                                    Some(Message::SelectAllShortcut)
+                        // A focused web text field needs the browser clipboard;
+                        // drawing shortcuts only run for ignored C/V events.
+                        #[cfg(target_arch = "wasm32")]
+                        if accel && status == Status::Captured {
+                            if let keyboard::Key::Character(value) = &key {
+                                if value.eq_ignore_ascii_case("v") {
+                                    return Some(Message::WebFieldPaste);
                                 }
-                                // Clipboard accelerators defer to a focused
-                                // text widget: when the command-line history
-                                // editor (or any text field) captures Ctrl+C/
-                                // X/V it copies/cuts/pastes its own text and
-                                // marks the event Captured, so we must NOT also
-                                // fire the drawing's COPYCLIP/CUTCLIP/paste.
-                                // Only when nothing captured (the drawing has
-                                // focus, status Ignored) do these run. (#232)
-                                "c" if status == Status::Ignored => {
-                                    Some(Message::Command("COPYCLIP".to_string()))
+                                if value.eq_ignore_ascii_case("c") {
+                                    return Some(Message::WebFieldCopy);
                                 }
-                                "x" if status == Status::Ignored => {
-                                    Some(Message::Command("CUTCLIP".to_string()))
-                                }
-                                "v" if status == Status::Ignored => Some(Message::PasteShortcut),
-                                // Web: a focused text field captured Ctrl+C/V,
-                                // but iced's clipboard is a no-op there — route
-                                // through the async browser clipboard (#346).
-                                #[cfg(target_arch = "wasm32")]
-                                "v" => Some(Message::WebFieldPaste),
-                                #[cfg(target_arch = "wasm32")]
-                                "c" => Some(Message::WebFieldCopy),
-                                _ => None,
-                            },
-                            // Printable glyphs are already handled by the
-                            // text guard above the match; anything reaching
-                            // here is a non-typing key we don't bind.
-                            _ => None,
+                            }
                         }
+                        let shortcut = shortcut_key_name(&key, modifiers)?;
+                        (status == Status::Ignored
+                            || crate::app::shortcuts::is_global_key(&shortcut))
+                        .then_some(Message::ShortcutPressed(shortcut))
                     }
                     _ => None,
                 }
@@ -2200,6 +2240,7 @@ fn pane_mouse_area<'a>(idx: usize) -> Element<'a, Message> {
 /// Canvas that draws a label rotated 90° (for a collapsed panel's bar).
 struct VBarLabel {
     text: String,
+    clockwise: bool,
 }
 
 impl canvas::Program<Message> for VBarLabel {
@@ -2216,7 +2257,11 @@ impl canvas::Program<Message> for VBarLabel {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         frame.with_save(|frame| {
             frame.translate(iced::Vector::new(bounds.width / 2.0, bounds.height / 2.0));
-            frame.rotate(iced::Radians(std::f32::consts::FRAC_PI_2));
+            frame.rotate(iced::Radians(if self.clockwise {
+                std::f32::consts::FRAC_PI_2
+            } else {
+                -std::f32::consts::FRAC_PI_2
+            }));
             frame.fill_text(canvas::Text {
                 content: self.text.clone(),
                 position: iced::Point::ORIGIN,
@@ -2233,10 +2278,17 @@ impl canvas::Program<Message> for VBarLabel {
 }
 
 /// A collapsed panel rendered as a tall narrow bar with its name written along
-/// it, rotated 90°. Pressing it emits `on_press`.
-pub(super) fn collapse_bar<'a>(name: &str, on_press: Message) -> Element<'a, Message> {
+/// it. It can be clicked on narrow windows or expanded by hover when auto-hide
+/// is enabled.
+pub(super) fn collapse_bar<'a>(
+    name: &str,
+    side: crate::app::config::DockSide,
+    on_press: Message,
+    on_enter: Message,
+) -> Element<'a, Message> {
     let label = canvas(VBarLabel {
         text: name.to_string(),
+        clockwise: side == crate::app::config::DockSide::Left,
     })
     .width(Fill)
     .height(Fill);
@@ -2259,7 +2311,27 @@ pub(super) fn collapse_bar<'a>(name: &str, on_press: Message) -> Element<'a, Mes
     )
     .interaction(iced::mouse::Interaction::Pointer)
     .on_press(on_press)
+    .on_enter(on_enter)
     .into()
+}
+
+/// Grabbable separator between the docked panel and drawing view. The visible
+/// line is wider than a single pixel so it remains discoverable in every theme.
+fn properties_divider() -> Element<'static, Message> {
+    let line = container(Space::new())
+        .width(Length::Fixed(5.0))
+        .height(Fill)
+        .style(|theme: &Theme| container::Style {
+            background: Some(Background::Color(
+                theme.palette().background.neutral.color,
+            )),
+            ..Default::default()
+        });
+    mouse_area(line)
+        .on_press(Message::PropertiesResizeGrab)
+        .on_double_click(Message::PropertiesWidthReset)
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .into()
 }
 
 const START_ACTION_RADIUS: f32 = 6.0;
@@ -2744,8 +2816,8 @@ fn start_page_content<'a>(
         })
         .width(Fill);
         for (name, cents) in patrons {
-            // Cents → the campaign currency's main unit. Symbol assumed "$";
-            // adjust if the campaign bills in another currency.
+            // Patreon payments are normalized to USD cents while the list is
+            // generated; hand-maintained entries use USD cents as well.
             let amount = format!("${:.2}", *cents as f64 / 100.0);
             list = list.push(
                 iced::widget::row![

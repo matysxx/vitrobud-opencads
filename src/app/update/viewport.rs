@@ -11,7 +11,7 @@ use crate::app::{Message, OpenCADStudio, POLY_START_DELAY_MS};
 use crate::modules::ModuleEvent;
 use crate::scene::model::object::GripApply;
 use crate::scene::pick::grip::{
-    find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit, GripTarget,
+    find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit, GripEditMode, GripTarget,
 };
 use crate::scene::{
     self, hover_id, CubeRegion, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX,
@@ -225,18 +225,21 @@ impl OpenCADStudio {
         p: iced::Point,
         bounds: iced::Rectangle,
     ) -> glam::DVec3 {
-        // Constrain to the UCS plane only where the UCS applies (model space or
-        // inside a viewport); plain paper space uses the target plane.
-        let plane = self.tabs[i]
-            .active_ucs
-            .as_ref()
-            .filter(|_| self.tabs[i].editing_model_space())
-            .map(|ucs| {
-                (
+        // Model-space input always belongs to a drawing plane. With no active
+        // UCS that plane is world XY; using the camera target plane and only
+        // clearing Z afterwards shifts the picked point on screen in an
+        // oblique view. Plain paper space still uses the camera target plane.
+        let plane = if self.tabs[i].editing_model_space() {
+            Some(match self.tabs[i].active_ucs.as_ref() {
+                Some(ucs) => (
                     ucs_z_axis(ucs),
                     glam::DVec3::new(ucs.origin.x, ucs.origin.y, ucs.origin.z),
-                )
-            });
+                ),
+                None => (glam::DVec3::Z, glam::DVec3::ZERO),
+            })
+        } else {
+            None
+        };
         let pick = |cam: &crate::scene::view::camera::Camera| match plane {
             Some((normal, origin)) => cam.pick_on_plane(p, bounds, normal.as_vec3(), origin),
             None => cam.pick_on_target_plane(p, bounds),
@@ -341,6 +344,7 @@ impl OpenCADStudio {
             grip_id,
             origin_world: world,
             last_world: world,
+            mode: GripEditMode::Stretch,
             targets,
         }
     }
@@ -478,6 +482,12 @@ impl OpenCADStudio {
                 if let Some(session) = self.tabs[i].active_block_edit_session_mut() {
                     session.editor_camera = camera;
                 }
+            } else if self.tabs[i].scene.active_viewport.is_some() {
+                // Floating-viewport navigation writes its camera straight to
+                // the viewport entity. Syncing the separate main camera here
+                // can overwrite the saved Model/Paper view with a camera that
+                // does not own this change.
+                self.tabs[i].dirty = true;
             } else if self.tabs[i].scene.sync_camera_to_document() {
                 self.tabs[i].dirty = true;
             }
@@ -537,7 +547,11 @@ impl OpenCADStudio {
         Task::none()
     }
 
-    pub(super) fn on_cursor_moved(&mut self, p: Point) -> Task<Message> {
+    pub(super) fn on_cursor_moved(
+        &mut self,
+        p: Point,
+        expected_viewport: Option<acadrust::Handle>,
+    ) -> Task<Message> {
         if self.color_pick_target.is_some() {
             return Task::none();
         }
@@ -548,6 +562,12 @@ impl OpenCADStudio {
         // the full canvas in model space, or of the active
         // viewport's screen rectangle in a paper layout.
         let i = self.active_tab;
+        if self.tabs[i].scene.active_viewport != expected_viewport
+            || (expected_viewport.is_none()
+                && self.tabs[i].scene.current_layout != "Model")
+        {
+            return Task::none();
+        }
         let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
         let (ox, oy) = match self.tabs[i]
             .scene
@@ -712,7 +732,7 @@ impl OpenCADStudio {
                 // — the requested Zoom=wheel / Pan=MMB / Rotate=Shift+MMB
                 // scheme (#229). Floating viewports and paper keep the
                 // plain MMB pan.
-                if self.shift_down {
+                if self.shift_down || self.tabs[i].orbit_mode {
                     if self.tabs[i].scene.active_viewport.is_some() {
                         // Orbit the floating viewport's own model view.
                         drop(sel);
@@ -742,8 +762,12 @@ impl OpenCADStudio {
                         self.tabs[i].scene.selection.borrow_mut().middle_last_pos = Some(p);
                         return Task::none();
                     }
-                    // Paper sheet is top-locked: Shift+MMB falls through
-                    // to the plain pan below.
+                    // Paper sheet is top-locked. Shift+MMB keeps its existing
+                    // pan fallback; the explicit orbit tool does nothing here.
+                    if self.tabs[i].orbit_mode {
+                        sel.middle_last_pos = Some(p);
+                        return Task::none();
+                    }
                 }
                 // Pan scale uses the active tile's size (ortho size
                 // is relative to viewport height), so a tiled pane
@@ -1000,18 +1024,91 @@ impl OpenCADStudio {
             let snap_ms = snap_started.elapsed().as_secs_f64() * 1000.0;
             let apply_started = Instant::now();
             let delta = snapped - grip.last_world;
-            let actions: Vec<_> = grip
-                .targets
-                .iter()
-                .map(|target| {
-                    let apply = if target.is_translate {
-                        GripApply::Translate(delta)
-                    } else {
-                        GripApply::Absolute(target.last_world + delta)
-                    };
-                    (target.handle, target.grip_id, apply)
-                })
-                .collect();
+            let lengthen = grip.mode == GripEditMode::Lengthen;
+            let actions: Vec<_> = if lengthen {
+                Vec::new()
+            } else {
+                grip.targets
+                    .iter()
+                    .map(|target| {
+                        let apply = if target.is_translate {
+                            GripApply::Translate(delta)
+                        } else {
+                            GripApply::Absolute(target.last_world + delta)
+                        };
+                        (target.handle, target.grip_id, apply)
+                    })
+                    .collect()
+            };
+            if lengthen {
+                let original = self
+                    .grip_originals
+                    .iter()
+                    .find(|(handle, _)| *handle == grip.handle)
+                    .map(|(_, entity)| entity.clone());
+                if let Some(original) = original {
+                    let action = crate::scene::model::object::GripMenuAction::Lengthen;
+                    let value = crate::scene::view::dispatch::grip_menu_point_value(
+                        &original,
+                        grip.grip_id,
+                        action,
+                        snapped,
+                    );
+                    if let Some(value) = value {
+                        if let Some(current) =
+                            self.tabs[i].scene.document.get_entity_mut(grip.handle)
+                        {
+                            *current = original;
+                            crate::entities::traits::EntityTypeOps::apply_grip_menu_value(
+                                current,
+                                grip.grip_id,
+                                action,
+                                value,
+                            );
+                        }
+                    }
+                }
+            }
+            // Arc point grips are coupled: moving one point must rebuild the
+            // circle from the drag-start start/middle/end set, otherwise the
+            // supposedly fixed points drift a little on every mouse event.
+            let mut arc_grip_edits: rustc_hash::FxHashMap<
+                Handle,
+                Vec<(usize, glam::DVec3)>,
+            > = rustc_hash::FxHashMap::default();
+            for (handle, grip_id, apply) in &actions {
+                if let GripApply::Absolute(point) = apply {
+                    if (1..=3).contains(grip_id) {
+                        arc_grip_edits
+                            .entry(*handle)
+                            .or_default()
+                            .push((*grip_id, *point));
+                    }
+                }
+            }
+            let mut rebuilt_arcs = rustc_hash::FxHashSet::default();
+            for (handle, edits) in arc_grip_edits {
+                let original = self
+                    .grip_originals
+                    .iter()
+                    .find(|(original_handle, _)| *original_handle == handle)
+                    .map(|(_, entity)| entity.clone());
+                let Some(original) = original else {
+                    continue;
+                };
+                let Some(current) = self.tabs[i].scene.document.get_entity_mut(handle) else {
+                    continue;
+                };
+                if crate::scene::view::dispatch::refit_arc_grips(
+                    current,
+                    &original,
+                    &edits,
+                )
+                .is_some()
+                {
+                    rebuilt_arcs.insert(handle);
+                }
+            }
             let refit_arc_targets: Vec<_> = grip
                 .targets
                 .iter()
@@ -1030,7 +1127,9 @@ impl OpenCADStudio {
                 })
                 .collect();
             for (handle, grip_id, apply) in actions {
-                self.tabs[i].scene.apply_grip(handle, grip_id, apply);
+                if !rebuilt_arcs.contains(&handle) {
+                    self.tabs[i].scene.apply_grip(handle, grip_id, apply);
+                }
             }
             for (handle, vertex_id, original_bulge) in refit_arc_targets {
                 if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
@@ -2106,10 +2205,9 @@ impl OpenCADStudio {
         };
         let (vw, vh) = vp_size;
 
-        // PAN mode: a left press begins a pan drag. Reuse the middle-
-        // button pan path (the move handler pans whenever `middle_down`),
-        // so no selection/pick logic runs while panning.
-        if self.tabs[i].pan_mode {
+        // Interactive navigation tools reuse the middle-button movement path,
+        // so no selection/pick logic runs while the left button drives them.
+        if self.tabs[i].orbit_mode || self.tabs[i].pan_mode {
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
             sel.middle_down = true;
             sel.middle_last_pos = Some(p);
@@ -2278,12 +2376,13 @@ impl OpenCADStudio {
     pub(super) fn on_viewport_left_release(&mut self) -> Task<Message> {
         let i = self.active_tab;
 
-        // PAN mode: end the pan drag but stay in pan mode for the next
-        // drag (exit is Esc / another command). Mirror of the press.
-        if self.tabs[i].pan_mode {
+        // Navigation mode: end this drag but keep the tool armed for the next
+        // left drag (exit is Esc / another command). Mirror of the press.
+        if self.tabs[i].orbit_mode || self.tabs[i].pan_mode {
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
             sel.middle_down = false;
             sel.middle_last_pos = None;
+            sel.orbit_pivot = None;
             return Task::none();
         }
 
@@ -2330,6 +2429,10 @@ impl OpenCADStudio {
             if is_click && !moved {
                 // Engaging click — stay hot, wait for the placement click.
                 return Task::none();
+            }
+            if grip.mode == GripEditMode::Lengthen {
+                self.grip_pending = None;
+                self.command_line.input.clear();
             }
             let added_vertex_focus = grip.targets.iter().find_map(|target| {
                 let original = self
@@ -3447,6 +3550,10 @@ impl OpenCADStudio {
             sel.left_dragging = false;
         }
 
+        if selection_just_completed {
+            self.quick_properties_anchor = p_full;
+        }
+
         if is_gathering && selection_just_completed {
             let handles: Vec<Handle> = self.tabs[i]
                 .scene
@@ -3799,8 +3906,17 @@ impl OpenCADStudio {
         }
     }
 
-    pub(super) fn on_viewport_click(&mut self) -> Task<Message> {
+    pub(super) fn on_viewport_click(
+        &mut self,
+        expected_viewport: Option<acadrust::Handle>,
+    ) -> Task<Message> {
         let i = self.active_tab;
+        if self.tabs[i].scene.active_viewport != expected_viewport
+            || (expected_viewport.is_none()
+                && self.tabs[i].scene.current_layout != "Model")
+        {
+            return Task::none();
+        }
         let rot = self.tabs[i].scene.active_view_rotation_mat();
         let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
         // The ViewCube draws in the top-right of whichever area
@@ -3842,17 +3958,17 @@ impl OpenCADStudio {
             } else {
                 scene::CubeRegion::Corner(id)
             };
-            return Task::done(Message::ViewCubeSnap(region));
+            return self.on_view_cube_snap(region);
         }
         if let Some(region) = scene::hit_test(cx, cy, w, h, rot, VIEWCUBE_PX) {
-            return Task::done(Message::ViewCubeSnap(region));
+            return self.on_view_cube_snap(region);
         }
         // Compass cardinals are world-fixed: hit-test through the camera-
         // only rotation (strip the UCS) so the target matches the drawn
         // N/E/S/W, and snap in world frame.
         let rot_world = rot * self.tabs[i].scene.viewcube_ucs_mat().inverse();
         if let Some(card) = scene::hit_test_cardinal(cx, cy, w, h, rot_world, VIEWCUBE_PX) {
-            return Task::done(Message::ViewCubeSnapWorld(card.face_region()));
+            return self.on_view_cube_snap_world(card.face_region());
         }
         Task::none()
     }

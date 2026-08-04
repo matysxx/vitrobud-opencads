@@ -5,13 +5,97 @@
 //! version-aware implementation is accepted by acadifc upstream.
 
 use acadrust::entities::{EntityCommon, EntityType};
-use acadrust::io::dxf::{DxfBinaryWriter, DxfStreamWriter, DxfStreamWriterExt};
-use acadrust::types::{BoundingBox3D, Vector3};
-use acadrust::{CadDocument, DxfReader};
+use acadrust::types::{BoundingBox3D, Color, Vector3};
+use acadrust::CadDocument;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Cursor;
+use std::io::Write;
 
 const SENTINEL: &[u8] = b"AutoCAD Binary DXF\r\n\x1a\0";
+
+/// Pre-R13 binary DXF uses a one-byte group code. Codes that do not fit in a
+/// byte use the documented 0xFF escape followed by a little-endian u16. The
+/// general acadifc writer always uses a u16 and therefore cannot frame AC1009.
+struct R12BinaryWriter<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> R12BinaryWriter<W> {
+    fn new(mut writer: W) -> Result<Self, String> {
+        writer
+            .write_all(SENTINEL)
+            .map_err(|error| error.to_string())?;
+        Ok(Self { writer })
+    }
+
+    fn write_code(&mut self, code: u16) -> Result<(), String> {
+        if code < 0xFF {
+            self.writer
+                .write_all(&[code as u8])
+                .map_err(|error| error.to_string())
+        } else {
+            self.writer
+                .write_all(&[0xFF])
+                .and_then(|_| self.writer.write_all(&code.to_le_bytes()))
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    fn write_string(&mut self, code: u16, value: &str) -> Result<(), String> {
+        if value.as_bytes().contains(&0) {
+            return Err("R12 string contains an embedded NUL byte".to_string());
+        }
+        self.write_code(code)?;
+        let sanitized = value
+            .replace("\r\n", "\\P")
+            .replace('\r', "\\P")
+            .replace('\n', "\\P");
+        self.writer
+            .write_all(sanitized.as_bytes())
+            .and_then(|_| self.writer.write_all(&[0]))
+            .map_err(|error| error.to_string())
+    }
+
+    fn write_i16(&mut self, code: u16, value: i16) -> Result<(), String> {
+        self.write_code(code)?;
+        self.writer
+            .write_all(&value.to_le_bytes())
+            .map_err(|error| error.to_string())
+    }
+
+    fn write_double(&mut self, code: u16, value: f64) -> Result<(), String> {
+        self.write_code(code)?;
+        self.writer
+            .write_all(&value.to_le_bytes())
+            .map_err(|error| error.to_string())
+    }
+
+    fn write_point3d(&mut self, code: u16, point: Vector3) -> Result<(), String> {
+        self.write_double(code, point.x)?;
+        self.write_double(code + 10, point.y)?;
+        self.write_double(code + 20, point.z)
+    }
+
+    fn write_color(&mut self, code: u16, color: Color) -> Result<(), String> {
+        self.write_i16(code, color.approximate_index())
+    }
+
+    fn write_section_start(&mut self, name: &str) -> Result<(), String> {
+        self.write_string(0, "SECTION")?;
+        self.write_string(2, name)
+    }
+
+    fn write_section_end(&mut self) -> Result<(), String> {
+        self.write_string(0, "ENDSEC")
+    }
+
+    fn write_eof(&mut self) -> Result<(), String> {
+        self.write_string(0, "EOF")
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        self.writer.flush().map_err(|error| error.to_string())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportReport {
@@ -69,18 +153,18 @@ pub fn export_to_bytes(document: &CadDocument) -> Result<(Vec<u8>, ExportReport)
 
     let mut bytes = Vec::with_capacity((entities.len() + 32) * 192);
     {
-        let mut writer = DxfBinaryWriter::new(&mut bytes).map_err(|error| error.to_string())?;
-        write_header(&mut writer, bounds).map_err(|error| error.to_string())?;
-        write_tables(&mut writer, &layers).map_err(|error| error.to_string())?;
-        writer.write_section_start("BLOCKS").map_err(|e| e.to_string())?;
-        writer.write_section_end().map_err(|e| e.to_string())?;
-        writer.write_section_start("ENTITIES").map_err(|e| e.to_string())?;
+        let mut writer = R12BinaryWriter::new(&mut bytes)?;
+        write_header(&mut writer, bounds)?;
+        write_tables(&mut writer, &layers)?;
+        writer.write_section_start("BLOCKS")?;
+        writer.write_section_end()?;
+        writer.write_section_start("ENTITIES")?;
         for entity in &entities {
-            write_entity(&mut writer, entity).map_err(|error| error.to_string())?;
+            write_entity(&mut writer, entity)?;
         }
-        writer.write_section_end().map_err(|e| e.to_string())?;
-        writer.write_eof().map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
+        writer.write_section_end()?;
+        writer.write_eof()?;
+        writer.flush()?;
     }
 
     verify(&bytes, entities.len())?;
@@ -239,9 +323,9 @@ fn is_r12_linetype(name: &str) -> bool {
 }
 
 fn write_header<W: std::io::Write>(
-    writer: &mut DxfBinaryWriter<W>,
+    writer: &mut R12BinaryWriter<W>,
     bounds: BoundingBox3D,
-) -> acadrust::Result<()> {
+) -> Result<(), String> {
     writer.write_section_start("HEADER")?;
     writer.write_string(9, "$ACADVER")?;
     writer.write_string(1, "AC1009")?;
@@ -253,9 +337,9 @@ fn write_header<W: std::io::Write>(
 }
 
 fn write_tables<W: std::io::Write>(
-    writer: &mut DxfBinaryWriter<W>,
+    writer: &mut R12BinaryWriter<W>,
     layers: &BTreeMap<String, i16>,
-) -> acadrust::Result<()> {
+) -> Result<(), String> {
     writer.write_section_start("TABLES")?;
     writer.write_string(0, "TABLE")?;
     writer.write_string(2, "LTYPE")?;
@@ -282,7 +366,10 @@ fn write_tables<W: std::io::Write>(
     writer.write_section_end()
 }
 
-fn write_common<W: std::io::Write>(writer: &mut DxfBinaryWriter<W>, common: &EntityCommon) -> acadrust::Result<()> {
+fn write_common<W: std::io::Write>(
+    writer: &mut R12BinaryWriter<W>,
+    common: &EntityCommon,
+) -> Result<(), String> {
     writer.write_string(8, if common.layer.trim().is_empty() { "0" } else { &common.layer })?;
     if !matches!(common.color, acadrust::types::Color::ByLayer) {
         writer.write_color(62, common.color)?;
@@ -299,7 +386,10 @@ fn write_common<W: std::io::Write>(writer: &mut DxfBinaryWriter<W>, common: &Ent
     Ok(())
 }
 
-fn write_entity<W: std::io::Write>(writer: &mut DxfBinaryWriter<W>, entity: &EntityType) -> acadrust::Result<()> {
+fn write_entity<W: std::io::Write>(
+    writer: &mut R12BinaryWriter<W>,
+    entity: &EntityType,
+) -> Result<(), String> {
     match entity {
         EntityType::Point(value) => {
             writer.write_string(0, "POINT")?;
@@ -381,12 +471,6 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
     if !bytes.starts_with(SENTINEL) {
         return Err("R12 verification failed: missing binary DXF sentinel".to_string());
     }
-    let reread = DxfReader::from_reader(Cursor::new(bytes.to_vec()))
-        .and_then(DxfReader::read)
-        .map_err(|error| format!("R12 verification failed: {error}"))?;
-    if !bytes.windows(b"AC1009".len()).any(|window| window == b"AC1009") {
-        return Err("R12 verification failed: missing AC1009 header".to_string());
-    }
     for forbidden in [b"CLASSES".as_slice(), b"OBJECTS", b"LWPOLYLINE", b"BLOCK_RECORD"] {
         if bytes.windows(forbidden.len()).any(|window| window == forbidden) {
             return Err(format!(
@@ -395,9 +479,167 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
             ));
         }
     }
-    let actual = reread.entities().count();
-    if actual != expected_entities {
-        return Err(format!("R12 verification failed: expected {expected_entities} entities, read {actual}"));
+
+    let mut cursor = SENTINEL.len();
+    let mut section: Option<Vec<u8>> = None;
+    let mut awaiting_section_name = false;
+    let mut sections = BTreeSet::new();
+    let mut acadver_pending = false;
+    let mut found_ac1009 = false;
+    let mut found_eof = false;
+    let mut actual_entities = 0usize;
+
+    while cursor < bytes.len() {
+        let (code, value) = read_strict_r12_group(bytes, &mut cursor)?;
+        if acadver_pending {
+            found_ac1009 = code == 1 && value.as_text() == Some(b"AC1009".as_slice());
+            acadver_pending = false;
+        }
+        if code == 9 && value.as_text() == Some(b"$ACADVER".as_slice()) {
+            acadver_pending = true;
+        }
+        if awaiting_section_name {
+            let Some(name) = value.as_text().filter(|_| code == 2) else {
+                return Err(
+                    "R12 verification failed: SECTION is not followed by a section name"
+                        .to_string(),
+                );
+            };
+            section = Some(name.to_vec());
+            sections.insert(name.to_vec());
+            awaiting_section_name = false;
+            continue;
+        }
+        if code != 0 {
+            continue;
+        }
+        let Some(record) = value.as_text() else {
+            return Err("R12 verification failed: group 0 is not a string".to_string());
+        };
+        match record {
+            b"SECTION" => {
+                if section.is_some() {
+                    return Err("R12 verification failed: nested SECTION".to_string());
+                }
+                awaiting_section_name = true;
+            }
+            b"ENDSEC" => {
+                if section.take().is_none() {
+                    return Err("R12 verification failed: ENDSEC outside a section".to_string());
+                }
+            }
+            b"EOF" => {
+                if section.is_some() || cursor != bytes.len() {
+                    return Err(
+                        "R12 verification failed: EOF is not the final top-level record"
+                            .to_string(),
+                    );
+                }
+                found_eof = true;
+            }
+            b"POINT" | b"LINE" | b"CIRCLE" | b"ARC" | b"POLYLINE"
+                if section.as_deref() == Some(b"ENTITIES".as_slice()) =>
+            {
+                actual_entities += 1;
+            }
+            _ => {}
+        }
+    }
+
+    if awaiting_section_name || section.is_some() {
+        return Err("R12 verification failed: unterminated section".to_string());
+    }
+    for required in [b"HEADER".as_slice(), b"TABLES", b"BLOCKS", b"ENTITIES"] {
+        if !sections.contains(required) {
+            return Err(format!(
+                "R12 verification failed: missing {} section",
+                String::from_utf8_lossy(required)
+            ));
+        }
+    }
+    if !found_ac1009 {
+        return Err("R12 verification failed: missing AC1009 header".to_string());
+    }
+    if !found_eof {
+        return Err("R12 verification failed: missing EOF".to_string());
+    }
+    if actual_entities != expected_entities {
+        return Err(format!(
+            "R12 verification failed: expected {expected_entities} entities, read {actual_entities}"
+        ));
     }
     Ok(())
+}
+
+enum StrictR12Value<'a> {
+    Text(&'a [u8]),
+    I16,
+    Double,
+}
+
+impl<'a> StrictR12Value<'a> {
+    fn as_text(&self) -> Option<&'a [u8]> {
+        match self {
+            Self::Text(value) => Some(value),
+            Self::I16 | Self::Double => None,
+        }
+    }
+}
+
+fn read_strict_r12_group<'a>(
+    bytes: &'a [u8],
+    cursor: &mut usize,
+) -> Result<(u16, StrictR12Value<'a>), String> {
+    let first = *bytes
+        .get(*cursor)
+        .ok_or_else(|| "R12 verification failed: truncated group code".to_string())?;
+    *cursor += 1;
+    let code = if first == 0xFF {
+        let code_bytes = bytes
+            .get(*cursor..*cursor + 2)
+            .ok_or_else(|| "R12 verification failed: truncated extended group code".to_string())?;
+        *cursor += 2;
+        u16::from_le_bytes([code_bytes[0], code_bytes[1]])
+    } else {
+        first as u16
+    };
+
+    let value = match code {
+        0..=9 => {
+            let tail = bytes
+                .get(*cursor..)
+                .ok_or_else(|| "R12 verification failed: truncated string".to_string())?;
+            let length = tail
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or_else(|| "R12 verification failed: unterminated string".to_string())?;
+            let value = &tail[..length];
+            *cursor += length + 1;
+            StrictR12Value::Text(value)
+        }
+        10..=59 => {
+            let value = bytes
+                .get(*cursor..*cursor + 8)
+                .ok_or_else(|| "R12 verification failed: truncated double".to_string())?;
+            let number = f64::from_le_bytes(value.try_into().expect("eight-byte slice"));
+            if !number.is_finite() {
+                return Err("R12 verification failed: non-finite numeric value".to_string());
+            }
+            *cursor += 8;
+            StrictR12Value::Double
+        }
+        60..=79 => {
+            bytes
+                .get(*cursor..*cursor + 2)
+                .ok_or_else(|| "R12 verification failed: truncated i16".to_string())?;
+            *cursor += 2;
+            StrictR12Value::I16
+        }
+        _ => {
+            return Err(format!(
+                "R12 verification failed: unsupported group code {code} in compatibility stream"
+            ));
+        }
+    };
+    Ok((code, value))
 }
