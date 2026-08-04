@@ -274,6 +274,7 @@ impl OpenCADStudio {
             },
             plugin_repos: self.plugin_repos.clone(),
             literal_spaces: self.command_line.literal_spaces,
+            command_history_height: self.command_line.history_height,
             osmode: crate::app::settings::osmode_from_snaps(
                 self.snapper.enabled.iter(),
                 self.snapper.snap_enabled,
@@ -304,6 +305,14 @@ impl OpenCADStudio {
         self.disabled_plugins = s.disabled_plugins.iter().cloned().collect();
         self.plugin_repos = s.plugin_repos.clone();
         self.command_line.literal_spaces = s.literal_spaces;
+        self.command_line.history_height = if s.command_history_height.is_finite() {
+            s.command_history_height.clamp(
+                crate::ui::command_line::HISTORY_HEIGHT_MIN,
+                crate::ui::command_line::HISTORY_HEIGHT_MAX,
+            )
+        } else {
+            crate::ui::command_line::HISTORY_HEIGHT_DEFAULT
+        };
         let (modes, snap_enabled) = crate::app::settings::snaps_from_osmode(s.osmode);
         self.snapper.enabled = modes.into_iter().collect();
         self.snapper.snap_enabled = snap_enabled;
@@ -520,11 +529,23 @@ impl OpenCADStudio {
                 section: self.start_section,
             },
             statusbar: self.statusbar_config.clone(),
+            properties: crate::app::config::PropertiesDockConfig {
+                side: self.properties_side,
+                width: self.properties_width,
+                auto_collapse: self.properties_auto_collapse,
+            },
             annotation_auto_scale: self.annotation_auto_scale,
             ribbon: crate::app::config::RibbonConfig {
                 collapse: self.ribbon.collapse_mode(),
             },
             plot: self.plot_dialog.clone(),
+            shortcuts: crate::app::config::ShortcutConfig {
+                bindings: self
+                    .shortcut_bindings
+                    .iter()
+                    .map(|(key, command)| (key.clone(), command.clone()))
+                    .collect(),
+            },
         }
     }
 
@@ -550,9 +571,17 @@ impl OpenCADStudio {
         // (`refresh_recent_thumbs`) — never here on the boot path.
         self.start_section = cfg.start.section;
         self.statusbar_config = cfg.statusbar;
+        self.properties_side = cfg.properties.side;
+        self.properties_width = if cfg.properties.width.is_finite() {
+            cfg.properties.width.clamp(220.0, 600.0)
+        } else {
+            250.0
+        };
+        self.properties_auto_collapse = cfg.properties.auto_collapse;
         self.annotation_auto_scale = cfg.annotation_auto_scale.clamp(-4, 4);
         self.ribbon.set_collapse_mode(cfg.ribbon.collapse);
         self.plot_dialog = cfg.plot;
+        self.shortcut_bindings = cfg.shortcuts.bindings.into_iter().collect();
     }
 
     /// Write the config only when it changed since the last write, so a toggle
@@ -567,7 +596,11 @@ impl OpenCADStudio {
 
     /// Back-compat name for the many "a preference changed, persist it" sites.
     pub(in crate::app) fn persist_settings_if_changed(&mut self) {
-        self.save_config();
+        // Keep resize feedback live without writing settings on every pointer
+        // move. The release message saves the final height once.
+        if !self.command_history_resizing {
+            self.save_config();
+        }
     }
 
     /// Record that the one-time default-association prompt has been answered and
@@ -2408,6 +2441,192 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         }
     }
 
+    pub(super) fn on_print_all_open(&mut self) -> Task<Message> {
+        self.print_all_layouts = self.tabs[self.active_tab]
+            .scene
+            .layout_names()
+            .into_iter()
+            .filter(|name| name != "Model")
+            .map(|name| (name, true))
+            .collect();
+        self.active_modal = Some(crate::app::ModalKind::PrintAll);
+        self.reset_modal_geometry();
+        Task::none()
+    }
+
+    pub(super) fn on_print_all_options(&mut self) -> Task<Message> {
+        let previous = self.plot_dialog.clone();
+        let previous_style = self.active_plot_style.clone();
+        let previous_window = self.plot_window;
+        let task = self.on_plot_dialog_open();
+        self.print_all_options_prev = Some(previous);
+        self.print_all_plot_style_prev = Some(previous_style);
+        self.print_all_plot_window_prev = Some(previous_window);
+        self.print_all_options = true;
+        self.plot_dialog.paper_space = true;
+        self.plot_dialog.area = "Layout".into();
+        task
+    }
+
+    fn print_all_pages(&mut self) -> Result<Vec<crate::io::pdf_export::PdfPageInput>, String> {
+        let available = self.tabs[self.active_tab].scene.layout_names();
+        let selected: Vec<String> = self
+            .print_all_layouts
+            .iter()
+            .filter(|(name, checked)| *checked && available.contains(name))
+            .map(|(name, _)| name.clone())
+            .collect();
+        if selected.is_empty() {
+            return Err(crate::t!("Select at least one layout.").into_owned());
+        }
+
+        let i = self.active_tab;
+        let original_layout = self.tabs[i].scene.current_layout.clone();
+        let original_viewport = self.tabs[i].scene.active_viewport;
+        let dialog = self.plot_dialog.clone();
+        let mut pages = Vec::with_capacity(selected.len());
+        for name in selected {
+            // Plot helpers read the active layout. Swap only this transient
+            // selector so the drawing's saved active-space metadata is not
+            // touched while the owned page snapshot is collected.
+            {
+                let scene = &mut self.tabs[i].scene;
+                scene.current_layout = name;
+                scene.active_viewport = None;
+            }
+            let (
+                wires,
+                hatches,
+                wipeouts,
+                group_splits,
+                paper_w,
+                paper_h,
+                offset_x,
+                offset_y,
+                rotation_deg,
+                scale,
+                clip,
+            ) = self.layout_plot_params_for("Layout");
+            pages.push(crate::io::pdf_export::PdfPageInput {
+                wires,
+                hatches,
+                wipeouts,
+                paper_w,
+                paper_h,
+                offset_x,
+                offset_y,
+                rotation_deg,
+                scale,
+                clip,
+                options: Self::pdf_plot_options(&dialog, group_splits),
+            });
+        }
+        self.tabs[i].scene.current_layout = original_layout;
+        self.tabs[i].scene.active_viewport = original_viewport;
+        Ok(pages)
+    }
+
+    pub(super) fn on_print_all_pdf_path_some(
+        &mut self,
+        path: std::path::PathBuf,
+    ) -> Task<Message> {
+        let dialog = self.plot_dialog.clone();
+        if dialog.style_missing {
+            self.command_line.push_error(crate::tf!(
+                "Plot style table '{}' is not loaded.",
+                dialog.style_name
+            ).as_ref());
+            return Task::none();
+        }
+        let pages = match self.print_all_pages() {
+            Ok(pages) => pages,
+            Err(error) => {
+                self.command_line.push_error(&error);
+                return Task::none();
+            }
+        };
+        let plot_style = self.dialog_plot_style(&dialog);
+        let worker_path = path.clone();
+        self.save_config();
+        self.close_active_modal();
+        let work = move || {
+            crate::io::pdf_export::export_pdf_pages(
+                &pages,
+                &worker_path,
+                plot_style.as_ref(),
+            )
+            .map(|_| format!("Exported {} layouts to {}", pages.len(), worker_path.display()))
+            .map_err(|error| format!("Export failed: {error}"))
+        };
+        self.run_print_all_work(dialog.background, work)
+    }
+
+    pub(super) fn on_print_all_print(&mut self) -> Task<Message> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.command_line.push_error(
+                crate::t!("Printing is not available in the web version.").as_ref(),
+            );
+            Task::none()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dialog = self.plot_dialog.clone();
+            if dialog.style_missing {
+                self.command_line.push_error(crate::tf!(
+                    "Plot style table '{}' is not loaded.",
+                    dialog.style_name
+                ).as_ref());
+                return Task::none();
+            }
+            let pages = match self.print_all_pages() {
+                Ok(pages) => pages,
+                Err(error) => {
+                    self.command_line.push_error(&error);
+                    return Task::none();
+                }
+            };
+            let plot_style = self.dialog_plot_style(&dialog);
+            let options = self.plot_print_options(&dialog, Default::default());
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let temp_path = std::env::temp_dir().join(format!(
+                "open_cad_studio_print_all_{stamp}.pdf"
+            ));
+            self.save_config();
+            self.close_active_modal();
+            self.command_line.push_info(
+                crate::t!("Sending selected layouts to the system printer…").as_ref(),
+            );
+            let work = move || {
+                crate::io::pdf_export::export_pdf_pages(
+                    &pages,
+                    &temp_path,
+                    plot_style.as_ref(),
+                )
+                .and_then(|_| {
+                    crate::io::print_to_printer::print_existing_pdf(&temp_path, &options)
+                })
+                .map(|printer| format!("Sent {} layouts to printer: {printer}", pages.len()))
+                .map_err(|error| format!("Print failed: {error}"))
+            };
+            self.run_print_all_work(dialog.background, work)
+        }
+    }
+
+    fn run_print_all_work<F>(&mut self, background: bool, work: F) -> Task<Message>
+    where
+        F: FnOnce() -> Result<String, String> + Send + 'static,
+    {
+        if background {
+            background_task(work, Message::PrintAllFinished)
+        } else {
+            Task::done(Message::PrintAllFinished(work()))
+        }
+    }
+
     fn run_plot_work<F>(
         &mut self,
         background: bool,
@@ -2940,6 +3159,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::none()
             }
             M::Area(s) => {
+                if self.print_all_options && s != "Layout" {
+                    return Task::none();
+                }
                 // A paper Layout page setup commonly carries physical-sheet
                 // origin and 1:1 scale. Those values are correct only for
                 // Layout; carrying them into Window/Extents/Display moves a
@@ -3040,6 +3262,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::none()
             }
             M::PickWindow => {
+                if self.print_all_options {
+                    return Task::none();
+                }
                 let i = self.active_tab;
                 if self.tabs[i].scene.current_layout != "Model"
                     && self.tabs[i].scene.active_viewport.is_some()
@@ -3060,14 +3285,24 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             }
             M::SelectSetup(name) => {
                 self.select_page_setup(&name);
+                if self.print_all_options {
+                    self.plot_dialog.paper_space = true;
+                    self.plot_dialog.area = "Layout".into();
+                }
                 Task::none()
             }
             M::SetCurrent => {
+                if self.print_all_options {
+                    return Task::none();
+                }
                 self.apply_dialog_to_layout();
                 self.command_line.push_info(crate::t!("Page setup applied to the layout.").as_ref());
                 Task::none()
             }
             M::NewSetup => {
+                if self.print_all_options {
+                    return Task::none();
+                }
                 // Create a setup from the current editor values, then start an
                 // inline rename so the user can name it.
                 let name = self.next_page_setup_name("Setup");
@@ -3081,6 +3316,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::none()
             }
             M::CopySetup => {
+                if self.print_all_options {
+                    return Task::none();
+                }
                 // Duplicate the selected entry — a layout OR a named setup —
                 // into a new standalone named page setup.
                 let sel = self.plot_dialog.selected_setup.clone();
@@ -3103,6 +3341,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::none()
             }
             M::RenameStart(name) => {
+                if self.print_all_options {
+                    return Task::none();
+                }
                 // Only standalone named setups can be renamed.
                 if is_layout_entry(&name) || is_special_entry(&name) {
                     return Task::none();
@@ -3116,6 +3357,9 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::none()
             }
             M::DeleteSetup => {
+                if self.print_all_options {
+                    return Task::none();
+                }
                 let sel = self.plot_dialog.selected_setup.clone();
                 if !sel.is_empty() && !is_layout_entry(&sel) {
                     self.tabs[self.active_tab].scene.page_setup_delete(&sel);
@@ -3153,7 +3397,30 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.plot_dialog.name_rename = false;
                 Task::none()
             }
+            M::Preview if self.print_all_options => Task::none(),
             M::Preview => self.on_plot_dlg_commit(true),
+            M::Commit if self.print_all_options => {
+                if self.plot_dialog.style_missing {
+                    self.command_line.push_error(crate::tf!(
+                        "Plot style table '{}' is not loaded.",
+                        self.plot_dialog.style_name
+                    ).as_ref());
+                    return Task::none();
+                }
+                self.plot_dialog.paper_space = true;
+                self.plot_dialog.area = "Layout".into();
+                self.sync_dialog_plot_runtime();
+                self.save_config();
+                self.print_all_options = false;
+                self.print_all_options_prev = None;
+                self.print_all_plot_style_prev = None;
+                if let Some(previous) = self.print_all_plot_window_prev.take() {
+                    self.plot_window = previous;
+                }
+                self.active_modal = Some(crate::app::ModalKind::PrintAll);
+                self.reset_modal_geometry();
+                Task::none()
+            }
             M::Commit => self.on_plot_dlg_commit(false),
         }
     }

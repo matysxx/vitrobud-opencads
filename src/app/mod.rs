@@ -19,6 +19,7 @@ pub mod plugin_host;
 mod properties;
 mod recent;
 mod settings;
+mod shortcuts;
 mod style_ops;
 mod text_inline;
 mod update;
@@ -84,9 +85,9 @@ pub struct GripPopup {
 }
 
 /// Pending follow-up value for grip-menu actions that need a number
-/// (Lengthen / Radius / Arc Length / Rotate Text). The next number
-/// typed in the command line is parsed and routed into
-/// `apply_grip_menu_value` for `(handle, grip_id, action)`.
+/// (Lengthen / Radius / Arc Length / Rotate Text). Lengthen can also resolve
+/// from a viewport point; otherwise the next typed number is parsed and routed
+/// into `apply_grip_menu_value` for `(handle, grip_id, action)`.
 #[derive(Clone, Debug)]
 pub struct GripPendingValue {
     pub handle: acadrust::Handle,
@@ -277,8 +278,8 @@ pub(super) struct OpenCADStudio {
     /// mid-edit; applied on Enter). Kept in sync when the +/- buttons change it.
     recent_limit_input: String,
     command_line: CommandLine,
-    /// Paying Patreon supporters shown on the Start page (name, pledge cents),
-    /// fetched once at boot, highest pledge first.
+    /// Recent Patreon supporters shown on the Start page (name, USD cents),
+    /// fetched once at boot, highest payment first.
     patrons: Vec<(String, i64)>,
     /// Tutorial-playlist videos for the Start page: seeded from the on-disk
     /// cache at boot, refreshed by a live playlist fetch.
@@ -305,10 +306,23 @@ pub(super) struct OpenCADStudio {
     /// When the window is too narrow the properties panel collapses to a
     /// vertical bar; this is the user's toggle to expand it back out.
     props_expanded: bool,
+    /// Persisted dock width and side of the Properties panel.
+    properties_width: f32,
+    properties_side: config::DockSide,
+    properties_auto_collapse: bool,
+    /// Transient hover/drag state for the docked Properties panel.
+    properties_hovered: bool,
+    properties_dragging: bool,
+    properties_resizing: bool,
+    properties_drag_last: Option<Point>,
+    properties_dock_preview: Option<config::DockSide>,
     /// Read-only editor buffer backing the command-line history dropdown, so
     /// the log can be drag-selected across lines and copied (issue #232).
     /// Rebuilt from the history each time the dropdown is opened.
     history_content: iced::widget::text_editor::Content,
+    /// Pointer state while the command-history panel's top edge is dragged.
+    command_history_resizing: bool,
+    command_history_drag_last: Option<Point>,
     status_bar: StatusBar,
     cursor_pos: Point,
     vp_size: (f32, f32),
@@ -669,6 +683,16 @@ pub(super) struct OpenCADStudio {
     /// Snapshot of the dialog's settings taken when it opened, restored by the
     /// `<previous>` list entry.
     plot_prev: Option<crate::ui::window::plot::PlotDialogState>,
+    /// Paper layouts shown by Print All, in tab order with their selection.
+    print_all_layouts: Vec<(String, bool)>,
+    /// True while the Plot dialog is editing settings for Print All.
+    print_all_options: bool,
+    /// Settings restored when the Print All options dialog is cancelled.
+    print_all_options_prev: Option<crate::ui::window::plot::PlotDialogState>,
+    /// Plot style restored together with cancelled Print All options.
+    print_all_plot_style_prev: Option<Option<crate::io::plot_style::PlotStyleTable>>,
+    /// Plot window restored together with cancelled Print All options.
+    print_all_plot_window_prev: Option<Option<(f64, f64, f64, f64)>>,
 
     // ── Plot Style Table ──────────────────────────────────────────────────
     /// Currently loaded CTB/STB table (None = no override).
@@ -770,8 +794,10 @@ pub(super) struct OpenCADStudio {
     theme_color_inputs: [String; 6],
 
     // ── Keyboard Shortcut Editor ──────────────────────────────────────────
-    /// User-defined function-key overrides: "F3" → command string.
-    shortcut_overrides: rustc_hash::FxHashMap<String, String>,
+    /// Complete editable key → command/action table.
+    shortcut_bindings: rustc_hash::FxHashMap<String, String>,
+    /// Working rows shown by the shortcut editor until Apply is pressed.
+    shortcut_editor_rows: Vec<(String, String)>,
 
     // ── Command Aliases ───────────────────────────────────────────────────
     /// Command-line aliases: uppercase abbreviation → uppercase command
@@ -1409,6 +1435,7 @@ pub enum ModalKind {
     LayerStateManager,
     LayerStateEditor,
     Plot,
+    PrintAll,
     LayoutManager,
     Plotstyle,
     TextStyle,
@@ -1609,6 +1636,21 @@ pub enum Message {
     StartSectionSelect(StartSection),
     /// Expand/collapse the properties panel when it has shrunk to a bar.
     TogglePropertiesBar,
+    /// Close the docked Properties panel; the ribbon command can reopen it.
+    PropertiesClose,
+    /// Pin/unpin the docked Properties panel.
+    PropertiesAutoCollapseToggle,
+    /// Hover state drives expansion while auto-collapse is enabled.
+    PropertiesHover(bool),
+    /// Begin dragging the Properties title bar to the opposite dock edge.
+    PropertiesDockGrab,
+    /// Begin dragging the Properties/viewport divider.
+    PropertiesResizeGrab,
+    /// Reset the dock width to its default value.
+    PropertiesWidthReset,
+    /// Full-workspace pointer tracking shared by dock and resize drags.
+    PropertiesDragMove(Point),
+    PropertiesDragRelease,
     /// Scroll the status-bar layout-tab strip horizontally by `delta` px
     /// (negative = left). Driven by the ‹ › arrows next to the tabs.
     ScrollLayoutTabs(f32),
@@ -1769,6 +1811,12 @@ pub enum Message {
     CommandHistoryNext,
     /// Toggle the dropdown listing the full command-line history.
     CommandHistoryToggle,
+    /// Grab/move/release the expanded history panel's top resize edge.
+    CommandHistoryResizeGrab,
+    CommandHistoryResizeMove(Point),
+    CommandHistoryResizeRelease,
+    /// Restore the expanded history panel to its default height.
+    CommandHistoryHeightReset,
     /// Start dragging the Layer Manager's Name-column divider.
     LayerNameColGrab,
     /// Toggle the persistent literal-space mode (the `>` button): while on,
@@ -2201,6 +2249,16 @@ pub enum Message {
     ShortcutsPanelOpen,
     #[allow(dead_code)]
     ShortcutsPanelClose,
+    ShortcutEditorInput {
+        idx: usize,
+        field: crate::ui::window::shortcuts::ShortcutField,
+        value: String,
+    },
+    ShortcutEditorAdd,
+    ShortcutEditorRemove(usize),
+    ShortcutEditorApply,
+    /// Canonical key emitted by the global keyboard subscription.
+    ShortcutPressed(String),
     // ── Command Alias Editor (ALIASEDIT) ────────────────────────────────
     /// Open the command-alias editor modal, seeding rows from the alias table.
     AliasEditorOpen,
@@ -2276,7 +2334,7 @@ pub enum Message {
     PluginRegistryErrorDetailsToggle,
     /// Copy registry URL, platform, version, and raw error details.
     PluginRegistryCopyDiagnostics,
-    /// Patreon supporters fetched at boot for the Start page (name, pledge cents).
+    /// Patreon supporters fetched at boot for the Start page (name, USD cents).
     PatronsFetched(Result<Vec<(String, i64)>, String>),
     /// Tutorial-playlist videos fetched at boot for the Start page.
     VideosFetched(Result<Vec<crate::videos::VideoEntry>, String>),
@@ -2455,6 +2513,23 @@ pub enum Message {
     PlotDialogOpen,
     /// An edit inside the Plot / Print dialog.
     PlotDlg(crate::ui::window::plot::PlotDlgMsg),
+    /// Open the paper-layout batch output dialog.
+    PrintAllOpen,
+    /// Toggle one paper layout in the batch.
+    PrintAllToggle(String),
+    /// Select or clear every paper layout in the batch.
+    PrintAllSelectAll,
+    PrintAllSelectNone,
+    /// Edit the shared batch output settings in the Plot dialog.
+    PrintAllOptions,
+    /// Save the selected layouts as one multi-page PDF.
+    PrintAllPdf,
+    /// Callback after the multi-page PDF path is picked or cancelled.
+    PrintAllPdfPath(Option<std::path::PathBuf>),
+    /// Send the selected layouts to the configured printer as one job.
+    PrintAllPrint,
+    /// Completion of a Print All PDF or printer job.
+    PrintAllFinished(Result<String, String>),
     // ── Plot Style Table ─────────────────────────────────────────────────
     /// Open file dialog to load a CTB/STB plot style table.
     PlotStyleLoad,
@@ -2769,7 +2844,17 @@ impl OpenCADStudio {
             start_section: StartSection::default(),
             start_action_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             props_expanded: false,
+            properties_width: 250.0,
+            properties_side: config::DockSide::Left,
+            properties_auto_collapse: false,
+            properties_hovered: false,
+            properties_dragging: false,
+            properties_resizing: false,
+            properties_drag_last: None,
+            properties_dock_preview: None,
             history_content: iced::widget::text_editor::Content::new(),
+            command_history_resizing: false,
+            command_history_drag_last: None,
             status_bar: StatusBar::new(),
             cursor_pos: Point::ORIGIN,
             vp_size: (1280.0, 720.0),
@@ -2903,6 +2988,11 @@ impl OpenCADStudio {
             plot_orientation: crate::io::paper_sizes::Orientation::Landscape,
             plot_dialog: crate::ui::window::plot::PlotDialogState::default(),
             plot_prev: None,
+            print_all_layouts: Vec::new(),
+            print_all_options: false,
+            print_all_options_prev: None,
+            print_all_plot_style_prev: None,
+            print_all_plot_window_prev: None,
             opening: None,
             open_job_serial: 0,
             recovery_report: None,
@@ -2941,7 +3031,8 @@ impl OpenCADStudio {
             ui_theme: config::UiThemeConfig::default(),
             theme_color_inputs: config::UiThemePalette::default().hex_values(),
             // Keyboard shortcuts
-            shortcut_overrides: rustc_hash::FxHashMap::default(),
+            shortcut_bindings: rustc_hash::FxHashMap::default(),
+            shortcut_editor_rows: Vec::new(),
             // Command aliases (populated from ocad.pgp just after construction)
             command_aliases: rustc_hash::FxHashMap::default(),
             alias_editor_rows: Vec::new(),

@@ -29,6 +29,7 @@ fn is_modal_blocked_key_msg(msg: &Message) -> bool {
             | Message::TogglePolar
             | Message::ToggleOTrack
             | Message::ToggleDynInput
+            | Message::ShortcutPressed(_)
             | Message::TabNew
             | Message::OpenFile
             | Message::SaveFile
@@ -110,10 +111,10 @@ impl OpenCADStudio {
         if self.history_content.text() == latest {
             return;
         }
-        use iced::widget::text_editor::{Action, Motion};
         self.history_content = iced::widget::text_editor::Content::with_text(&latest);
-        self.history_content
-            .perform(Action::Move(Motion::DocumentEnd));
+        // The outer scrollable is anchored to the newest lines. Leaving the
+        // editor cursor at its initial position also keeps horizontal scroll at
+        // zero, so the first glyph of each line cannot be clipped.
     }
 
     /// Close the active in-canvas modal (Plan B), mirroring what closing the
@@ -121,6 +122,21 @@ impl OpenCADStudio {
     /// changes, and the ribbon tool that launched the dialog is de-highlighted.
     fn close_active_modal(&mut self) {
         use super::ModalKind::*;
+        if self.active_modal == Some(Plot) && self.print_all_options {
+            if let Some(previous) = self.print_all_options_prev.take() {
+                self.plot_dialog = previous;
+            }
+            if let Some(previous) = self.print_all_plot_style_prev.take() {
+                self.active_plot_style = previous;
+            }
+            if let Some(previous) = self.print_all_plot_window_prev.take() {
+                self.plot_window = previous;
+            }
+            self.print_all_options = false;
+            self.active_modal = Some(PrintAll);
+            self.reset_modal_geometry();
+            return;
+        }
         if matches!(
             self.active_modal,
             Some(TextStyle | DimStyle | TableStyle | MLeaderStyle | MlStyle)
@@ -156,9 +172,8 @@ impl OpenCADStudio {
             }
             // Closing (✕) discards edits made since the last Apply — matching the
             // style editors. Committing happens only through the Apply button.
-            Some(Aliases) => {
-                self.alias_editor_rows.clear();
-            }
+            Some(Aliases) => self.alias_editor_rows.clear(),
+            Some(Shortcuts) => self.shortcut_editor_rows.clear(),
             Some(LayerStateEditor) => {
                 self.layer_state_edit_draft = None;
                 self.layer_state_edit_filter.clear();
@@ -191,7 +206,9 @@ impl OpenCADStudio {
         // the modal's own text fields keep working because they emit their own
         // (non-blocked) messages. (#126)
         if self.active_modal.is_some() {
-            if matches!(msg, Message::CommandEscape) {
+            if matches!(msg, Message::CommandEscape)
+                || matches!(&msg, Message::ShortcutPressed(key) if key.rsplit('+').next() == Some("ESCAPE"))
+            {
                 return self.update(Message::CloseModal);
             }
             if is_modal_blocked_key_msg(&msg) {
@@ -332,6 +349,110 @@ impl OpenCADStudio {
 
             Message::TogglePropertiesBar => {
                 self.props_expanded = !self.props_expanded;
+                Task::none()
+            }
+
+            Message::PropertiesClose => {
+                self.show_properties = false;
+                self.properties_hovered = false;
+                self.properties_dragging = false;
+                self.properties_resizing = false;
+                self.properties_drag_last = None;
+                self.properties_dock_preview = None;
+                self.ribbon.set_properties(false);
+                Task::none()
+            }
+
+            Message::PropertiesAutoCollapseToggle => {
+                self.properties_auto_collapse ^= true;
+                // Keep the panel open while the pointer is still over the
+                // button; leaving the panel performs the first collapse.
+                self.properties_hovered = self.properties_auto_collapse;
+                self.save_config();
+                Task::none()
+            }
+
+            Message::PropertiesHover(hovered) => {
+                if self.properties_auto_collapse
+                    && !self.properties_dragging
+                    && !self.properties_resizing
+                {
+                    self.properties_hovered = hovered;
+                }
+                Task::none()
+            }
+
+            Message::PropertiesDockGrab => {
+                self.properties_dragging = true;
+                self.properties_resizing = false;
+                self.properties_drag_last = None;
+                self.properties_dock_preview = Some(self.properties_side);
+                self.properties_hovered = true;
+                Task::none()
+            }
+
+            Message::PropertiesResizeGrab => {
+                self.properties_resizing = true;
+                self.properties_dragging = false;
+                self.properties_drag_last = None;
+                self.properties_dock_preview = None;
+                self.properties_hovered = true;
+                Task::none()
+            }
+
+            Message::PropertiesWidthReset => {
+                self.properties_width = 250.0;
+                self.save_config();
+                Task::none()
+            }
+
+            Message::PropertiesDragMove(point) => {
+                if self.properties_dragging {
+                    self.properties_dock_preview = Some(if point.x < self.win_size.0 * 0.5 {
+                        crate::app::config::DockSide::Left
+                    } else {
+                        crate::app::config::DockSide::Right
+                    });
+                } else if self.properties_resizing {
+                    if let Some(last) = self.properties_drag_last {
+                        let dx = point.x - last.x;
+                        let delta = match self.properties_side {
+                            crate::app::config::DockSide::Left => dx,
+                            crate::app::config::DockSide::Right => -dx,
+                        };
+                        let max_width = (self.win_size.0 * 0.45).clamp(220.0, 600.0);
+                        self.properties_width =
+                            (self.properties_width + delta).clamp(220.0, max_width);
+                    }
+                }
+                if self.properties_dragging || self.properties_resizing {
+                    self.properties_drag_last = Some(point);
+                }
+                Task::none()
+            }
+
+            Message::PropertiesDragRelease => {
+                let changed = if self.properties_dragging {
+                    if let Some(side) = self.properties_dock_preview {
+                        let changed = side != self.properties_side;
+                        self.properties_side = side;
+                        changed
+                    } else {
+                        false
+                    }
+                } else {
+                    self.properties_resizing
+                };
+                self.properties_dragging = false;
+                self.properties_resizing = false;
+                self.properties_drag_last = None;
+                self.properties_dock_preview = None;
+                if self.properties_auto_collapse {
+                    self.properties_hovered = false;
+                }
+                if changed {
+                    self.save_config();
+                }
                 Task::none()
             }
 
@@ -1519,7 +1640,53 @@ impl OpenCADStudio {
 
             Message::CommandHistoryToggle => {
                 self.command_line.toggle_history();
+                if !self.command_line.history_open {
+                    self.command_history_resizing = false;
+                    self.command_history_drag_last = None;
+                }
                 self.sync_open_command_history();
+                Task::none()
+            }
+
+            Message::CommandHistoryResizeGrab => {
+                if self.command_line.history_open {
+                    self.command_history_resizing = true;
+                    self.command_history_drag_last = None;
+                }
+                Task::none()
+            }
+
+            Message::CommandHistoryResizeMove(point) => {
+                if self.command_history_resizing {
+                    if let Some(last) = self.command_history_drag_last {
+                        let dy = point.y - last.y;
+                        let max_height =
+                            crate::ui::command_line::history_max_height(self.win_size.1);
+                        self.command_line.history_height = (self.command_line.history_height - dy)
+                            .clamp(
+                                crate::ui::command_line::HISTORY_HEIGHT_MIN,
+                                max_height,
+                            );
+                    }
+                    self.command_history_drag_last = Some(point);
+                }
+                Task::none()
+            }
+
+            Message::CommandHistoryResizeRelease => {
+                let changed = self.command_history_resizing;
+                self.command_history_resizing = false;
+                self.command_history_drag_last = None;
+                if changed {
+                    self.save_config();
+                }
+                Task::none()
+            }
+
+            Message::CommandHistoryHeightReset => {
+                self.command_line.history_height =
+                    crate::ui::command_line::HISTORY_HEIGHT_DEFAULT;
+                self.save_config();
                 Task::none()
             }
 
@@ -1553,12 +1720,24 @@ impl OpenCADStudio {
             }
 
             Message::CommandHistoryEdit(action) => {
-                // Read-only: drop edits, keep selection / cursor / scroll so
-                // the user can still highlight and Ctrl+C the log.
-                if !action.is_edit() {
-                    self.history_content.perform(action);
+                // Read-only: drop edits, keep selection/cursor actions, and
+                // route wheel input to the outer scrollbar. The text editor
+                // remains one selectable buffer while the scrollbar stays
+                // visible and draggable.
+                if let iced::widget::text_editor::Action::Scroll { lines } = action {
+                    iced::widget::operation::scroll_by(
+                        iced::widget::Id::new(crate::ui::command_line::HISTORY_SCROLL_ID),
+                        iced::widget::scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: lines as f32 * 14.0,
+                        },
+                    )
+                } else {
+                    if !action.is_edit() {
+                        self.history_content.perform(action);
+                    }
+                    Task::none()
                 }
-                Task::none()
             }
 
             Message::CommandSuggestionPick(cmd) => {
@@ -4431,6 +4610,13 @@ impl OpenCADStudio {
 
             // ── Keyboard Shortcuts Panel ──────────────────────────────────────
             Message::ShortcutsPanelOpen => {
+                let mut rows: Vec<(String, String)> = self
+                    .shortcut_bindings
+                    .iter()
+                    .map(|(key, command)| (key.clone(), command.clone()))
+                    .collect();
+                rows.sort_by(|a, b| a.0.cmp(&b.0));
+                self.shortcut_editor_rows = rows;
                 self.active_modal = Some(super::ModalKind::Shortcuts);
                 Task::none()
             }
@@ -4438,6 +4624,35 @@ impl OpenCADStudio {
                 self.close_active_modal();
                 Task::none()
             }
+            Message::ShortcutEditorInput { idx, field, value } => {
+                use crate::ui::window::shortcuts::ShortcutField;
+                if let Some(row) = self.shortcut_editor_rows.get_mut(idx) {
+                    match field {
+                        ShortcutField::Key => row.0 = value.to_uppercase(),
+                        ShortcutField::Command => row.1 = value.to_uppercase(),
+                    }
+                }
+                Task::none()
+            }
+            Message::ShortcutEditorAdd => {
+                self.shortcut_editor_rows
+                    .push((String::new(), String::new()));
+                Task::none()
+            }
+            Message::ShortcutEditorRemove(idx) => {
+                if idx < self.shortcut_editor_rows.len() {
+                    self.shortcut_editor_rows.remove(idx);
+                }
+                Task::none()
+            }
+            Message::ShortcutEditorApply => {
+                self.apply_shortcut_editor_rows();
+                self.command_line.push_info(
+                    crate::tf!("{} shortcut(s) applied.", self.shortcut_bindings.len()).as_ref(),
+                );
+                Task::none()
+            }
+            Message::ShortcutPressed(key) => self.run_shortcut(&key),
 
             // ── Command Alias Editor (ALIASEDIT) ──────────────────────────────
             Message::AliasEditorOpen => {
@@ -4924,8 +5139,8 @@ impl OpenCADStudio {
                 let info = format!(
                     "Open CAD Studio v{}\nOS: {}\nArch: {}",
                     env!("CARGO_PKG_VERSION"),
-                    std::env::consts::OS,
-                    std::env::consts::ARCH,
+                    crate::ui::window::about::platform_name(),
+                    crate::ui::window::about::architecture_name(),
                 );
                 iced::clipboard::write(info).discard()
             }
@@ -5536,6 +5751,73 @@ impl OpenCADStudio {
             }
             Message::PlotDialogOpen => self.on_plot_dialog_open(),
             Message::PlotDlg(m) => self.on_plot_dlg(m),
+            Message::PrintAllOpen => self.on_print_all_open(),
+            Message::PrintAllToggle(name) => {
+                if let Some((_, selected)) = self
+                    .print_all_layouts
+                    .iter_mut()
+                    .find(|(layout, _)| layout == &name)
+                {
+                    *selected = !*selected;
+                }
+                Task::none()
+            }
+            Message::PrintAllSelectAll => {
+                for (_, selected) in &mut self.print_all_layouts {
+                    *selected = true;
+                }
+                Task::none()
+            }
+            Message::PrintAllSelectNone => {
+                for (_, selected) in &mut self.print_all_layouts {
+                    *selected = false;
+                }
+                Task::none()
+            }
+            Message::PrintAllOptions => self.on_print_all_options(),
+            Message::PrintAllPdf => {
+                let i = self.active_tab;
+                let stem = self.tabs[i]
+                    .current_path
+                    .as_deref()
+                    .and_then(|path| path.file_stem())
+                    .map(|name| format!("{}_layouts", name.to_string_lossy()))
+                    .unwrap_or_else(|| "drawing_layouts".into());
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let Some(window_id) = self.main_window else {
+                        return Task::done(Message::PrintAllPdfPath(None));
+                    };
+                    iced::window::run(window_id, move |parent| {
+                        crate::io::pdf_export::pick_pdf_path_owned(stem, parent)
+                    })
+                    .map(Message::PrintAllPdfPath)
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let _ = stem;
+                    self.command_line.push_error(
+                        crate::t!("PDF export is not available in the web version.").as_ref(),
+                    );
+                    Task::none()
+                }
+            }
+            Message::PrintAllPdfPath(None) => Task::none(),
+            Message::PrintAllPdfPath(Some(path)) => self.on_print_all_pdf_path_some(path),
+            Message::PrintAllPrint => self.on_print_all_print(),
+            Message::PrintAllFinished(result) => {
+                match result {
+                    Ok(message) => self.command_line.push_info(&message),
+                    Err(error) => {
+                        self.command_line.push_error(&error);
+                        if self.active_modal.is_none() {
+                            self.active_modal = Some(super::ModalKind::PrintAll);
+                            self.reset_modal_geometry();
+                        }
+                    }
+                }
+                Task::none()
+            }
 
             // ── Plot / Export ─────────────────────────────────────────────
             Message::PlotExport => {
