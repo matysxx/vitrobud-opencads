@@ -492,10 +492,10 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
     while cursor < bytes.len() {
         let (code, value) = read_strict_r12_group(bytes, &mut cursor)?;
         if acadver_pending {
-            found_ac1009 = code == 1 && value.as_text() == Some(b"AC1009");
+            found_ac1009 = code == 1 && value.as_text() == Some(b"AC1009".as_slice());
             acadver_pending = false;
         }
-        if code == 9 && value.as_text() == Some(b"$ACADVER") {
+        if code == 9 && value.as_text() == Some(b"$ACADVER".as_slice()) {
             acadver_pending = true;
         }
         if awaiting_section_name {
@@ -538,7 +538,7 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
                 found_eof = true;
             }
             b"POINT" | b"LINE" | b"CIRCLE" | b"ARC" | b"POLYLINE"
-                if section.as_deref() == Some(b"ENTITIES") =>
+                if section.as_deref() == Some(b"ENTITIES".as_slice()) =>
             {
                 actual_entities += 1;
             }
