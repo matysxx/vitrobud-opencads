@@ -283,7 +283,6 @@ inventory::submit!(crate::command::CommandRegistration {
         "BMAKE",
         "EXPORTPDF",
         "EXPORTDXFR12",
-        "EXPORTR12",
         "DDIM",
         // Inquiry: list the whole drawing database.
         "DBLIST",

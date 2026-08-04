@@ -439,7 +439,7 @@ impl OpenCADStudio {
 
             // Dedicated, fail-safe machine export. This intentionally does not
             // alter SAVE/SAVEAS or the normal DXF writer path.
-            "EXPORTDXFR12" | "EXPORTR12" => {
+            "EXPORTDXFR12" => {
                 return Some(Task::done(Message::DxfR12Export));
             }
 

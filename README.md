@@ -61,7 +61,7 @@ OCS is a CAD application for 2D drafting and 3D modeling, built with Rust. Reads
 ### File Formats
 - **DWG** read/write (R13 through R2018)
 - **DXF** read/write (R13 through R2018)
-- **DXF R12 Binary machine export** (`EXPORTDXFR12`; alias `EXPORTR12`)
+- **DXF R12 Binary machine export** (`EXPORTDXFR12`)
 - **STL** export (`STLOUT` / `EXPORTSTL`)
 - **STEP AP203** export (`STEPOUT`)
 - **OBJ** import (`IMPORTOBJ`)

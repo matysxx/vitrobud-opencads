@@ -13,3 +13,7 @@
   (`2-export-dxf-r12/`)
 - `OCSSTACK-3` — Sync reviewed upstream revision `2c5b7e76`
   (`3-upstream-sync-2c5b7e76/`)
+- `OCSSTACK-4` — Keep one canonical DXF R12 export command
+  (`4-canonical-r12-command/`)
+- `OCSSTACK-5` — Sync reviewed upstream revision `734afd56`
+  (`5-upstream-sync-734afd56/`)
