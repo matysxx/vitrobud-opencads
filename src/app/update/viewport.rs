@@ -2417,6 +2417,11 @@ impl OpenCADStudio {
             .as_ref()
             .map(|c| c.is_selection_gathering())
             .unwrap_or(false);
+        let selection_pick_add = self.pick_add
+            || self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .is_some_and(|command| command.selection_forces_add());
         // A committed window corner must stay free of the Ortho/Polar
         // lock too, so the picked rectangle isn't flattened (#291).
         let is_window_corner = self.tabs[i]
@@ -2710,11 +2715,20 @@ impl OpenCADStudio {
                         .map(|c| c.inject_before_entity_pick())
                         .unwrap_or(false);
                     if inject_first {
+                        let surface_area = self.tabs[i]
+                            .scene
+                            .meshes
+                            .get(&handle)
+                            .or_else(|| self.tabs[i].scene.block_meshes.get(&handle))
+                            .map(|mesh| mesh.metrics.surface_area);
                         if let Some(entity) =
                             self.tabs[i].scene.document.get_entity(handle).cloned()
                         {
                             if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
                                 cmd.inject_picked_entity(entity);
+                                if let Some(area) = surface_area {
+                                    cmd.inject_picked_surface_area(area);
+                                }
                             }
                         }
                     }
@@ -3002,7 +3016,7 @@ impl OpenCADStudio {
                                 self.tabs[i].scene.deselect_entity(*h);
                             }
                         } else {
-                            if !self.pick_add && !handles.is_empty() {
+                            if !selection_pick_add && !handles.is_empty() {
                                 self.tabs[i].scene.deselect_all();
                             }
                             for h in &handles {
@@ -3133,7 +3147,7 @@ impl OpenCADStudio {
                         // PICKADD 0 (#226): a plain marquee REPLACES
                         // the selection (empty results still leave it
                         // alone, matching the box rule).
-                        if !self.pick_add && !handles.is_empty() {
+                        if !selection_pick_add && !handles.is_empty() {
                             self.tabs[i].scene.deselect_all();
                         }
                         for h in &handles {
@@ -3262,7 +3276,7 @@ impl OpenCADStudio {
                                 // REPLACES the selection instead and
                                 // Shift+click toggles membership.
                                 if self.shift_down {
-                                    if !self.pick_add
+                                    if !selection_pick_add
                                         && !self.tabs[i].scene.selected.contains(&handle)
                                     {
                                         self.tabs[i].scene.select_entity(handle, false);
@@ -3271,7 +3285,9 @@ impl OpenCADStudio {
                                         self.tabs[i].scene.deselect_entity(handle);
                                     }
                                 } else {
-                                    self.tabs[i].scene.select_entity(handle, !self.pick_add);
+                                    self.tabs[i]
+                                        .scene
+                                        .select_entity(handle, !selection_pick_add);
                                     self.tabs[i].scene.expand_selection_for_groups(&[handle]);
                                 }
                                 self.refresh_properties();
@@ -3285,7 +3301,7 @@ impl OpenCADStudio {
                             // selection.
                             // PICKADD 0 (#226): OS convention — the
                             // empty click also drops the selection.
-                            if !self.pick_add && !self.shift_down {
+                            if !selection_pick_add && !self.shift_down {
                                 self.tabs[i].scene.deselect_all();
                                 self.refresh_properties();
                             }
@@ -3404,7 +3420,7 @@ impl OpenCADStudio {
                             self.tabs[i].scene.deselect_entity(*h);
                         }
                     } else {
-                        if !self.pick_add && !handles.is_empty() {
+                        if !selection_pick_add && !handles.is_empty() {
                             self.tabs[i].scene.deselect_all();
                         }
                         for h in &handles {
@@ -3438,10 +3454,7 @@ impl OpenCADStudio {
                 .into_iter()
                 .map(|(h, _)| h)
                 .collect();
-            if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
-                let result = cmd.on_selection_complete(handles);
-                return self.apply_cmd_result(result);
-            }
+            return self.feed_command(crate::command::StepInput::SelectionComplete(handles));
         }
 
         // ── Double-click in Model Space: DDEDIT for Text/MText ────

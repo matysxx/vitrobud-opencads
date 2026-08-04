@@ -40,6 +40,25 @@ command-line-hint = Type a command or use the ribbon. Open OBJ from the Insert t
 command-line-label = Command:
 command-line-literal-spaces = Literal spaces: Space stays in the line instead of running the command. Stays on until toggled off.
 
+area-option-objects = Objects
+area-option-back = Back
+area-option-add = Add area
+area-option-subtract = Subtract area
+area-prompt-first = AREA  Specify first corner point or [Objects/Add area/Subtract area] <Objects>:
+area-prompt-add = AREA ADD  Specify first corner point or [Objects/Subtract area] <Objects>:
+area-prompt-subtract = AREA SUBTRACT  Specify first corner point or [Objects/Add area] <Objects>:
+area-prompt-next = AREA  Specify next point ({ $count } picked, Enter to calculate):
+area-prompt-objects = AREA  Select objects ({ $count } selected, Enter to calculate):
+area-objects-not-measurable = AREA: none of the selected objects has a measurable area.
+area-result = Area = { $area },  Perimeter = { $perimeter }
+area-result-area-only = Area = { $area }
+area-running-result =
+    Area = { $area },  Perimeter = { $perimeter }
+    Total area = { $total_area },  Total perimeter = { $total_perimeter }
+area-running-result-area-only =
+    Area = { $area }
+    Total area = { $total_area }
+
 start-new-drawing = New Drawing
 start-open-file = Open File…
 start-donate = Donate
