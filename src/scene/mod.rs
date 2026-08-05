@@ -1575,6 +1575,10 @@ pub struct Scene {
     /// preview wires, layer visibility, layout). The GPU pipeline uses this to
     /// skip re-uploading unchanged geometry buffers every frame.
     pub geometry_epoch: u64,
+    /// Geometry epoch represented by the model bounds cached on the live
+    /// camera. Projection switches refresh those bounds through the same
+    /// filtered fit path when this falls behind `geometry_epoch`.
+    projection_bounds_epoch: std::cell::Cell<u64>,
     /// Separate epoch for the (expensive) block-definition tessellation cache.
     /// Bumped together with `geometry_epoch` by `bump_geometry`, but NOT by
     /// `bump_geometry_no_blocks` — so edits that provably can't change any
@@ -1649,6 +1653,9 @@ pub struct Scene {
     /// constants. `[depth, half]` retains a fixed child sub-range for block
     /// composition. Full sort/layout/block changes rebuild the labels.
     draw_depth_cache: RefCell<Option<DrawDepthCache>>,
+    /// Shared empty map for 3-D wireframe, where true depth wins instead of
+    /// the entity submission order used by the optimized 2-D style.
+    no_draw_depths: Arc<HashMap<u64, [f32; 2]>>,
     /// Cached hatch fill models, keyed by target block and geometry_epoch. View culling
     /// is handled at draw time via `hatch_skip_flags` in the pipeline,
     /// not at build time — that lets the GPU buffer stay stable across
@@ -1950,6 +1957,7 @@ impl Scene {
             interim_wire: None,
             camera_generation: 0,
             geometry_epoch: GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed),
+            projection_bounds_epoch: std::cell::Cell::new(0),
             block_epoch: GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed),
             selection_generation: 0,
             wire_cache: RefCell::new(None),
@@ -1960,6 +1968,7 @@ impl Scene {
             interaction_handle_index_cache: RefCell::new(None),
             sort_cache: RefCell::new(None),
             draw_depth_cache: RefCell::new(None),
+            no_draw_depths: Arc::new(HashMap::default()),
             hatch_cache: RefCell::new(HashMap::default()),
             wipeout_cache: RefCell::new(HashMap::default()),
             image_cache: RefCell::new(HashMap::default()),
@@ -9185,7 +9194,8 @@ impl Scene {
                         }
                     }
                     // 3D solids render as meshes, not wires, so fold their
-                    // XY AABBs in too — otherwise ZOOM EXTENTS ignores them.
+                    // complete 3D boxes in too — otherwise view fitting loses
+                    // both solid-only drawings and their depth.
                     for (&handle, set) in &self.meshes {
                         if !self.mesh_entity_visible(handle)
                             || !self.document.get_entity(handle).is_some_and(|entity| {
@@ -9199,8 +9209,9 @@ impl Scene {
                             continue;
                         }
                         let [ax, ay, bx, by] = set.world_aabb;
-                        let lo = glam::Vec3::new(ax, ay, 0.0);
-                        let hi = glam::Vec3::new(bx, by, 0.0);
+                        let [az, bz] = set.z_aabb;
+                        let lo = glam::Vec3::new(ax, ay, az);
+                        let hi = glam::Vec3::new(bx, by, bz);
                         if lo.is_finite() && hi.is_finite() {
                             min = min.min(lo);
                             max = max.max(hi);
@@ -9257,8 +9268,9 @@ impl Scene {
                 continue;
             }
             let [ax, ay, bx, by] = set.world_aabb;
-            let lo = glam::Vec3::new(ax, ay, 0.0);
-            let hi = glam::Vec3::new(bx, by, 0.0);
+            let [az, bz] = set.z_aabb;
+            let lo = glam::Vec3::new(ax, ay, az);
+            let hi = glam::Vec3::new(bx, by, bz);
             if lo.is_finite() && hi.is_finite() {
                 min = min.min(lo);
                 max = max.max(hi);

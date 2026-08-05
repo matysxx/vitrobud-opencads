@@ -9,7 +9,7 @@ pub(crate) mod commands;
 mod document;
 mod expr_eval;
 mod find_replace;
-mod helpers;
+pub(crate) mod helpers;
 mod history;
 mod layers;
 mod model_ops;
@@ -109,6 +109,38 @@ pub enum QSelectOp {
     Lt,
 }
 
+/// Candidate set searched by Quick Select.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QSelectScope {
+    CurrentSpace,
+    CurrentSelection,
+}
+
+impl std::fmt::Display for QSelectScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let source = match self {
+            QSelectScope::CurrentSpace => "Current space",
+            QSelectScope::CurrentSelection => "Current selection",
+        };
+        f.write_str(crate::t!(source).as_ref())
+    }
+}
+
+/// Whether matching candidates are kept or removed from the result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QSelectMode {
+    Include,
+    Exclude,
+}
+
+/// Editor used by the Quick Select value field.
+#[derive(Clone, Debug)]
+pub enum QSelectValueEditor {
+    Text,
+    Number,
+    Choice(Vec<String>),
+}
+
 impl std::fmt::Display for QSelectOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
@@ -131,6 +163,7 @@ impl std::fmt::Display for QSelectOp {
 pub struct QSelectPropertyChoice {
     pub field: String,
     pub label: String,
+    pub editor: QSelectValueEditor,
 }
 
 impl PartialEq for QSelectPropertyChoice {
@@ -148,19 +181,22 @@ impl std::fmt::Display for QSelectPropertyChoice {
 }
 
 /// Open Quick Select panel state. The filter is one
-/// `(type, property, op, value)` row plus an Append-to-current-selection
-/// toggle, mirroring the classic QSELECT dialog: the panel filters
-/// candidate entities (entire layout) by type, then by the chosen
-/// property compared to the typed value using the operator.
+/// `(scope, type, property, op, value)` row plus result behavior.
 #[derive(Clone, Debug)]
 pub struct QSelectState {
+    pub scope: QSelectScope,
+    pub available_types: Vec<String>,
+    pub available_properties: Vec<QSelectPropertyChoice>,
+    pub candidate_count: usize,
     /// `None` = "(Any type)".
     pub type_filter: Option<String>,
     /// `None` = no property filter; the type filter alone applies.
     pub property: Option<QSelectPropertyChoice>,
     pub operator: QSelectOp,
     pub value: String,
+    pub mode: QSelectMode,
     pub append: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -263,6 +299,7 @@ pub(super) struct OpenCADStudio {
     start: Instant,
     tabs: Vec<DocumentTab>,
     active_tab: usize,
+    hovered_doc_tab: Option<usize>,
     tab_counter: usize,
     ribbon: Ribbon,
     /// Recently opened files, newest first — backs the Start page panel.
@@ -497,6 +534,11 @@ pub(super) struct OpenCADStudio {
     /// next frame to decide whether the ViewCube still has room beside it — so
     /// the two corner widgets adapt to the bar's real width, not an estimate.
     render_bar_w: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Whether the visual-style flyout beside the active viewport is open.
+    render_mode_menu_open: bool,
+    /// Mode whose sample is shown while the pointer moves through the flyout.
+    /// This does not alter the drawing until the corresponding row is clicked.
+    render_mode_preview: Option<acadrust::entities::ViewportRenderMode>,
     /// Whether the Properties panel is shown on the left (PROPERTIES).
     show_properties: bool,
     /// Whether the document file tabs are shown at the top (FILETAB).
@@ -1568,6 +1610,14 @@ pub enum DsField {
     Dimtzin,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ArrowKey {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick(Instant),
@@ -1586,10 +1636,11 @@ pub enum Message {
         crate::scene::text::web_font::Script,
         Result<(), String>,
     ),
-    /// Ctrl+V. Routed by `update`: into the open text/MText editor (via an async
-    /// system-clipboard read, which is the only paste path that works on the
-    /// web) or, with no editor open, the entity paste command.
+    /// Ctrl+V. Routed by `update` into an open text editor, the drawing-object
+    /// clipboard, or the system text clipboard.
     PasteShortcut,
+    /// Completion of a system text clipboard read requested by PASTECLIP.
+    SystemClipboardPaste(SystemClipboardText),
     /// Ctrl/Cmd+A — select all layer rows when the Layer Manager is open, or all
     /// drawing objects otherwise (#236).
     SelectAllShortcut,
@@ -1706,6 +1757,12 @@ pub enum Message {
     /// styles). Replaces the binary `SetWireframe` over time; the older
     /// message stays for ribbon/CLI back-compat and forwards.
     SetRenderMode(acadrust::entities::ViewportRenderMode),
+    /// Open or close the active viewport's visual-style flyout.
+    ToggleRenderModeMenu(acadrust::entities::ViewportRenderMode),
+    /// Close the visual-style flyout after Escape or an outside click.
+    DismissRenderModeMenu,
+    /// Change only the sample shown beside the visual-style list.
+    PreviewRenderMode(acadrust::entities::ViewportRenderMode),
     /// Switch camera projection: true = Orthographic, false = Perspective.
     SetProjection(bool),
     /// Select a ribbon module tab by index.
@@ -1729,6 +1786,8 @@ pub enum Message {
     TabNew,
     /// Switch to the given tab index.
     TabSwitch(usize),
+    /// Drawing tab currently under the pointer; controls integrated close affordance.
+    DocTabHover(Option<usize>),
     /// Move a drawing tab before/after another drawing tab.
     TabReorder {
         from: usize,
@@ -1811,6 +1870,18 @@ pub enum Message {
     CommandHistoryPrev,
     /// Recall next command in history (↓ arrow key).
     CommandHistoryNext,
+    /// An unconsumed arrow key; the active editor gets first choice, otherwise
+    /// the configurable shortcut table handles it.
+    ArrowKeyPressed {
+        direction: ArrowKey,
+        shortcut: String,
+        extend_selection: bool,
+    },
+    /// A widget captured Up/Down; resolve it only if the command input owns
+    /// keyboard focus.
+    CommandLineArrowProbe { direction: ArrowKey },
+    /// Result of the command-input focus query for a captured Up/Down key.
+    CommandLineArrowResolved { direction: ArrowKey, focused: bool },
     /// Toggle the dropdown listing the full command-line history.
     CommandHistoryToggle,
     /// Grab/move/release the expanded history panel's top resize edge.
@@ -2458,6 +2529,8 @@ pub enum Message {
     QSelectOpen,
     /// Close the Quick Select panel without applying.
     QSelectClose,
+    /// Candidate scope: active space or the current selection.
+    QSelectSetScope(QSelectScope),
     /// Type filter — `None` means "any type".
     QSelectSetType(Option<String>),
     /// Property to compare. `None` means "no property filter — just type
@@ -2468,6 +2541,8 @@ pub enum Message {
     QSelectSetOperator(QSelectOp),
     /// Compare-against value (free-text input).
     QSelectSetValue(String),
+    /// Include or exclude objects matching the filter.
+    QSelectSetMode(QSelectMode),
     /// Append-to-current-selection toggle.
     QSelectSetAppend(bool),
     /// Apply the current filter and close the panel.
@@ -2779,7 +2854,7 @@ pub enum Message {
     /// Callback after the user picks (or cancels) the STEP save path.
     StepExportPath(Option<std::path::PathBuf>),
     StepExportFinished(std::path::PathBuf, Result<(), String>),
-    /// Binary DXF R12 machine-compatibility export (`EXPORTDXFR12`).
+    /// ASCII DXF R12 machine-compatibility export (`EXPORTDXFR12`).
     DxfR12Export,
     DxfR12ExportPath(Option<std::path::PathBuf>),
     DxfR12ExportFinished(
@@ -2796,6 +2871,15 @@ pub enum Message {
         std::path::PathBuf,
         Result<crate::scene::model::mesh_model::MeshModel, String>,
     ),
+}
+
+#[derive(Debug, Clone)]
+pub enum SystemClipboardText {
+    Text(String),
+    EmptyOrUnsupported,
+    Unavailable,
+    Occupied,
+    ConversionFailed,
 }
 
 impl OpenCADStudio {
@@ -2831,6 +2915,7 @@ impl OpenCADStudio {
             start: Instant::now(),
             tabs: vec![start_tab],
             active_tab: 0,
+            hovered_doc_tab: None,
             tab_counter: 0,
             ribbon: Ribbon::new(),
             // Populated from the consolidated config after construction
@@ -2926,6 +3011,8 @@ impl OpenCADStudio {
             ucs_icon_at_origin: true,
             show_viewcube: true,
             render_bar_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            render_mode_menu_open: false,
+            render_mode_preview: None,
             show_properties: true,
             show_file_tabs: true,
             show_layout_tabs: true,

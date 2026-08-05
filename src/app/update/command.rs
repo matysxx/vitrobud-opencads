@@ -193,6 +193,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     } else {
                         // Command-line entry is shown uppercase.
                         self.command_line.input.push_str(&s.to_uppercase());
+                        self.command_line.cancel_history_navigation();
                     }
                 }
                 self.command_line.autocomplete_cursor = None;
@@ -221,6 +222,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 }
                 self.command_line.input.pop();
                 self.command_line.autocomplete_cursor = None;
+                self.command_line.cancel_history_navigation();
                 self.focus_cmd_input()
     }
 
@@ -303,15 +305,12 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     }
                     return self.dispatch_command(&format!("SETVAR {name} {val}"));
                 }
-                // If the user navigated the autocomplete list with the
-                // arrow keys, Enter dispatches the highlighted command
-                // rather than the partial text actually in the buffer.
                 let i_tab = self.active_tab;
                 if self.tabs[i_tab].active_cmd.is_none() {
-                    if let Some(cmd) = self.command_line.selected_suggestion() {
+                    if let Some(command) = self.command_line.selected_suggestion() {
                         self.command_line.input.clear();
                         self.command_line.autocomplete_cursor = None;
-                        return self.dispatch_command(&cmd);
+                        return self.dispatch_command(&command);
                     }
                 }
                 let i = self.active_tab;
@@ -417,8 +416,8 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         // independent of DYN: `@` forces relative, `#` forces
                         // absolute, and a bare value is absolute. (Relative-by-
                         // default lives in the DYN tooltip path — see
-                        // `dyn_resolve_point` — matching AutoCAD, where the
-                        // command line stays absolute regardless of DYN.)
+                        // `dyn_resolve_point`; command-line coordinates stay
+                        // absolute regardless of the DYN setting.)
                         let want_relative = matches!(kind, CoordKind::Relative);
                         let ucs = self.tabs[i].active_ucs.clone();
                         let wcs_pt = match (want_relative, self.last_point) {
@@ -474,7 +473,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     }
 
                     self.command_line.push_error(crate::tf!(
-                        "Expected coordinates (x,y) or a number, got: \"{text}\""
+                        "Expected Cartesian, polar, cylindrical or spherical coordinates, or a number; got: \"{text}\""
                     ).as_ref());
                     return self.focus_cmd_input();
                 }
@@ -1259,7 +1258,44 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     #[cfg(not(target_arch = "wasm32"))]
                     return Task::none();
                 }
-                Task::done(Message::Command("PASTECLIP".to_string()))
+                if self.clipboard.is_empty() {
+                    self.read_system_clipboard_for_paste()
+                } else {
+                    Task::done(Message::Command("PASTECLIP".to_string()))
+                }
+    }
+
+    pub(in crate::app) fn read_system_clipboard_for_paste(&self) -> Task<Message> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Task::perform(crate::sys::read_clipboard_text(), |text| {
+                Message::SystemClipboardPaste(match text {
+                    Some(text) if !text.is_empty() => {
+                        crate::app::SystemClipboardText::Text(text)
+                    }
+                    _ => crate::app::SystemClipboardText::EmptyOrUnsupported,
+                })
+            })
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            iced::clipboard::read_text().map(|result| {
+                use crate::app::SystemClipboardText as Text;
+                use iced::clipboard::Error;
+
+                let result = match result {
+                    Ok(text) if !text.is_empty() => Text::Text((*text).clone()),
+                    Ok(_) | Err(Error::ContentNotAvailable) => Text::EmptyOrUnsupported,
+                    Err(Error::ClipboardUnavailable) | Err(Error::Unknown { .. }) => {
+                        Text::Unavailable
+                    }
+                    Err(Error::ClipboardOccupied) => Text::Occupied,
+                    Err(Error::ConversionFailure) => Text::ConversionFailed,
+                };
+                Message::SystemClipboardPaste(result)
+            })
+        }
     }
 
     pub(super) fn on_qselect_open(&mut self) -> Task<Message> {
@@ -1277,12 +1313,24 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         type_filter = Some(entity_type_name(e).to_string());
                     }
                 }
+                let scope = crate::app::QSelectScope::CurrentSpace;
+                let available_types = self.tabs[i].scene.qselect_entity_type_names(scope);
+                let available_properties = self.tabs[i]
+                    .scene
+                    .qselect_properties(type_filter.as_deref(), scope);
+                let candidate_count = self.tabs[i].scene.qselect_candidate_count(scope);
                 self.qselect = Some(crate::app::QSelectState {
+                    scope,
+                    available_types,
+                    available_properties,
+                    candidate_count,
                     type_filter,
                     property: None,
                     operator: crate::app::QSelectOp::Eq,
                     value: String::new(),
+                    mode: crate::app::QSelectMode::Include,
                     append: false,
+                    error: None,
                 });
                 self.reset_modal_geometry();
                 Task::none()
@@ -1837,10 +1885,20 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             }
                         }
                     } else {
+                        let plane = if self.tabs[i].editing_model_space() {
+                            self.tabs[i].ucs_xform().working_plane()
+                        } else {
+                            crate::command::WorkingPlane::default()
+                        };
                         for &handle in &handles {
                             if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle)
                             {
-                                crate::scene::view::dispatch::apply_geom_prop(entity, field, &value);
+                                crate::scene::view::dispatch::apply_geom_prop_in_working_plane(
+                                    entity,
+                                    field,
+                                    &value,
+                                    plane,
+                                );
                             }
                         }
                     }
@@ -1899,6 +1957,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             crate::scene::view::dispatch::set_prop_current_vertex(
                                 self.tabs[i].properties.prop_vertex,
                             );
+                            let plane = if self.tabs[i].editing_model_space() {
+                                self.tabs[i].ucs_xform().working_plane()
+                            } else {
+                                crate::command::WorkingPlane::default()
+                            };
                             for &handle in &handles {
                                 // Skip objects on a locked layer.
                                 if self.tabs[i].scene.is_layer_locked(handle) {
@@ -1970,8 +2033,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                         if let Some(entity) =
                                             self.tabs[i].scene.document.get_entity_mut(handle)
                                         {
-                                            crate::scene::view::dispatch::apply_geom_prop(
-                                                entity, field, &val,
+                                            crate::scene::view::dispatch::apply_geom_prop_in_working_plane(
+                                                entity,
+                                                field,
+                                                &val,
+                                                plane,
                                             );
                                         }
                                     }

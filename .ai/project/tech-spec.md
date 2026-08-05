@@ -11,9 +11,9 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The current locally integrated upstream candidate is Open CAD Studio `0.9.2` at
-post-tag revision `d1f905590126495c734c63984f2345ffbbd2ec70` (2026-08-04).
-This includes additional commits after tag `v0.9.2`; therefore the exact Git revision,
+The current locally integrated upstream candidate is Open CAD Studio `0.9.3` at
+post-tag revision `afc94dce1350cfaa4ac2d6983328721c1bcdcb6e` (2026-08-05).
+This includes additional commits after tag `v0.9.3`; therefore the exact Git revision,
 not only the application version string, identifies the build. The baseline
 pins `OpenAEC-Foundation/acadifc` at `ab388a7de9b38f7b06e963c35b45fb35d9fee97a`.
 Upstream now includes the no-default-features ACIS helper fix previously carried

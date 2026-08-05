@@ -1,4 +1,4 @@
-use super::{Message, OpenCADStudio};
+use super::{ArrowKey, Message, OpenCADStudio};
 use crate::scene::VIEWCUBE_DRAW_PX;
 use crate::ui::PropertiesPanel;
 use iced::time::Instant;
@@ -19,6 +19,9 @@ fn is_modal_blocked_key_msg(msg: &Message) -> bool {
             | Message::CommandBackspace
             | Message::CommandHistoryPrev
             | Message::CommandHistoryNext
+            | Message::ArrowKeyPressed { .. }
+            | Message::CommandLineArrowProbe { .. }
+            | Message::CommandLineArrowResolved { .. }
             | Message::DynTabNext
             | Message::MTextCaretMove(_)
             | Message::DeleteSelected
@@ -1071,7 +1074,7 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            // ── Binary DXF R12 machine export ────────────────────────────
+            // ── ASCII DXF R12 machine export ─────────────────────────────
             Message::DxfR12Export => {
                 let i = self.active_tab;
                 let filename = crate::io::export_dxf_r12::suggested_filename(
@@ -1266,7 +1269,30 @@ impl OpenCADStudio {
                 Task::done(Message::SetRenderMode(mode))
             }
 
-            Message::SetRenderMode(mode) => self.on_set_render_mode(mode),
+            Message::SetRenderMode(mode) => {
+                self.render_mode_menu_open = false;
+                self.render_mode_preview = None;
+                self.on_set_render_mode(mode)
+            }
+
+            Message::ToggleRenderModeMenu(mode) => {
+                self.render_mode_menu_open = !self.render_mode_menu_open;
+                self.render_mode_preview = self.render_mode_menu_open.then_some(mode);
+                Task::none()
+            }
+
+            Message::DismissRenderModeMenu => {
+                self.render_mode_menu_open = false;
+                self.render_mode_preview = None;
+                Task::none()
+            }
+
+            Message::PreviewRenderMode(mode) => {
+                if self.render_mode_menu_open {
+                    self.render_mode_preview = Some(mode);
+                }
+                Task::none()
+            }
 
             Message::SetProjection(ortho) => {
                 use crate::scene::Projection;
@@ -1276,8 +1302,9 @@ impl OpenCADStudio {
                     Projection::Perspective
                 };
                 let i = self.active_tab;
-                self.tabs[i].scene.camera.borrow_mut().projection = proj;
-                self.tabs[i].scene.camera_generation += 1;
+                self.tabs[i]
+                    .scene
+                    .set_projection_preserving_frame(proj);
                 self.ribbon.set_ortho(ortho);
                 self.command_line.push_output(if ortho {
                     "Projection: Orthographic"
@@ -1300,7 +1327,11 @@ impl OpenCADStudio {
             }
 
             Message::RibbonToolClick { tool_id, event } => {
-                self.on_ribbon_tool_click(tool_id, event)
+                if self.tabs[self.active_tab].is_start {
+                    Task::none()
+                } else {
+                    self.on_ribbon_tool_click(tool_id, event)
+                }
             }
             Message::PluginFileDialogResult { command, path } => {
                 if let Some(path) = path {
@@ -1359,6 +1390,9 @@ impl OpenCADStudio {
                         self.stamp_header_sysvars(prev);
                     }
                     self.active_tab = idx;
+                    if self.tabs[idx].is_start {
+                        self.ribbon.close_dropdown();
+                    }
                     if self.tabs[idx].is_start
                         && matches!(
                             self.active_modal,
@@ -1408,6 +1442,11 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::DocTabHover(index) => {
+                self.hovered_doc_tab = index.filter(|&idx| idx < self.tabs.len());
+                Task::none()
+            }
+
             Message::TabReorder { from, to, after } => {
                 let Some(insertion) =
                     reorder_insertion_index(from, to, after, self.tabs.len())
@@ -1426,10 +1465,14 @@ impl OpenCADStudio {
                 if let Some(index) = self.tabs.iter().position(|tab| tab.id == active_id) {
                     self.active_tab = index;
                 }
+                self.hovered_doc_tab = None;
                 Task::none()
             }
 
-            Message::TabClose(idx) => self.on_tab_close(idx),
+            Message::TabClose(idx) => {
+                self.hovered_doc_tab = None;
+                self.on_tab_close(idx)
+            }
 
             Message::DocTabSaveAll => self.dispatch_command("SAVEALL"),
 
@@ -1536,9 +1579,8 @@ impl OpenCADStudio {
                     return self.update(Message::CommandSubmit);
                 }
                 self.command_line.input = s;
-                // Typing invalidates the previous arrow-key cursor —
-                // the matches list has likely changed.
                 self.command_line.autocomplete_cursor = None;
+                self.command_line.cancel_history_navigation();
                 Task::none()
             }
 
@@ -1601,14 +1643,17 @@ impl OpenCADStudio {
                     }
                     return Task::none();
                 }
-                // While autocomplete is showing suggestions, ↑ walks up
-                // that list. Otherwise it falls back to recall history.
                 let i = self.active_tab;
-                if self.tabs[i].active_cmd.is_none() && self.command_line.autocomplete_prev() {
+                if !self.command_line.history_navigation_active()
+                    && self.tabs[i].active_cmd.is_none()
+                    && self.command_line.autocomplete_prev()
+                {
                     return Task::none();
                 }
                 self.command_line.history_prev();
-                Task::none()
+                iced::widget::operation::move_cursor_to_end(iced::widget::Id::new(
+                    crate::ui::command_line::CMD_INPUT_ID,
+                ))
             }
 
             Message::CommandHistoryNext => {
@@ -1625,11 +1670,63 @@ impl OpenCADStudio {
                     return Task::none();
                 }
                 let i = self.active_tab;
-                if self.tabs[i].active_cmd.is_none() && self.command_line.autocomplete_next() {
+                if !self.command_line.history_navigation_active()
+                    && self.tabs[i].active_cmd.is_none()
+                    && self.command_line.autocomplete_next()
+                {
                     return Task::none();
                 }
                 self.command_line.history_next();
-                Task::none()
+                iced::widget::operation::move_cursor_to_end(iced::widget::Id::new(
+                    crate::ui::command_line::CMD_INPUT_ID,
+                ))
+            }
+
+            Message::CommandLineArrowProbe { direction } => {
+                iced::widget::operation::is_focused(iced::widget::Id::new(
+                    crate::ui::command_line::CMD_INPUT_ID,
+                ))
+                .map(move |focused| Message::CommandLineArrowResolved {
+                    direction,
+                    focused,
+                })
+            }
+
+            Message::CommandLineArrowResolved { direction, focused } => {
+                if !focused {
+                    return Task::none();
+                }
+                match direction {
+                    ArrowKey::Up => self.update(Message::CommandHistoryPrev),
+                    ArrowKey::Down => self.update(Message::CommandHistoryNext),
+                    ArrowKey::Left | ArrowKey::Right => Task::none(),
+                }
+            }
+
+            Message::ArrowKeyPressed {
+                direction,
+                shortcut,
+                extend_selection,
+            } => {
+                if self.mtext_editor.is_some() {
+                    match direction {
+                        ArrowKey::Left => self.mtext_caret_move(-1, extend_selection),
+                        ArrowKey::Right => self.mtext_caret_move(1, extend_selection),
+                        ArrowKey::Up => {
+                            self.mtext_caret_move_vertical(1, extend_selection)
+                        }
+                        ArrowKey::Down => {
+                            self.mtext_caret_move_vertical(-1, extend_selection)
+                        }
+                    }
+                    Task::none()
+                } else {
+                    match direction {
+                        ArrowKey::Up => self.update(Message::CommandHistoryPrev),
+                        ArrowKey::Down => self.update(Message::CommandHistoryNext),
+                        ArrowKey::Left | ArrowKey::Right => self.run_shortcut(&shortcut),
+                    }
+                }
             }
 
             Message::CommandLiteralToggle => {
@@ -1742,6 +1839,7 @@ impl OpenCADStudio {
 
             Message::CommandSuggestionPick(cmd) => {
                 self.command_line.input.clear();
+                self.command_line.autocomplete_cursor = None;
                 self.command_line.close_history();
                 self.dispatch_command(&cmd)
             }
@@ -3415,11 +3513,19 @@ impl OpenCADStudio {
 
             // ── Ribbon dropdowns ──────────────────────────────────────────
             Message::ToggleRibbonDropdown(id) => {
-                self.ribbon.toggle_dropdown(&id);
+                if self.tabs[self.active_tab].is_start {
+                    self.ribbon.close_dropdown();
+                } else {
+                    self.ribbon.toggle_dropdown(&id);
+                }
                 Task::none()
             }
             Message::ToggleRibbonPanel(id) => {
-                self.ribbon.toggle_collapsed_panel(&id);
+                if self.tabs[self.active_tab].is_start {
+                    self.ribbon.close_dropdown();
+                } else {
+                    self.ribbon.toggle_collapsed_panel(&id);
+                }
                 Task::none()
             }
             Message::CloseRibbonDropdown => {
@@ -3427,6 +3533,10 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::DropdownSelectItem { dropdown_id, cmd } => {
+                if self.tabs[self.active_tab].is_start {
+                    self.ribbon.close_dropdown();
+                    return Task::none();
+                }
                 self.ribbon.select_dropdown_item(dropdown_id, cmd);
                 self.ribbon.activate_tool(cmd);
                 self.dispatch_command(cmd)
@@ -3610,7 +3720,7 @@ impl OpenCADStudio {
                         }
                     }
                 }
-                Task::none()
+                self.unfocus_widgets()
             }
             Message::MTextSelTo(off) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
@@ -3628,7 +3738,7 @@ impl OpenCADStudio {
                 {
                     return self.update(Message::PropHatchPatternNavigate(d as i8));
                 }
-                self.mtext_caret_move(d);
+                self.mtext_caret_move(d, false);
                 Task::none()
             }
             Message::MTextCaretBlink => {
@@ -3660,9 +3770,44 @@ impl OpenCADStudio {
             // Ctrl+V. The MText editor and (on the web) the TEXT editor read the
             // system clipboard asynchronously — the only paste path that works
             // in the browser, where the synchronous clipboard the iced
-            // text_input expects is empty. With no editor open it falls through
-            // to the entity paste command.
+            // text_input expects is empty. With no editor open, drawing objects
+            // take priority and system text is used when that clipboard is empty.
             Message::PasteShortcut => self.on_paste_shortcut(),
+
+            Message::SystemClipboardPaste(result) => {
+                use super::SystemClipboardText as Text;
+
+                match result {
+                    Text::Text(text) => {
+                        let flat = text.replace(['\r', '\n'], " ").to_uppercase();
+                        self.command_line.input.push_str(&flat);
+                        self.command_line.autocomplete_cursor = None;
+                        self.command_line.cancel_history_navigation();
+                        self.focus_cmd_input()
+                    }
+                    Text::EmptyOrUnsupported => {
+                        self.command_line.push_error(
+                            crate::tr!("clipboard-no-supported-content").as_ref(),
+                        );
+                        Task::none()
+                    }
+                    Text::Unavailable => {
+                        self.command_line
+                            .push_error(crate::tr!("clipboard-unavailable").as_ref());
+                        Task::none()
+                    }
+                    Text::Occupied => {
+                        self.command_line
+                            .push_error(crate::tr!("clipboard-occupied").as_ref());
+                        Task::none()
+                    }
+                    Text::ConversionFailed => {
+                        self.command_line
+                            .push_error(crate::tr!("clipboard-conversion-failed").as_ref());
+                        Task::none()
+                    }
+                }
+            }
 
             Message::SelectAllShortcut => {
                 let i = self.active_tab;
@@ -3775,22 +3920,77 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::QSelectSetType(t) => {
+            Message::QSelectSetScope(scope) => {
+                let i = self.active_tab;
+                let available_types = self.tabs[i].scene.qselect_entity_type_names(scope);
+                let type_filter = self.qselect.as_ref().and_then(|state| {
+                    state
+                        .type_filter
+                        .as_ref()
+                        .filter(|selected| available_types.iter().any(|item| item == *selected))
+                        .cloned()
+                });
+                let available_properties = self.tabs[i]
+                    .scene
+                    .qselect_properties(type_filter.as_deref(), scope);
+                let candidate_count = self.tabs[i].scene.qselect_candidate_count(scope);
                 if let Some(state) = self.qselect.as_mut() {
-                    // Drop the property when it no longer applies to the
-                    // chosen type: type-specific fields like `start_x`
-                    // would otherwise stay selected but never match.
-                    let kept_property = state.property.clone().and_then(|p| {
-                        let i = self.active_tab;
-                        let props = self.tabs[i].scene.qselect_properties(t.as_deref());
-                        if props.iter().any(|(f, _)| f == &p.field) {
-                            Some(p)
-                        } else {
-                            None
-                        }
+                    state.scope = scope;
+                    state.available_types = available_types;
+                    state.available_properties = available_properties;
+                    state.candidate_count = candidate_count;
+                    state.type_filter = type_filter;
+                    state.property = state.property.as_ref().and_then(|selected| {
+                        state
+                            .available_properties
+                            .iter()
+                            .find(|available| available.field == selected.field)
+                            .cloned()
+                    });
+                    state.value.clear();
+                    state.error = None;
+                    if matches!(scope, crate::app::QSelectScope::CurrentSelection) {
+                        state.append = false;
+                    }
+                    if matches!(state.operator, crate::app::QSelectOp::Gt | crate::app::QSelectOp::Lt)
+                        && !state.property.as_ref().is_some_and(|property| {
+                            matches!(property.editor, crate::app::QSelectValueEditor::Number)
+                        })
+                    {
+                        state.operator = crate::app::QSelectOp::Eq;
+                    }
+                }
+                Task::none()
+            }
+
+            Message::QSelectSetType(t) => {
+                let i = self.active_tab;
+                let scope = self
+                    .qselect
+                    .as_ref()
+                    .map_or(crate::app::QSelectScope::CurrentSpace, |state| state.scope);
+                let properties = self.tabs[i]
+                    .scene
+                    .qselect_properties(t.as_deref(), scope);
+                if let Some(state) = self.qselect.as_mut() {
+                    let kept_property = state.property.as_ref().and_then(|selected| {
+                        properties
+                            .iter()
+                            .find(|available| available.field == selected.field)
+                            .cloned()
                     });
                     state.type_filter = t;
+                    state.available_properties = properties;
                     state.property = kept_property;
+                    state.value.clear();
+                    state.error = None;
+                    if matches!(state.operator, crate::app::QSelectOp::Gt | crate::app::QSelectOp::Lt)
+                        && !state.property.as_ref().is_some_and(|property| {
+                            matches!(property.editor, crate::app::QSelectValueEditor::Number)
+                        })
+                    {
+                        state.operator = crate::app::QSelectOp::Eq;
+                    }
                 }
                 Task::none()
             }
@@ -3798,6 +3998,15 @@ impl OpenCADStudio {
             Message::QSelectSetProperty(p) => {
                 if let Some(state) = self.qselect.as_mut() {
                     state.property = p;
+                    state.value.clear();
+                    state.error = None;
+                    if matches!(state.operator, crate::app::QSelectOp::Gt | crate::app::QSelectOp::Lt)
+                        && !state.property.as_ref().is_some_and(|property| {
+                            matches!(property.editor, crate::app::QSelectValueEditor::Number)
+                        })
+                    {
+                        state.operator = crate::app::QSelectOp::Eq;
+                    }
                 }
                 Task::none()
             }
@@ -3805,6 +4014,7 @@ impl OpenCADStudio {
             Message::QSelectSetOperator(op) => {
                 if let Some(state) = self.qselect.as_mut() {
                     state.operator = op;
+                    state.error = None;
                 }
                 Task::none()
             }
@@ -3812,29 +4022,91 @@ impl OpenCADStudio {
             Message::QSelectSetValue(v) => {
                 if let Some(state) = self.qselect.as_mut() {
                     state.value = v;
+                    state.error = None;
+                }
+                Task::none()
+            }
+
+            Message::QSelectSetMode(mode) => {
+                if let Some(state) = self.qselect.as_mut() {
+                    state.mode = mode;
+                    state.error = None;
                 }
                 Task::none()
             }
 
             Message::QSelectSetAppend(b) => {
                 if let Some(state) = self.qselect.as_mut() {
-                    state.append = b;
+                    if matches!(state.scope, crate::app::QSelectScope::CurrentSpace) {
+                        state.append = b;
+                    }
+                    state.error = None;
                 }
                 Task::none()
             }
 
             Message::QSelectApply => {
+                let validation_error = self.qselect.as_ref().and_then(|state| {
+                    let candidate_count = self.tabs[self.active_tab]
+                        .scene
+                        .qselect_candidate_count(state.scope);
+                    if candidate_count == 0 {
+                        Some(crate::t!("No objects are available in this scope.").into_owned())
+                    } else if let Some(property) = state.property.as_ref() {
+                        if matches!(state.operator, crate::app::QSelectOp::Any) {
+                            None
+                        } else if matches!(
+                            state.operator,
+                            crate::app::QSelectOp::Gt | crate::app::QSelectOp::Lt
+                        ) && !matches!(
+                            property.editor,
+                            crate::app::QSelectValueEditor::Number
+                        ) {
+                            Some(
+                                crate::t!("This operator requires a numeric property.")
+                                    .into_owned(),
+                            )
+                        } else {
+                            match &property.editor {
+                                crate::app::QSelectValueEditor::Number
+                                    if crate::entities::common::parse_f64(&state.value).is_none() =>
+                                {
+                                    Some(crate::t!("Enter a valid number.").into_owned())
+                                }
+                                crate::app::QSelectValueEditor::Choice(_)
+                                    if state.value.is_empty() =>
+                                {
+                                    Some(crate::t!("Choose a value.").into_owned())
+                                }
+                                crate::app::QSelectValueEditor::Text
+                                | crate::app::QSelectValueEditor::Number
+                                | crate::app::QSelectValueEditor::Choice(_) => None,
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                });
+                if let Some(error) = validation_error {
+                    if let Some(state) = self.qselect.as_mut() {
+                        state.error = Some(error);
+                    }
+                    return Task::none();
+                }
                 let Some(state) = self.qselect.take() else {
                     return Task::none();
                 };
                 self.reset_modal_geometry();
                 let i = self.active_tab;
                 let matched = self.tabs[i].scene.qselect(
+                    state.scope,
                     state.type_filter.as_deref(),
                     state.property.as_ref().map(|p| p.field.as_str()),
                     state.operator,
                     &state.value,
-                    state.append,
+                    state.mode,
+                    state.append
+                        && matches!(state.scope, crate::app::QSelectScope::CurrentSpace),
                 );
                 self.command_line
                     .push_output(crate::tf!("QSELECT: {} object(s) selected.", matched).as_ref());

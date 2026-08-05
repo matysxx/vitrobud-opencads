@@ -23,3 +23,7 @@
   (`8-upstream-sync-b0806679/`)
 - `OCSSTACK-9` — Sync reviewed upstream revision `d1f90559`
   (`9-upstream-sync-d1f90559/`)
+- `OCSSTACK-10` — Switch the machine export to validated ASCII DXF R12
+  (`10-ascii-dxf-r12/`)
+- `OCSSTACK-11` — Sync reviewed upstream revision `afc94dce`
+  (`11-upstream-sync-afc94dce/`)

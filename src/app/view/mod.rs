@@ -1,7 +1,7 @@
 use super::document::DocumentTab;
 use super::document::DynComponent;
 use super::history::history_dropdown_labels;
-use super::{Message, OpenCADStudio};
+use super::{ArrowKey, Message, OpenCADStudio};
 use crate::scene::pick::grip::{grips_to_screen, grips_to_screen_paper, grips_to_screen_rte};
 use crate::scene::view::viewport_pane::ViewportPane;
 use crate::scene::{VIEWCUBE_PAD, VIEWCUBE_REGION_PX};
@@ -199,6 +199,21 @@ impl OpenCADStudio {
             theme_text.a,
         ];
         let is_paper = tab.scene.current_layout != "Model";
+        let committed_render_mode = if is_paper {
+            tab.scene
+                .active_viewport_render_mode()
+                .unwrap_or(tab.render_mode)
+        } else {
+            tab.render_mode
+        };
+        // Gallery hover is a non-destructive live preview: only the shader's
+        // input changes. Dismissal restores the committed mode, while clicking
+        // a row follows the normal SetRenderMode path and persists it.
+        let viewport_render_mode = if self.render_mode_menu_open {
+            self.render_mode_preview.unwrap_or(committed_render_mode)
+        } else {
+            committed_render_mode
+        };
         // Adaptive corner widgets: the ViewCube shows only while the active
         // viewport is wide enough to hold it *beside* the render-mode bar, whose
         // real width is measured each frame by its `DensitySwap` and read back
@@ -250,7 +265,7 @@ impl OpenCADStudio {
             shader(ViewportPane::model(
                 &tab.scene,
                 viewcube_visible,
-                tab.render_mode,
+                viewport_render_mode,
                 viewcube_text_color,
             ))
             .width(Fill)
@@ -268,7 +283,7 @@ impl OpenCADStudio {
             // mouse_areas' hover state and drops their move events).
             let scene = &tab.scene;
             let show_viewcube = viewcube_visible;
-            let render_mode = tab.render_mode;
+            let render_mode = viewport_render_mode;
             let size_probe: Element<'_, Message> = responsive(move |size| {
                 {
                     let mut sel = scene.selection.borrow_mut();
@@ -856,6 +871,8 @@ impl OpenCADStudio {
                 self.snapper.grid_snap(),
                 true,
                 tab.scene.model_tiles.borrow().len(),
+                self.render_mode_menu_open,
+                self.render_mode_preview,
             );
             // Adaptive: DensitySwap measures the bar's real width every frame
             // (reported into `render_bar_w`, which the ViewCube reads to decide
@@ -946,6 +963,8 @@ impl OpenCADStudio {
                 self.snapper.grid_snap(),
                 false,
                 0,
+                self.render_mode_menu_open,
+                self.render_mode_preview,
             );
             let adaptive: Element<'_, Message> = DensitySwap::new(vec![
                 iced::widget::opaque(bar),
@@ -1575,7 +1594,11 @@ impl OpenCADStudio {
                 ));
             }
             if self.show_file_tabs {
-                col = col.push(doc_tab_bar(&self.tabs, self.active_tab));
+                col = col.push(doc_tab_bar(
+                    &self.tabs,
+                    self.active_tab,
+                    self.hovered_doc_tab,
+                ));
             }
             col.push(center_stack)
                 .push({
@@ -1685,6 +1708,7 @@ impl OpenCADStudio {
                 &history_dropdown_labels(&self.tabs[self.active_tab].history.undo_stack),
                 &history_dropdown_labels(&self.tabs[self.active_tab].history.redo_stack),
                 self.win_size,
+                self.tabs[self.active_tab].is_start,
             )
             .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
 
@@ -1696,12 +1720,11 @@ impl OpenCADStudio {
             };
 
         let qselect_layer: Element<'_, Message> = if let Some(state) = &self.qselect {
-            let types = tab.scene.entity_type_names_in_layout();
-            let properties = tab.scene.qselect_properties(state.type_filter.as_deref());
             qselect_overlay(
                 state,
-                &types,
-                &properties,
+                &state.available_types,
+                &state.available_properties,
+                state.candidate_count,
                 self.modal_offset,
                 self.modal_resize,
             )
@@ -1954,6 +1977,44 @@ impl OpenCADStudio {
                                 }
                             }
                         }
+                        let has_printable_text = text.as_deref().is_some_and(|value| {
+                            !value.is_empty()
+                                && value
+                                    .chars()
+                                    .all(|ch| !ch.is_control() && !ch.is_whitespace())
+                        });
+                        let arrow = match &key {
+                            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                                Some(ArrowKey::Up)
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                                Some(ArrowKey::Down)
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                                Some(ArrowKey::Left)
+                            }
+                            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                                Some(ArrowKey::Right)
+                            }
+                            _ => None,
+                        };
+                        if !has_printable_text && status == Status::Ignored {
+                            if let Some(direction) = arrow {
+                                return Some(Message::ArrowKeyPressed {
+                                    direction,
+                                    shortcut: shortcut_key_name(&key, modifiers)?,
+                                    extend_selection: modifiers.shift(),
+                                });
+                            }
+                        }
+                        if !has_printable_text
+                            && status == Status::Captured
+                            && matches!(arrow, Some(ArrowKey::Up | ArrowKey::Down))
+                        {
+                            return Some(Message::CommandLineArrowProbe {
+                                direction: arrow?,
+                            });
+                        }
                         // A focused web text field needs the browser clipboard;
                         // drawing shortcuts only run for ignored C/V events.
                         #[cfg(target_arch = "wasm32")]
@@ -1980,6 +2041,12 @@ impl OpenCADStudio {
 
     pub(super) fn focus_cmd_input(&self) -> Task<Message> {
         iced::widget::operation::focus(iced::widget::Id::new(crate::ui::command_line::CMD_INPUT_ID))
+    }
+
+    pub(super) fn unfocus_widgets(&self) -> Task<Message> {
+        iced::advanced::widget::operate(
+            iced::advanced::widget::operation::focusable::unfocus(),
+        )
     }
 }
 
@@ -2032,7 +2099,11 @@ fn doc_tab_context_menu(
     .into()
 }
 
-pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Element<'a, Message> {
+pub(super) fn doc_tab_bar<'a>(
+    tabs: &'a [DocumentTab],
+    active_tab: usize,
+    hovered_tab: Option<usize>,
+) -> Element<'a, Message> {
     // Document tabs live in a flex-wrap flow so they spill onto lower rows when
     // there are more tabs than the width can hold on one line.
     let mut items: Vec<Element<'_, Message>> = Vec::new();
@@ -2045,6 +2116,7 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
 
     for (idx, tab) in tabs.iter().enumerate() {
         let is_active = idx == active_tab;
+        let is_hovered = hovered_tab == Some(idx);
         let name = crate::ui::text_util::elide(&tab.tab_display_name(), 24);
         let title_inner: Element<'_, Message> = if tab.dirty {
             row![
@@ -2061,19 +2133,15 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
         let title_btn = button(title_inner)
             .on_press(Message::TabSwitch(idx))
             .height(Fill)
-            .padding([4, 12])
-            .style(move |theme: &Theme, status| {
+            .padding([5, 14])
+            .style(move |theme: &Theme, _status| {
                 let palette = theme.palette();
-                let background = match (is_active, status) {
-                    (false, button::Status::Hovered) => {
-                        Some(Background::Color(palette.background.weak.color))
-                    }
-                    _ => None,
-                };
                 button::Style {
-                    background,
+                    background: None,
                     text_color: if is_active {
                         palette.primary.weak.text
+                    } else if is_hovered {
+                        palette.background.weak.text
                     } else {
                         palette.background.base.text.scale_alpha(0.72)
                     },
@@ -2100,8 +2168,32 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
             let close_btn = button(text("×").size(12))
                 .on_press(Message::TabClose(idx))
                 .height(Fill)
-                .padding([4, 8])
-                .style(button::subtle);
+                .padding([5, 9])
+                .style(move |theme: &Theme, status| {
+                    let palette = theme.palette();
+                    button::Style {
+                        background: matches!(
+                            status,
+                            button::Status::Hovered | button::Status::Pressed
+                        )
+                        .then_some(Background::Color(palette.warning.weak.color)),
+                        text_color: if matches!(
+                            status,
+                            button::Status::Hovered | button::Status::Pressed
+                        ) {
+                            palette.warning.weak.text
+                        } else if is_active {
+                            palette.primary.weak.text
+                        } else if is_hovered {
+                            palette.background.weak.text
+                        } else {
+                            palette.background.base.text.scale_alpha(0.72)
+                        },
+                        border: Border::default(),
+                        shadow: iced::Shadow::default(),
+                        snap: false,
+                    }
+                });
             row![title_btn, close_btn]
                 .spacing(0)
                 .height(Fill)
@@ -2109,22 +2201,25 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
         };
 
         let tab_container = container(row_inner)
-            .height(iced::Length::Fixed(23.0))
+            .height(iced::Length::Fixed(28.0))
             .style(move |theme: &Theme| {
                 let palette = theme.palette();
+                let background = if is_active {
+                    palette.primary.weak.color
+                } else if is_hovered {
+                    palette.background.weak.color
+                } else {
+                    palette.background.base.color
+                };
                 container::Style {
-                    background: Some(Background::Color(if is_active {
-                        palette.primary.weak.color
-                    } else {
-                        palette.background.base.color
-                    })),
+                    background: Some(Background::Color(background)),
                     border: Border {
                         color: if is_active {
                             palette.primary.base.color
                         } else {
-                            Color::TRANSPARENT
+                            palette.background.neutral.color
                         },
-                        width: if is_active { 1.0 } else { 0.0 },
+                        width: 1.0,
                         radius: 0.0.into(),
                     },
                     ..Default::default()
@@ -2157,22 +2252,58 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
             )
             .into()
         };
-        items.push(tab_element);
+        items.push(
+            mouse_area(tab_element)
+                .on_enter(Message::DocTabHover(Some(idx)))
+                .on_exit(Message::DocTabHover(None))
+                .into(),
+        );
     }
 
     let new_btn = button(text("+").size(14))
         .on_press(Message::TabNew)
-        .padding([4, 10])
-        .style(button::subtle);
+        .height(iced::Length::Fixed(28.0))
+        .padding([5, 10])
+        .style(|theme: &Theme, status| {
+            let palette = theme.palette();
+            let hovered = matches!(
+                status,
+                button::Status::Hovered | button::Status::Pressed
+            );
+            button::Style {
+                background: Some(Background::Color(if hovered {
+                    palette.background.weak.color
+                } else {
+                    palette.background.base.color
+                })),
+                text_color: palette.background.base.text,
+                border: Border {
+                    color: palette.background.neutral.color,
+                    width: 1.0,
+                    radius: 3.0.into(),
+                },
+                shadow: iced::Shadow::default(),
+                snap: false,
+            }
+        });
 
-    items.push(new_btn.into());
+    items.push(
+        container(new_btn)
+            .padding(iced::Padding {
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 6.0,
+            })
+            .into(),
+    );
 
     container(
         Row::with_children(items)
             .spacing(0.0)
             .align_y(iced::Center)
             .wrap()
-            .vertical_spacing(0.0),
+            .vertical_spacing(2.0),
     )
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(
@@ -2186,7 +2317,7 @@ pub(super) fn doc_tab_bar<'a>(tabs: &'a [DocumentTab], active_tab: usize) -> Ele
             ..Default::default()
         })
         .width(Fill)
-        .padding([0, 2])
+        .padding([2, 2])
         .into()
 }
 

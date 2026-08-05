@@ -3,60 +3,38 @@ use acadrust::types::{Vector2, Vector3};
 use acadrust::CadDocument;
 use OpenCADStudio::io::export_dxf_r12::export_to_bytes;
 
-const BINARY_DXF_SENTINEL: &[u8] = b"AutoCAD Binary DXF\r\n\x1a\0";
-
 #[derive(Debug, PartialEq)]
 enum Value<'a> {
-    Text(&'a [u8]),
+    Text(&'a str),
     I16(i16),
     Double(f64),
 }
 
-fn parse_strict_r12(bytes: &[u8]) -> Result<Vec<(u16, Value<'_>)>, String> {
-    if !bytes.starts_with(BINARY_DXF_SENTINEL) {
-        return Err("missing sentinel".to_string());
+fn parse_ascii_r12(bytes: &[u8]) -> Result<Vec<(u16, Value<'_>)>, String> {
+    if !bytes.ends_with(b"\r\n") {
+        return Err("missing final CRLF".to_string());
     }
-    let mut cursor = BINARY_DXF_SENTINEL.len();
+    for (index, byte) in bytes.iter().enumerate() {
+        if (*byte == b'\n' && (index == 0 || bytes[index - 1] != b'\r'))
+            || (*byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+        {
+            return Err("non-CRLF line ending".to_string());
+        }
+    }
+
+    let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
+    let mut lines = text.strip_suffix("\r\n").unwrap().split("\r\n");
     let mut groups = Vec::new();
-    while cursor < bytes.len() {
-        let first = bytes[cursor];
-        cursor += 1;
-        let code = if first == 0xFF {
-            let raw = bytes
-                .get(cursor..cursor + 2)
-                .ok_or_else(|| "truncated extended code".to_string())?;
-            cursor += 2;
-            u16::from_le_bytes([raw[0], raw[1]])
-        } else {
-            first as u16
-        };
+    while let Some(code) = lines.next() {
+        let value = lines.next().ok_or_else(|| "missing value line".to_string())?;
+        let code = code
+            .trim()
+            .parse::<u16>()
+            .map_err(|error| error.to_string())?;
         let value = match code {
-            0..=9 => {
-                let tail = bytes
-                    .get(cursor..)
-                    .ok_or_else(|| "truncated text".to_string())?;
-                let length = tail
-                    .iter()
-                    .position(|byte| *byte == 0)
-                    .ok_or_else(|| "unterminated text".to_string())?;
-                let text = &tail[..length];
-                cursor += length + 1;
-                Value::Text(text)
-            }
-            10..=59 => {
-                let raw = bytes
-                    .get(cursor..cursor + 8)
-                    .ok_or_else(|| "truncated double".to_string())?;
-                cursor += 8;
-                Value::Double(f64::from_le_bytes(raw.try_into().unwrap()))
-            }
-            60..=79 => {
-                let raw = bytes
-                    .get(cursor..cursor + 2)
-                    .ok_or_else(|| "truncated i16".to_string())?;
-                cursor += 2;
-                Value::I16(i16::from_le_bytes(raw.try_into().unwrap()))
-            }
+            0..=9 => Value::Text(value),
+            10..=59 => Value::Double(value.trim().parse().map_err(|error: std::num::ParseFloatError| error.to_string())?),
+            60..=79 => Value::I16(value.trim().parse().map_err(|error: std::num::ParseIntError| error.to_string())?),
             _ => return Err(format!("unsupported code {code}")),
         };
         groups.push((code, value));
@@ -64,10 +42,7 @@ fn parse_strict_r12(bytes: &[u8]) -> Result<Vec<(u16, Value<'_>)>, String> {
     Ok(groups)
 }
 
-fn text_records<'bytes>(
-    groups: &[(u16, Value<'bytes>)],
-    code: u16,
-) -> Vec<&'bytes [u8]> {
+fn text_records<'bytes>(groups: &[(u16, Value<'bytes>)], code: u16) -> Vec<&'bytes str> {
     groups
         .iter()
         .filter_map(|(candidate, value)| match (candidate, value) {
@@ -78,7 +53,7 @@ fn text_records<'bytes>(
 }
 
 #[test]
-fn exports_strict_binary_ac1009_line_and_finite_extents() {
+fn exports_ascii_crlf_ac1009_line_and_finite_extents() {
     let mut document = CadDocument::new();
     document
         .add_entity(EntityType::Line(Line::from_points(
@@ -89,26 +64,19 @@ fn exports_strict_binary_ac1009_line_and_finite_extents() {
 
     let (bytes, report) = export_to_bytes(&document).expect("export");
 
-    assert!(bytes.starts_with(BINARY_DXF_SENTINEL));
-    assert_eq!(
-        &bytes[BINARY_DXF_SENTINEL.len()..BINARY_DXF_SENTINEL.len() + 9],
-        b"\0SECTION\0"
-    );
-    assert_ne!(
-        &bytes[BINARY_DXF_SENTINEL.len()..BINARY_DXF_SENTINEL.len() + 2],
-        b"\0\0"
-    );
+    assert!(bytes.starts_with(b"  0\r\nSECTION\r\n"));
+    assert!(!bytes.starts_with(b"AutoCAD Binary DXF"));
     assert_eq!(report.entity_count, 1);
 
-    let groups = parse_strict_r12(&bytes).expect("strict R12 parse");
-    assert!(text_records(&groups, 1).contains(&b"AC1009".as_slice()));
-    assert!(text_records(&groups, 2).contains(&b"ENTITIES".as_slice()));
-    assert!(text_records(&groups, 0).contains(&b"LINE".as_slice()));
-    assert_eq!(text_records(&groups, 0).last(), Some(&b"EOF".as_slice()));
+    let groups = parse_ascii_r12(&bytes).expect("ASCII R12 parse");
+    assert!(text_records(&groups, 1).contains(&"AC1009"));
+    assert!(text_records(&groups, 2).contains(&"ENTITIES"));
+    assert!(text_records(&groups, 0).contains(&"LINE"));
+    assert_eq!(text_records(&groups, 0).last(), Some(&"EOF"));
 
     let extmax = groups
         .windows(4)
-        .find(|window| matches!(&window[0], (9, Value::Text(b"$EXTMAX"))))
+        .find(|window| matches!(&window[0], (9, Value::Text("$EXTMAX"))))
         .expect("EXTMAX");
     assert_eq!(extmax[1], (10, Value::Double(20.0)));
     assert_eq!(extmax[2], (20, Value::Double(20.0)));
@@ -125,50 +93,26 @@ fn converts_bulged_lwpolyline_without_mutating_source() {
     ];
     polyline.is_closed = true;
     let mut document = CadDocument::new();
-    document
-        .add_entity(EntityType::LwPolyline(polyline))
-        .unwrap();
+    document.add_entity(EntityType::LwPolyline(polyline)).unwrap();
     let source = document.clone();
 
     let (bytes, report) = export_to_bytes(&document).expect("export");
 
     assert_eq!(document, source);
     assert_eq!(report.converted_lwpolylines, 1);
-    let groups = parse_strict_r12(&bytes).expect("strict R12 parse");
+    let groups = parse_ascii_r12(&bytes).expect("ASCII R12 parse");
     let records = text_records(&groups, 0);
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| **record == b"POLYLINE")
-            .count(),
-        1
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| **record == b"VERTEX")
-            .count(),
-        3
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| **record == b"SEQEND")
-            .count(),
-        1
-    );
+    assert_eq!(records.iter().filter(|record| **record == "POLYLINE").count(), 1);
+    assert_eq!(records.iter().filter(|record| **record == "VERTEX").count(), 3);
+    assert_eq!(records.iter().filter(|record| **record == "SEQEND").count(), 1);
     assert!(groups.contains(&(42, Value::Double(0.5))));
-    assert!(!bytes
-        .windows(b"LWPOLYLINE".len())
-        .any(|window| window == b"LWPOLYLINE"));
+    assert!(!bytes.windows(b"LWPOLYLINE".len()).any(|window| window == b"LWPOLYLINE"));
 }
 
 #[test]
-fn strict_parser_rejects_former_two_byte_group_codes() {
-    let mut malformed = BINARY_DXF_SENTINEL.to_vec();
-    malformed.extend_from_slice(b"\0\0SECTION\0");
-
-    assert!(parse_strict_r12(&malformed).is_err());
+fn independent_parser_rejects_binary_or_lf_only_streams() {
+    assert!(parse_ascii_r12(b"AutoCAD Binary DXF\r\n\x1a\0").is_err());
+    assert!(parse_ascii_r12(b"0\nEOF\n").is_err());
 }
 
 #[test]

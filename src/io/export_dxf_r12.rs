@@ -1,4 +1,4 @@
-//! Fail-safe machine export to binary DXF R12 (AC1009).
+//! Fail-safe machine export to ASCII DXF R12 (AC1009) with CRLF records.
 //!
 //! This deliberately does not use the general DXF writer: the pinned writer
 //! can label post-R12 structures as AC1009.  Keep this path isolated until the
@@ -10,34 +10,17 @@ use acadrust::CadDocument;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
-const SENTINEL: &[u8] = b"AutoCAD Binary DXF\r\n\x1a\0";
-
-/// Pre-R13 binary DXF uses a one-byte group code. Codes that do not fit in a
-/// byte use the documented 0xFF escape followed by a little-endian u16. The
-/// general acadifc writer always uses a u16 and therefore cannot frame AC1009.
-struct R12BinaryWriter<W: Write> {
+struct R12AsciiWriter<W: Write> {
     writer: W,
 }
 
-impl<W: Write> R12BinaryWriter<W> {
-    fn new(mut writer: W) -> Result<Self, String> {
-        writer
-            .write_all(SENTINEL)
-            .map_err(|error| error.to_string())?;
-        Ok(Self { writer })
+impl<W: Write> R12AsciiWriter<W> {
+    fn new(writer: W) -> Self {
+        Self { writer }
     }
 
     fn write_code(&mut self, code: u16) -> Result<(), String> {
-        if code < 0xFF {
-            self.writer
-                .write_all(&[code as u8])
-                .map_err(|error| error.to_string())
-        } else {
-            self.writer
-                .write_all(&[0xFF])
-                .and_then(|_| self.writer.write_all(&code.to_le_bytes()))
-                .map_err(|error| error.to_string())
-        }
+        write!(self.writer, "{code:>3}\r\n").map_err(|error| error.to_string())
     }
 
     fn write_string(&mut self, code: u16, value: &str) -> Result<(), String> {
@@ -51,21 +34,24 @@ impl<W: Write> R12BinaryWriter<W> {
             .replace('\n', "\\P");
         self.writer
             .write_all(sanitized.as_bytes())
-            .and_then(|_| self.writer.write_all(&[0]))
+            .and_then(|_| self.writer.write_all(b"\r\n"))
             .map_err(|error| error.to_string())
     }
 
     fn write_i16(&mut self, code: u16, value: i16) -> Result<(), String> {
         self.write_code(code)?;
-        self.writer
-            .write_all(&value.to_le_bytes())
-            .map_err(|error| error.to_string())
+        writeln!(self.writer, "{value}\r").map_err(|error| error.to_string())
     }
 
     fn write_double(&mut self, code: u16, value: f64) -> Result<(), String> {
+        if !value.is_finite() {
+            return Err("R12 numeric value is not finite".to_string());
+        }
         self.write_code(code)?;
+        let rendered = value.to_string().replace('e', "E");
         self.writer
-            .write_all(&value.to_le_bytes())
+            .write_all(rendered.as_bytes())
+            .and_then(|_| self.writer.write_all(b"\r\n"))
             .map_err(|error| error.to_string())
     }
 
@@ -153,7 +139,7 @@ pub fn export_to_bytes(document: &CadDocument) -> Result<(Vec<u8>, ExportReport)
 
     let mut bytes = Vec::with_capacity((entities.len() + 32) * 192);
     {
-        let mut writer = R12BinaryWriter::new(&mut bytes)?;
+        let mut writer = R12AsciiWriter::new(&mut bytes);
         write_header(&mut writer, bounds)?;
         write_tables(&mut writer, &layers)?;
         writer.write_section_start("BLOCKS")?;
@@ -323,7 +309,7 @@ fn is_r12_linetype(name: &str) -> bool {
 }
 
 fn write_header<W: std::io::Write>(
-    writer: &mut R12BinaryWriter<W>,
+    writer: &mut R12AsciiWriter<W>,
     bounds: BoundingBox3D,
 ) -> Result<(), String> {
     writer.write_section_start("HEADER")?;
@@ -337,7 +323,7 @@ fn write_header<W: std::io::Write>(
 }
 
 fn write_tables<W: std::io::Write>(
-    writer: &mut R12BinaryWriter<W>,
+    writer: &mut R12AsciiWriter<W>,
     layers: &BTreeMap<String, i16>,
 ) -> Result<(), String> {
     writer.write_section_start("TABLES")?;
@@ -367,7 +353,7 @@ fn write_tables<W: std::io::Write>(
 }
 
 fn write_common<W: std::io::Write>(
-    writer: &mut R12BinaryWriter<W>,
+    writer: &mut R12AsciiWriter<W>,
     common: &EntityCommon,
 ) -> Result<(), String> {
     writer.write_string(8, if common.layer.trim().is_empty() { "0" } else { &common.layer })?;
@@ -387,7 +373,7 @@ fn write_common<W: std::io::Write>(
 }
 
 fn write_entity<W: std::io::Write>(
-    writer: &mut R12BinaryWriter<W>,
+    writer: &mut R12AsciiWriter<W>,
     entity: &EntityType,
 ) -> Result<(), String> {
     match entity {
@@ -468,8 +454,15 @@ fn write_entity<W: std::io::Write>(
 }
 
 fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
-    if !bytes.starts_with(SENTINEL) {
-        return Err("R12 verification failed: missing binary DXF sentinel".to_string());
+    if !bytes.ends_with(b"\r\n") {
+        return Err("R12 verification failed: stream does not end with CRLF".to_string());
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        if (*byte == b'\n' && (index == 0 || bytes[index - 1] != b'\r'))
+            || (*byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+        {
+            return Err("R12 verification failed: stream contains a non-CRLF line ending".to_string());
+        }
     }
     for forbidden in [b"CLASSES".as_slice(), b"OBJECTS", b"LWPOLYLINE", b"BLOCK_RECORD"] {
         if bytes.windows(forbidden.len()).any(|window| window == forbidden) {
@@ -480,7 +473,7 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
         }
     }
 
-    let mut cursor = SENTINEL.len();
+    let mut lines = bytes.split(|byte| *byte == b'\n');
     let mut section: Option<Vec<u8>> = None;
     let mut awaiting_section_name = false;
     let mut sections = BTreeSet::new();
@@ -489,8 +482,15 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
     let mut found_eof = false;
     let mut actual_entities = 0usize;
 
-    while cursor < bytes.len() {
-        let (code, value) = read_strict_r12_group(bytes, &mut cursor)?;
+    loop {
+        let Some(code_line) = lines.next() else { break };
+        if code_line.is_empty() {
+            break;
+        }
+        let value_line = lines.next().ok_or_else(|| {
+            "R12 verification failed: group code has no value line".to_string()
+        })?;
+        let (code, value) = read_ascii_r12_group(code_line, value_line)?;
         if acadver_pending {
             found_ac1009 = code == 1 && value.as_text() == Some(b"AC1009".as_slice());
             acadver_pending = false;
@@ -529,7 +529,7 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
                 }
             }
             b"EOF" => {
-                if section.is_some() || cursor != bytes.len() {
+                if section.is_some() || lines.any(|line| !line.is_empty()) {
                     return Err(
                         "R12 verification failed: EOF is not the final top-level record"
                             .to_string(),
@@ -571,13 +571,13 @@ fn verify(bytes: &[u8], expected_entities: usize) -> Result<(), String> {
     Ok(())
 }
 
-enum StrictR12Value<'a> {
+enum AsciiR12Value<'a> {
     Text(&'a [u8]),
     I16,
     Double,
 }
 
-impl<'a> StrictR12Value<'a> {
+impl<'a> AsciiR12Value<'a> {
     fn as_text(&self) -> Option<&'a [u8]> {
         match self {
             Self::Text(value) => Some(value),
@@ -586,54 +586,42 @@ impl<'a> StrictR12Value<'a> {
     }
 }
 
-fn read_strict_r12_group<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-) -> Result<(u16, StrictR12Value<'a>), String> {
-    let first = *bytes
-        .get(*cursor)
-        .ok_or_else(|| "R12 verification failed: truncated group code".to_string())?;
-    *cursor += 1;
-    let code = if first == 0xFF {
-        let code_bytes = bytes
-            .get(*cursor..*cursor + 2)
-            .ok_or_else(|| "R12 verification failed: truncated extended group code".to_string())?;
-        *cursor += 2;
-        u16::from_le_bytes([code_bytes[0], code_bytes[1]])
-    } else {
-        first as u16
-    };
+fn read_ascii_r12_group<'a>(
+    code_line: &'a [u8],
+    value_line: &'a [u8],
+) -> Result<(u16, AsciiR12Value<'a>), String> {
+    let code_text = std::str::from_utf8(code_line.strip_suffix(b"\r").ok_or_else(|| {
+        "R12 verification failed: group code line is not CRLF terminated".to_string()
+    })?)
+    .map_err(|_| "R12 verification failed: group code is not ASCII".to_string())?;
+    let code = code_text
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| "R12 verification failed: invalid group code".to_string())?;
+    let raw_value = value_line.strip_suffix(b"\r").ok_or_else(|| {
+        "R12 verification failed: value line is not CRLF terminated".to_string()
+    })?;
 
     let value = match code {
-        0..=9 => {
-            let tail = bytes
-                .get(*cursor..)
-                .ok_or_else(|| "R12 verification failed: truncated string".to_string())?;
-            let length = tail
-                .iter()
-                .position(|byte| *byte == 0)
-                .ok_or_else(|| "R12 verification failed: unterminated string".to_string())?;
-            let value = &tail[..length];
-            *cursor += length + 1;
-            StrictR12Value::Text(value)
-        }
+        0..=9 => AsciiR12Value::Text(raw_value),
         10..=59 => {
-            let value = bytes
-                .get(*cursor..*cursor + 8)
-                .ok_or_else(|| "R12 verification failed: truncated double".to_string())?;
-            let number = f64::from_le_bytes(value.try_into().expect("eight-byte slice"));
+            let number = std::str::from_utf8(raw_value)
+                .map_err(|_| "R12 verification failed: numeric value is not ASCII".to_string())?
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| "R12 verification failed: invalid numeric value".to_string())?;
             if !number.is_finite() {
                 return Err("R12 verification failed: non-finite numeric value".to_string());
             }
-            *cursor += 8;
-            StrictR12Value::Double
+            AsciiR12Value::Double
         }
         60..=79 => {
-            bytes
-                .get(*cursor..*cursor + 2)
-                .ok_or_else(|| "R12 verification failed: truncated i16".to_string())?;
-            *cursor += 2;
-            StrictR12Value::I16
+            std::str::from_utf8(raw_value)
+                .map_err(|_| "R12 verification failed: integer value is not ASCII".to_string())?
+                .trim()
+                .parse::<i16>()
+                .map_err(|_| "R12 verification failed: invalid integer value".to_string())?;
+            AsciiR12Value::I16
         }
         _ => {
             return Err(format!(
