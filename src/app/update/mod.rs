@@ -149,6 +149,9 @@ impl OpenCADStudio {
         if self.active_modal == Some(ScaleManager) {
             self.scale_stage_discard();
         }
+        if self.active_modal == Some(DraftingSettings) {
+            self.snap_popup_open = false;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if self.active_modal == Some(FileInUse) {
             self.pending_save_failure = None;
@@ -239,6 +242,9 @@ impl OpenCADStudio {
         self.command_line.set_step_options(opts);
         // Persist UI preferences whenever a toggle changes them (issue #68).
         self.persist_settings_if_changed();
+        // The block panel watches the drawing's block list and rebuilds its
+        // thumbnails whenever the names change (BLOCK define, file open, …).
+        self.refresh_block_palette_if_stale();
         // OTRACK acquires tracking points only while a command or grip drag is
         // running; drop them once neither is active so the temporary tracking
         // points / vectors disappear when the command ends (issue #64).
@@ -249,6 +255,7 @@ impl OpenCADStudio {
         {
             self.snapper.clear_tracking();
             self.otrack_active = None;
+            self.otrack_kind = None;
         }
         if let Some(started) = perf_started {
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -261,6 +268,9 @@ impl OpenCADStudio {
         }
         #[cfg(target_arch = "wasm32")]
         crate::sys::set_unsaved_changes_warning(self.tabs.iter().any(|tab| tab.dirty));
+        if self.tabs[i].active_cmd.is_none() {
+            self.block_palette.placing = None;
+        }
         task
     }
 
@@ -271,6 +281,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn reset_tracking_after_point(&mut self) {
         self.snapper.clear_tracking();
         self.otrack_active = None;
+        self.otrack_kind = None;
     }
 
     fn update_inner(&mut self, msg: Message) -> Task<Message> {
@@ -1257,18 +1268,6 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::SetWireframe(w) => {
-                // Back-compat shim: forward to the new render-mode path so
-                // the ribbon button + WIREFRAME / SOLID command line still
-                // work without duplicating the rendering plumbing.
-                let mode = if w {
-                    acadrust::entities::ViewportRenderMode::Wireframe2D
-                } else {
-                    acadrust::entities::ViewportRenderMode::FlatShaded
-                };
-                Task::done(Message::SetRenderMode(mode))
-            }
-
             Message::SetRenderMode(mode) => {
                 self.render_mode_menu_open = false;
                 self.render_mode_preview = None;
@@ -1938,6 +1937,142 @@ impl OpenCADStudio {
                 self.load_layer_state_editor(names.into_iter().next());
                 self.active_modal = Some(super::ModalKind::LayerStateManager);
                 Task::none()
+            }
+            // ── Layer Translator (#624) ──────────────────────────────────
+            Message::LayerTranslatorLoad => Task::perform(
+                crate::io::pick_layer_standard_path(),
+                |path| match path {
+                    Some(path) => Message::LayerTranslatorLoaded(path),
+                    None => Message::Noop,
+                },
+            ),
+            Message::LayerTranslatorLoaded(path) => {
+                use crate::modules::draw::layers::laytrans;
+                match laytrans::load_targets(&path) {
+                    Ok(targets) => {
+                        let state = self.layer_translator.get_or_insert_with(Default::default);
+                        state.source_file = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        state.targets = targets;
+                        // A target set that no longer contains a mapped name
+                        // would translate onto nothing.
+                        let names: Vec<String> =
+                            state.targets.iter().map(|t| t.name.clone()).collect();
+                        state
+                            .mappings
+                            .retain(|m| names.iter().any(|n| n.eq_ignore_ascii_case(&m.to)));
+                        state.selected_to = None;
+                    }
+                    Err(why) => self
+                        .command_line
+                        .push_error(crate::tf!("LAYTRANS: {why}.").as_ref()),
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorSelectFrom(name) => {
+                if let Some(state) = self.layer_translator.as_mut() {
+                    state.selected_from = Some(name);
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorSelectTo(name) => {
+                if let Some(state) = self.layer_translator.as_mut() {
+                    state.selected_to = Some(name);
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorMap => {
+                use crate::modules::draw::layers::laytrans::Mapping;
+                if let Some(state) = self.layer_translator.as_mut() {
+                    if let (Some(from), Some(to)) =
+                        (state.selected_from.take(), state.selected_to.clone())
+                    {
+                        state.mappings.retain(|m| !m.from.eq_ignore_ascii_case(&from));
+                        state.mappings.push(Mapping { from, to });
+                    }
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorMapSame => {
+                use crate::modules::draw::layers::laytrans;
+                let i = self.active_tab;
+                let current = self.tabs[i].active_layer.clone();
+                let sources = laytrans::source_layers(&self.tabs[i].scene, &current);
+                if let Some(state) = self.layer_translator.as_mut() {
+                    for mapping in laytrans::map_same(&sources, &state.targets) {
+                        if !state
+                            .mappings
+                            .iter()
+                            .any(|m| m.from.eq_ignore_ascii_case(&mapping.from))
+                        {
+                            state.mappings.push(mapping);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorUnmap(from) => {
+                if let Some(state) = self.layer_translator.as_mut() {
+                    state.mappings.retain(|m| m.from != from);
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorForceByLayer(value) => {
+                if let Some(state) = self.layer_translator.as_mut() {
+                    state.force_bylayer = value;
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorWriteLog(value) => {
+                if let Some(state) = self.layer_translator.as_mut() {
+                    state.write_log = value;
+                }
+                Task::none()
+            }
+            Message::LayerTranslatorSaveMappings => Task::perform(
+                crate::io::pick_layer_mapping_path(true),
+                |path| match path {
+                    Some(path) => Message::LayerTranslatorMappingsPath(path, true),
+                    None => Message::Noop,
+                },
+            ),
+            Message::LayerTranslatorLoadMappings => Task::perform(
+                crate::io::pick_layer_mapping_path(false),
+                |path| match path {
+                    Some(path) => Message::LayerTranslatorMappingsPath(path, false),
+                    None => Message::Noop,
+                },
+            ),
+            Message::LayerTranslatorMappingsPath(path, save) => {
+                self.layer_translator_mappings_file(&path, save);
+                Task::none()
+            }
+            Message::LayerTranslatorTranslate => {
+                use crate::modules::draw::layers::laytrans;
+                let Some(state) = self.layer_translator.take() else {
+                    return Task::none();
+                };
+                self.active_modal = None;
+                let i = self.active_tab;
+                let current = self.tabs[i].active_layer.clone();
+                self.push_undo_snapshot(i, "LAYTRANS");
+                let report = laytrans::translate(
+                    &mut self.tabs[i].scene,
+                    &state.mappings,
+                    &state.targets,
+                    &current,
+                    laytrans::Options {
+                        force_bylayer: state.force_bylayer,
+                    },
+                );
+                let write_log = state.write_log;
+                let task = self.finish_layer_translation(i, report);
+                if write_log {
+                    self.write_layer_translation_log(i);
+                }
+                task
             }
             Message::LayerStateManagerSelect(name) => {
                 self.load_layer_state_editor(Some(name));
@@ -2755,6 +2890,8 @@ impl OpenCADStudio {
                 // End of a Shift+MMB orbit — drop the captured pivot so the next
                 // gesture recomputes it against the current selection. (#229)
                 sel.orbit_pivot = None;
+                drop(sel);
+                self.arm_hover_after_navigation(i);
                 Task::none()
             }
 
@@ -2773,6 +2910,8 @@ impl OpenCADStudio {
 
             Message::ViewCubeHome => {
                 let i = self.active_tab;
+                self.clear_navigation_hover(i);
+                self.tabs[i].scene.remember_current_view();
                 let r_ucs = self.tabs[i].scene.viewcube_ucs_mat();
                 if self.tabs[i].scene.active_viewport.is_some() {
                     self.tabs[i]
@@ -2788,6 +2927,8 @@ impl OpenCADStudio {
 
             Message::ViewCubeRoll(cw) => {
                 let i = self.active_tab;
+                self.clear_navigation_hover(i);
+                self.tabs[i].scene.remember_current_view();
                 let ang = if cw {
                     std::f32::consts::FRAC_PI_2
                 } else {
@@ -2813,6 +2954,8 @@ impl OpenCADStudio {
                     NudgeDir::Right => (true, true),
                 };
                 let i = self.active_tab;
+                self.clear_navigation_hover(i);
+                self.tabs[i].scene.remember_current_view();
                 if self.tabs[i].scene.active_viewport.is_some() {
                     self.tabs[i]
                         .scene
@@ -2951,6 +3094,43 @@ impl OpenCADStudio {
                 self.sync_vport_display(self.active_tab);
                 Task::none()
             }
+            Message::ToggleIsometricDrafting => {
+                self.isometric_drafting = !self.isometric_drafting;
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+            Message::SetIsoPlane(plane) => {
+                self.isometric_drafting = true;
+                self.iso_plane = plane;
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+            Message::CycleIsoPlane => {
+                if self.isometric_drafting {
+                    self.iso_plane = self.iso_plane.next();
+                } else {
+                    self.isometric_drafting = true;
+                }
+                self.command_line.push_output(crate::tf!(
+                    "Isometric plane: {}.",
+                    self.iso_plane.label()
+                ).as_ref());
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+            Message::ResetDraftingRotation => {
+                self.snap_angle_deg = 0.0;
+                let i = self.active_tab;
+                if self.tabs[i].active_ucs.is_some() {
+                    self.tabs[i].active_ucs = None;
+                    self.commit_active_ucs_change(i, "UCS");
+                    self.tabs[i].scene.camera_generation += 1;
+                }
+                self.command_line
+                    .push_output(crate::t!("Drafting rotation reset to World at 0°.").as_ref());
+                self.persist_settings_if_changed();
+                Task::none()
+            }
             Message::ToggleGrid => {
                 self.show_grid ^= true;
                 self.sync_vport_display(self.active_tab);
@@ -3032,6 +3212,8 @@ impl OpenCADStudio {
                 self.snapper.otrack_enabled ^= true;
                 if !self.snapper.otrack_enabled {
                     self.snapper.clear_tracking();
+                    self.otrack_active = None;
+                    self.otrack_kind = None;
                 }
                 Task::none()
             }
@@ -3474,11 +3656,107 @@ impl OpenCADStudio {
                 self.units_popup_open = false;
                 Task::none()
             }
+            Message::OpenDrawingUnits => {
+                self.units_popup_open = false;
+                let header = &self.tabs[self.active_tab].scene.document.header;
+                self.drawing_units = Some(crate::ui::window::drawing_units::State {
+                    linear_format: header.linear_unit_format,
+                    linear_precision: header.linear_unit_precision,
+                    angular_format: header.angular_unit_format,
+                    angular_precision: header.angular_unit_precision,
+                    clockwise: header.angle_direction != 0,
+                    base_angle: format!("{:.6}", header.angle_base.to_degrees())
+                        .trim_end_matches('0')
+                        .trim_end_matches('.')
+                        .to_string(),
+                    insertion_units: header.insertion_units,
+                });
+                self.active_modal = Some(crate::app::ModalKind::DrawingUnits);
+                Task::none()
+            }
+            Message::DrawingUnitsField(field) => {
+                use crate::ui::window::drawing_units::Field;
+                let Some(state) = self.drawing_units.as_mut() else {
+                    return Task::none();
+                };
+                match field {
+                    Field::LinearFormat(v) => state.linear_format = v,
+                    Field::LinearPrecision(v) => state.linear_precision = v,
+                    Field::AngularFormat(v) => state.angular_format = v,
+                    Field::AngularPrecision(v) => state.angular_precision = v,
+                    Field::Clockwise(v) => state.clockwise = v,
+                    // Kept as typed so a lone "-" or a trailing "." survives
+                    // until the number it is becoming is finished.
+                    Field::BaseAngle(v) => state.base_angle = v,
+                    Field::InsertionUnits(v) => state.insertion_units = v,
+                }
+                Task::none()
+            }
+            Message::DrawingUnitsApply => {
+                let Some(state) = self.drawing_units.take() else {
+                    self.active_modal = None;
+                    return Task::none();
+                };
+                self.active_modal = None;
+                let i = self.active_tab;
+                self.push_undo_snapshot(i, "UNITS");
+                let header = &mut self.tabs[i].scene.document.header;
+                header.linear_unit_format = state.linear_format;
+                header.linear_unit_precision = state.linear_precision;
+                header.angular_unit_format = state.angular_format;
+                header.angular_unit_precision = state.angular_precision;
+                header.angle_direction = i16::from(state.clockwise);
+                // A base angle that will not parse is a half-finished edit, not
+                // an instruction to move zero — leave the drawing's own value.
+                if let Ok(degrees) = state.base_angle.trim().parse::<f64>() {
+                    header.angle_base = degrees.to_radians();
+                }
+                header.insertion_units = state.insertion_units;
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.bump_geometry();
+                self.refresh_properties();
+                Task::none()
+            }
+            Message::SetLinearFormat(code) => {
+                self.units_popup_open = false;
+                let i = self.active_tab;
+                if self.tabs[i].scene.document.header.linear_unit_format == code {
+                    return Task::none();
+                }
+                // Every displayed length is written through this, so the whole
+                // drawing re-reads at once — no geometry moves, only the way it
+                // is written down.
+                self.push_undo_snapshot(i, "LUNITS");
+                self.tabs[i].scene.document.header.linear_unit_format = code;
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.bump_geometry();
+                self.refresh_properties();
+                let label = crate::modules::draw::units::linear_format_label(code);
+                self.command_line
+                    .push_output(crate::tf!("Length format is now {label}.").as_ref());
+                Task::none()
+            }
             Message::SetDrawingUnits(code) => {
                 self.units_popup_open = false;
                 let i = self.active_tab;
+                let current = self.tabs[i].scene.document.header.insertion_units;
+                if current == code {
+                    return Task::none();
+                }
+                // Relabelling only: the geometry keeps every number it had, and
+                // now says they count something else. Say so, because picking a
+                // unit and seeing the drawing sit still otherwise reads as the
+                // menu having done nothing. (#668)
+                self.push_undo_snapshot(i, "UNITS");
                 self.tabs[i].scene.document.header.insertion_units = code;
                 self.tabs[i].dirty = true;
+                let label = crate::modules::draw::units::label(code);
+                self.command_line.push_output(
+                    crate::tf!(
+                        "Drawing unit is now {label}. Geometry unchanged — use DWGUNITS to convert it."
+                    )
+                    .as_ref(),
+                );
                 Task::none()
             }
             Message::ToggleIsolatePopup => {
@@ -3495,11 +3773,20 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::ToggleSnapPopup => {
-                self.snap_popup_open ^= true;
+                if self.active_modal == Some(super::ModalKind::DraftingSettings) {
+                    self.close_active_modal();
+                    self.snap_popup_open = false;
+                } else {
+                    self.active_modal = Some(super::ModalKind::DraftingSettings);
+                    self.snap_popup_open = true;
+                }
                 Task::none()
             }
             Message::CloseSnapPopup => {
                 self.snap_popup_open = false;
+                if self.active_modal == Some(super::ModalKind::DraftingSettings) {
+                    self.close_active_modal();
+                }
                 Task::none()
             }
             Message::SnapSelectAll => {
@@ -3787,23 +4074,23 @@ impl OpenCADStudio {
                     }
                     Text::EmptyOrUnsupported => {
                         self.command_line.push_error(
-                            crate::tr!("clipboard-no-supported-content").as_ref(),
+                            crate::tr!("clipboard", "no-supported-content").as_ref(),
                         );
                         Task::none()
                     }
                     Text::Unavailable => {
                         self.command_line
-                            .push_error(crate::tr!("clipboard-unavailable").as_ref());
+                            .push_error(crate::tr!("clipboard", "unavailable").as_ref());
                         Task::none()
                     }
                     Text::Occupied => {
                         self.command_line
-                            .push_error(crate::tr!("clipboard-occupied").as_ref());
+                            .push_error(crate::tr!("clipboard", "occupied").as_ref());
                         Task::none()
                     }
                     Text::ConversionFailed => {
                         self.command_line
-                            .push_error(crate::tr!("clipboard-conversion-failed").as_ref());
+                            .push_error(crate::tr!("clipboard", "conversion-failed").as_ref());
                         Task::none()
                     }
                 }
@@ -4990,6 +5277,41 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::OptionsTabChanged(tab) => {
+                self.options_tab = tab;
+                Task::none()
+            }
+
+            Message::CursorSizeChanged(value) => {
+                self.cursor_size = value.clamp(1, 100);
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
+            Message::PickBoxChanged(value) => {
+                self.pick_box = value.clamp(0, 50);
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
+            Message::CursorTypeChanged(value) => {
+                self.cursor_type = value;
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
+            Message::CrosshairColorChanged(value) => {
+                self.crosshair_color_input = value.clone();
+                if value.trim().is_empty() {
+                    self.crosshair_color = None;
+                    self.persist_settings_if_changed();
+                } else if let Some(rgb) = crate::app::config::parse_hex(&value) {
+                    self.crosshair_color = Some(rgb);
+                    self.persist_settings_if_changed();
+                }
+                Task::none()
+            }
+
             Message::DefaultSaveFormatChanged(format) => {
                 self.default_save_format =
                     crate::io::canonical_save_format(&format).to_string();
@@ -5027,6 +5349,39 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::FileAssocChanged(enabled) => {
+                // The same two calls FILEASSOC makes, so the checkbox and the
+                // command cannot leave the setting and the registration
+                // disagreeing.
+                self.file_assoc_enabled = enabled;
+                self.persist_settings_if_changed();
+                let outcome = if enabled {
+                    crate::io::file_association::register_as_handler()
+                } else {
+                    crate::io::file_association::unregister_handler()
+                };
+                match outcome {
+                    Ok(()) => {
+                        let said = if enabled {
+                            crate::t!("Registered as a .dwg/.dxf handler.")
+                        } else {
+                            crate::t!("No longer registered as a file handler.")
+                        };
+                        self.command_line.push_output(said.as_ref());
+                    }
+                    Err(why) => {
+                        // The setting is what the user asked for; the
+                        // registration is what the system allowed. Put the
+                        // checkbox back rather than showing a state that is not
+                        // true.
+                        self.file_assoc_enabled = !enabled;
+                        self.persist_settings_if_changed();
+                        self.command_line
+                            .push_error(crate::tf!("File association failed: {why}").as_ref());
+                    }
+                }
+                Task::none()
+            }
             Message::LanguageChanged(language) => {
                 if self.language == language {
                     return Task::none();
@@ -6035,6 +6390,7 @@ impl OpenCADStudio {
             }
             Message::PlotDialogOpen => self.on_plot_dialog_open(),
             Message::PlotDlg(m) => self.on_plot_dlg(m),
+            Message::BlockPalette(m) => self.on_block_palette(m),
             Message::PrintAllOpen => self.on_print_all_open(),
             Message::PrintAllToggle(name) => {
                 if let Some((_, selected)) = self

@@ -4,7 +4,7 @@
 use super::util::*;
 use super::{format_size, VIEWCUBE_HIT_SIZE};
 use crate::app::helpers::{
-    ortho_constrain, parse_coord, polar_constrain_near, ucs_rotate_vec, ucs_to_wcs, ucs_z_axis,
+    parse_coord, polar_constrain_near, ucs_rotate_vec, ucs_to_wcs, ucs_z_axis,
     CoordKind,
 };
 use crate::app::{Message, OpenCADStudio, POLY_START_DELAY_MS};
@@ -281,6 +281,95 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     self.refresh_properties();
                     return Task::none();
                 }
+
+                // Direct-distance entry while a normal grip stretch is active.
+                //
+                // The live grip-drag path has already resolved OSNAP / OTRACK /
+                // Extension / Polar / Ortho into `last_cursor_world`. A typed scalar
+                // therefore means: move from the grip's original position by that
+                // distance along the currently indicated direction.
+                {
+                    let i = self.active_tab;
+
+                    if let Some(grip) = self.tabs[i].active_grip.clone() {
+                        if grip.mode == GripEditMode::Stretch {
+                            let text =
+                                crate::app::expr_eval::eval_to_string(self.command_line.input.trim());
+
+                            if let Some(dist) = crate::app::expr_eval::eval_number(text.trim()) {
+                                let cursor = self.tabs[i].last_cursor_world;
+
+                                // If the cursor is following OTRACK or Extension, use the actual
+                                // reference ray that is currently driving the cursor. Otherwise
+                                // fall back to the direction from the original grip position,
+                                // which covers Polar / Ortho / free direct-distance entry.
+                                let target = if let Some((base, dir)) = self.active_distance_ray(i) {
+                                    base + dir * dist
+                                } else {
+                                    let direction = cursor - grip.origin_world;
+                                    let len = direction.length();
+
+                                    if len <= 1e-12 {
+                                        self.command_line.push_error(
+                                            "Move the cursor in a direction before entering a distance.",
+                                        );
+                                        return self.focus_cmd_input();
+                                    }
+
+                                    let dir = direction / len;
+                                    grip.origin_world + dir * dist
+                                };
+
+                                // The entity is already being edited live. Apply only the
+                                // incremental movement from its current grip position to the
+                                // exact typed-distance position.
+                                let delta = target - grip.last_world;
+
+                                let actions: Vec<_> = grip
+                                    .targets
+                                    .iter()
+                                    .map(|target_grip| {
+                                        let apply = if target_grip.is_translate {
+                                            GripApply::Translate(delta)
+                                        } else {
+                                            GripApply::Absolute(target_grip.last_world + delta)
+                                        };
+
+                                        (
+                                            target_grip.handle,
+                                            target_grip.grip_id,
+                                            apply,
+                                        )
+                                    })
+                                    .collect();
+
+                                for (handle, grip_id, apply) in actions {
+                                    self.tabs[i]
+                                        .scene
+                                        .apply_grip(handle, grip_id, apply);
+                                }
+
+                                // Keep the live GripEdit state synchronized so the normal
+                                // grip commit path sees the exact final position.
+                                if let Some(active) = self.tabs[i].active_grip.as_mut() {
+                                    active.last_world = target;
+
+                                    for target_grip in &mut active.targets {
+                                        target_grip.last_world += delta;
+                                    }
+                                }
+
+                                self.tabs[i].last_cursor_world = target;
+                                self.command_line.input.clear();
+                                self.tabs[i].dirty = true;
+
+                                // Reuse the existing click-move-click grip finalization:
+                                // undo grouping, preview restoration, grip cleanup, etc.
+                                return self.on_viewport_left_release();
+                            }
+                        }
+                    }
+                }
                 // Interactive VPORTS: the entry after a bare `VPORTS` is the
                 // tiled configuration. Empty input defaults to SINGLE.
                 if self.awaiting_vports {
@@ -386,10 +475,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         return self.feed_command(crate::command::StepInput::Enter);
                     }
 
-                    // OTRACK: while aligned to a tracking ray, a bare distance
-                    // places the point along the ray from the tracking point
-                    // (issue #69).
-                    if let Some((base, dir)) = self.otrack_active {
+                    // OTRACK and Extension both allow a bare scalar to act as a
+                    // distance measured along the active reference ray.
+                    if let Some((base, dir)) = self.active_distance_ray(i) {
                         if let Some(dist) = crate::app::expr_eval::eval_number(text.trim()) {
                             let pt = base + dir * dist;
                             if !self.command_point_allowed(i, pt) {
@@ -572,16 +660,22 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 // drag. Orbit exits silently; PAN keeps its existing message.
                 if self.tabs[self.active_tab].pan_mode
                     || self.tabs[self.active_tab].orbit_mode
+                    || self.tabs[self.active_tab].zoom_dynamic_mode
                 {
                     let i = self.active_tab;
                     let was_pan = self.tabs[i].pan_mode;
                     self.tabs[i].pan_mode = false;
                     self.tabs[i].orbit_mode = false;
+                    self.tabs[i].zoom_dynamic_mode = false;
                     {
                         let mut sel = self.tabs[i].scene.selection.borrow_mut();
                         sel.middle_down = false;
                         sel.middle_last_pos = None;
                         sel.orbit_pivot = None;
+                        sel.box_anchor = None;
+                        sel.box_anchor_world = None;
+                        sel.box_current = None;
+                        sel.box_crossing_locked = false;
                     }
                     if was_pan {
                         self.command_line.push_output(crate::t!("PAN ended.").as_ref());

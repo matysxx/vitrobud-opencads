@@ -5,6 +5,7 @@ use super::{ArrowKey, Message, OpenCADStudio};
 use crate::scene::pick::grip::{grips_to_screen, grips_to_screen_paper, grips_to_screen_rte};
 use crate::scene::view::viewport_pane::ViewportPane;
 use crate::scene::{VIEWCUBE_PAD, VIEWCUBE_REGION_PX};
+use crate::ui::window::block_palette::BlockPaletteMsg;
 use crate::ui::wrap_bar::DensitySwap;
 use crate::ui::wrap_bar::WrapFlow;
 use iced::widget::{
@@ -33,11 +34,13 @@ use viewcube::{viewcube_nav_controls, viewcube_ucs_picker, UCS_PICKER_W};
 pub(in crate::app) use overlay::{MTEXT_TEXT_ID, TEXT_INLINE_ID};
 
 const VIEWCUBE_HIT_SIZE: f32 = VIEWCUBE_REGION_PX;
+/// The desk shown around the sheet, as the widget wants it. One definition,
+/// shared with the renderer that clears the sheet viewport to the same thing.
 const PAPER_SPACE_BACKGROUND: Color = Color {
-    r: 138.0 / 255.0,
-    g: 138.0 / 255.0,
-    b: 138.0 / 255.0,
-    a: 1.0,
+    r: crate::scene::PAPER_DESK_COLOR[0],
+    g: crate::scene::PAPER_DESK_COLOR[1],
+    b: crate::scene::PAPER_DESK_COLOR[2],
+    a: crate::scene::PAPER_DESK_COLOR[3],
 };
 
 /// Base surface directly under the crosshair. Paper content viewports render
@@ -162,16 +165,7 @@ pub(super) struct RenderModeChoice(pub acadrust::entities::ViewportRenderMode);
 
 impl std::fmt::Display for RenderModeChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use acadrust::entities::ViewportRenderMode as M;
-        f.write_str(match self.0 {
-            M::Wireframe2D => "Wireframe 2D",
-            M::Wireframe3D => "Wireframe 3D",
-            M::HiddenLine => "Hidden Line",
-            M::FlatShaded => "Flat Shaded",
-            M::GouraudShaded => "Gouraud Shaded",
-            M::FlatShadedWithEdges => "Flat Shaded + Edges",
-            M::GouraudShadedWithEdges => "Gouraud Shaded + Edges",
-        })
+        f.write_str(crate::modules::view::visual_style::label_for(self.0))
     }
 }
 
@@ -341,6 +335,14 @@ impl OpenCADStudio {
             let (vw, vh) = tab.scene.selection.borrow().vp_size;
             let model_basis = {
                 let (o, ux, uy, uz) = tab.ucs_xform().axes();
+                let (ux, uy, uz) = super::helpers::drafting_axes(
+                    ux,
+                    uy,
+                    uz,
+                    self.isometric_drafting,
+                    self.iso_plane,
+                    self.snap_angle_deg,
+                );
                 (o, (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()))
             };
             let grid: Vec<crate::ui::overlay::GridParams> = tab
@@ -348,7 +350,7 @@ impl OpenCADStudio {
                 .grid_views(vw, vh)
                 .into_iter()
                 .map(|(bounds, cam, handle)| {
-                    let (origin, axes): (glam::DVec3, _) = if is_paper {
+                    let (origin, mut axes): (glam::DVec3, _) = if is_paper {
                         match tab.ucs_from_viewport(handle) {
                             Some(u) => {
                                 let (o, ux, uy, uz) =
@@ -363,6 +365,17 @@ impl OpenCADStudio {
                     } else {
                         model_basis
                     };
+                    if is_paper {
+                        let (ux, uy, uz) = super::helpers::drafting_axes(
+                            axes.0.as_dvec3(),
+                            axes.1.as_dvec3(),
+                            axes.2.as_dvec3(),
+                            self.isometric_drafting,
+                            self.iso_plane,
+                            self.snap_angle_deg,
+                        );
+                        axes = (ux.as_vec3(), uy.as_vec3(), uz.as_vec3());
+                    }
                     crate::ui::overlay::GridParams {
                         view_rot: cam.view_proj_rte(bounds),
                         eye: cam.eye(),
@@ -686,10 +699,19 @@ impl OpenCADStudio {
                 dividers,
                 pane_move_rect,
                 pane_drop_rect,
-                tab.pan_mode || tab.orbit_mode,
+                tab.pan_mode || tab.orbit_mode || tab.zoom_dynamic_mode,
                 self.ribbon.open_dropdown.is_some(),
                 hover_locked,
                 crosshair_background(tab, is_paper),
+                crate::ui::overlay::CrosshairOptions {
+                    size_percent: self.cursor_size,
+                    pick_box: self.pick_box,
+                    cursor_type: self.cursor_type,
+                    color: self.crosshair_color,
+                    isometric: self.isometric_drafting,
+                    iso_plane: self.iso_plane,
+                    snap_angle_deg: self.snap_angle_deg,
+                },
             )
         };
 
@@ -787,6 +809,17 @@ impl OpenCADStudio {
                     .as_ref()
                     .map(|c| c.prompt())
                     .unwrap_or_default();
+
+                let tracking_hint = match self.otrack_kind {
+                    Some(crate::snap::TrackingKind::Perpendicular) => {
+                        Some(crate::tr!("common", "perpendicular"))
+                    }
+                    Some(crate::snap::TrackingKind::Extension) => {
+                        Some(crate::tr!("common", "extension"))
+                    }
+                    _ => None,
+                };
+
                 Some(crate::ui::overlay::dynamic_input_overlay(
                     tab.last_cursor_screen,
                     tab.last_point_screen,
@@ -794,6 +827,7 @@ impl OpenCADStudio {
                     tab.dyn_guide,
                     boxes,
                     prompt,
+                    tracking_hint,
                 ))
             } else {
                 None
@@ -1445,6 +1479,7 @@ impl OpenCADStudio {
                     self.properties_side,
                     Message::TogglePropertiesBar,
                     Message::PropertiesHover(true),
+                    26.0,
                 )
             } else {
                 let panel = tab
@@ -1466,6 +1501,33 @@ impl OpenCADStudio {
         // the input stays close to the cursor. The Start page gives it a real
         // layout row instead: its panels and action buttons must end above the
         // command line rather than rendering behind it (#546).
+        // The block palette docks on the right, mirroring the Properties panel on the
+        // left. The collapse button reduces it to a vertical bar whose width equals
+        // the title height, with the title rotated 90° (see `collapse_bar`).
+        let block_palette_el: Element<'_, Message> = if tab.is_start {
+            Space::new().into()
+        } else if self.show_block_palette && !self.clean_screen {
+            if self.block_palette_expanded {
+                crate::ui::window::block_palette::view(&self.block_palette)
+            } else {
+                // Collapsed bar width matches the title bar height (icon button
+                // 30px + 5px top/bottom padding) so expand/collapse is seamless.
+                collapse_bar(
+                    "Block Palette",
+                    crate::app::config::DockSide::Right,
+                    Message::BlockPalette(BlockPaletteMsg::ToggleBar),
+                    Message::Noop,
+                    40.0,
+                )
+            }
+        } else {
+            Space::new().into()
+        };
+
+        // Command-line sits as a bottom-centre overlay on top of the
+        // viewport stack rather than as a separate row in the main
+        // column — frees up vertical space when no command is active
+        // and keeps the input close to where the cursor is drawing.
         // Autocomplete shows only when no command is collecting its
         // own input (otherwise typed prefixes are coordinates / values).
         let allow_autocomplete = tab.active_cmd.is_none();
@@ -1531,6 +1593,9 @@ impl OpenCADStudio {
         } else {
             workspace
         };
+        let workspace = row![workspace, block_palette_el]
+            .width(Fill)
+            .height(Fill);
         let command_line = self.command_line.view(
             allow_autocomplete,
             dyn_capturing,
@@ -1635,6 +1700,16 @@ impl OpenCADStudio {
                     let active_block = tab
                         .active_block_edit_session()
                         .map(|session| session.block_name.clone());
+                    // The coordinate readout formats through the same helper
+                    // the properties panel uses, so it has to see the drawing's
+                    // linear-unit settings. Properties happens to set this on
+                    // every refresh; the status bar redraws on its own schedule
+                    // and cannot rely on that having happened.
+                    crate::entities::common::set_unit_context(
+                        crate::entities::common::UnitContext::from_header(
+                            &tab.scene.document.header,
+                        ),
+                    );
                     let status_menu_data = crate::ui::statusbar::StatusMenuData {
                         layout_names: layout_names.clone(),
                         polar_custom_input: &self.polar_custom_input,
@@ -1658,6 +1733,8 @@ impl OpenCADStudio {
                         self.polar_increment_deg,
                         self.dyn_input,
                         self.snapper.otrack_enabled,
+                        self.isometric_drafting,
+                        self.iso_plane,
                         layout_names.clone(),
                         block_tabs,
                         layout_names.into_iter().skip(1).collect(),
@@ -1680,7 +1757,7 @@ impl OpenCADStudio {
                         last_coord,
                         picking,
                         self.clean_screen,
-                        tab.scene.document.header.insertion_units,
+                        tab.scene.document.header.linear_unit_format,
                         tab.scene.is_isolation_active(),
                         tab.scene.transparency_display,
                         self.quick_properties,
@@ -2416,6 +2493,7 @@ pub(super) fn collapse_bar<'a>(
     side: crate::app::config::DockSide,
     on_press: Message,
     on_enter: Message,
+    width: f32,
 ) -> Element<'a, Message> {
     let label = canvas(VBarLabel {
         text: name.to_string(),
@@ -2426,7 +2504,7 @@ pub(super) fn collapse_bar<'a>(
 
     mouse_area(
         container(label)
-            .width(iced::Length::Fixed(26.0))
+            .width(iced::Length::Fixed(width))
             .height(Fill)
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
@@ -2558,7 +2636,7 @@ fn start_page_content<'a>(
         button(
             row![
                 crate::ui::icons::themed_danger_text(crate::ui::icons::HEART, 14.0),
-                text(crate::tr!("start-donate")).size(14),
+                text(crate::tr!("start", "donate")).size(14),
             ]
             .spacing(5)
             .align_y(iced::Center),
@@ -2572,8 +2650,8 @@ fn start_page_content<'a>(
     };
 
     let primary_row = WrapFlow::new(vec![
-        outline_btn(crate::tr!("start-new-drawing"), Message::TabNew).into(),
-        outline_btn(crate::tr!("start-open-file"), Message::OpenFile).into(),
+        outline_btn(crate::tr!("start", "new-drawing"), Message::TabNew).into(),
+        outline_btn(crate::tr!("start", "open-file"), Message::OpenFile).into(),
         donate_btn.into(),
     ])
     .spacing_x(12.0)
@@ -2583,16 +2661,16 @@ fn start_page_content<'a>(
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut secondary_items: Vec<Element<'a, Message>> = vec![
         outline_btn(
-            crate::tr!("start-send-feedback"),
+            crate::tr!("start", "send-feedback"),
             Message::RibbonToolClick {
                 tool_id: "REPORT".to_string(),
                 event: crate::modules::ModuleEvent::Command("REPORT".to_string()),
             },
         )
         .into(),
-        outline_btn(crate::tr!("action-options"), Message::OptionsOpen).into(),
+        outline_btn(crate::tr!("action", "options"), Message::OptionsOpen).into(),
     ];
-    secondary_items.push(outline_btn(crate::tr!("action-plugins"), Message::PluginManagerOpen).into());
+    secondary_items.push(outline_btn(crate::tr!("action", "plugins"), Message::PluginManagerOpen).into());
     // The web build is already in the browser, so only the desktop offers a
     // link to the web version.
     #[cfg(not(target_arch = "wasm32"))]
@@ -2615,7 +2693,7 @@ fn start_page_content<'a>(
         .report_natural_width(action_width_out.clone());
 
     let sponsors = column![
-        text(crate::tr!("start-sponsors")).size(15),
+        text(crate::tr!("start", "sponsors")).size(15),
         mouse_area(
             container(
                 iced::widget::svg(iced::widget::svg::Handle::from_memory(include_bytes!(
@@ -2717,7 +2795,7 @@ fn start_page_content<'a>(
         // whole thumbnail remains visible when that width changes.
         let thumb_h =
             (panel_w - VIDEO_PANEL_PADDING * 2.0 - VIDEO_SCROLL_GUTTER) * 9.0 / 16.0;
-        let mut list = column![text(crate::tr!("start-tutorials")).size(15)]
+        let mut list = column![text(crate::tr!("start", "tutorials")).size(15)]
             .spacing(10)
             .width(Fill)
             // Keep the scrollbar off the thumbnails.
@@ -2757,14 +2835,14 @@ fn start_page_content<'a>(
         }
         if videos.is_empty() {
             let note = if videos_loading {
-                crate::tr!("start-loading-videos")
+                crate::tr!("start", "loading-videos")
             } else {
-                crate::tr!("start-videos-online")
+                crate::tr!("start", "videos-online")
             };
             list = list.push(text(note).size(12).style(start_muted_style));
         }
         let playlist_btn = mouse_area(
-            container(text(crate::tr!("start-open-playlist")).size(12))
+            container(text(crate::tr!("start", "open-playlist")).size(12))
             .padding([6, 10])
             .width(Fill)
             .center_x(Fill)
@@ -2817,7 +2895,7 @@ fn start_page_content<'a>(
     // web builds read the CI-generated snapshot. Both sources mark pinned
     // discussions and sort them before the rest of the list.
     let discussions_panel: Element<'a, Message> = {
-        let mut list = column![text(crate::tr!("start-discussions")).size(15)]
+        let mut list = column![text(crate::tr!("start", "discussions")).size(15)]
             .spacing(8)
             .width(Fill);
         for discussion in discussions {
@@ -2830,7 +2908,7 @@ fn start_page_content<'a>(
             .align_y(iced::Center);
             if discussion.pinned {
                 meta = meta.push(
-                    text(crate::tr!("start-pinned"))
+                    text(crate::tr!("start", "pinned"))
                         .size(10)
                         .style(start_primary_style),
                 );
@@ -2873,14 +2951,14 @@ fn start_page_content<'a>(
         }
         if discussions.is_empty() {
             let note = if discussions_loading {
-                crate::tr!("start-loading-discussions")
+                crate::tr!("start", "loading-discussions")
             } else {
-                crate::tr!("start-discussions-online")
+                crate::tr!("start", "discussions-online")
             };
             list = list.push(text(note).size(12).style(start_muted_style));
         }
         let open_btn = mouse_area(
-            container(text(crate::tr!("start-open-discussions")).size(12))
+            container(text(crate::tr!("start", "open-discussions")).size(12))
                 .padding([6, 10])
                 .width(Fill)
                 .center_x(Fill)
@@ -2937,7 +3015,7 @@ fn start_page_content<'a>(
     // shows, so the rail always invites support.
     let supporters: Element<'a, Message> = {
         let mut list = column![
-            text(crate::tr!("start-supporters")).size(15),
+            text(crate::tr!("start", "supporters")).size(15),
             Space::new().height(iced::Length::Fixed(12.0)),
         ]
         .spacing(6)
@@ -2962,7 +3040,7 @@ fn start_page_content<'a>(
             container(
                 iced::widget::row![
                     crate::ui::icons::themed_danger_text(crate::ui::icons::HEART, 13.0),
-                    text(crate::tr!("start-support-on-patreon")).size(12),
+                    text(crate::tr!("start", "support-on-patreon")).size(12),
                 ]
                 .spacing(6)
                 .align_y(iced::Center),
@@ -3080,11 +3158,11 @@ fn start_page_content<'a>(
                     })
             };
             let tab_bar = Row::with_children(vec![
-                tab_btn(crate::tr!("start-recent-files"), super::StartSection::Recent).into(),
-                tab_btn(crate::tr!("start-videos"), super::StartSection::Videos).into(),
-                tab_btn(crate::tr!("start-welcome"), super::StartSection::Welcome).into(),
-                tab_btn(crate::tr!("start-discussions"), super::StartSection::Discussions).into(),
-                tab_btn(crate::tr!("start-supporters"), super::StartSection::Supporters).into(),
+                tab_btn(crate::tr!("start", "recent-files"), super::StartSection::Recent).into(),
+                tab_btn(crate::tr!("start", "videos"), super::StartSection::Videos).into(),
+                tab_btn(crate::tr!("start", "welcome"), super::StartSection::Welcome).into(),
+                tab_btn(crate::tr!("start", "discussions"), super::StartSection::Discussions).into(),
+                tab_btn(crate::tr!("start", "supporters"), super::StartSection::Supporters).into(),
             ])
             .spacing(6.0)
             .align_y(iced::Center)
@@ -3160,11 +3238,11 @@ pub(super) fn recent_files_panel<'a>(
 ) -> Element<'a, Message> {
     // Title mirrors the Supporters rail: size 15 in the bright text colour,
     // followed by a 12px gap before the content.
-    let title = text(crate::tr!("start-recent-documents")).size(15);
+    let title = text(crate::tr!("start", "recent-documents")).size(15);
 
     let body: Element<'a, Message> = if recents.is_empty() {
         container(
-            text(crate::tr!("start-no-recent-files"))
+            text(crate::tr!("start", "no-recent-files"))
                 .size(12)
                 .style(start_muted_style)
         )
@@ -3192,7 +3270,7 @@ pub(super) fn recent_files_panel<'a>(
             // directory line.
             #[cfg(target_arch = "wasm32")]
             let dir = if dir.is_empty() {
-                crate::tr!("start-browser-storage")
+                crate::tr!("start", "browser-storage")
             } else {
                 dir
             };
@@ -3303,7 +3381,7 @@ pub(super) fn recent_files_panel<'a>(
         .padding([2, 6])
         .width(iced::Length::Fixed(46.0));
     let limit_row = row![
-        text(crate::tr!("start-keep-recent-files")).size(11).style(start_muted_style).width(Fill),
+        text(crate::tr!("start", "keep-recent-files")).size(11).style(start_muted_style).width(Fill),
         button(crate::ui::icons::themed(crate::ui::icons::MINUS, 11.0))
             .on_press(Message::SetRecentLimit(shown.saturating_sub(STEP)))
             .padding([3, 6])

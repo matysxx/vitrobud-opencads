@@ -23,7 +23,7 @@ pub(crate) use view::DrawOrderRefCommand;
 impl OpenCADStudio {
     /// First `"{prefix}{n}"` (n ≥ 1) not already used by a block record in the
     /// active drawing. Used to auto-name a paste-as-block definition.
-    fn unique_block_name(&self, prefix: &str) -> String {
+    pub(super) fn unique_block_name(&self, prefix: &str) -> String {
         let i = self.active_tab;
         let mut n = 1;
         loop {
@@ -65,9 +65,27 @@ impl OpenCADStudio {
         // the first space are left untouched. A non-alias passes through as-is.
         let resolved = self.resolve_alias(cmd);
         let cmd = resolved.as_deref().unwrap_or(cmd);
+        // A drafting aid only flips a flag, so it must not disturb whatever is
+        // already running: pressing F8 partway through a LINE means "constrain
+        // the rest of this line", not "abandon it". Everything below tears the
+        // running command down, so a transparent one skips straight past it.
+        // (#677)
+        if is_transparent(cmd) {
+            return self
+                .dispatch_families(cmd, i)
+                .unwrap_or_else(Task::none);
+        }
         // Starting a command closes any open ribbon dropdown (e.g. a style
         // combo left open) so it does not stay stuck behind the new tool.
         self.ribbon.close_dropdown();
+        // Selection keywords last only for the round that asked for them: a
+        // Remove or a fixed Window sense must not quietly still be in force
+        // when the next command asks for objects. (#596)
+        self.select_remove_mode = false;
+        {
+            let mut selection = self.tabs[i].scene.selection.borrow_mut();
+            selection.box_crossing_locked = false;
+        }
         // Cancel any running command before starting a new one.
         if self.tabs[i].active_cmd.is_some() {
             self.tabs[i].scene.clear_preview_wire();
@@ -80,6 +98,7 @@ impl OpenCADStudio {
         // command arms below re-enable the selected one).
         self.tabs[i].pan_mode = false;
         self.tabs[i].orbit_mode = false;
+        self.tabs[i].zoom_dynamic_mode = false;
         // Reset the last committed point so the first click of the new command
         // is not constrained by ortho/polar relative to a previous command's endpoint.
         self.last_point = None;
@@ -224,6 +243,21 @@ impl OpenCADStudio {
     }
 }
 
+/// Commands that toggle a drafting aid and nothing else.
+///
+/// They are reachable from a function key, and a function key gets pressed
+/// mid-command — that is the point of it. Running them through the ordinary
+/// path cancelled the active command, cleared its preview and dropped its base
+/// point, so F8 during a MOVE both ended the move and made the dragged ghost
+/// vanish. Nothing here starts a command, opens a document or reads geometry,
+/// so there is nothing for the teardown to protect. (#677)
+pub fn is_transparent(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "ORTHO" | "GRID" | "SNAP" | "POLAR" | "OSNAP" | "DSETTINGS"
+    )
+}
+
 /// Whether `cmd` makes sense on the Start (welcome) tab — document lifecycle,
 /// links, and app-wide configuration; nothing that reads the scene. Single
 /// source of truth: the dispatch gate refuses everything else, and the ribbon
@@ -267,6 +301,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "CUI",
         "DSETTINGS",
         "GRID",
+        "ISODRAFT",
+        "ISOPLANE",
         "OSNAP",
         "POLAR",
         "QUICKPROPERTIES",
@@ -290,6 +326,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "DBLIST",
         // Layer management.
         "LAYDEL",
+        "LAYTRANS",
+        "DWGUNITS",
         "LAYMRG",
         "LAYERSTATE",
         "LAS",
@@ -320,12 +358,6 @@ inventory::submit!(crate::command::CommandRegistration {
         // Visual styles (mapped to the wireframe / shaded view).
         "VSCURRENT",
         "SHADEMODE",
-        "HIDDENLINE",
-        "XRAY",
-        "REALISTIC",
-        "CONCEPTUAL",
-        "2DWIREFRAME",
-        "3DWIREFRAME",
         // Raster image brightness / contrast / fade.
         "ADJUST",
         // Block list + block-attribute list (command-line forms).
@@ -417,6 +449,12 @@ inventory::submit!(crate::command::CommandRegistration {
         "FITSPLINE",
         // System variables (typeable directly).
         "MIRRTEXT",
+        "ZOOMWHEEL",
+        "ZOOMFACTOR",
+        "CURSORSIZE",
+        "PICKBOX",
+        "CURSORTYPE",
+        "SNAPANG",
         "ATTREQ",
         "ATTDIA",
         "DIMASSOC",
@@ -600,7 +638,6 @@ inventory::submit!(crate::command::CommandRegistration {
         "WB",
         "WBLOCK",
         "WEBVERSION",
-        "WIREFRAME",
         "XA",
         "XATTACH",
         "XDATA",

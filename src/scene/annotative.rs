@@ -25,7 +25,6 @@ pub fn as_dict(doc: &CadDocument, handle: Handle) -> Option<&Dictionary> {
         _ => None,
     }
 }
-
 /// Resolve the drawing's root named-objects dictionary, creating one if the
 /// file has none reachable.
 ///
@@ -641,7 +640,25 @@ pub fn effective_annotation_scale_for(
 ) -> f32 {
     let context_annotative = is_annotative(doc, entity);
     let style_annotative = annotation_style_is_annotative(doc, entity);
-    if !context_annotative && !style_annotative {
+    // An annotative object is scaled at the scales it has a representation
+    // for. Text is the case where the style alone proves nothing: a text style
+    // can be turned annotative long after text was drawn in it, and that text
+    // keeps its stored height until it is explicitly converted — which is what
+    // `is_annotative` already says by ignoring the style for TEXT. Scaling on
+    // the style regardless contradicted it, and a drawing whose text sits on a
+    // style someone flagged annotative, with no object contexts anywhere, came
+    // out at the whole annotation scale too large.
+    //
+    // A dimension, leader, tolerance or table is different: there the style is
+    // the standard signal and still counts on its own.
+    let text_like = matches!(
+        entity,
+        EntityType::Text(_)
+            | EntityType::MText(_)
+            | EntityType::AttributeEntity(_)
+            | EntityType::AttributeDefinition(_)
+    );
+    if !context_annotative && (text_like || !style_annotative) {
         return 1.0;
     }
 
@@ -652,17 +669,6 @@ pub fn effective_annotation_scale_for(
             | EntityType::Tolerance(_)
             | EntityType::Table(_)
     ) {
-        return fallback;
-    }
-    if style_annotative
-        && matches!(
-            entity,
-            EntityType::Text(_)
-                | EntityType::MText(_)
-                | EntityType::AttributeEntity(_)
-                | EntityType::AttributeDefinition(_)
-        )
-    {
         return fallback;
     }
 

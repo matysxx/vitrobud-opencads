@@ -4,8 +4,8 @@
 //   • plane-surface faces  → collect coedge-loop polygon, fan-triangulate.
 //   • cone-surface faces   → sample a parametric grid (handles both cylinders
 //                            and true cones).
-//   • sphere-surface faces → sample a full UV grid.
-//   • torus-surface faces  → sample a full UV grid.
+//   • sphere-surface faces → sample a boundary-clipped UV grid.
+//   • torus-surface faces  → sample a boundary-clipped UV grid.
 //
 // Coverage is tracked explicitly. Unsupported or malformed faces retain
 // feature/display wires, and partial shells are marked non-complete so solid
@@ -40,9 +40,13 @@ use crate::scene::model::mesh_model::{MeshLodSet, MeshModel};
 /// segments per full circle).
 pub(crate) const EDGE_CHORD_FRAC: f64 = 0.002;
 /// Truck's own triangulation chord tolerance for the cone faces still routed
-/// through its kernel, as a fraction of the surface radius.
+/// through its kernel, as a fraction of the surface radius. Matches
+/// [`LodConfig::HIGH`]: truck emits a single mesh rather than an LOD ladder, so
+/// it has to be the detailed one. A coarse fraction here turns a wide pipe into
+/// a hexagonal prism whose flats sink far inside the true radius, tearing the
+/// wall away from the planar faces and caps that meet it.
 #[cfg(feature = "solid3d")]
-pub(crate) const TRUCK_CHORD_FRAC: f64 = 0.1;
+pub(crate) const TRUCK_CHORD_FRAC: f64 = 0.005;
 /// Boundary-loop sampling for parameter-range classification (which arc of a
 /// sphere/torus a face covers): a fine fraction so the classification is
 /// accurate; the points are not rendered.
@@ -398,7 +402,7 @@ fn cone_face_geom(sat: &SatDocument, face: &SatFace) -> Option<ConeFaceGeom> {
     let (cx, cy, cz) = cone.center();
     let (ax, ay, az) = cone.axis();
     let (ux, uy, uz) = cone.major_axis();
-    let radius = cone.radius();
+    let radius = cone_radius(&cone);
     let sin_a = cone.sin_half_angle();
     let cos_a = cone.cos_half_angle();
     let axis = norm3([ax, ay, az]);
@@ -506,16 +510,16 @@ fn sphere_isolines(sat: &SatDocument, face: &SatFace, count: usize, out: &mut Ve
     };
     let (cx, cy, cz) = sphere.center();
     let r = sphere.radius();
-    let pole = norm3([sphere.pole().0, sphere.pole().1, sphere.pole().2]);
-    let u = norm3([
-        sphere.u_direction().0,
-        sphere.u_direction().1,
-        sphere.u_direction().2,
-    ]);
-    let v = cross3(pole, u);
-    let poly = collect_face_polygon(sat, face, BOUNDARY_CHORD_FRAC);
-    let (theta_min, theta_span, full, phi_min, phi_max) =
-        sphere_param_range(&poly, [cx, cy, cz], pole, u, v);
+    let SphereWindow {
+        pole,
+        u,
+        v,
+        theta_min,
+        theta_span,
+        theta_full: full,
+        phi_min,
+        phi_max,
+    } = sphere_window(sat, face, &sphere);
     // Meridian subdivisions from the sphere radius and colatitude span (a great
     // circle of radius `r`) at the shared edge chord tolerance.
     let m = edge_arc_segs(r, phi_max - phi_min);
@@ -552,16 +556,21 @@ fn torus_isolines(sat: &SatDocument, face: &SatFace, count: usize, out: &mut Vec
     let v = cross3(axis, u);
     let major = torus.major_radius();
     let minor = torus.minor_radius();
-    let (phi_min, phi_span, full) = torus_phi_range(sat, face, [cx, cy, cz], u, v);
+    let (phi_min, phi_span, full) =
+        torus_phi_range(sat, face, [cx, cy, cz], u, v, major);
     let phi_total = if full { TAU } else { phi_span };
+    let (theta_min, theta_span, theta_full) =
+        torus_theta_range(sat, face, [cx, cy, cz], axis, major, minor);
+    let theta_total = if theta_full { TAU } else { theta_span };
 
-    // Minor (cross-section) circles — constant revolution angle, full tube.
+    // Minor (cross-section) arcs — constant revolution angle, clipped to the
+    // face's tube-angle window.
     // Segment count from the tube (minor) radius at the shared edge tolerance.
-    let m = edge_arc_segs(minor, TAU);
+    let m = edge_arc_segs(minor, theta_total);
     for phi in iso_params(phi_min, phi_span, full, count) {
         for t in 0..m {
-            let t0 = TAU * (t as f64 / m as f64);
-            let t1 = TAU * ((t + 1) as f64 / m as f64);
+            let t0 = theta_min + theta_total * (t as f64 / m as f64);
+            let t1 = theta_min + theta_total * ((t + 1) as f64 / m as f64);
             out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, t0, phi));
             out.push(torus_pt(cx, cy, cz, axis, u, v, major, minor, t1, phi));
         }
@@ -573,8 +582,7 @@ fn torus_isolines(sat: &SatDocument, face: &SatFace, count: usize, out: &mut Vec
     // cross-sections. `count.max(2)` guarantees outer + inner even at ISOLINES=1.
     let ring_segs = edge_arc_segs(major, phi_total).max(2);
     let n_ring = count.max(2);
-    for k in 0..n_ring {
-        let theta = TAU * (k as f64 / n_ring as f64);
+    for theta in iso_params(theta_min, theta_span, theta_full, n_ring) {
         for s in 0..ring_segs {
             let p0 = phi_min + phi_total * (s as f64 / ring_segs as f64);
             let p1 = phi_min + phi_total * ((s + 1) as f64 / ring_segs as f64);
@@ -620,56 +628,233 @@ fn sphere_param_range(
     )
 }
 
+/// Frame and parameter window a sphere face is drawn in.
+///
+/// The surface record's pole is only a parametrisation choice, so a dish cap is
+/// commonly bounded by a circle that is no line of latitude in that frame. A
+/// θ/φ bounding box of such a boundary covers nearly the whole ball, drawing the
+/// cap as a complete sphere. When the face's loops are circles lying on the
+/// sphere we re-pole the frame onto their common axis, where the seam *is* a
+/// latitude and the window is exact.
+struct SphereWindow {
+    pole: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    theta_min: f64,
+    theta_span: f64,
+    /// Longitude wrap only. A cap centred on the pole covers every longitude
+    /// while still ending at its seam, so this never widens `phi_min/phi_max`.
+    theta_full: bool,
+    phi_min: f64,
+    phi_max: f64,
+}
+
+/// Resolve the frame and trim window for a sphere face, preferring the analytic
+/// cap/zone derivation and falling back to the boundary-polygon bounding box.
+fn sphere_window(sat: &SatDocument, face: &SatFace, sphere: &SatSphereSurface) -> SphereWindow {
+    let (cx, cy, cz) = sphere.center();
+    let center = [cx, cy, cz];
+    let radius = sphere.radius();
+    let acis_pole = norm3([sphere.pole().0, sphere.pole().1, sphere.pole().2]);
+    let acis_u = norm3([
+        sphere.u_direction().0,
+        sphere.u_direction().1,
+        sphere.u_direction().2,
+    ]);
+    let acis_v = cross3(acis_pole, acis_u);
+
+    if let Some((pole, phi_min, phi_max)) = sphere_cap_window(sat, face, center, radius) {
+        let u = perp_axis(pole);
+        return SphereWindow {
+            pole,
+            u,
+            v: cross3(pole, u),
+            // A face closed by full circles of latitude wraps every longitude.
+            theta_min: 0.0,
+            theta_span: TAU,
+            theta_full: true,
+            phi_min,
+            phi_max,
+        };
+    }
+
+    let poly = collect_face_polygon(sat, face, BOUNDARY_CHORD_FRAC);
+    let (theta_min, theta_span, full, phi_min, phi_max) =
+        sphere_param_range(&poly, center, acis_pole, acis_u, acis_v);
+    // `full` reports the *longitude* wrap only. A cap sitting on the pole covers
+    // every longitude while still spanning a narrow colatitude band, so the
+    // derived φ window stands on its own and callers must not widen it back to
+    // the whole 0..π meridian — that grows the cap into a complete ball.
+    SphereWindow {
+        pole: acis_pole,
+        u: acis_u,
+        v: acis_v,
+        theta_min,
+        theta_span,
+        theta_full: full,
+        phi_min,
+        phi_max,
+    }
+}
+
+/// Colatitude window of a sphere face bounded by circles that lie on the sphere,
+/// in a frame poled on those circles' common axis. `None` when the boundary is
+/// not made of such circles, leaving the caller on the polygon fallback.
+///
+/// One boundary circle bounds a cap, two bound a zone. The cut plane of a circle
+/// at distance `d` from the centre meets the sphere at colatitude `acos(d / R)`
+/// measured about the circle's axis, so each seam maps to an exact latitude.
+fn sphere_cap_window(
+    sat: &SatDocument,
+    face: &SatFace,
+    center: [f64; 3],
+    radius: f64,
+) -> Option<([f64; 3], f64, f64)> {
+    use std::f64::consts::PI;
+    const GEOM_EPS: f64 = 1e-6;
+    if !(radius.abs() > GEOM_EPS) {
+        return None;
+    }
+    let r2 = radius * radius;
+
+    // Per boundary circle: its plane's offset from the sphere centre, that
+    // offset's length, and the plane normal.
+    let mut rings: Vec<([f64; 3], f64, [f64; 3])> = Vec::new();
+    let mut first_loop_seen = false;
+    let mut sense_axis: Option<[f64; 3]> = None;
+
+    let first = face.first_loop();
+    let mut current = first;
+    let mut seen: HashSet<i32> = HashSet::default();
+    while !current.is_null() && seen.insert(current.0) {
+        let sat_loop = SatLoop::from_record(sat.resolve(current)?)?;
+        let (cc, normal, ring_radius) = loop_circle_geometry(sat, &sat_loop)?;
+        let offset = [cc[0] - center[0], cc[1] - center[1], cc[2] - center[2]];
+        let dist2 = dot3(offset, offset);
+        // The circle has to be a section of this sphere: d² + r_ring² == R².
+        if (dist2 + ring_radius * ring_radius - r2).abs() > 1e-6 * r2.max(1.0) {
+            return None;
+        }
+        let dist = dist2.sqrt();
+        let axis = if dist > GEOM_EPS {
+            norm3(offset)
+        } else {
+            // A great circle is centred on the sphere, so only its plane gives an
+            // axis; which side of it the face keeps has to come from the winding.
+            normal
+        };
+        if !first_loop_seen {
+            first_loop_seen = true;
+            // The in-surface direction pointing into the face tells us which of
+            // the two caps this plane cuts is the material one.
+            if let Some((_, inward)) = circle_loop_inward_direction(sat, face, &sat_loop) {
+                sense_axis = Some(if dot3(inward, axis) >= 0.0 {
+                    axis
+                } else {
+                    [-axis[0], -axis[1], -axis[2]]
+                });
+            } else if dist > GEOM_EPS {
+                // No usable winding: keep the cap the offset points at, which is
+                // the shallow dish that an offset seam normally bounds.
+                sense_axis = Some(axis);
+            }
+        }
+        rings.push((offset, dist, normal));
+        current = sat_loop.next_loop();
+        if current == first {
+            break;
+        }
+    }
+
+    let pole = sense_axis?;
+    match rings.len() {
+        1 => {
+            let (_, dist, _) = rings[0];
+            let phi_seam = (dist / radius).clamp(-1.0, 1.0).acos();
+            Some((pole, 0.0, phi_seam))
+        }
+        2 => {
+            // Both seams must lie in planes square to the shared axis, otherwise
+            // this is not a zone and the box fallback is the honest answer. An
+            // offset ring proves that by having its offset run along the axis; a
+            // ring centred on the sphere has no offset to test, so its own plane
+            // normal has to line up instead.
+            for (offset, dist, normal) in &rings {
+                let square = if *dist > GEOM_EPS {
+                    (dot3(*offset, pole).abs() - *dist).abs() <= 1e-6 * dist.max(1.0)
+                } else {
+                    (dot3(*normal, pole).abs() - 1.0).abs() <= 1e-6
+                };
+                if !square {
+                    return None;
+                }
+            }
+            // acos maps into [0, π] already, so these are ordered colatitudes.
+            let mut phis = [0.0f64; 2];
+            for (i, (offset, _, _)) in rings.iter().enumerate() {
+                phis[i] = (dot3(*offset, pole) / radius).clamp(-1.0, 1.0).acos();
+            }
+            let (lo, hi) = if phis[0] <= phis[1] {
+                (phis[0], phis[1])
+            } else {
+                (phis[1], phis[0])
+            };
+            debug_assert!((0.0..=PI).contains(&lo) && (0.0..=PI).contains(&hi));
+            Some((pole, lo, hi))
+        }
+        _ => None,
+    }
+}
+
+/// Reference cross-section radius of a cone/cylinder surface.
+///
+/// The record's trailing real is a parameter scale, not geometry — it coincides
+/// with the radius on many bodies but diverges on others, which draws the
+/// lateral surface at the wrong size while the rims stay put (a gauge dial
+/// rendering as a ring around its own face). The major axis *is* the radius
+/// vector at the reference cross-section, so its length is the radius; fall back
+/// to the record's field only when that vector is missing.
+pub(crate) fn cone_radius(cone: &SatConeSurface) -> f64 {
+    let (x, y, z) = cone.major_axis();
+    let len = (x * x + y * y + z * z).sqrt();
+    if len > 1e-12 {
+        len
+    } else {
+        cone.radius()
+    }
+}
+
+/// Any unit vector square to `axis`, for completing a frame.
+fn perp_axis(axis: [f64; 3]) -> [f64; 3] {
+    let seed = if axis[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    norm3(cross3(seed, axis))
+}
+
 /// Revolution-angle arc a torus face spans, walking all its boundary loops.
 ///
-/// A partial tube ends in two minor-circle caps sitting in constant-φ planes;
-/// the arc between them is the opening. But the tube body can also carry
-/// interior hole loops where another solid punches through it, so the widest
-/// empty gap is *not* reliably the opening — a hole splits the body into wide
-/// hole-free stretches that masquerade as it. Only a gap flanked by two end
-/// caps is genuinely surface-free, so that is the opening; the body is the rest
-/// of the turn. Returns `(body_start, body_span, full)`.
+/// A partial tube ends in two oriented minor-circle boundary loops sitting in
+/// constant-φ planes. Each loop's coedge and edge senses, combined with the
+/// face sense, identify the side that belongs to the trimmed face. That makes
+/// both short elbows and long open tubes follow their recorded boundary rather
+/// than choosing an angular span by size. If that trim topology is absent or
+/// ambiguous, the face remains untrimmed. Returns
+/// `(body_start, body_span, full)`.
 pub(crate) fn torus_phi_range(
     sat: &SatDocument,
     face: &SatFace,
     center: [f64; 3],
     u: [f64; 3],
     v: [f64; 3],
+    major: f64,
 ) -> (f64, f64, bool) {
-    // Below this revolution-angle spread a loop is a minor circle sitting in a
-    // constant-φ plane — a tube end cap. Interference loops (where another solid
-    // punches through the tube) wander several degrees in φ, well above it.
-    const CAP_SPREAD: f64 = 0.15; // rad (~8.6°)
-                                  // Ignore sub-degree gaps *within* a cap's own point cluster; a genuine tube
-                                  // opening is far wider.
-    const MIN_OPENING: f64 = 0.02; // rad (~1.1°)
-
-    let phi_of = |p: [f64; 3]| -> f64 {
-        let rel = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
-        dot3(rel, v).atan2(dot3(rel, u)).rem_euclid(TAU)
-    };
-    // Angular spread of a set of φ values, wrap-aware: the turn minus the widest
-    // gap between them. A cap collapses to ~0; a hole loop keeps its real width.
-    let spread = |phis: &[f64]| -> f64 {
-        if phis.len() < 2 {
-            return 0.0;
-        }
-        let mut s = phis.to_vec();
-        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let mut gmax = 0.0f64;
-        for i in 0..s.len() {
-            let next = if i + 1 < s.len() {
-                s[i + 1]
-            } else {
-                s[0] + TAU
-            };
-            gmax = gmax.max(next - s[i]);
-        }
-        TAU - gmax
-    };
-
-    // Every boundary point, tagged by whether its loop is a tube end cap.
-    let mut tagged: Vec<(f64, bool)> = Vec::new();
+    const GEOM_EPS: f64 = 1e-6;
+    let axis = norm3(cross3(u, v));
+    let mut starts = Vec::new();
+    let mut ends = Vec::new();
     let mut lp = face.first_loop();
     let mut seen: HashSet<i32> = HashSet::default();
     while !lp.is_null() && seen.insert(lp.0) {
@@ -677,46 +862,244 @@ pub(crate) fn torus_phi_range(
         let Some(sl) = SatLoop::from_record(lr) else {
             break;
         };
-        let poly = collect_loop_polygon(sat, &sl, BOUNDARY_CHORD_FRAC);
         lp = sl.next_loop();
-        if poly.is_empty() {
+        let Some((boundary_center, inward_direction)) =
+            circle_loop_inward_direction(sat, face, &sl)
+        else {
+            continue;
+        };
+        let rel = [
+            boundary_center[0] - center[0],
+            boundary_center[1] - center[1],
+            boundary_center[2] - center[2],
+        ];
+        let axial = dot3(rel, axis);
+        let radial_u = dot3(rel, u);
+        let radial_v = dot3(rel, v);
+        let radial_len = (radial_u * radial_u + radial_v * radial_v).sqrt();
+        let scale = major.abs().max(radial_len).max(1.0);
+        if axial.abs() > scale * GEOM_EPS
+            || (radial_len - major.abs()).abs() > scale * GEOM_EPS
+        {
             continue;
         }
-        let phis: Vec<f64> = poly.iter().map(|&p| phi_of(p)).collect();
-        let is_cap = spread(&phis) < CAP_SPREAD;
-        for phi in phis {
-            tagged.push((phi, is_cap));
-        }
-    }
-    if tagged.len() < 2 {
-        return (0.0, TAU, true);
-    }
-    tagged.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-    // The opening is the arc with no surface: a gap flanked on *both* sides by
-    // end-cap points (a hole never bounds the opening). Of those, the tube's own
-    // opening is the narrowest above the intra-cluster noise floor; the body is
-    // the rest of the turn. No cap-cap gap ⇒ the tube closes into a full ring.
-    let n = tagged.len();
-    let mut opening_gap = f64::MAX;
-    let mut body_start = 0.0;
-    for i in 0..n {
-        let (phi_i, cap_i) = tagged[i];
-        let (phi_j, cap_j) = if i + 1 < n {
-            tagged[i + 1]
+        let physical_phi = radial_v.atan2(radial_u);
+        let phi = if major < 0.0 {
+            (physical_phi - std::f64::consts::PI).rem_euclid(TAU)
         } else {
-            (tagged[0].0 + TAU, tagged[0].1)
+            physical_phi.rem_euclid(TAU)
         };
-        let gap = phi_j - phi_i;
-        if cap_i && cap_j && gap > MIN_OPENING && gap < opening_gap {
-            opening_gap = gap;
-            body_start = phi_j.rem_euclid(TAU); // body resumes past the far cap
+        let major_sign = if major < 0.0 { -1.0 } else { 1.0 };
+        let tangent = norm3([
+            major_sign * (-u[0] * phi.sin() + v[0] * phi.cos()),
+            major_sign * (-u[1] * phi.sin() + v[1] * phi.cos()),
+            major_sign * (-u[2] * phi.sin() + v[2] * phi.cos()),
+        ]);
+        let alignment = dot3(tangent, inward_direction);
+        if (alignment.abs() - 1.0).abs() > GEOM_EPS {
+            continue;
+        }
+        if alignment > 0.0 {
+            starts.push(phi);
+        } else {
+            ends.push(phi);
         }
     }
-    if opening_gap == f64::MAX {
+
+    starts.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    ends.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    starts.dedup_by(|left, right| (*left - *right).abs() < GEOM_EPS);
+    ends.dedup_by(|left, right| (*left - *right).abs() < GEOM_EPS);
+    if let ([start], [end]) = (starts.as_slice(), ends.as_slice()) {
+        let span = (end - start).rem_euclid(TAU);
+        if span > GEOM_EPS && span < TAU - GEOM_EPS {
+            return (*start, span, false);
+        }
+    }
+    (0.0, TAU, true)
+}
+
+/// Analytic circle data carried by an ellipse edge in a boundary loop.
+fn loop_circle_geometry(
+    sat: &SatDocument,
+    sat_loop: &SatLoop,
+) -> Option<([f64; 3], [f64; 3], f64)> {
+    let first = sat_loop.first_coedge();
+    let mut current = first;
+    let mut seen: HashSet<i32> = HashSet::default();
+    while !current.is_null() && seen.insert(current.0) {
+        let coedge = SatCoedge::from_record(sat.resolve(current)?)?;
+        if let Some(ellipse) = sat
+            .resolve(coedge.edge())
+            .and_then(SatEdge::from_record)
+            .and_then(|edge| sat.resolve(edge.curve()))
+            .and_then(SatEllipseCurve::from_record)
+        {
+            if (ellipse.ratio() - 1.0).abs() <= 1e-6 {
+                let (cx, cy, cz) = ellipse.center();
+                let (nx, ny, nz) = ellipse.normal();
+                let (mx, my, mz) = ellipse.major_axis();
+                let radius = (mx * mx + my * my + mz * mz).sqrt();
+                return Some(([cx, cy, cz], norm3([nx, ny, nz]), radius));
+            }
+        }
+        current = coedge.next();
+        if current == first {
+            break;
+        }
+    }
+    None
+}
+
+/// Circle centre and the in-surface direction lying inside an oriented loop.
+/// The direction comes directly from the boundary curve winding and face sense.
+fn circle_loop_inward_direction(
+    sat: &SatDocument,
+    face: &SatFace,
+    sat_loop: &SatLoop,
+) -> Option<([f64; 3], [f64; 3])> {
+    const GEOM_EPS: f64 = 1e-6;
+    let first = sat_loop.first_coedge();
+    let mut current = first;
+    let mut seen: HashSet<i32> = HashSet::default();
+    while !current.is_null() && seen.insert(current.0) {
+        let coedge = SatCoedge::from_record(sat.resolve(current)?)?;
+        let Some(edge) = sat.resolve(coedge.edge()).and_then(SatEdge::from_record) else {
+            break;
+        };
+        let Some(ellipse) = sat
+            .resolve(edge.curve())
+            .and_then(SatEllipseCurve::from_record)
+        else {
+            current = coedge.next();
+            if current == first {
+                break;
+            }
+            continue;
+        };
+        if (ellipse.ratio() - 1.0).abs() > GEOM_EPS {
+            current = coedge.next();
+            if current == first {
+                break;
+            }
+            continue;
+        }
+
+        let center = ellipse.center();
+        let ellipse_frame = ellipse_frame(&ellipse, matches!(edge.sense(), Sense::Reversed))?;
+        let coedge_forward = matches!(coedge.sense(), Sense::Forward);
+        let parameter = if coedge_forward {
+            edge.start_param()
+        } else {
+            edge.end_param()
+        };
+        let edge_span = edge.end_param() - edge.start_param();
+        let edge_direction = if edge_span < -GEOM_EPS { -1.0 } else { 1.0 };
+        let traversal_direction = if coedge_forward {
+            edge_direction
+        } else {
+            -edge_direction
+        };
+        let (point, curve_tangent) = ellipse_frame.point_tangent(parameter);
+        let boundary_tangent = norm3([
+            traversal_direction * curve_tangent[0],
+            traversal_direction * curve_tangent[1],
+            traversal_direction * curve_tangent[2],
+        ]);
+        let face_sign = if matches!(face.sense(), Sense::Reversed) {
+            -1.0
+        } else {
+            1.0
+        };
+        let face_normal = norm3([
+            face_sign * (point[0] - center.0),
+            face_sign * (point[1] - center.1),
+            face_sign * (point[2] - center.2),
+        ]);
+        let inward = norm3(cross3(face_normal, boundary_tangent));
+        return Some(([center.0, center.1, center.2], inward));
+    }
+    None
+}
+
+/// Tube-angle span of a torus face from its boundary loops.
+///
+/// Ring tori normally cover the complete minor circle, while a spindle-torus
+/// cap terminates at the surface's axial singularity and owns just one
+/// constant-θ boundary ring. Sampling the complete minor circle in that case
+/// duplicates the cap across the rest of the self-intersecting analytic
+/// surface, producing a ball much larger than the bounded face.
+fn torus_theta_range(
+    sat: &SatDocument,
+    face: &SatFace,
+    center: [f64; 3],
+    axis: [f64; 3],
+    major: f64,
+    minor: f64,
+) -> (f64, f64, bool) {
+    const GEOM_EPS: f64 = 1e-6;
+
+    if minor <= 1e-9 || major.abs() >= minor {
         return (0.0, TAU, true);
     }
-    (body_start, TAU - opening_gap, false)
+
+    let mut rims = Vec::new();
+    let mut lp = face.first_loop();
+    let mut seen: HashSet<i32> = HashSet::default();
+    while !lp.is_null() && seen.insert(lp.0) {
+        let Some(sat_loop) = sat.resolve(lp).and_then(SatLoop::from_record) else {
+            break;
+        };
+        lp = sat_loop.next_loop();
+        let Some((circle_center, circle_normal, circle_radius)) =
+            loop_circle_geometry(sat, &sat_loop)
+        else {
+            continue;
+        };
+        let rel = [
+            circle_center[0] - center[0],
+            circle_center[1] - center[1],
+            circle_center[2] - center[2],
+        ];
+        let axial = dot3(rel, axis);
+        let planar = [
+            rel[0] - axial * axis[0],
+            rel[1] - axial * axis[1],
+            rel[2] - axial * axis[2],
+        ];
+        let scale = major.abs().max(minor).max(circle_radius).max(1.0);
+        if dot3(planar, planar).sqrt() > scale * GEOM_EPS
+            || (dot3(circle_normal, axis).abs() - 1.0).abs() > GEOM_EPS
+        {
+            continue;
+        }
+
+        // The principal spindle branch has non-negative revolution radius:
+        // circle_radius = major + minor·cos(θ). Together with the circle
+        // plane's axial coordinate this recovers θ directly.
+        let sin_theta = axial / minor;
+        let cos_theta = (circle_radius - major) / minor;
+        if (sin_theta * sin_theta + cos_theta * cos_theta - 1.0).abs() > GEOM_EPS {
+            continue;
+        }
+        rims.push(sin_theta.atan2(cos_theta));
+    }
+
+    rims.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    rims.dedup_by(|left, right| (*left - *right).abs() < GEOM_EPS);
+    if rims.len() != 1 || rims[0].abs() < GEOM_EPS {
+        return (0.0, TAU, true);
+    }
+
+    let rim = rims[0];
+    let singular = (-major / minor).clamp(-1.0, 1.0).acos();
+    if rim > 0.0 && rim < singular {
+        (rim, singular - rim, false)
+    } else if rim < 0.0 && rim > -singular {
+        (-singular, singular + rim, false)
+    } else {
+        (0.0, TAU, true)
+    }
 }
 
 /// Reduce a set of angles to a `(min, span, full)` arc. Mirrors `angular_range`'s
@@ -831,16 +1214,16 @@ fn collect_curved_gens(
                     continue;
                 };
                 let (cx, cy, cz) = sphere.center();
-                let pole = norm3([sphere.pole().0, sphere.pole().1, sphere.pole().2]);
-                let u = norm3([
-                    sphere.u_direction().0,
-                    sphere.u_direction().1,
-                    sphere.u_direction().2,
-                ]);
-                let v = cross3(pole, u);
-                let poly = collect_face_polygon(sat, &face, BOUNDARY_CHORD_FRAC);
-                let (tmin, tspan, full, pmin, pmax) =
-                    sphere_param_range(&poly, [cx, cy, cz], pole, u, v);
+                let SphereWindow {
+                    pole,
+                    u,
+                    v,
+                    theta_min: tmin,
+                    theta_span: tspan,
+                    theta_full: full,
+                    phi_min: pmin,
+                    phi_max: pmax,
+                } = sphere_window(sat, &face, &sphere);
                 let (center, center_low) = place([cx, cy, cz]);
                 out.push(CurvedGen::Sphere {
                     center,
@@ -868,7 +1251,22 @@ fn collect_curved_gens(
                     torus.u_direction().2,
                 ]);
                 let v = cross3(axis, u);
-                let (pmin, pspan, full) = torus_phi_range(sat, &face, [cx, cy, cz], u, v);
+                let (pmin, pspan, full) = torus_phi_range(
+                    sat,
+                    &face,
+                    [cx, cy, cz],
+                    u,
+                    v,
+                    torus.major_radius(),
+                );
+                let (tmin, tspan, tfull) = torus_theta_range(
+                    sat,
+                    &face,
+                    [cx, cy, cz],
+                    axis,
+                    torus.major_radius(),
+                    torus.minor_radius(),
+                );
                 let (center, center_low) = place([cx, cy, cz]);
                 out.push(CurvedGen::Torus {
                     center,
@@ -881,6 +1279,9 @@ fn collect_curved_gens(
                     phi_min: pmin as f32,
                     phi_span: pspan as f32,
                     full,
+                    theta_min: tmin as f32,
+                    theta_span: tspan as f32,
+                    theta_full: tfull,
                 });
             }
             _ => {}
@@ -1481,6 +1882,66 @@ pub(crate) fn append_coedge_points(
     }
 }
 
+struct EllipseFrame {
+    center: [f64; 3],
+    major: [f64; 3],
+    minor: [f64; 3],
+    major_len: f64,
+}
+
+impl EllipseFrame {
+    fn point_tangent(&self, parameter: f64) -> ([f64; 3], [f64; 3]) {
+        let (sin_parameter, cos_parameter) = parameter.sin_cos();
+        (
+            [
+                self.center[0]
+                    + self.major[0] * cos_parameter
+                    + self.minor[0] * sin_parameter,
+                self.center[1]
+                    + self.major[1] * cos_parameter
+                    + self.minor[1] * sin_parameter,
+                self.center[2]
+                    + self.major[2] * cos_parameter
+                    + self.minor[2] * sin_parameter,
+            ],
+            [
+                -self.major[0] * sin_parameter + self.minor[0] * cos_parameter,
+                -self.major[1] * sin_parameter + self.minor[1] * cos_parameter,
+                -self.major[2] * sin_parameter + self.minor[2] * cos_parameter,
+            ],
+        )
+    }
+}
+
+/// Analytic ellipse frame shared by boundary sampling and trim orientation.
+fn ellipse_frame(ellipse: &SatEllipseCurve, curve_reversed: bool) -> Option<EllipseFrame> {
+    let center = ellipse.center();
+    let major = ellipse.major_axis();
+    let major_len = (major.0 * major.0 + major.1 * major.1 + major.2 * major.2).sqrt();
+    if major_len < 1e-12 {
+        return None;
+    }
+    let major_u = [
+        major.0 / major_len,
+        major.1 / major_len,
+        major.2 / major_len,
+    ];
+    let normal = norm3([ellipse.normal().0, ellipse.normal().1, ellipse.normal().2]);
+    let minor_u = cross3(normal, major_u);
+    let minor_len = major_len * ellipse.ratio();
+    let hand = if curve_reversed { -1.0 } else { 1.0 };
+    Some(EllipseFrame {
+        center: [center.0, center.1, center.2],
+        major: [major_u[0] * major_len, major_u[1] * major_len, major_u[2] * major_len],
+        minor: [
+            minor_u[0] * minor_len * hand,
+            minor_u[1] * minor_len * hand,
+            minor_u[2] * minor_len * hand,
+        ],
+        major_len,
+    })
+}
+
 /// Sample points along an ellipse/circle arc from `sp` to `ep` (radians).
 /// Returns points at the start of each segment (the end param is omitted so
 /// adjacent coedges don't double up the shared junction point). Segment count
@@ -1496,49 +1957,24 @@ fn sample_ellipse_arc(
     if span.abs() < 1e-9 {
         return vec![];
     }
-    let center = ellipse.center();
-    let major = ellipse.major_axis();
-    let major_len = (major.0 * major.0 + major.1 * major.1 + major.2 * major.2).sqrt();
-    if major_len < 1e-12 {
+    let Some(frame) = ellipse_frame(ellipse, curve_reversed) else {
         return vec![];
-    }
-    let major_u = [
-        major.0 / major_len,
-        major.1 / major_len,
-        major.2 / major_len,
-    ];
-    let normal = norm3([ellipse.normal().0, ellipse.normal().1, ellipse.normal().2]);
-    let minor_u = cross3(normal, major_u);
-    let minor_len = major_len * ellipse.ratio();
-
-    // P(t) = center + major·cos t + (normal×major)·ratio·sin t, with param
-    // winding CCW about the curve normal. An edge stored with REVERSED sense
-    // traverses the curve backward, i.e. about the opposite normal, so its
-    // params index the mirror winding — evaluate with the sin term negated.
-    // Ignoring the edge sense mirrors a reversed boundary arc across the major
-    // axis to the far side of the circle, ballooning a curved wall into a full
-    // cylinder of the surface radius.
-    let hand = if curve_reversed { -1.0 } else { 1.0 };
+    };
 
     // Segment count from this ellipse's own radius and arc span at the requested
     // chord tolerance — the same model the 2-D circle/arc/ellipse wires use, so
     // a big rim samples finer than a small one and a short arc proportionally
     // less than a full turn. `major_len` is the reference radius.
     let segs = crate::scene::convert::tess_util::arc_segments_floored(
-        major_len,
+        frame.major_len,
         span.abs(),
-        major_len * chord_frac,
+        frame.major_len * chord_frac,
         2,
     ) as usize;
     let mut out = Vec::with_capacity(segs);
     for i in 0..segs {
         let t = sp + span * (i as f64 / segs as f64);
-        let (c, s) = (t.cos(), t.sin() * hand);
-        out.push([
-            center.0 + major_u[0] * major_len * c + minor_u[0] * minor_len * s,
-            center.1 + major_u[1] * major_len * c + minor_u[1] * minor_len * s,
-            center.2 + major_u[2] * major_len * c + minor_u[2] * minor_len * s,
-        ]);
+        out.push(frame.point_tangent(t).0);
     }
     out
 }
@@ -1631,13 +2067,20 @@ pub(crate) fn tess_cone_face(
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
 ) {
-    // Determine the height range and angular span from the boundary polygon.
-    let poly = collect_face_polygon(sat, face, lod.chord_frac);
+    // Determine the height range and angular span from the boundary. Every loop
+    // counts: a lateral face closed off by one rim and one pierce curve (a pipe
+    // branch meeting its run) carries its two ends on *different* loops, so
+    // reading only the first would size the tube to whichever end came first and
+    // leave the rest of the leg undrawn.
+    let poly: Vec<[f64; 3]> = collect_face_loops(sat, face, lod.chord_frac)
+        .into_iter()
+        .flatten()
+        .collect();
 
     let (cx, cy, cz) = cone.center();
     let (ax, ay, az) = cone.axis(); // axis direction (unit)
     let (ux, uy, uz) = cone.major_axis(); // u=0 direction
-    let radius = cone.radius();
+    let radius = cone_radius(cone);
     let sin_a = cone.sin_half_angle();
     let cos_a = cone.cos_half_angle(); // ≈1 for cylinder, <1 for cone
 
@@ -1907,7 +2350,7 @@ pub(crate) fn cone_axis_span(
         let major = e.major_axis();
         let curve_radius = dot3([major.0, major.1, major.2], [major.0, major.1, major.2])
             .sqrt();
-        let expected_radius = (cone.radius() + h * tangent).abs();
+        let expected_radius = (cone_radius(cone) + h * tangent).abs();
         let scale = curve_radius.max(expected_radius).max(1.0);
         if radial_len < scale * 1e-6
             && n_dot > 0.999
@@ -1934,8 +2377,8 @@ pub(crate) fn cone_axis_span(
                 d[2] - h * axis[2],
             ];
             let radial_len = dot3(radial, radial).sqrt();
-            let expected = (cone.radius() + h * tangent).abs();
-            let tolerance = expected.max(cone.radius().abs()).max(1.0) * 1e-5;
+            let expected = (cone_radius(cone) + h * tangent).abs();
+            let tolerance = expected.max(cone_radius(cone).abs()).max(1.0) * 1e-5;
             if (radial_len - expected).abs() <= tolerance {
                 heights.push(h);
             }
@@ -1962,7 +2405,7 @@ pub(crate) fn cone_axis_span(
             return Some((anchor.min(mate), anchor.max(mate)));
         }
         if sin_a.abs() > 1e-6 {
-            let apex = -cone.radius() * cos_a / sin_a;
+            let apex = -cone_radius(cone) * cos_a / sin_a;
             if (apex - anchor).abs() >= 1e-9 {
                 return Some((anchor.min(apex), anchor.max(apex)));
             }
@@ -1975,7 +2418,7 @@ pub(crate) fn cone_axis_span(
 
     // True cone with a single rim: close the surface at its apex (r = 0).
     if sin_a.abs() > 1e-6 && heights.len() <= 1 {
-        let apex = -cone.radius() * cos_a / sin_a;
+        let apex = -cone_radius(cone) * cos_a / sin_a;
         h_min = h_min.min(apex);
         h_max = h_max.max(apex);
     }
@@ -1999,28 +2442,28 @@ pub(crate) fn tess_sphere_face(
 ) {
     let (cx, cy, cz) = sphere.center();
     let r = sphere.radius();
-    let (px, py, pz) = sphere.pole(); // north-pole direction
-    let pole = norm3([px, py, pz]);
-    let (ux, uy, uz) = sphere.u_direction();
-    let u_dir = norm3([ux, uy, uz]);
-    let v_dir = cross3(pole, u_dir);
 
-    // Mesh only the part of the sphere the face covers — its boundary loop's
-    // longitude/colatitude window. A partial sphere (a fillet cap) otherwise
-    // builds as a full ball floating where the solid is open.
-    let poly = collect_face_polygon(sat, face, BOUNDARY_CHORD_FRAC);
-    let (t_min, t_span, full, p_min, p_max) =
-        sphere_param_range(&poly, [cx, cy, cz], pole, u_dir, v_dir);
+    // Mesh only the part of the sphere the face covers — its boundary loops'
+    // longitude/colatitude window. A partial sphere (a dish head, a fillet cap)
+    // otherwise builds as a full ball floating where the solid is open.
+    let SphereWindow {
+        pole,
+        u: u_dir,
+        v: v_dir,
+        theta_min: t_min,
+        theta_span: t_span,
+        theta_full: full,
+        phi_min: p_min,
+        phi_max: p_max,
+    } = sphere_window(sat, face, sphere);
     let (theta_lo, theta_hi) = if full {
         (0.0, TAU)
     } else {
         (t_min, t_min + t_span)
     };
-    let (phi_lo, phi_hi) = if full {
-        (0.0, std::f64::consts::PI)
-    } else {
-        (p_min, p_max)
-    };
+    // φ is trimmed independently: `full` only says the face wraps every
+    // longitude, which a pole-centred cap does while still ending at its seam.
+    let (phi_lo, phi_hi) = (p_min, p_max);
 
     // Longitude / colatitude divisions from the sphere radius and the covered
     // spans at the LOD's chord tolerance — a small cap samples far fewer than a
@@ -2093,14 +2536,19 @@ pub(crate) fn tess_torus_face(
     let v_dir = cross3(axis, u_dir);
     let major_r = torus.major_radius();
     let minor_r = torus.minor_radius();
-
-    // Tube cross-section is a closed minor circle → full-circle segment count at
-    // the tube (minor) radius.
-    let nu = lod.circle_segs(minor_r).max(3); // around the tube
+    let (theta_start, theta_arc, theta_full) =
+        torus_theta_range(sat, face, [cx, cy, cz], axis, major_r, minor_r);
+    let theta_total = if theta_full { TAU } else { theta_arc };
+    let nu = if theta_full {
+        lod.circle_segs(minor_r).max(3)
+    } else {
+        lod.arc_segs(minor_r, theta_total).max(1)
+    };
 
     // Mesh only the revolution arc the face covers. A partial tube (an open "C")
     // otherwise builds as a full closed ring where the solid is open.
-    let (phi_start, phi_arc, full) = torus_phi_range(sat, face, [cx, cy, cz], u_dir, v_dir);
+    let (phi_start, phi_arc, full) =
+        torus_phi_range(sat, face, [cx, cy, cz], u_dir, v_dir, major_r);
     let phi_total = if full { TAU } else { phi_arc };
     // Along-length divisions from the ring (major) radius and the covered arc at
     // the LOD's chord tolerance — a short arc samples proportionally less.
@@ -2111,8 +2559,8 @@ pub(crate) fn tess_torus_face(
         let phi1 = phi_start + phi_total * ((j + 1) as f64 / nv as f64);
 
         for i in 0..nu {
-            let theta0 = TAU * (i as f64 / nu as f64);
-            let theta1 = TAU * ((i + 1) as f64 / nu as f64);
+            let theta0 = theta_start + theta_total * (i as f64 / nu as f64);
+            let theta1 = theta_start + theta_total * ((i + 1) as f64 / nu as f64);
 
             let p = [
                 torus_pt(
@@ -2162,14 +2610,20 @@ fn torus_pt(
     theta: f64, // tube angle
     phi: f64,   // revolution angle
 ) -> [f64; 3] {
-    // Ring center at angle phi.
-    let ring = [
-        cx + major_r * (u_dir[0] * phi.cos() + v_dir[0] * phi.sin()),
-        cy + major_r * (u_dir[1] * phi.cos() + v_dir[1] * phi.sin()),
-        cz + major_r * (u_dir[2] * phi.cos() + v_dir[2] * phi.sin()),
+    // Parametric radial direction at angle phi. Keep this independent from the
+    // signed major radius: a zero-major spindle is still well-defined, while
+    // normalizing `ring - center` would collapse it and would flip the tube
+    // frame whenever the stored major radius is negative.
+    let radial = [
+        u_dir[0] * phi.cos() + v_dir[0] * phi.sin(),
+        u_dir[1] * phi.cos() + v_dir[1] * phi.sin(),
+        u_dir[2] * phi.cos() + v_dir[2] * phi.sin(),
     ];
-    // Radial direction from torus axis to ring center.
-    let radial = norm3([ring[0] - cx, ring[1] - cy, ring[2] - cz]);
+    let ring = [
+        cx + major_r * radial[0],
+        cy + major_r * radial[1],
+        cz + major_r * radial[2],
+    ];
     // Point on tube.
     [
         ring[0] + minor_r * (radial[0] * theta.cos() + axis[0] * theta.sin()),

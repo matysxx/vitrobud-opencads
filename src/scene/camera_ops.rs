@@ -3,7 +3,10 @@
 // hit-testing lives in `scene::pick::hit_test`.)
 use super::*;
 
-fn rendered_wire_center(wires: &[WireModel], fallback_z: f64) -> Option<glam::DVec3> {
+fn rendered_wire_bounds(
+    wires: &[WireModel],
+    fallback_z: f64,
+) -> Option<(glam::DVec3, glam::DVec3)> {
     let mut min = glam::DVec3::splat(f64::INFINITY);
     let mut max = glam::DVec3::splat(f64::NEG_INFINITY);
     let mut include = |point: glam::DVec3| {
@@ -55,10 +58,14 @@ fn rendered_wire_center(wires: &[WireModel], fallback_z: f64) -> Option<glam::DV
     }
 
     if min.is_finite() && max.is_finite() {
-        Some((min + max) * 0.5)
+        Some((min, max))
     } else {
         None
     }
+}
+
+fn rendered_wire_center(wires: &[WireModel], fallback_z: f64) -> Option<glam::DVec3> {
+    rendered_wire_bounds(wires, fallback_z).map(|(min, max)| (min + max) * 0.5)
 }
 
 fn block_entity_transform(
@@ -189,6 +196,105 @@ impl Scene {
         self.camera_generation += 1;
     }
 
+    /// Save the active view immediately before a navigation operation. The
+    /// paper-space camera and an entered floating viewport use different state,
+    /// so the snapshot records whichever one currently owns navigation.
+    pub fn remember_current_view(&mut self) {
+        let layout = self.current_layout.clone();
+        if let Some(handle) = self.active_viewport {
+            if let Some(EntityType::Viewport(viewport)) = self.document.get_entity(handle) {
+                self.previous_view = Some(ViewSnapshot::Floating {
+                    layout,
+                    handle,
+                    viewport: Box::new(viewport.clone()),
+                });
+                return;
+            }
+        }
+        self.previous_view = Some(ViewSnapshot::Main {
+            layout,
+            tile: self.active_model_tile.get(),
+            camera: self.camera.borrow().clone(),
+        });
+    }
+
+    /// Swap the active view with the most recently remembered one. Keeping the
+    /// displaced current view makes repeated ZOOM Previous calls toggle cleanly
+    /// between the last two views.
+    pub fn restore_previous_view(&mut self) -> bool {
+        let Some(snapshot) = self.previous_view.take() else {
+            return false;
+        };
+        match snapshot {
+            ViewSnapshot::Main {
+                layout,
+                tile,
+                camera,
+            } if self.active_viewport.is_none()
+                && self.current_layout == layout
+                && (layout != "Model" || self.active_model_tile.get() == tile) =>
+            {
+                let current = ViewSnapshot::Main {
+                    layout,
+                    tile,
+                    camera: self.camera.borrow().clone(),
+                };
+                *self.camera.borrow_mut() = camera;
+                self.previous_view = Some(current);
+                self.camera_generation += 1;
+                true
+            }
+            ViewSnapshot::Floating {
+                layout,
+                handle,
+                viewport,
+            } if self.current_layout == layout && self.active_viewport == Some(handle) => {
+                let Some(EntityType::Viewport(current)) = self.document.get_entity(handle) else {
+                    self.previous_view = Some(ViewSnapshot::Floating {
+                        layout,
+                        handle,
+                        viewport,
+                    });
+                    return false;
+                };
+                if current.status.locked {
+                    self.previous_view = Some(ViewSnapshot::Floating {
+                        layout,
+                        handle,
+                        viewport,
+                    });
+                    return false;
+                }
+                let current = Box::new(current.clone());
+                if let Some(EntityType::Viewport(destination)) =
+                    self.document.get_entity_mut(handle)
+                {
+                    destination.view_center = viewport.view_center;
+                    destination.view_direction = viewport.view_direction;
+                    destination.view_target = viewport.view_target;
+                    destination.lens_length = viewport.lens_length;
+                    destination.front_clip_z = viewport.front_clip_z;
+                    destination.back_clip_z = viewport.back_clip_z;
+                    destination.view_height = viewport.view_height;
+                    destination.twist_angle = viewport.twist_angle;
+                    destination.custom_scale = viewport.custom_scale;
+                    destination.status.perspective = viewport.status.perspective;
+                }
+                self.previous_view = Some(ViewSnapshot::Floating {
+                    layout,
+                    handle,
+                    viewport: current,
+                });
+                self.camera_generation += 1;
+                true
+            }
+            snapshot => {
+                self.previous_view = Some(snapshot);
+                false
+            }
+        }
+    }
+
     /// Refresh model bounds without moving the live camera. Reusing `fit_all`
     /// keeps projection framing on the same visibility and outlier filters as
     /// Zoom Extents instead of accepting every finite cached AABB.
@@ -268,6 +374,52 @@ impl Scene {
             .fit_to_bounds(min, max, aspect);
         self.projection_bounds_epoch.set(self.geometry_epoch);
         self.camera_generation += 1;
+    }
+
+    /// Fit the active view to the rendered bounds of the supplied entities.
+    /// Returns false when the selection has no finite visible geometry.
+    pub fn zoom_to_entities(&mut self, handles: &[Handle]) -> bool {
+        let fallback_z = self.active_camera_target().z;
+        let wires = self.wire_models_for(handles);
+        let mut bounds = rendered_wire_bounds(&wires, fallback_z);
+
+        for handle in handles {
+            let Some(mesh) = self.meshes.get(handle) else {
+                continue;
+            };
+            let [x0, y0, x1, y1] = mesh.world_aabb;
+            let [z0, z1] = mesh.z_aabb;
+            let mesh_min = glam::DVec3::new(x0 as f64, y0 as f64, z0 as f64);
+            let mesh_max = glam::DVec3::new(x1 as f64, y1 as f64, z1 as f64);
+            if !mesh_min.is_finite() || !mesh_max.is_finite() {
+                continue;
+            }
+            bounds = Some(match bounds {
+                Some((min, max)) => (min.min(mesh_min), max.max(mesh_max)),
+                None => (mesh_min, mesh_max),
+            });
+        }
+
+        let Some((mut min, mut max)) = bounds else {
+            return false;
+        };
+        if min == max {
+            min -= glam::DVec3::splat(1.0);
+            max += glam::DVec3::splat(1.0);
+        }
+        let min = min.as_vec3();
+        let max = max.as_vec3();
+        if !min.is_finite() || !max.is_finite() {
+            return false;
+        }
+        if self.active_viewport.is_some() {
+            return self.fit_active_viewport_to_bounds(min, max);
+        }
+        let aspect = self.active_camera_aspect();
+        self.camera.borrow_mut().fit_to_bounds(min, max, aspect);
+        self.projection_bounds_epoch.set(self.geometry_epoch);
+        self.camera_generation += 1;
+        true
     }
 
     /// Centre the active camera on one rendered entity without changing zoom
@@ -405,7 +557,7 @@ impl Scene {
         model_space: bool,
     ) -> bool {
         let _ = model_space;
-        let Some(cam) = self.camera_from_view(
+        let Some(cam) = self.camera_from_view_mode(
             view.direction,
             view.target,
             acadrust::types::Vector2 {
@@ -414,6 +566,8 @@ impl Scene {
             },
             view.height,
             view.twist_angle,
+            view.perspective,
+            view.lens_length,
         ) else {
             return false;
         };
@@ -463,16 +617,15 @@ impl Scene {
     /// their already-effective `view_target` / `view_center` / `view_height`.
     ///
     /// Returns `None` for a zero `view_height` (an uninitialised entry).
-    pub(super) fn camera_from_view(
+    pub(super) fn camera_from_view_mode(
         &self,
         view_direction: acadrust::types::Vector3,
         view_target: acadrust::types::Vector3,
         view_center: acadrust::types::Vector2,
         view_height: f64,
         twist: f64,
-        // Subtracted from `view_target` to reach wire-space. Model views pass
-        // `[0.0_f64; 3]`; paper-space views (whose entities carry no
-        // offset) pass `[0; 3]`.
+        perspective: bool,
+        lens_length: f64,
     ) -> Option<Camera> {
         if view_height.abs() < 1e-9 {
             return None;
@@ -516,14 +669,26 @@ impl Scene {
         let target = base
             + view_right.as_dvec3() * view_center.x
             + view_up.as_dvec3() * view_center.y;
-        let fov_y = 45.0_f32.to_radians();
+        let lens_length = lens_length.max(1.0) as f32;
+        // The saved-view convention uses a 24 mm vertical aperture. This is
+        // the inverse of the projection path's documented
+        // `distance = view_height * lens / 24` relation.
+        let fov_y = if perspective {
+            2.0 * (12.0 / lens_length).atan()
+        } else {
+            45.0_f32.to_radians()
+        };
         let distance = ((view_height as f32 / 2.0) / (fov_y * 0.5).tan()).max(0.001);
         Some(Camera {
             target,
             rotation,
             distance,
             fov_y,
-            projection: view::camera::Projection::Orthographic,
+            projection: if perspective {
+                view::camera::Projection::Perspective
+            } else {
+                view::camera::Projection::Orthographic
+            },
             yaw,
             pitch,
             // Sized from the saved view height (not a zoom-scaled range) so a
@@ -544,12 +709,14 @@ impl Scene {
 
     /// Decode a VPort table entry (model-space tiled view) into a `Camera`.
     fn camera_from_vport(&self, vp: &acadrust::tables::VPort) -> Option<Camera> {
-        self.camera_from_view(
+        self.camera_from_view_mode(
             vp.view_direction,
             vp.view_target,
             vp.view_center,
             vp.view_height,
             vp.view_twist,
+            vp.perspective,
+            vp.lens_length,
         )
     }
 
@@ -580,6 +747,8 @@ impl Scene {
             z: view_dir.z as f64,
         };
         entry.view_height = view_height as f64;
+        entry.perspective = cam.projection == view::camera::Projection::Perspective;
+        entry.lens_length = (12.0 / (cam.fov_y * 0.5).tan().max(1e-6)) as f64;
         entry.view_center = acadrust::types::Vector2::ZERO;
         // Stored twist = -roll, matching the decoder (roll = -twist).
         entry.view_twist = -cam.roll() as f64;
@@ -796,7 +965,7 @@ impl Scene {
 
         // Paper-space entities carry no world_offset → decode with a zero
         // offset, through the same shared decoder (twist included).
-        let Some(cam) = self.camera_from_view(
+        let Some(cam) = self.camera_from_view_mode(
             vp.view_direction,
             vp.view_target,
             acadrust::types::Vector2 {
@@ -805,6 +974,8 @@ impl Scene {
             },
             vp.view_height,
             vp.twist_angle,
+            vp.status.perspective,
+            vp.lens_length,
         ) else {
             return false;
         };
@@ -847,6 +1018,8 @@ impl Scene {
                 vp.view_direction = vd3;
                 vp.view_height = view_height as f64;
                 vp.view_twist = twist;
+                vp.perspective = cam.projection == view::camera::Projection::Perspective;
+                vp.lens_length = (12.0 / (cam.fov_y * 0.5).tan().max(1e-6)) as f64;
             }
 
             // Persist the tiled layout as duplicate `*Active` VPort entries.
@@ -878,6 +1051,9 @@ impl Scene {
                 vp.view_direction = vd3;
                 vp.view_height = view_height as f64;
                 vp.twist_angle = twist;
+                vp.status.perspective =
+                    cam.projection == view::camera::Projection::Perspective;
+                vp.lens_length = (12.0 / (cam.fov_y * 0.5).tan().max(1e-6)) as f64;
             }
             true
         }
@@ -985,6 +1161,7 @@ impl Scene {
                 None,
                 scale,
                 self.annotation_all_visible(),
+                None,
             ) {
                 let is_infinite = Self::handle_from_wire_name(&wire.name)
                     .and_then(|handle| self.document.get_entity(handle))
@@ -1081,6 +1258,7 @@ impl Scene {
             None,
             scale,
             self.annotation_all_visible(),
+            None,
         );
         // Ray / XLine tessellate as ±DISPLAY_EXTENT display segments
         // (entities/ray.rs) — their endpoints are rendering artifacts, not

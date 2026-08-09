@@ -87,6 +87,7 @@ impl OpenCADStudio {
         self.snapper.from_point = None;
         self.snapper.clear_tracking();
         self.otrack_active = None;
+        self.otrack_kind = None;
         self.axis_lock_dir = None;
         self.dyn_user_reshaped = false;
         self.dyn_coord_absolute = false;
@@ -100,6 +101,7 @@ impl OpenCADStudio {
         self.ucs_icon_hover = false;
         self.tabs[i].pan_mode = false;
         self.tabs[i].orbit_mode = false;
+        self.tabs[i].zoom_dynamic_mode = false;
         let _ = self.on_viewport_exit();
     }
 
@@ -391,7 +393,50 @@ impl OpenCADStudio {
             return None;
         }
         let kw = text.trim().to_ascii_uppercase();
+
+        // Modes that arm the next gesture rather than selecting anything now.
+        // Dragging normally decides window-vs-crossing from the direction the
+        // corner travels; asking for one by name has to override that, and hold
+        // the override until the box is finished. (#596)
+        if let "W" | "WINDOW" | "C" | "CROSSING" = kw.as_str() {
+            let crossing = matches!(kw.as_str(), "C" | "CROSSING");
+            {
+                let mut selection = self.tabs[i].scene.selection.borrow_mut();
+                selection.box_crossing = crossing;
+                selection.box_crossing_locked = true;
+            }
+            let hint = if crossing {
+                crate::t!("Crossing: specify first corner.")
+            } else {
+                crate::t!("Window: specify first corner.")
+            };
+            self.command_line.push_info(hint.as_ref());
+            return Some(Task::none());
+        }
+
+        // Whether a pick adds to the set or takes away from it, for the rest of
+        // this selection. Mirrors PICKADD, which the pick paths already read.
+        if let "R" | "REMOVE" | "A" | "ADD" = kw.as_str() {
+            let adding = matches!(kw.as_str(), "A" | "ADD");
+            self.select_remove_mode = !adding;
+            let hint = if adding {
+                crate::t!("Add mode: picks join the selection.")
+            } else {
+                crate::t!("Remove mode: picks leave the selection.")
+            };
+            self.command_line.push_info(hint.as_ref());
+            return Some(Task::none());
+        }
+
         let add: Vec<Handle> = match kw.as_str() {
+            // Every selectable object of the current space.
+            "ALL" => self.tabs[i]
+                .scene
+                .entity_wires()
+                .iter()
+                .filter_map(|w| crate::scene::Scene::handle_from_wire_name(&w.name))
+                .filter(|&h| !self.tabs[i].scene.is_layer_locked(h))
+                .collect(),
             "P" | "PREVIOUS" => self.tabs[i]
                 .prev_selection
                 .iter()
@@ -418,6 +463,7 @@ impl OpenCADStudio {
         if add.is_empty() {
             self.command_line.push_info(match kw.as_str() {
                 "P" | "PREVIOUS" => "No previous selection set.",
+                "ALL" => "Nothing to select.",
                 _ => "No last object.",
             });
             return Some(Task::none());
@@ -1476,6 +1522,69 @@ impl OpenCADStudio {
                     "Command cancelled."
                 });
             }
+            CmdResult::SelectByPath {
+                path,
+                closed,
+                crossing,
+            } => {
+                // The command picked the path; the hit test lives here, where
+                // the camera and the drawing's geometry are. Everything after
+                // matches what a lasso does, Remove included.
+                let canvas = self.tabs[i].scene.selection.borrow().vp_size;
+                let bounds = iced::Rectangle {
+                    x: 0.0,
+                    y: 0.0,
+                    width: canvas.0,
+                    height: canvas.1,
+                };
+                let edit_cam = self.tabs[i]
+                    .scene
+                    .viewport_edit_frame(canvas)
+                    .map(|(cam, _)| cam);
+                let (view_rot, eye, all_wires) = self.pick_view(i, &edit_cam, bounds);
+                let screen: Vec<iced::Point> = path
+                    .iter()
+                    .map(|p| {
+                        crate::scene::pick::hit_test::world_to_screen(
+                            glam::DVec3::new(p[0], p[1], 0.0),
+                            view_rot,
+                            eye,
+                            bounds,
+                        )
+                    })
+                    .collect();
+                let handles = self.tabs[i].scene.path_hit_handles(
+                    &screen,
+                    crossing,
+                    !closed,
+                    all_wires,
+                    view_rot,
+                    eye,
+                    bounds,
+                    |point| self.cursor_model_point(i, &edit_cam, point, bounds),
+                );
+                if self.select_remove_mode {
+                    for h in &handles {
+                        self.tabs[i].scene.deselect_entity(*h);
+                    }
+                } else {
+                    for h in &handles {
+                        self.tabs[i].scene.select_entity(*h, false);
+                    }
+                    self.tabs[i].scene.expand_selection_for_groups(&handles);
+                }
+                self.refresh_properties();
+                let selected: Vec<Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .map(|(h, _)| h)
+                    .collect();
+                let count = handles.len();
+                self.command_line
+                    .push_info(crate::tf!("{count} object(s) found.").as_ref());
+                return self.feed_command(StepInput::SelectionComplete(selected));
+            }
             CmdResult::Relaunch(cmd, handles) => {
                 self.tabs[i].scene.deselect_all();
                 for h in &handles {
@@ -1832,6 +1941,7 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].scene.remember_current_view();
                 self.tabs[i]
                     .scene
                     .zoom_to_window(p1.as_vec3(), p2.as_vec3());
@@ -2213,21 +2323,25 @@ impl OpenCADStudio {
                             .filter(|&h| !scene.is_layer_locked(h)),
                     );
                 }
-                if handles.is_empty() {
+                use crate::command::CadCommand;
+                use crate::modules::draw::modify::stretch::StretchCommand;
+                // A window that caught nothing is a missed aim, not a decision
+                // to stop. Ending the command there made the user restart it to
+                // try again; instead say so and ask for the corner afresh, the
+                // way a selection that picks nothing leaves MOVE still asking.
+                // (#676)
+                let cmd = if handles.is_empty() {
                     self.command_line
                         .push_output(crate::t!("STRETCH: nothing crosses the window.").as_ref());
-                    self.tabs[i].active_cmd = None;
-                    self.tabs[i].snap_result = None;
-                    self.tabs[i].scene.clear_preview_wire();
-                    self.restore_pre_cmd_tangent();
+                    StretchCommand::new(Vec::new(), Vec::new())
                 } else {
-                    use crate::command::CadCommand;
-                    use crate::modules::draw::modify::stretch::StretchCommand;
                     let wires = self.tabs[i].scene.wire_models_for(&handles);
-                    let cmd = StretchCommand::with_window(handles, wires, win_min, win_max);
-                    self.command_line.push_info(&CadCommand::prompt(&cmd));
-                    self.tabs[i].active_cmd = Some(Box::new(cmd));
-                }
+                    StretchCommand::with_window(handles, wires, win_min, win_max)
+                };
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.clear_preview_wire();
+                self.command_line.push_info(&CadCommand::prompt(&cmd));
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
             CmdResult::StretchEntities {
                 handles,
@@ -3141,40 +3255,49 @@ impl OpenCADStudio {
     /// this drawing doesn't already have. Each recreated record gets a fresh
     /// handle from the target document so it can't collide with an existing
     /// one. No-op for same-document pastes (the records already exist). (#129)
-    pub(super) fn merge_clipboard_deps(&mut self, i: usize) {
+    pub(super) fn merge_dependencies(
+        &mut self,
+        i: usize,
+        deps: &crate::app::ClipboardDeps,
+    ) {
         use acadrust::TableEntry;
-        if self.clipboard_deps.is_empty() {
+        if deps.is_empty() {
             return;
         }
         let doc = &mut self.tabs[i].scene.document;
-        for rec in &self.clipboard_deps.layers {
+        for rec in &deps.layers {
             if !doc.layers.contains(rec.name()) {
                 let mut r = rec.clone();
                 r.set_handle(doc.allocate_handle());
                 let _ = doc.layers.add(r);
             }
         }
-        for rec in &self.clipboard_deps.linetypes {
+        for rec in &deps.linetypes {
             if !doc.line_types.contains(rec.name()) {
                 let mut r = rec.clone();
                 r.set_handle(doc.allocate_handle());
                 let _ = doc.line_types.add(r);
             }
         }
-        for rec in &self.clipboard_deps.text_styles {
+        for rec in &deps.text_styles {
             if !doc.text_styles.contains(rec.name()) {
                 let mut r = rec.clone();
                 r.set_handle(doc.allocate_handle());
                 let _ = doc.text_styles.add(r);
             }
         }
-        for rec in &self.clipboard_deps.dim_styles {
+        for rec in &deps.dim_styles {
             if !doc.dim_styles.contains(rec.name()) {
                 let mut r = rec.clone();
                 r.set_handle(doc.allocate_handle());
                 let _ = doc.dim_styles.add(r);
             }
         }
+    }
+
+    pub(super) fn merge_clipboard_deps(&mut self, i: usize) {
+        let deps = self.clipboard_deps.clone();
+        self.merge_dependencies(i, &deps);
     }
 
     /// Recreate any block definition the pasted INSERTs reference but tab

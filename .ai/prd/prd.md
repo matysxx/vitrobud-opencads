@@ -27,3 +27,5 @@
   (`10-ascii-dxf-r12/`)
 - `OCSSTACK-11` — Sync reviewed upstream revision `afc94dce`
   (`11-upstream-sync-afc94dce/`)
+- `OCSSTACK-13` — Sync reviewed upstream revision `f57c258a`
+  (`13-upstream-sync-f57c258a/`)

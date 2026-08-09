@@ -11,10 +11,16 @@ use iced::{Point, Rectangle};
 use crate::command::TangentObject;
 use crate::scene::model::wire_model::{SnapHint, TangentGeom, WireModel};
 use crate::scene::pick::interaction_index::WireSource;
-use crate::ui::overlay::CROSSHAIR_ARM;
+const DEFAULT_OSNAP_RADIUS_PX: f32 = 15.0;
 
 // ── Snap type ─────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrackingKind {
+    Generic,
+    Extension,
+    Perpendicular,
+}
 /// Every OSNAP mode — mirrors the OpenCADStudio list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SnapType {
@@ -74,6 +80,12 @@ pub struct SnapResult {
     /// overlay draws a dashed guide from each base to the crossing so both
     /// contributing extensions stay visible. `None` otherwise. (#247, #259)
     pub extension_base2: Option<Point>,
+    /// World-space twin of `extension_base`: the acquired endpoint the guide is
+    /// drawn from. Typed-distance entry measures along this ray, so taking it
+    /// from the same decision that drew the guide keeps the two from
+    /// disagreeing — the guide showing while typing does nothing, or the
+    /// distance running off along a ray the user cannot see.
+    pub extension_origin: Option<glam::DVec3>,
 }
 
 /// Object-snap-tracking alignment: the cursor projected onto a ray from an
@@ -86,6 +98,8 @@ pub struct OtrackHit {
     pub dir: DVec3,
     /// The tracking point the ray emanates from.
     pub base: DVec3,
+
+    pub kind: TrackingKind,
 }
 
 // ── Snapper ───────────────────────────────────────────────────────────────
@@ -108,7 +122,8 @@ pub struct Snapper {
     pub osnap_radius_px: f32,
     /// Object Snap Tracking on/off (F11).
     pub otrack_enabled: bool,
-    /// Acquired OST points (world XZ, Y=0 plane).
+    /// Acquired OST points, world space. Tracking is planar: `tracking_dirs_at`
+    /// builds every direction from X/Y with Z zeroed, and the rays follow.
     pub tracking_points: Vec<DVec3>,
     /// Edge directions at each acquired point (parallel to `tracking_points`):
     /// the line direction of every wire segment meeting at that corner, so
@@ -117,6 +132,12 @@ pub struct Snapper {
     /// then locks to that line (#219). Empty for a point that is not a segment
     /// endpoint (e.g. a midpoint or centre acquisition).
     pub tracking_dirs: Vec<Vec<DVec3>>,
+    /// Perpendicular directions through each acquired tracking point.
+    ///
+    /// Kept separate from `tracking_dirs` because those directions are also
+    /// consumed by Extension snap and extended-intersection logic. These rays
+    /// belong only to OTRACK when Perpendicular OSNAP is enabled. (#695)
+    pub tracking_perp_dirs: Vec<Vec<DVec3>>,
     /// Last snap world position (for dwell detection).
     pub last_snap_world: Option<DVec3>,
     /// When the cursor first rested near `last_snap_world`.
@@ -161,10 +182,11 @@ impl Default for Snapper {
             enabled,
             grid_snap_on: false,
             grid_spacing: 1.0,
-            osnap_radius_px: CROSSHAIR_ARM * 0.25,
+            osnap_radius_px: DEFAULT_OSNAP_RADIUS_PX,
             otrack_enabled: false,
             tracking_points: Vec::new(),
             tracking_dirs: Vec::new(),
+            tracking_perp_dirs: Vec::new(),
             last_snap_world: None,
             dwell_since: None,
             dwell_acquired: false,
@@ -328,8 +350,13 @@ impl Snapper {
                         match existing {
                             Some(idx) => {
                                 self.tracking_points.remove(idx);
+
                                 if idx < self.tracking_dirs.len() {
                                     self.tracking_dirs.remove(idx);
+                                }
+
+                                if idx < self.tracking_perp_dirs.len() {
+                                    self.tracking_perp_dirs.remove(idx);
                                 }
                             }
                             None => self.acquire_tracking_point(p, wires, endpoints_only),
@@ -368,18 +395,24 @@ impl Snapper {
         // Edge directions double as an endpoint test: a point with no incident
         // segment — a midpoint, centre, intersection or extension foot — has
         // none. Extension-driven acquisition (#262) keeps only endpoints.
-        let dirs = edge_dirs_at(p, wires);
+        let (dirs, perp_dirs) = tracking_dirs_at(p, wires);
         if endpoints_only && dirs.is_empty() {
             return;
         }
         if self.tracking_points.len() >= 4 {
             self.tracking_points.remove(0);
+
             if !self.tracking_dirs.is_empty() {
                 self.tracking_dirs.remove(0);
+            }
+
+            if !self.tracking_perp_dirs.is_empty() {
+                self.tracking_perp_dirs.remove(0);
             }
         }
         self.tracking_points.push(p);
         self.tracking_dirs.push(dirs);
+        self.tracking_perp_dirs.push(perp_dirs);
     }
 
     /// If the cursor dwelt on a snap point long enough but the in-place check
@@ -486,6 +519,7 @@ impl Snapper {
             origin: DVec3,
             dir: DVec3,
             group: usize,
+            kind: TrackingKind,
         }
         let mut rays: Vec<Ray> = Vec::new();
         for (gi, &tp) in self.tracking_points.iter().enumerate() {
@@ -495,6 +529,7 @@ impl Snapper {
                     origin: tp,
                     dir: ucs_x * ar.cos() + ucs_y * ar.sin(),
                     group: gi,
+                    kind: TrackingKind::Generic,
                 });
             }
             // Extension rays along the corner's own edges (world-space geometry
@@ -507,7 +542,25 @@ impl Snapper {
                         origin: tp,
                         dir: d,
                         group: gi,
+                        kind: TrackingKind::Extension,
                     });
+                }
+            }
+            // Perpendicular tracking ray through the acquired point.
+            //
+            // This is intentionally OTRACK-only. `tracking_dirs` continues to contain
+            // only real edge directions so Extension and extended intersections are not
+            // polluted by synthetic perpendicular rays. (#695)
+            if self.is_on(SnapType::Perpendicular) {
+                if let Some(pdirs) = self.tracking_perp_dirs.get(gi) {
+                    for &d in pdirs {
+                        rays.push(Ray {
+                            origin: tp,
+                            dir: d,
+                            group: gi,
+                            kind: TrackingKind::Perpendicular,
+                        });
+                    }
                 }
             }
             // Ray from the command's base point toward this acquired corner:
@@ -525,6 +578,7 @@ impl Snapper {
                         origin: bp,
                         dir: DVec3::new(d.x * inv, d.y * inv, 0.0),
                         group: gi,
+                        kind: TrackingKind::Generic,
                     });
                 }
             }
@@ -542,6 +596,7 @@ impl Snapper {
                     origin: lp,
                     dir: ucs_x * ar.cos() + ucs_y * ar.sin(),
                     group: POLAR_GROUP,
+                    kind: TrackingKind::Generic,
                 });
             }
         }
@@ -555,6 +610,7 @@ impl Snapper {
                     origin: lp,
                     dir: ucs_x * ar.cos() + ucs_y * ar.sin(),
                     group: ORTHO_GROUP,
+                    kind: TrackingKind::Generic,
                 });
             }
         }
@@ -593,7 +649,8 @@ impl Snapper {
                             aligned: x,
                             dir: dir_out,
                             base: ot.origin,
-                        },
+                            kind: ot.kind,
+                        }
                     ));
                 }
             }
@@ -629,6 +686,7 @@ impl Snapper {
                         aligned,
                         dir: dir_out,
                         base: ray.origin,
+                        kind: ray.kind,
                     },
                 ));
             }
@@ -640,6 +698,7 @@ impl Snapper {
     pub fn clear_tracking(&mut self) {
         self.tracking_points.clear();
         self.tracking_dirs.clear();
+        self.tracking_perp_dirs.clear();
         self.parallel_ref = None;
         self.parallel_dwell = None;
         self.last_snap_world = None;
@@ -743,6 +802,7 @@ impl Snapper {
             tangent_obj: None,
             extension_base: None,
             extension_base2: None,
+            extension_origin: None,
         })
     }
 
@@ -769,6 +829,7 @@ impl Snapper {
             otrack_enabled: false,
             tracking_points: Vec::new(),
             tracking_dirs: Vec::new(),
+            tracking_perp_dirs: Vec::new(),
             last_snap_world: None,
             dwell_since: None,
             dwell_acquired: false,
@@ -786,7 +847,8 @@ impl Snapper {
             eye,
             bounds,
             Vec3::ZERO,
-            Mat4::IDENTITY,
+            (Vec3::X, Vec3::Y, Vec3::Z),
+            None,
         )
     }
 
@@ -799,10 +861,11 @@ impl Snapper {
         view_rot: Mat4,
         eye: glam::DVec3,
         bounds: Rectangle,
-        // Grid origin (render/wire space) and UCS→world rotation, so grid snap
-        // lands on the UCS grid the user sees. `(ZERO, IDENTITY)` = world grid.
+        // Grid origin and live drafting axes, so grid snap lands on the same
+        // rotated or isometric grid the user sees.
         grid_origin: Vec3,
-        grid_rot: Mat4,
+        grid_axes: (Vec3, Vec3, Vec3),
+        construction_ray: Option<(glam::DVec3, glam::DVec3)>,
     ) -> Option<SnapResult> {
         // Object-snap selection is priority-then-distance, NOT nearest-wins.
         // "Continuous" snaps (Nearest, Perpendicular, …) sit on the geometry
@@ -837,13 +900,27 @@ impl Snapper {
             let s = self.grid_spacing as f64;
             if s.abs() > 1e-9 {
                 // Round in the UCS grid frame, then map back to world.
-                let ax = grid_rot.transform_vector3(Vec3::X).as_dvec3();
-                let ay = grid_rot.transform_vector3(Vec3::Y).as_dvec3();
-                let az = grid_rot.transform_vector3(Vec3::Z).as_dvec3();
+                let (ax, ay, az) = grid_axes;
+                let ax = ax.normalize_or(Vec3::X).as_dvec3();
+                let ay = ay.normalize_or(Vec3::Y).as_dvec3();
+                let az = az.normalize_or(Vec3::Z).as_dvec3();
                 let origin = grid_origin.as_dvec3();
                 let rel = cursor_world - origin;
-                let ux = (rel.dot(ax) / s).round() * s;
-                let uy = (rel.dot(ay) / s).round() * s;
+                // The isometric pairs are oblique, so dot products alone are
+                // not coordinates. Invert their 2×2 Gram matrix before rounding.
+                let aa = ax.dot(ax);
+                let ab = ax.dot(ay);
+                let bb = ay.dot(ay);
+                let det = aa * bb - ab * ab;
+                let (ux, uy) = if det.abs() > 1e-9 {
+                    let ra = rel.dot(ax);
+                    let rb = rel.dot(ay);
+                    ((ra * bb - rb * ab) / det, (rb * aa - ra * ab) / det)
+                } else {
+                    (rel.dot(ax), rel.dot(ay))
+                };
+                let ux = (ux / s).round() * s;
+                let uy = (uy / s).round() * s;
                 let uz = (rel.dot(az) / s).round() * s;
                 let gp = origin + ax * ux + ay * uy + az * uz;
                 let screen = world_to_screen(gp, view_rot, eye, bounds);
@@ -856,6 +933,7 @@ impl Snapper {
                         tangent_obj: None,
                         extension_base: None,
                         extension_base2: None,
+                        extension_origin: None,
                     });
                     best_rank = snap_tier(SnapType::Grid);
                     best_sub = snap_priority(SnapType::Grid);
@@ -954,6 +1032,7 @@ impl Snapper {
                     tangent_obj: None,
                     extension_base: None,
                     extension_base2: None,
+                    extension_origin: None,
                 });
             }
         };
@@ -966,6 +1045,7 @@ impl Snapper {
                 SnapHint::Quadrant => SnapType::Quadrant,
                 SnapHint::Insertion => SnapType::Insertion,
                 SnapHint::Midpoint => SnapType::Midpoint,
+                SnapHint::Endpoint => SnapType::Endpoint,
             };
             if self.is_on(snap_type) {
                 try_pt(world, snap_type);
@@ -1136,6 +1216,73 @@ impl Snapper {
                 }
             }
         }
+
+        let mut try_ray_intersections = |origin: glam::DVec3, through: glam::DVec3| {
+            if (through - origin).length_squared() <= 1e-18 {
+                return;
+            }
+            if let Some(segments) = &local_segments {
+                for segment in segments {
+                    if let Some(point) =
+                        ray_segment_intersect_3d(origin, through, segment.a, segment.b)
+                    {
+                        if (point - origin).length_squared() > 1e-18 {
+                            try_pt(point, SnapType::Intersection);
+                        }
+                    }
+                }
+            } else {
+                for wire in wires.iter().filter(|wire| wire_in_range(wire)) {
+                    for index in 0..wire.points.len().saturating_sub(1) {
+                        if let Some(point) = ray_segment_intersect_3d(
+                            origin,
+                            through,
+                            wp_f64(wire, index),
+                            wp_f64(wire, index + 1),
+                        ) {
+                            if (point - origin).length_squared() > 1e-18 {
+                                try_pt(point, SnapType::Intersection);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        if self.is_on(SnapType::Intersection) {
+            if let Some((origin, through)) = construction_ray {
+                try_ray_intersections(origin, through);
+            }
+        }
+
+        // Check engaged perpendicular tracking rays against nearby geometry.
+        if self.is_on(SnapType::Intersection)
+            && self.otrack_enabled
+            && self.is_on(SnapType::Perpendicular)
+        {
+            for (gi, &origin) in self.tracking_points.iter().enumerate() {
+                let Some(perp_dirs) = self.tracking_perp_dirs.get(gi) else {
+                    continue;
+                };
+
+                for &dir in perp_dirs {
+                    let rel = cursor_world - origin;
+                    let t = rel.x * dir.x + rel.y * dir.y;
+                    let aligned = glam::DVec3::new(
+                        origin.x + dir.x * t,
+                        origin.y + dir.y * t,
+                        origin.z,
+                    );
+                    let aligned_screen = world_to_screen(aligned, view_rot, eye, bounds);
+                    if dist2(aligned_screen, cursor_screen) > radius2 {
+                        continue;
+                    }
+                    let dir_to_cursor = if t >= 0.0 { dir } else { -dir };
+                    try_ray_intersections(origin, origin + dir_to_cursor);
+                }
+            }
+        }
+        drop(try_ray_intersections);
 
         // ── Intersection — segment-segment intersections (pairwise, gated) ──
         if self.is_on(SnapType::Intersection)
@@ -1500,6 +1647,7 @@ impl Snapper {
                             tangent_obj: Some(tangent_obj),
                             extension_base: None,
                             extension_base2: None,
+                            extension_origin: None,
                         });
                     }
                 }
@@ -1548,6 +1696,7 @@ impl Snapper {
                         tangent_obj: None,
                         extension_base: None,
                         extension_base2: None,
+                        extension_origin: None,
                     });
                 }
             };
@@ -1605,7 +1754,7 @@ impl Snapper {
         // intersection yields none, so its guides simply don't draw. (#238, #247, #259)
         if let Some(b) = best.as_mut() {
             if matches!(b.snap_type, SnapType::Extension | SnapType::Intersection) {
-                let (b1, b2) = extension_bases_screen(
+                let (b1, b2, origin) = extension_bases_screen(
                     b.world,
                     &self.tracking_points,
                     &self.tracking_dirs,
@@ -1615,6 +1764,7 @@ impl Snapper {
                 );
                 b.extension_base = b1;
                 b.extension_base2 = b2;
+                b.extension_origin = origin;
             }
         }
 
@@ -1686,41 +1836,78 @@ fn snap_priority(t: SnapType) -> u8 {
 
 // ── Geometric helpers ─────────────────────────────────────────────────────
 
-/// Line directions of every wire segment that has an endpoint at `p` (an
-/// acquired corner), deduped by near-parallelism and capped. OTRACK offers an
-/// alignment ray along each so the cursor can track a segment's extension, not
-/// just the ortho/polar axes (#219). Scanned once, at acquisition — not per
-/// move. Empty when `p` is not a segment endpoint (midpoint / centre / node).
-fn edge_dirs_at<W: WireSource + ?Sized>(p: DVec3, wires: &W) -> Vec<DVec3> {
+/// Tracking directions through `p`, in one pass: the alignment ray along each
+/// segment that ENDS at `p`, and the perpendicular of each segment that PASSES
+/// THROUGH it.
+///
+/// The two ask different questions of the same segments, and the scan is the
+/// expensive part — asking separately would walk the whole drawing twice for
+/// every acquisition. Both are deduped by near-parallelism and capped.
+///
+/// Edge rays let the cursor track a segment's extension rather than only the
+/// ortho/polar axes (#219); their sign is kept, because Extension needs to know
+/// which way the segment left the corner, so two opposite collinear edges stay
+/// distinct. Perpendicular rays are OTRACK's alone and describe an infinite
+/// line, so one direction covers both sides (#695).
+///
+/// Scanned once, at acquisition — not per move. The edge list is empty when `p`
+/// is not a segment endpoint (midpoint / centre / node), which is what makes it
+/// double as the endpoint test.
+fn tracking_dirs_at<W: WireSource + ?Sized>(
+    p: DVec3,
+    wires: &W,
+) -> (Vec<DVec3>, Vec<DVec3>) {
     // Acquired points and reconstructed wire vertices are both f64. Keep a
     // small scale-aware window for double-single reconstruction residuals
     // without allowing unrelated UTM-scale vertices to match.
     let tol = 1e-8_f64.max(2e-12 * p.x.abs().max(p.y.abs()));
     let tol2 = tol * tol;
-    let mut dirs: Vec<DVec3> = Vec::new();
+    let mut edges: Vec<DVec3> = Vec::new();
+    let mut perps: Vec<DVec3> = Vec::new();
     let mut consider = |a: DVec3, b: DVec3| {
         if !a.x.is_finite() || !b.x.is_finite() {
             return false;
         }
+        let seg_len = {
+            let seg = b - a;
+            (seg.x * seg.x + seg.y * seg.y).sqrt()
+        };
+        if seg_len < 1e-9 {
+            return false;
+        }
         let at_a = (a - p).length_squared() < tol2;
         let at_b = (b - p).length_squared() < tol2;
-        if !at_a && !at_b {
-            return false;
+
+        if at_a || at_b {
+            // Store the outward ray from the acquired endpoint.
+            let seg = if at_a { a - b } else { b - a };
+            let d = DVec3::new(seg.x / seg_len, seg.y / seg_len, 0.0);
+            if !edges.iter().any(|e| e.x * d.x + e.y * d.y > 0.99996) {
+                edges.push(d);
+            }
         }
-        // Store the outward ray from the acquired endpoint. Unlike OTRACK's
-        // infinite alignment line, Extension needs the sign, so opposite
-        // collinear incident edges remain distinct.
-        let seg = if at_a { a - b } else { b - a };
-        let l = (seg.x * seg.x + seg.y * seg.y).sqrt();
-        if l < 1e-9 {
-            return false;
+
+        // A perpendicular needs only that `p` lie on the segment — the whole
+        // point of #695 is tracking away from a point partway along a line, not
+        // just from its ends.
+        if at_a || at_b || (nearest_on_segment(p, a, b) - p).length_squared() <= tol2 {
+            let seg = b - a;
+            let perp = DVec3::new(-seg.y / seg_len, seg.x / seg_len, 0.0);
+            // Opposite perpendiculars describe the same infinite tracking line.
+            let known = |list: &[DVec3]| {
+                list.iter()
+                    .any(|d| (d.x * perp.x + d.y * perp.y).abs() > 0.99996)
+            };
+            // Also skip a perpendicular that lands on a direction the edge rays
+            // already cover: at a square corner one segment's perpendicular is
+            // the other's own ray, and two rays down the same line are two
+            // things for the cursor to choose between that look identical.
+            if !known(&perps) && !known(&edges) {
+                perps.push(perp);
+            }
         }
-        let d = DVec3::new(seg.x / l, seg.y / l, 0.0);
-        if dirs.iter().any(|e| e.x * d.x + e.y * d.y > 0.99996) {
-            return false;
-        }
-        dirs.push(d);
-        dirs.len() >= 6
+
+        edges.len() >= 6 && perps.len() >= 6
     };
     let is_round = |wire: &WireModel| {
         wire.snap_pts
@@ -1736,7 +1923,7 @@ fn edge_dirs_at<W: WireSource + ?Sized>(p: DVec3, wires: &W) -> Vec<DVec3> {
                 break;
             }
         }
-        return dirs;
+        return (edges, perps);
     }
     'outer: for wire in wires.iter() {
         if is_round(wire) {
@@ -1754,7 +1941,7 @@ fn edge_dirs_at<W: WireSource + ?Sized>(p: DVec3, wires: &W) -> Vec<DVec3> {
             }
         }
     }
-    dirs
+    (edges, perps)
 }
 
 #[derive(Clone, Copy)]
@@ -1889,6 +2076,48 @@ fn perp_foot(query: glam::DVec3, p0: glam::DVec3, p1: glam::DVec3) -> Option<gla
         p0.x + t * d.x,
         p0.y + t * d.y,
         p0.z + t * d.z,
+    ))
+}
+
+/// True 3D intersection of a forward ray and a finite segment.
+fn ray_segment_intersect_3d(
+    ray_origin: glam::DVec3,
+    ray_through: glam::DVec3,
+    b0: glam::DVec3,
+    b1: glam::DVec3,
+) -> Option<glam::DVec3> {
+    let d1x = ray_through.x - ray_origin.x;
+    let d1y = ray_through.y - ray_origin.y;
+    let d2x = b1.x - b0.x;
+    let d2y = b1.y - b0.y;
+
+    let cross = d1x * d2y - d1y * d2x;
+    if cross.abs() < 1e-9 {
+        return None;
+    }
+
+    let ex = b0.x - ray_origin.x;
+    let ey = b0.y - ray_origin.y;
+
+    let t = (ex * d2y - ey * d2x) / cross;
+    let s = (ex * d1y - ey * d1x) / cross;
+
+    if t < 0.0 || s < 0.0 || s > 1.0 {
+        return None;
+    }
+
+    let za = ray_origin.z + t * (ray_through.z - ray_origin.z);
+    let zb = b0.z + s * (b1.z - b0.z);
+    let tol = 1e-6_f64.max(1e-9 * za.abs().max(zb.abs()));
+
+    if (za - zb).abs() > tol {
+        return None;
+    }
+
+    Some(glam::DVec3::new(
+        ray_origin.x + t * d1x,
+        ray_origin.y + t * d1y,
+        0.5 * (za + zb),
     ))
 }
 
@@ -2033,7 +2262,7 @@ fn extension_bases_screen(
     view_rot: Mat4,
     eye: glam::DVec3,
     bounds: Rectangle,
-) -> (Option<Point>, Option<Point>) {
+) -> (Option<Point>, Option<Point>, Option<glam::DVec3>) {
     let snapped_screen = world_to_screen(snapped, view_rot, eye, bounds);
     // Collect qualifying endpoints, off-ray distance measured in screen space so
     // the tolerance stays scale-independent at UTM coordinates (a world² test
@@ -2077,7 +2306,9 @@ fn extension_bases_screen(
             break;
         }
     }
-    (bases[0], bases[1])
+    // `origins` is sorted nearest-fit first, so its head is the endpoint the
+    // primary guide is drawn from — the one a typed distance measures along.
+    (bases[0], bases[1], origins.first().copied())
 }
 
 // ── Projection helpers ────────────────────────────────────────────────────

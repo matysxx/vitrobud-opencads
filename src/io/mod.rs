@@ -176,6 +176,40 @@ pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
     Some((path, size))
 }
 
+/// Pick the drawing whose layers become translation targets. A standards file
+/// is a drawing too, so `.dws` and `.dwt` sit alongside the ordinary formats
+/// rather than needing anything of their own. (#624)
+pub async fn pick_layer_standard_path() -> Option<PathBuf> {
+    let handle = crate::sys::file_dialog()
+        .set_title("Load layer standard")
+        .add_filter(
+            "Drawings and standards",
+            &["dwg", "dws", "dwt", "dxf", "DWG", "DWS", "DWT", "DXF"],
+        )
+        .add_filter("All Files", &["*"])
+        .pick_file()
+        .await?;
+    Some(crate::sys::handle_path(&handle))
+}
+
+/// Pick where a set of layer mappings is written, or read back from.
+pub async fn pick_layer_mapping_path(save: bool) -> Option<PathBuf> {
+    let dialog = crate::sys::file_dialog()
+        .set_title(if save {
+            "Save layer mappings"
+        } else {
+            "Load layer mappings"
+        })
+        .add_filter("Layer mappings", &["ocslmap"])
+        .add_filter("All Files", &["*"]);
+    let handle = if save {
+        dialog.set_file_name("layers.ocslmap").save_file().await?
+    } else {
+        dialog.pick_file().await?
+    };
+    Some(crate::sys::handle_path(&handle))
+}
+
 /// Load a CAD file from a known path. Parsing and cache building run on a
 /// dedicated OS thread so the async executor stays free for rendering during
 /// the load. Writes phase markers into `phase` so the UI can show
@@ -712,6 +746,19 @@ fn sniff_dwg_or_dxf(path: &Path) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_file(path: &Path) -> Result<CadDocument, String> {
     load_file_with_progress(path, None).map(|outcome| outcome.document)
+}
+
+/// Opening a drawing by path is a desktop affair. In the browser a file
+/// arrives through the page rather than from a filesystem the app can reach,
+/// so there is nothing behind a path to open.
+///
+/// The function still exists there so the features that read a *second*
+/// drawing — importing one as a block, taking layer standards from one — go on
+/// compiling and say why they cannot run, instead of each having to know that
+/// the web has no files.
+#[cfg(target_arch = "wasm32")]
+pub fn load_file(_path: &Path) -> Result<CadDocument, String> {
+    Err(crate::t!("Opening a drawing by path is not available in the browser.").into_owned())
 }
 
 pub(crate) fn load_file_with_progress(

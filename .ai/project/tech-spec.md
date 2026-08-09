@@ -11,17 +11,16 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The current locally integrated upstream candidate is Open CAD Studio `0.9.3` at
-post-tag revision `afc94dce1350cfaa4ac2d6983328721c1bcdcb6e` (2026-08-05).
-This includes additional commits after tag `v0.9.3`; therefore the exact Git revision,
-not only the application version string, identifies the build. The baseline
-pins `OpenAEC-Foundation/acadifc` at `ab388a7de9b38f7b06e963c35b45fb35d9fee97a`.
-Upstream now includes the no-default-features ACIS helper fix previously carried
-temporarily by this fork.
+The current locally integrated upstream candidate is Open CAD Studio `0.9.4` at
+post-tag revision `f57c258ada7a76731f6a0a7894752ee1665ce334` (2026-08-09).
+This includes 44 additional commits after tag `v0.9.4`; therefore the exact Git
+revision, not only the application version string, identifies the build. The
+application now reaches the OpenAEC CAD stack through `acadifc` revision
+`fe98e425578c54facd021d8df74d86052b2f848b`; its lock file also pins the
+re-exported codec/kernel dependencies used by that revision.
 The container builder must install the exact `wasm-bindgen-cli` version selected
-in `Cargo.lock`; for this baseline that version remains `0.2.108`. Its Iced
-dependency requires Rust `1.92`, so the verified builder baseline remains the
-official `rust:1.92.0-bookworm` image.
+in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
+builder baseline remains the official `rust:1.92.0-bookworm` image.
 
 ## Recommended runtime model
 

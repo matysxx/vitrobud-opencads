@@ -29,14 +29,19 @@ fn material_map_text(map: &acadrust::objects::MaterialMap) -> String {
             }
         }
         2 => format!(
-            "Procedural {}",
-            map.texture.as_ref().map_or(0, |texture| texture.mode)
+            "Procedural {:#?}",
+            map.texture
         ),
-        _ => "None".to_string(),
+        0 => "Scene".to_string(),
+        value => format!("Source {value}"),
     };
     format!(
-        "{source}; blend {:.3}; projection {}; tiling {}; auto {}",
-        map.blend_factor, map.projection, map.tiling, map.auto_transform
+        "{source}; blend {:.3}; projection {}; tiling {}; auto {}; transform {:?}",
+        map.blend_factor,
+        map.projection,
+        map.tiling,
+        map.auto_transform,
+        map.transform
     )
 }
 
@@ -84,12 +89,14 @@ impl OpenCADStudio {
         // lengths/angles per LUNITS / LUPREC / AUNITS / AUPREC.
         {
             let h = &self.tabs[i].scene.document.header;
-            crate::entities::common::set_unit_context(crate::entities::common::UnitContext {
-                lunits: h.linear_unit_format,
-                luprec: h.linear_unit_precision,
-                aunits: h.angular_unit_format,
-                auprec: h.angular_unit_precision,
-            });
+            crate::entities::common::set_unit_context(
+                crate::entities::common::UnitContext::from_header(h),
+            );
+        }
+        {
+            // Which text styles fix their own height — the height rows read it
+            // to decide whether they are editable.
+            crate::entities::common::set_fixed_text_heights(&self.tabs[i].scene.document);
         }
 
         let layer_names: Vec<String> = self.tabs[i]
@@ -568,11 +575,31 @@ impl OpenCADStudio {
                                         t!("Advanced").as_ref(),
                                         "mat_advanced",
                                         format!(
-                                            "normal {:.3}; bump {:.3}; reflect {:.3}; transmit {:.3}",
+                                            "normal method {}; strength {:.3}; bump {:.3}; reflect {:.3}; transmit {:.3}; bleed {:.3}",
+                                            material.normal_map_method,
                                             material.normal_map_strength,
                                             material.indirect_bump_scale,
                                             material.reflectance_scale,
-                                            material.transmittance_scale
+                                            material.transmittance_scale,
+                                            material.color_bleed_scale
+                                        ),
+                                    ),
+                                    ro_prop(
+                                        t!("Indirect Lighting").as_ref(),
+                                        "mat_indirect_lighting",
+                                        format!(
+                                            "global {}; final gather {}",
+                                            material.global_illumination,
+                                            material.final_gather
+                                        ),
+                                    ),
+                                    ro_prop(
+                                        t!("Source State").as_ref(),
+                                        "mat_source_state",
+                                        format!(
+                                            "advanced {}; anonymous {}",
+                                            material.advanced_data_present,
+                                            material.is_anonymous
                                         ),
                                     ),
                                 ],
@@ -1806,6 +1833,16 @@ impl OpenCADStudio {
     pub(super) fn invalidate_property_targets(&mut self, i: usize, handles: &[Handle]) {
         let mut context_object_changed = false;
         for &handle in handles {
+            // A dimension is drawn from the block holding its picture, and that
+            // picture was made under the settings just edited. Drop it so the
+            // dimension is drawn afresh — otherwise the edit changes the stored
+            // variables and nothing on screen.
+            if matches!(
+                self.tabs[i].scene.document.get_entity(handle),
+                Some(acadrust::EntityType::Dimension(_))
+            ) {
+                self.tabs[i].scene.invalidate_dim_block_recorded(handle);
+            }
             context_object_changed |= self.tabs[i]
                 .scene
                 .sync_displayed_annotation_context(handle);

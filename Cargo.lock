@@ -14,13 +14,12 @@ dependencies = [
 
 [[package]]
 name = "OpenCADStudio"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
- "acadrust",
+ "acadifc 0.5.0 (git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=fe98e42)",
  "ashpd",
  "bincode",
  "bytemuck",
- "cavalier_contours",
  "clap",
  "console_error_panic_hook",
  "cosmic-text 0.15.0",
@@ -46,6 +45,7 @@ dependencies = [
  "open",
  "printpdf",
  "rayon",
+ "resvg",
  "rfd",
  "rust-embed",
  "rustc-hash 2.1.3",
@@ -83,9 +83,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "acadifc"
+version = "0.5.0"
+source = "git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=c65d396#c65d396abc3defcf96b1d71a3f812c8ad993e77c"
+dependencies = [
+ "acadrust",
+ "base64 0.22.1",
+ "cadkernel",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "acadifc"
+version = "0.5.0"
+source = "git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=fe98e42#fe98e425578c54facd021d8df74d86052b2f848b"
+dependencies = [
+ "acadrust",
+ "base64 0.22.1",
+ "cadkernel",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "acadrust"
-version = "0.4.0"
-source = "git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=ab388a7#ab388a7de9b38f7b06e963c35b45fb35d9fee97a"
+version = "0.4.1"
+source = "git+https://github.com/HakanSeven12/cadcodec.git?rev=d645c7f#d645c7f526c199c02fcab7272d6b6f2d1c6b91ae"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -96,7 +124,6 @@ dependencies = [
  "indexmap",
  "itoa",
  "memmap2",
- "nalgebra",
  "nom 7.1.3",
  "once_cell",
  "rayon",
@@ -335,15 +362,6 @@ name = "approx"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f2a05fd1bd10b2527e20a2cd32d8873d115b8b39fe219ee25f42a8aca6ba278"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "approx"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
 dependencies = [
  "num-traits",
 ]
@@ -929,6 +947,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "cadkernel"
+version = "0.1.0"
+source = "git+https://github.com/HakanSeven12/cadkernel.git#c9e104b99e8901c4804e7cece67f038f249a33f5"
+dependencies = [
+ "cavalier_contours",
+]
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1009,7 +1035,7 @@ version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a98d30140e3296250832bbaaff83b27dcd6fa3cc70fb6f1f3e5c9c0023b5317"
 dependencies = [
- "approx 0.4.0",
+ "approx",
  "num-traits",
  "serde",
 ]
@@ -3194,16 +3220,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "matrixmultiply"
-version = "0.3.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
-dependencies = [
- "autocfg",
- "rawpointer",
-]
-
-[[package]]
 name = "maybe-rayon"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3381,33 +3397,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nalgebra"
-version = "0.32.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b5c17de023a86f59ed79891b2e5d5a94c705dbe904a5b5c9c952ea6221b03e4"
-dependencies = [
- "approx 0.5.1",
- "matrixmultiply",
- "nalgebra-macros",
- "num-complex",
- "num-rational",
- "num-traits",
- "simba",
- "typenum",
-]
-
-[[package]]
-name = "nalgebra-macros"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "254a5372af8fc138e36684761d3c0cdb758a4410e938babcff1c860ce14ddbfc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3487,7 +3476,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b577e2d69827c4740cba2b52efaad1c4cc7c73042860b199710b3575c68438d"
 dependencies = [
  "bytecount",
- "memchr 2.8.3",
+ "memchr 1.0.2",
  "nom 8.0.0",
 ]
 
@@ -3964,7 +3953,7 @@ dependencies = [
 name = "ocs_plugin_api"
 version = "0.1.0"
 dependencies = [
- "acadrust",
+ "acadifc 0.5.0 (git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=c65d396)",
  "bincode",
  "getrandom 0.2.17",
  "interprocess",
@@ -3979,7 +3968,7 @@ dependencies = [
 name = "ocs_web_worker"
 version = "0.1.0"
 dependencies = [
- "acadrust",
+ "acadifc 0.5.0 (git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=c65d396)",
  "bincode",
  "console_error_panic_hook",
  "getrandom 0.3.4",
@@ -4699,12 +4688,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rawpointer"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
-
-[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5152,15 +5135,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "safe_arch"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5343,19 +5317,6 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
-]
-
-[[package]]
-name = "simba"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "061507c94fc6ab4ba1c9a0305018408e312e17c041eb63bef8aa726fa33aceae"
-dependencies = [
- "approx 0.5.1",
- "num-complex",
- "num-traits",
- "paste",
- "wide",
 ]
 
 [[package]]
@@ -6813,16 +6774,6 @@ dependencies = [
  "log",
  "raw-window-handle",
  "web-sys",
-]
-
-[[package]]
-name = "wide"
-version = "0.7.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
-dependencies = [
- "bytemuck",
- "safe_arch",
 ]
 
 [[package]]
