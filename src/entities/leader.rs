@@ -6,13 +6,13 @@ use crate::command::EntityTransform;
 use crate::entities::common::{
     center_grip, edit_prop as edit, ro_prop as ro, square_grip, stepper_prop as stepper,
 };
-use crate::entities::traits::TruckConvertible;
-use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
+use crate::entities::traits::RenderConvertible;
+use crate::scene::convert::acad_to_render::{RenderEntity, RenderObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::TangentGeom;
 use crate::t;
 
-// ── TruckConvertible (used for snap/grip key-vertices) ─────────────────────
+// ── RenderConvertible (used for snap/grip key-vertices) ─────────────────────
 
 /// Whether a leader draws a horizontal hookline. DWG stores no "hookline
 /// exists" flag (only the direction bit), so the stored flag alone would drop
@@ -44,7 +44,7 @@ fn draws_hookline(leader: &Leader) -> bool {
     cos < (15.0f64).to_radians().cos()
 }
 
-fn to_truck(leader: &Leader) -> TruckEntity {
+fn to_render(leader: &Leader) -> RenderEntity {
     let verts = &leader.vertices;
     let nan = [f64::NAN; 3];
     let p3 = |v: &acadrust::types::Vector3| -> [f64; 3] { [v.x, v.y, v.z] };
@@ -126,9 +126,9 @@ fn to_truck(leader: &Leader) -> TruckEntity {
         ]);
     }
 
-    TruckEntity {
+    RenderEntity {
         pick_tris: Vec::new(),
-        object: TruckObject::Lines(points),
+        object: RenderObject::Lines(points),
         snap_pts: vec![],
         tangent_geoms: tangents,
         key_vertices: key_verts,
@@ -159,7 +159,59 @@ fn grips(leader: &Leader) -> Vec<GripDef> {
 
 fn apply_grip(leader: &mut Leader, grip_id: usize, apply: GripApply) {
     let n = leader.vertices.len();
+
     if grip_id < n {
+        if n >= 3 && leader.creation_type == LeaderCreationType::WithText {
+            // Grip del codo: mueve el codo libremente, pero arrastra también
+            // el extremo del renglón manteniendo la distancia relativa.
+            if grip_id == n - 2 {
+                let old_elbow = leader.vertices[n - 2];
+                let old_end = leader.vertices[n - 1];
+
+                let delta = match apply {
+                    GripApply::Absolute(p) => acadrust::types::Vector3::new(
+                        p.x as f64 - old_elbow.x,
+                        p.y as f64 - old_elbow.y,
+                        p.z as f64 - old_elbow.z,
+                    ),
+                    GripApply::Translate(d) => acadrust::types::Vector3::new(
+                        d.x as f64,
+                        d.y as f64,
+                        d.z as f64,
+                    ),
+                };
+
+                leader.vertices[n - 2].x = old_elbow.x + delta.x;
+                leader.vertices[n - 2].y = old_elbow.y + delta.y;
+                leader.vertices[n - 2].z = old_elbow.z + delta.z;
+
+                leader.vertices[n - 1].x = old_end.x + delta.x;
+                leader.vertices[n - 1].y = old_end.y + delta.y;
+                leader.vertices[n - 1].z = old_end.z + delta.z;
+
+                return;
+            }
+
+            // Grip del extremo horizontal: sólo debe estirar en X;
+            // Y/Z quedan pegados al codo para que siga horizontal.
+            if grip_id == n - 1 {
+                let elbow = leader.vertices[n - 2];
+
+                match apply {
+                    GripApply::Absolute(p) => {
+                        leader.vertices[n - 1].x = p.x as f64;
+                    }
+                    GripApply::Translate(d) => {
+                        leader.vertices[n - 1].x += d.x as f64;
+                    }
+                }
+
+                leader.vertices[n - 1].y = elbow.y;
+                leader.vertices[n - 1].z = elbow.z;
+                return;
+            }
+        }
+
         if let Some(v) = leader.vertices.get_mut(grip_id) {
             match apply {
                 GripApply::Absolute(p) => {
@@ -176,7 +228,9 @@ fn apply_grip(leader: &mut Leader, grip_id: usize, apply: GripApply) {
         }
     } else if let GripApply::Translate(d) = apply {
         leader.translate(acadrust::types::Vector3::new(
-            d.x as f64, d.y as f64, d.z as f64,
+            d.x as f64,
+            d.y as f64,
+            d.z as f64,
         ));
     }
 }
@@ -459,12 +513,12 @@ fn apply_transform(leader: &mut Leader, t: &EntityTransform) {
 
 // ── Trait impls ────────────────────────────────────────────────────────────
 
-impl TruckConvertible for Leader {
-    fn to_truck(&self, _document: &acadrust::CadDocument) -> Option<TruckEntity> {
+impl RenderConvertible for Leader {
+    fn to_render(&self, _document: &acadrust::CadDocument) -> Option<RenderEntity> {
         if self.vertices.is_empty() {
             return None;
         }
-        Some(to_truck(self))
+        Some(to_render(self))
     }
 }
 
@@ -625,6 +679,7 @@ impl LeaderTess for Leader {
                 depth_override: None,
                 fill_is_3d: false,
                 fill_is_2d_solid: false,
+                render_instance: None,
                 pick_tris: Vec::new(),
                 pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -800,6 +855,7 @@ impl LeaderTess for Leader {
             depth_override: None,
             fill_is_3d: false,
             fill_is_2d_solid: false,
+            render_instance: None,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

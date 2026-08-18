@@ -1,4 +1,4 @@
-use acadrust::kernel::space::polygon;
+use cadkernel::space::polygon;
 use acadrust::{EntityType, Handle};
 use glam::DVec3;
 
@@ -367,6 +367,7 @@ impl CadCommand for AreaCommand {
             depth_override: None,
             fill_is_3d: false,
             fill_is_2d_solid: false,
+            render_instance: None,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

@@ -3,12 +3,46 @@ use super::*;
 
 impl Scene {
     // ── Selection ─────────────────────────────────────────────────────────
+    /// Treat a classic LEADER and its attached annotation as one logical object.
+    /// Clicking/copying/deleting either side expands to the complete pair.
+    pub(crate) fn handles_expanded_for_leader_annotations(
+        &self,
+        handles: &[Handle],
+    ) -> Vec<Handle> {
+        let mut expanded = handles.to_vec();
 
+        for &handle in handles {
+            // LEADER -> annotation.
+            if let Some(EntityType::Leader(leader)) = self.document.get_entity(handle) {
+                if !leader.annotation_handle.is_null() {
+                    expanded.push(leader.annotation_handle);
+                }
+            }
+
+            // Annotation -> LEADER.
+            expanded.extend(self.document.entities().filter_map(|entity| match entity {
+                EntityType::Leader(leader)
+                    if !leader.annotation_handle.is_null()
+                        && leader.annotation_handle == handle =>
+                {
+                    Some(entity.common().handle)
+                }
+                _ => None,
+            }));
+        }
+
+        expanded.sort_unstable_by_key(|handle| handle.value());
+        expanded.dedup();
+        expanded
+    }
     pub fn select_entity(&mut self, handle: Handle, exclusive: bool) {
+        let handles = self.handles_expanded_for_leader_annotations(&[handle]);
+
         if exclusive {
             self.selected.clear();
         }
-        self.selected.insert(handle);
+
+        self.selected.extend(handles);
         self.bump_selection();
     }
 
@@ -21,6 +55,12 @@ impl Scene {
     /// only when its contents actually changed. History/file/command paths must
     /// use this instead of assigning `selected` directly.
     pub(crate) fn replace_selection(&mut self, selected: HashSet<Handle>) {
+        let handles: Vec<Handle> = selected.iter().copied().collect();
+        let selected: HashSet<Handle> = self
+            .handles_expanded_for_leader_annotations(&handles)
+            .into_iter()
+            .collect();
+
         if self.selected != selected {
             self.selected = selected;
             self.bump_selection();
@@ -29,7 +69,14 @@ impl Scene {
 
     /// Remove a single entity from the selection (Shift+click subtractive pick).
     pub fn deselect_entity(&mut self, handle: Handle) {
-        if self.selected.remove(&handle) {
+        let handles = self.handles_expanded_for_leader_annotations(&[handle]);
+        let mut changed = false;
+
+        for handle in handles {
+            changed |= self.selected.remove(&handle);
+        }
+
+        if changed {
             self.bump_selection();
         }
     }
@@ -164,16 +211,6 @@ impl Scene {
             let Some(e) = self.document.get_entity(h) else {
                 continue;
             };
-            // Never quick-select objects on a locked layer.
-            if self
-                .document
-                .layers
-                .get(&e.common().layer)
-                .map(|l| l.is_locked())
-                .unwrap_or(false)
-            {
-                continue;
-            }
             let type_ok = type_name.is_none_or(|t| entity_type_name(e) == t);
             let prop_ok = if !type_ok {
                 true
@@ -618,10 +655,14 @@ impl Scene {
     // ── Erase ─────────────────────────────────────────────────────────────
 
     pub fn erase_entities(&mut self, handles: &[Handle]) {
+
+        let erase_handles = self.handles_expanded_for_leader_annotations(handles);
+
         let mut handle_set: HashSet<Handle> = HashSet::default();
         let mut erased: Vec<(Handle, ChangeKind)> = Vec::new();
         let mut highlight_changed = false;
-        for &h in handles {
+
+        for &h in &erase_handles {
             // Objects on a locked layer can't be erased.
             if self.is_layer_locked(h) {
                 continue;
@@ -631,6 +672,7 @@ impl Scene {
                 let before = self.document.get_entity_arc(h);
                 self.record_undo_before(h, before);
             }
+            self.delete_solid_history(h);
             self.remember_removed_cache_categories(h);
             self.document.remove_entity_arc(h);
             highlight_changed |= self.selected.remove(&h);

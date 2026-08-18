@@ -2,7 +2,7 @@
 //!
 //! This deliberately does not use the general DXF writer: the pinned writer
 //! can label post-R12 structures as AC1009.  Keep this path isolated until the
-//! version-aware implementation is accepted by acadifc upstream.
+//! version-aware implementation is accepted by the upstream CAD codec.
 
 use acadrust::entities::{EntityCommon, EntityType};
 use acadrust::types::{BoundingBox3D, Color, Vector3};

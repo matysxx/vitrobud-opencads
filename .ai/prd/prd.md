@@ -29,3 +29,5 @@
   (`11-upstream-sync-afc94dce/`)
 - `OCSSTACK-13` — Sync reviewed upstream revision `f57c258a`
   (`13-upstream-sync-f57c258a/`)
+- `OCSSTACK-14` — Sync reviewed upstream revision `403247cb`
+  (`14-upstream-sync-403247cb/`)

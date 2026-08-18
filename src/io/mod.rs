@@ -72,6 +72,7 @@ impl OpenProgressState {
         self.phase.store(phase, Ordering::Release);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_fraction(&self, phase: u8, base: u16, span: u16, completed: usize, total: usize) {
         let denominator = total.max(1) as u64;
         let value = base as u64 + (completed.min(total.max(1)) as u64 * span as u64 / denominator);
@@ -664,6 +665,7 @@ async fn load_web_bytes(
         merge_read_diagnostics(&mut outcome.stats, initial_stats);
     }
     let mut doc = outcome.document;
+    normalize_block_origins(&mut doc);
     if name.to_ascii_lowercase().ends_with(".dxf") {
         fix_dxf_dimension_rotations(&mut doc);
         fix_dxf_layout_plot_settings(&mut doc);
@@ -1337,6 +1339,27 @@ impl std::fmt::Display for SaveFailure {
 
 impl std::error::Error for SaveFailure {}
 
+const SUPPORTED_SAVE_FORMATS: &str = ".dwg, .dxf";
+
+fn validate_save_extension(path: &Path) -> Result<(), SaveFailure> {
+    let extension = path
+        .extension()
+        .map(|value| value.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if matches!(extension.as_str(), "dwg" | "dxf") {
+        return Ok(());
+    }
+
+    let requested = if extension.is_empty() {
+        "<none>".to_string()
+    } else {
+        format!(".{extension}")
+    };
+    Err(SaveFailure::other(format!(
+        "unsupported output format {requested}; supported formats: {SUPPORTED_SAVE_FORMATS}"
+    )))
+}
+
 fn replace_error_is_file_in_use(error: &std::io::Error) -> bool {
     #[cfg(target_os = "windows")]
     {
@@ -1359,7 +1382,7 @@ fn windows_replace_error_is_file_in_use(raw_os_error: Option<i32>) -> bool {
 
 #[cfg(test)]
 mod save_failure_tests {
-    use super::windows_replace_error_is_file_in_use;
+    use super::{save_as_version, windows_replace_error_is_file_in_use};
 
     #[test]
     fn issue_498_recognizes_windows_file_sharing_errors() {
@@ -1367,6 +1390,31 @@ mod save_failure_tests {
         assert!(windows_replace_error_is_file_in_use(Some(33)));
         assert!(!windows_replace_error_is_file_in_use(Some(5)));
         assert!(!windows_replace_error_is_file_in_use(None));
+    }
+
+    #[test]
+    fn unsupported_output_extension_is_rejected_before_write() {
+        let path = std::env::temp_dir().join(format!(
+            "ocs_unsupported_export_{}_{}.pdf",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let error = save_as_version(
+            &acadrust::CadDocument::new(),
+            &path,
+            acadrust::DxfVersion::AC1032,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "unsupported output format .pdf; supported formats: .dwg, .dxf"
+        );
+        assert!(!path.exists(), "unsupported export created an output file");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1390,6 +1438,41 @@ mod save_failure_tests {
             acadrust::DxfVersion::AC1032,
             false,
             Some(expected),
+            None,
+        )
+        .unwrap_err();
+
+        assert!(error.externally_modified);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn external_path_replacement_prevents_atomic_replace() {
+        let path = std::env::temp_dir().join(format!(
+            "ocs_external_replace_{}_{}.dwg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let replacement = path.with_extension("replacement.dwg");
+        std::fs::write(&path, b"old").unwrap();
+        let expected = super::edit_lock::FileFingerprint::capture(&path).unwrap();
+        let reader = std::fs::File::open(&path).unwrap();
+        std::fs::write(&replacement, b"new").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+
+        let error = super::save_owned_as_version_atomic(
+            acadrust::CadDocument::new(),
+            &path,
+            acadrust::DxfVersion::AC1032,
+            false,
+            Some(expected),
+            Some(reader),
         )
         .unwrap_err();
 
@@ -1403,15 +1486,16 @@ mod save_failure_tests {
 
 /// Show a file-open dialog and load the selected CTB or STB file.
 pub async fn pick_plot_style() -> Option<plot_style::PlotStyleTable> {
-    let mut dialog = crate::sys::file_dialog()
+    let dialog = crate::sys::file_dialog()
         .set_title("Load Plot Style Table")
         .add_filter("Plot Style Tables", &["ctb", "CTB"])
         .add_filter("CTB Files", &["ctb", "CTB"])
         .add_filter("All Files", &["*"]);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(dir) = plot_style::ensure_plot_styles_dir() {
-        dialog = dialog.set_directory(dir);
-    }
+    let dialog = match plot_style::ensure_plot_styles_dir() {
+        Ok(dir) => dialog.set_directory(dir),
+        Err(_) => dialog,
+    };
     let handle = dialog.pick_file().await?;
     plot_style::PlotStyleTable::load(&crate::sys::handle_path(&handle)).ok()
 }
@@ -1461,12 +1545,20 @@ pub fn save_owned_as_version_atomic(
     version: acadrust::DxfVersion,
     backup: bool,
     expected_fingerprint: Option<edit_lock::FileFingerprint>,
+    verify_reader: Option<std::fs::File>,
 ) -> Result<(), SaveFailure> {
     save_owned_as_version_inner(doc, path, version, backup, 0.0, move |path| {
         let Some(expected) = expected_fingerprint else {
             return Ok(());
         };
-        match edit_lock::FileFingerprint::capture(path) {
+        let current = match verify_reader {
+            Some(mut file) => match edit_lock::path_matches_file(path, &file) {
+                Ok(true) => edit_lock::FileFingerprint::capture_from(&mut file),
+                Ok(false) | Err(_) => return Err(SaveFailure::externally_modified(path)),
+            },
+            None => edit_lock::FileFingerprint::capture(path),
+        };
+        match current {
             Ok(current) if current == expected => Ok(()),
             _ => Err(SaveFailure::externally_modified(path)),
         }
@@ -1484,6 +1576,7 @@ fn save_owned_as_version_inner<F>(
 where
     F: FnOnce(&Path) -> Result<(), SaveFailure>,
 {
+    validate_save_extension(path)?;
     let perf = crate::perf::enabled();
     let total_started = iced::time::Instant::now();
     doc.version = version;
@@ -1897,7 +1990,7 @@ pub(crate) fn is_entity_corrupt(e: &EntityType) -> bool {
             !finite_vec3(&c.center)
                 || !finite_coord(c.radius)
                 // Reject zero- or near-zero circles: they tessellate into a
-                // degenerate truck curve that crashes parameter_division.
+                // degenerate curve the tessellator cannot sample.
                 || c.radius.abs() < 1.0e-10
                 || c.radius.abs() > 1.0e10
         }
@@ -1910,12 +2003,12 @@ pub(crate) fn is_entity_corrupt(e: &EntityType) -> bool {
                 || a.radius.abs() < 1.0e-10
                 || a.radius.abs() > 1.0e10
                 // Zero-sweep arc (start_angle == end_angle, modulo 2π) collapses
-                // to a single point in WCS — truck's circle_arc on three
+                // to a single point in WCS — a three-point circle fit on
                 // coincident vertices recurses unboundedly in parameter_division.
                 || (a.end_angle - a.start_angle).abs() < 1.0e-9
                 // Near-zero sweep is the same trap with a wider mouth: a tiny but
                 // non-zero sweep (e.g. 1.6e-6 rad) still places start/mid/end
-                // within truck's coincidence tolerance, so parameter_division
+                // within the coincidence tolerance, so sampling
                 // recurses and allocates until OOM. Gate on arc *length*
                 // (radius × sweep), not sweep alone, so a legitimately large-
                 // radius small-sweep arc (still a visible curve) survives while
@@ -1925,7 +2018,7 @@ pub(crate) fn is_entity_corrupt(e: &EntityType) -> bool {
                 // the floor above, a small sweep over a modest radius leaves
                 // start/mid/end almost on one line (a 35-unit, 6.5e-7-rad arc has
                 // arc length 2.3e-5 — past the gate — yet bows off its chord by
-                // only ~2e-12). truck's 3-point `circle_arc` fit then returns a
+                // only ~2e-12). A three-point circle fit then returns a
                 // near-infinite radius and `parameter_division` subdivides without
                 // bound. Gate on the sagitta (chord height = r·(1−cos(sweep/2))),
                 // the true measure of how far the arc departs a straight line and
@@ -1952,13 +2045,13 @@ pub(crate) fn is_entity_corrupt(e: &EntityType) -> bool {
         }
         E::Spline(s) => {
             // Parser desync emits exactly-100_000-control-point splines with a
-            // garbage knot vector. Building a truck NURBS/B-spline from one and
+            // garbage knot vector. Building a NURBS from one and
             // tessellating it runs `parameter_division` into an unbounded
             // allocation — single-threaded, 32 GB+ — long before the drawing
             // finishes loading. Reject the desync signature plus any spline
-            // truck can't build: non-finite control points, or a knot vector
+            // the kernel can't build: non-finite control points, or a knot vector
             // that's non-finite, non-monotonic, or the wrong length
-            // (truck requires `knots.len() == ctrl.len() + degree + 1`).
+            // (the kernel requires `knots.len() == ctrl.len() + degree + 1`).
             let n = s.control_points.len();
             let degree_bad = s.degree < 1;
             let deg = s.degree.max(0) as usize;
@@ -1967,7 +2060,7 @@ pub(crate) fn is_entity_corrupt(e: &EntityType) -> bool {
                     || s.knots.windows(2).any(|w| w[1] < w[0])
                     || s.knots.len() != n + deg + 1);
             // Degenerate: every control point collapses onto (nearly) the same
-            // point, so the curve has zero length. truck's `circle_arc` /
+            // point, so the curve has zero length. A three-point fit
             // `parameter_division` never converges on it and the tessellation
             // hangs — a periodic 9-point spline pinned at the origin is the seen
             // case. Reject when the control-point extent is sub-precision.
@@ -2204,7 +2297,7 @@ mod corrupt_guard_tests {
     // A near-zero-sweep arc: sweep 1.56e-6 rad on a 3.9e-3 radius. The angles
     // are individually finite and the radius is in range, so the old
     // (end-start) < 1e-9 check passed it through — but start/mid/end land
-    // within truck's coincidence tolerance and parameter_division allocates
+    // within the coincidence tolerance and sampling allocates
     // until OOM. The arc-length floor must reject it.
     #[test]
     fn rejects_near_degenerate_arc() {
@@ -2219,7 +2312,7 @@ mod corrupt_guard_tests {
 
     // A 35-unit-radius arc sweeping 6.5e-7 rad has arc length 2.3e-5 — past the
     // arc-length floor — yet its start/mid/end bow off the chord by only ~2e-12,
-    // so truck's 3-point circle fit blows up and parameter_division hangs. The
+    // so a three-point circle fit blows up and sampling hangs. The
     // sagitta floor must reject it where the arc-length floor alone does not.
     #[test]
     fn rejects_near_collinear_arc() {
@@ -2247,7 +2340,7 @@ mod corrupt_guard_tests {
         assert!(!is_entity_corrupt(&EntityType::Arc(a)));
     }
 
-    // Parser desync emits 100_000-control-point splines; building a truck
+    // Parser desync emits 100_000-control-point splines; building a kernel
     // NURBS from one and tessellating it OOMs. The control-point cap rejects it.
     #[test]
     fn rejects_desync_spline() {
@@ -2257,7 +2350,7 @@ mod corrupt_guard_tests {
     }
 
     // A periodic spline whose control points all collapse onto (nearly) one
-    // point has zero length; truck's parameter_division never converges and the
+    // point has zero length; sampling never converges and the
     // tessellation hangs. The control-point extent floor must reject it.
     #[test]
     fn rejects_degenerate_point_spline() {

@@ -11,11 +11,11 @@
 //! resident render path splits the `f64` into a high/low pair instead. Only a
 //! caller knows which of the two it is.
 
-use acadrust::kernel::geom2d::{self, Ellipse};
+use cadkernel::geom2d::{self, Ellipse};
 
 /// Re-exported unchanged: these already speak in plain `f64`, so there is no
 /// call-shape difference for this module to absorb.
-pub use acadrust::kernel::geom2d::{arc_parameter, lerp, normalize_angle};
+pub use cadkernel::geom2d::{arc_parameter, lerp, normalize_angle};
 
 /// Preview geometry keeps the density the commands have always used.
 const SEGMENTS_PER_RADIAN: f64 = geom2d::DEFAULT_SEGMENTS_PER_RADIAN;
@@ -43,12 +43,6 @@ pub fn line_line(
     ey: f64,
 ) -> Option<(f64, f64)> {
     geom2d::line_line([px, py], [dx, dy], [qx, qy], [ex, ey])
-}
-
-/// Line parameters where `p + t·d` meets a circle: none, one when tangent, or
-/// two ordered by increasing `t`.
-pub fn line_circle(px: f64, py: f64, dx: f64, dy: f64, cx: f64, cy: f64, r: f64) -> Vec<f64> {
-    geom2d::line_circle([px, py], [dx, dy], [cx, cy], r)
 }
 
 pub fn line_points(start: [f64; 3], end: [f64; 3]) -> Vec<[f32; 3]> {

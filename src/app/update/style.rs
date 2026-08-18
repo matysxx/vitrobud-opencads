@@ -358,15 +358,7 @@ impl OpenCADStudio {
 
     pub(in crate::app) fn apply_dimstyle_bufs(&mut self, tab: usize) {
         let doc = &mut self.tabs[tab].scene.document;
-        let read_only = doc
-            .dim_styles
-            .get(&self.dimstyle_selected)
-            .is_some_and(|style| {
-                style.xref_reference || style.xref_dependent || !style.xref_handle.is_null()
-            });
-        if read_only {
-            return;
-        }
+
         let text_style_handle = doc
             .text_styles
             .get(&self.ds_dimtxsty)
@@ -1115,6 +1107,26 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
     }
 
     pub(super) fn on_color_window_pick(&mut self, color: acadrust::types::Color) -> Task<Message> {
+                if matches!(
+                    self.color_pick_target.as_ref().map(|(target, _)| target),
+                    Some(crate::app::ColorPickTarget::PlotStyle)
+                ) {
+                    self.color_pick_target = None;
+
+                    let rgb = match color {
+                        acadrust::types::Color::Rgb { r, g, b } => Some((r, g, b)),
+                        acadrust::types::Color::Index(index) => {
+                            acadrust::types::aci_table::aci_to_rgb(index)
+                        }
+                        _ => None,
+                    };
+
+                    if let Some((r, g, b)) = rgb {
+                        self.ps_color_buf = format!("#{r:02X}{g:02X}{b:02X}");
+                    }
+
+                    return self.on_plot_style_panel_apply();
+                }
                 let s = crate::ui::color_select::color_to_aci_string(color);
                 let edit = match self.color_pick_target.take().map(|(target, _)| target) {
                     Some(crate::app::ColorPickTarget::DimStyle(f)) => Some(Message::DsEdit(f, s)),
@@ -1147,6 +1159,7 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
                     Some(crate::app::ColorPickTarget::LayerState(idx)) => {
                         Some(Message::LayerStateEditorLayerColor(idx, color))
                     }
+                    Some(crate::app::ColorPickTarget::PlotStyle) => None,
                     None => None,
                 };
                 if let Some(m) = edit {
@@ -1164,11 +1177,6 @@ pub(super) fn on_text_style_dialog_open(&mut self) -> Task<Message> {
                     "dimltex_handle" | "dimltex1_handle" | "dimltex2_handle"
                 );
                 let doc = &self.tabs[i].scene.document;
-                if doc.dim_styles.get(&name).is_some_and(|style| {
-                    style.xref_reference || style.xref_dependent || !style.xref_handle.is_null()
-                }) {
-                    return Task::none();
-                }
                 let handle = if value == "Default" || value == "ByBlock" {
                     acadrust::types::Handle::NULL
                 } else if is_lt {

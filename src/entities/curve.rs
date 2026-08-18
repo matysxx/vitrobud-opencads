@@ -32,11 +32,11 @@ use acadrust::entities::{
     Arc as ArcEnt, Circle as CircleEnt, Ellipse as EllipseEnt, LwPolyline as LwPolylineEnt,
     Polyline2D, Spline as SplineEnt,
 };
-use acadrust::kernel::geom2d::{
+use cadkernel::geom2d::{
     characteristic_points, Arc, Circle, Curve, Ellipse, EllipseArc, Line, Polyline, PolylineVertex,
     Ray, SnapKind, Transform, XLine,
 };
-use acadrust::kernel::space::{PlanarCurve, Plane, Vec3};
+use cadkernel::space::{PlanarCurve, Plane, Vec3};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 
@@ -331,20 +331,9 @@ pub fn entity_curve_xy(entity: &EntityType) -> Option<Curve> {
     })
 }
 
-/// World-space wire points for a curve, cut to the render pass's current
-/// chord tolerance.
-///
-/// The density comes from how far a chord may sag from the curve, not from a
-/// segment count: an arc a metre across and one a kilometre across need
-/// different numbers of points to look equally round, and the tolerance the
-/// render pass carries is already zoom-adaptive.
-///
-/// Everything stays `f64` to the end. The narrowing belongs at the GPU
-/// boundary, where the residual is kept as the low half of a double-single
-/// pair; casting local coordinates on the way in throws away precision the
-/// shader was built to reconstruct.
+/// World-space wire points sampled by the kernel's angular policy.
 pub fn curve_points(curve: &PlanarCurve) -> Vec<[f64; 3]> {
-    curve.tessellate_within(crate::scene::convert::truck_tess::current_curve_tol())
+    curve.tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE)
 }
 
 /// The snap candidates an entity's curve offers, in the two channels the
@@ -357,26 +346,7 @@ pub struct CurveSnap {
     pub key_vertices: Vec<[f64; 3]>,
 }
 
-/// Every point the entity's own geometry offers to snap to.
-///
-/// The point of routing this through [`entity_curve`] rather than reading the
-/// fields per type: an arc's quadrants, an ellipse's axis ends and a spline's
-/// midpoint are all the same question asked of different shapes, and asking
-/// it once means the answer is exact everywhere. Previously an arc offered no
-/// quadrants at all and a spline's "endpoints" were its control points, which
-/// for a control-point spline are not on the curve.
-///
-/// `None` for anything that is not a planar curve, which keeps the callers
-/// that have their own snap sources — text, blocks, dimensions — untouched.
-pub fn curve_snap(entity: &EntityType) -> Option<CurveSnap> {
-    Some(snap_from(&entity_curve(entity)?))
-}
-
-/// [`curve_snap`] for a caller that already has the curve.
-///
-/// The per-type wire builders take a concrete entity rather than an
-/// [`EntityType`], and wrapping one back up would mean cloning it on the
-/// render path.
+/// Snap candidates for a caller that already has the curve.
 pub fn snap_from(curve: &PlanarCurve) -> CurveSnap {
     // A chain of straight segments is what `key_vertices` means: the snap
     // engine joins consecutive entries and offers the midpoint of each. Only
@@ -643,7 +613,7 @@ mod tests {
         arc.start_angle = 0.0;
         arc.end_angle = PI; // the upper half
         arc.normal = v3(0.0, 0.0, 1.0);
-        let snap = curve_snap(&EntityType::Arc(arc)).unwrap();
+        let snap = snap_from(&entity_curve(&EntityType::Arc(arc)).unwrap());
         let quadrants = hints(&snap, SnapHint::Quadrant);
         // 0° and 90° and 180° are on it; 270° is not.
         assert_eq!(quadrants.len(), 3, "{quadrants:?}");
@@ -666,7 +636,7 @@ mod tests {
             LwVertex::from_coords(10.0, 0.0),
             LwVertex::from_coords(10.0, 5.0),
         ];
-        let snap = curve_snap(&EntityType::LwPolyline(polyline)).unwrap();
+        let snap = snap_from(&entity_curve(&EntityType::LwPolyline(polyline)).unwrap());
         assert_eq!(snap.key_vertices.len(), 3);
         // Midpoints are derived from those by the snap engine, so emitting
         // them here as well would offer every one of them twice.
@@ -678,7 +648,7 @@ mod tests {
         let mut circle = CircleEnt::default();
         circle.radius = 1.0;
         circle.normal = v3(0.0, 0.0, 1.0);
-        let snap = curve_snap(&EntityType::Circle(circle)).unwrap();
+        let snap = snap_from(&entity_curve(&EntityType::Circle(circle)).unwrap());
         assert!(snap.key_vertices.is_empty());
         assert!(hints(&snap, SnapHint::Endpoint).is_empty());
         assert!(hints(&snap, SnapHint::Midpoint).is_empty());
@@ -716,12 +686,12 @@ mod tests {
     /// where it happens rather than the next time somebody reaches for it.
     #[test]
     fn the_solid_layer_and_the_acis_bridge_are_reachable() {
-        let solid = acadrust::kernel::brep::make::cuboid([0.0; 3], [1.0; 3])
+        let solid = cadkernel::brep::make::cuboid([0.0; 3], [1.0; 3])
             .expect("the kernel builds its own primitives");
         assert!(solid.validate().is_empty());
         assert_eq!(solid.euler_characteristic(), 2);
         let document = acadrust::entities::acis::types::SatDocument::new();
-        let (bodies, loss) = acadrust::acis::lift(&document);
+        let (bodies, loss) = cadkernel::acis::lift(&document);
         assert!(bodies.is_empty() && loss.is_empty(), "an empty document lifts to nothing");
     }
 
@@ -753,14 +723,14 @@ mod tests {
         ray.base_point = v3(1.0, 1.0, 0.0);
         ray.direction = v3(2.0, 0.0, 0.0);
         let curve = entity_curve(&EntityType::Ray(ray)).unwrap();
-        assert_eq!(curve.extent(), acadrust::kernel::geom2d::Extent::Forward);
+        assert_eq!(curve.extent(), cadkernel::geom2d::Extent::Forward);
         assert_eq!(curve.point_at(1.0), [3.0, 1.0, 0.0]);
 
         let mut line = XLineEnt::default();
         line.base_point = v3(0.0, 0.0, 0.0);
         line.direction = v3(0.0, 3.0, 0.0);
         let curve = entity_curve(&EntityType::XLine(line)).unwrap();
-        assert_eq!(curve.extent(), acadrust::kernel::geom2d::Extent::Infinite);
+        assert_eq!(curve.extent(), cadkernel::geom2d::Extent::Infinite);
         assert_eq!(curve.point_at(-1.0), [0.0, -3.0, 0.0]);
     }
 }

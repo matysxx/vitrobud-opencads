@@ -423,6 +423,7 @@ pub fn square_grip(id: usize, world: glam::DVec3) -> GripDef {
         is_midpoint: false,
         shape: GripShape::Square,
         dir: None,
+        axis: None,
     }
 }
 
@@ -435,6 +436,7 @@ pub fn center_grip(id: usize, world: glam::DVec3) -> GripDef {
         is_midpoint: true,
         shape: GripShape::Square,
         dir: None,
+        axis: None,
     }
 }
 
@@ -447,6 +449,7 @@ pub fn circle_grip(id: usize, world: glam::DVec3) -> GripDef {
         is_midpoint: true,
         shape: GripShape::Circle,
         dir: None,
+        axis: None,
     }
 }
 
@@ -460,6 +463,7 @@ pub fn rectangle_grip(id: usize, world: glam::DVec3, dir: [f32; 2]) -> GripDef {
         is_midpoint: true,
         shape: GripShape::Rectangle,
         dir: Some(dir),
+        axis: None,
     }
 }
 
@@ -471,6 +475,7 @@ pub fn triangle_grip(id: usize, world: glam::DVec3) -> GripDef {
         is_midpoint: false,
         shape: GripShape::Triangle,
         dir: None,
+        axis: None,
     }
 }
 
@@ -587,10 +592,10 @@ pub fn parse_angle_deg(value: &str) -> Option<f64> {
 /// Re-exported rather than imported at each call site so the twelve modules
 /// that already reach for `entities::common::BulgeArc` keep working, and so
 /// there is one obvious place to see that the maths moved out.
-pub use acadrust::kernel::geom2d::BulgeArc;
+pub use cadkernel::geom2d::BulgeArc;
 
 /// Triangulate the solid bands a `wide_fills` returns into the flat WCS f64
-/// triangle list `TruckEntity::pick_tris` carries, so a wide polyline is
+/// triangle list `RenderEntity::pick_tris` carries, so a wide polyline is
 /// selectable across the band it draws and not just along its centreline.
 ///
 /// `origin` and `fills` are that function's own pair: 2-D offsets from the
@@ -616,7 +621,7 @@ pub(crate) fn wide_band_tris(origin: [f64; 2], fills: &[Vec<[f32; 2]>]) -> Vec<[
 /// thickness (code 39): a vertical wall between every band-boundary point and
 /// its `thickness`-along-`normal` copy, plus triangulated bottom and top caps.
 /// Returns `(fill_tris, edge_lines)` as flat WCS f64 lists — the caller wraps
-/// them in a `TruckEntity` (object = `Lines(edge_lines)`, `fill_tris`, and
+/// them in a `RenderEntity` (object = `Lines(edge_lines)`, `fill_tris`, and
 /// `pick_tris = fill_tris`). Shared by LwPolyline and Polyline2D so both wide
 /// polyline kinds extrude the same solid instead of just their centre-line.
 ///
@@ -670,14 +675,7 @@ pub(crate) fn thick_band_tube(
     (fill_tris, lines)
 }
 
-/// Build a continuous WCS point list + a per-point FULL band width for a
-/// tapered wide polyline, so the wire shader can interpolate each segment's two
-/// endpoint widths. Each `verts` entry is `(location_xy, bulge_to_next,
-/// start_width, end_width)` — the effective full widths at that vertex's segment
-/// start and end (already resolved against the polyline's constant width). Arcs
-/// are sampled in 16 steps with the width interpolated linearly along the arc.
-/// A shared vertex is emitted once (carrying the previous segment's end width),
-/// which is exact for the usual continuous taper.
+/// Build a continuous WCS point list and full width for a tapered polyline.
 pub(crate) fn tapered_band_points(
     verts: &[([f64; 2], f64, f64, f64)],
     is_closed: bool,
@@ -701,9 +699,10 @@ pub(crate) fn tapered_band_points(
         if bulge.abs() < 1e-9 {
             push(p1[0], p1[1], ew0 as f32);
         } else if let Some(arc) = BulgeArc::from_bulge(p0, p1, bulge) {
-            for j in 1..=16usize {
-                let t = j as f64 / 16.0;
-                let s = arc.sample(t);
+            let samples = arc.tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE);
+            let segments = samples.len().saturating_sub(1).max(1);
+            for (index, s) in samples.into_iter().enumerate().skip(1) {
+                let t = index as f64 / segments as f64;
                 push(s[0], s[1], (sw0 + (ew0 - sw0) * t) as f32);
             }
         }
@@ -792,4 +791,3 @@ pub(crate) fn polyline_segment_fill(
         Some(boundary)
     }
 }
-

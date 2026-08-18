@@ -340,19 +340,6 @@ pub(super) struct OpenCADStudio {
     /// Widest natural single-row width of the Start-page action buttons,
     /// measured by `WrapFlow` so side lists collapse before those buttons wrap.
     start_action_w: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    /// When the window is too narrow the properties panel collapses to a
-    /// vertical bar; this is the user's toggle to expand it back out.
-    props_expanded: bool,
-    /// Persisted dock width and side of the Properties panel.
-    properties_width: f32,
-    properties_side: config::DockSide,
-    properties_auto_collapse: bool,
-    /// Transient hover/drag state for the docked Properties panel.
-    properties_hovered: bool,
-    properties_dragging: bool,
-    properties_resizing: bool,
-    properties_drag_last: Option<Point>,
-    properties_dock_preview: Option<config::DockSide>,
     /// Read-only editor buffer backing the command-line history dropdown, so
     /// the log can be drag-selected across lines and copied (issue #232).
     /// Rebuilt from the history each time the dropdown is opened.
@@ -543,8 +530,20 @@ pub(super) struct OpenCADStudio {
     /// Snapshots of edited entities taken at the start of a grip drag. The drag
     /// mutates the document live, so Escape restores this group atomically.
     grip_originals: Vec<(acadrust::Handle, acadrust::EntityType)>,
+    /// Solid-history objects paired with their owning entity before a grip drag.
+    grip_history_originals: Vec<(
+        acadrust::Handle,
+        Vec<(acadrust::Handle, acadrust::objects::ObjectType)>,
+    )>,
     /// Document dirty state before the live grip mutation began.
     grip_dirty_before: Option<bool>,
+    /// Frozen wire geometry of the entities being grip-edited.
+    ///
+    /// The live entities are hidden from the resident hit-test set while their
+    /// grip preview is active. Keep their pre-drag geometry here so OSNAP,
+    /// Extension and OTRACK can still reference the entity's own vertices and
+    /// segments without snapping against the geometry being deformed.
+    grip_snap_wires: Vec<crate::scene::model::wire_model::WireModel>,
     /// Drag-start snapshot of the dragged entity's SDF glyph quads. A whole-
     /// entity text move slides these each frame (translating the already-shaped
     /// glyphs) instead of re-tessellating the run every cursor move (issue #316).
@@ -579,10 +578,21 @@ pub(super) struct OpenCADStudio {
     show_properties: bool,
     /// Docked Insert Block panel visibility.
     pub(crate) show_block_palette: bool,
+    /// General edge-stack dock layout for the side panels.
+    pub(crate) dock: crate::ui::dock::DockState,
+    /// Which panel is currently floated at full height (hovered, or a pinned
+    /// panel on top).
+    pub(crate) dock_expanded: Option<crate::ui::dock::PanelId>,
+    /// Panel currently being dragged between sides / reordered.
+    pub(crate) dock_dragging: Option<crate::ui::dock::PanelId>,
+    /// Panel currently being width-resized.
+    pub(crate) dock_resizing: Option<crate::ui::dock::PanelId>,
+    /// Last pointer position during a drag / resize.
+    pub(crate) dock_drag_last: Option<iced::Point>,
+    /// Live drag target (side + index), shown as a highlight while dragging.
+    pub(crate) dock_drag_target: Option<(crate::app::config::DockSide, usize)>,
     /// Docked Insert Block panel state (search, preview size, cached thumbnails).
     pub(crate) block_palette: crate::ui::window::block_palette::BlockPalette,
-    /// Whether the narrow-window block-palette bar is expanded.
-    block_palette_expanded: bool,
     /// Whether the document file tabs are shown at the top (FILETAB).
     show_file_tabs: bool,
     /// Whether the layout/paper-space tabs are shown at the bottom (LAYOUTTAB).
@@ -599,9 +609,17 @@ pub(super) struct OpenCADStudio {
     // ── Floating panel windows ────────────────────────────────────────────
     /// Active `iced_aw` colour picker: destination plus its initial colour.
     color_pick_target: Option<(ColorPickTarget, AcadColor)>,
+    /// Visible page in the shared CAD colour picker.
+    color_picker_tab: ColorPickerTab,
+    /// Recently committed real colours, newest first.
+    /// ACI and True Color remain semantically distinct even when their RGB matches.
+    recent_colors: Vec<AcadColor>,
     /// The open in-canvas modal dialog, if any (Plan B: shared overlay instead
     /// of OS windows).
     active_modal: Option<ModalKind>,
+    /// Plot modal geometry preserved while the Plot Style editor is open as
+    /// a child dialog. None means Plotstyle was opened directly (e.g. command).
+    plotstyle_parent_plot_geometry: Option<(iced::Vector, iced::Vector)>,
     /// FIND dialog inputs and current result cursor.
     find_replace: FindReplaceState,
     /// Set once the user acknowledges the AEC-drop warning, so re-entering the
@@ -1162,13 +1180,21 @@ pub struct SaveOutcome {
     refreshed_preview: Option<Option<acadrust::Preview>>,
     result: Result<(), crate::io::SaveFailure>,
 }
-
+/// Active page in the shared CAD colour picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorPickerTab {
+    #[default]
+    Index,
+    TrueColor,
+}
 /// Where a colour chosen in the standalone palette window should be applied.
 #[derive(Debug, Clone)]
 pub enum ColorPickTarget {
     DimStyle(DsField),
     MLeader(&'static str),
     Table(u8, &'static str),
+    /// Plot-style colour override for the currently selected ACI entry.
+    PlotStyle,
     /// Selected entities' colour (left properties panel).
     Properties,
     /// Selected entities' background colour (hatch / MTEXT background row).
@@ -1666,6 +1692,10 @@ pub enum ArrowKey {
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick(Instant),
+    /// Periodic drain of plugin-to-host requests that arrived outside a host
+    /// call (e.g. mutations from the Python REPL).
+    #[cfg(not(target_arch = "wasm32"))]
+    DrainPluginRequests,
     /// Web: periodic check for per-script fonts a drawing needs but hasn't
     /// fetched yet (#141). Native: never emitted.
     PollWebFonts,
@@ -1732,23 +1762,6 @@ pub enum Message {
     OpenUrl(String),
     /// Select which section a narrow (tabbed) Start page shows.
     StartSectionSelect(StartSection),
-    /// Expand/collapse the properties panel when it has shrunk to a bar.
-    TogglePropertiesBar,
-    /// Close the docked Properties panel; the ribbon command can reopen it.
-    PropertiesClose,
-    /// Pin/unpin the docked Properties panel.
-    PropertiesAutoCollapseToggle,
-    /// Hover state drives expansion while auto-collapse is enabled.
-    PropertiesHover(bool),
-    /// Begin dragging the Properties title bar to the opposite dock edge.
-    PropertiesDockGrab,
-    /// Begin dragging the Properties/viewport divider.
-    PropertiesResizeGrab,
-    /// Reset the dock width to its default value.
-    PropertiesWidthReset,
-    /// Full-workspace pointer tracking shared by dock and resize drags.
-    PropertiesDragMove(Point),
-    PropertiesDragRelease,
     /// Scroll the status-bar layout-tab strip horizontally by `delta` px
     /// (negative = left). Driven by the ‹ › arrows next to the tabs.
     ScrollLayoutTabs(f32),
@@ -2353,6 +2366,17 @@ pub enum Message {
     PropAttrInput { tag: String, value: String },
     /// User committed a block-attribute value edit (Enter pressed).
     PropAttrCommit(String),
+    /// Reports the currently keyboard-focused widget (if any) after a
+    /// [`sync_active_field_task`](crate::ui::properties::sync_active_field_task)
+    /// sweep, so the update handler can keep the active-row marker reconciled
+    /// against real focus instead of pointer hover.
+    PropSyncActive(Option<iced::widget::Id>),
+    /// A left mouse button was pressed anywhere. The clicked widget has already
+    /// been given focus by the time this arrives (the widget tree processes the
+    /// event before the runtime broadcasts it to subscriptions), so a focus
+    /// sweep — which resolves as `PropSyncActive` — reveals whether a property
+    /// value field was clicked and can select its whole value.
+    PropPointerPressed,
     /// Toggle the inline color picker dropdown open/closed.
     PropColorPickerToggle,
     /// Toggle the MTEXT background-colour picker dropdown open/closed.
@@ -2690,6 +2714,9 @@ pub enum Message {
     PlotDlg(crate::ui::window::plot::PlotDlgMsg),
     /// An edit inside the docked Insert Block panel.
     BlockPalette(crate::ui::window::block_palette::BlockPaletteMsg),
+    /// A dock chrome interaction (grab/resize/pin/hover/dock move) on a side
+    /// panel.
+    Dock(crate::ui::dock::DockMsg),
     /// Open the paper-layout batch output dialog.
     PrintAllOpen,
     /// Toggle one paper layout in the batch.
@@ -2723,10 +2750,13 @@ pub enum Message {
     /// Edit buffers changed.
     PlotStylePanelColorBuf(String),
     PlotStylePanelLwBuf(String),
+    PlotStylePanelLwSet(u8),
     PlotStylePanelScreenBuf(String),
     /// Apply current edit buffers to the selected ACI entry.
     PlotStylePanelApply,
-    /// Save the modified table back to disk.
+    /// Save the modified table directly over the currently edited CTB.
+    PlotStylePanelSaveDirect,
+    /// Save the modified table under a chosen name/path.
     PlotStylePanelSave,
     /// Save callback.
     PlotStylePanelSavePath(Option<std::path::PathBuf>),
@@ -2904,11 +2934,15 @@ pub enum Message {
     DsCenterMarkMode(String),
     /// Toggle the expanded colour palette for a DimStyle colour field.
     DsColorMore(DsField),
-    /// Open the `iced_aw` colour picker for a field and its current colour.
+    /// Open the shared CAD colour picker for a field and its current colour.
     OpenColorWindow(ColorPickTarget, AcadColor),
+    /// Switch between Index Color and True Color.
+    ColorPickerTabChanged(ColorPickerTab),
+    /// Change the pending colour without committing it yet.
+    ColorPickerColorChanged(AcadColor),
     /// Close the colour picker without choosing.
     CloseColorPicker,
-    /// A colour was chosen in the `iced_aw` picker.
+    /// Commit the colour chosen in the shared picker.
     ColorWindowPick(acadrust::types::Color),
     /// Set a block/linetype Handle field on the selected dim style from a
     /// dropdown of available block-records / linetypes (by name).
@@ -3030,15 +3064,6 @@ impl OpenCADStudio {
             props_asym_scale: std::collections::HashSet::new(),
             start_section: StartSection::default(),
             start_action_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            props_expanded: false,
-            properties_width: 250.0,
-            properties_side: config::DockSide::Left,
-            properties_auto_collapse: false,
-            properties_hovered: false,
-            properties_dragging: false,
-            properties_resizing: false,
-            properties_drag_last: None,
-            properties_dock_preview: None,
             history_content: iced::widget::text_editor::Content::new(),
             command_history_resizing: false,
             command_history_drag_last: None,
@@ -3115,7 +3140,9 @@ impl OpenCADStudio {
             grip_preview_handles: Vec::new(),
             hover_dwell: None,
             grip_originals: Vec::new(),
+            grip_history_originals: Vec::new(),
             grip_dirty_before: None,
+            grip_snap_wires: Vec::new(),
             grip_text_verts: Vec::new(),
             grip_text_slide: false,
             qselect: None,
@@ -3128,13 +3155,21 @@ impl OpenCADStudio {
             show_properties: true,
             show_block_palette: false,
             block_palette: Default::default(),
-            block_palette_expanded: false,
+            dock: Default::default(),
+            dock_expanded: None,
+            dock_dragging: None,
+            dock_resizing: None,
+            dock_drag_last: None,
+            dock_drag_target: None,
             show_file_tabs: true,
             show_layout_tabs: true,
             last_point: None,
             main_window: None,
             color_pick_target: None,
+            color_picker_tab: ColorPickerTab::Index,
+            recent_colors: Vec::new(),
             active_modal: None,
+            plotstyle_parent_plot_geometry: None,
             find_replace: FindReplaceState::default(),
             aec_drop_acknowledged: false,
             aec_drop_count: 0,
@@ -3456,17 +3491,6 @@ impl OpenCADStudio {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn push_plugin_error(&mut self, msg: &str) {
         self.command_line.push_error(msg);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn command_history_info(&self) -> Vec<String> {
-        use crate::ui::command_line::EntryKind;
-        self.command_line
-            .history
-            .iter()
-            .filter(|e| e.kind == EntryKind::Info)
-            .map(|e| e.text.clone())
-            .collect()
     }
 
     /// Boot function for `iced::daemon`: returns initial state plus a task that

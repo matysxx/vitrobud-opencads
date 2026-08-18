@@ -1,5 +1,5 @@
 // Scene modules grouped by role:
-//   convert — DXF/ACIS entities → truck solids & tessellated geometry
+//   convert — DXF/ACIS entities → solids & tessellated geometry
 //   text    — LFF stroke + TrueType font engines and shaping
 //   model   — per-entity GPU render models (wire, hatch, mesh, image, object)
 //   pick    — hit-testing, selection, grips, spatial index, xclip
@@ -32,6 +32,8 @@ mod preview;
 mod project;
 mod scene_markers;
 mod selection;
+
+pub(crate) use boundary::{boundary_entities, ring_source_handles};
 
 // Parallel tessellation free functions live in `convert::tess` (alongside the
 // other tessellation code); re-exported here so this root and sibling topic
@@ -89,6 +91,9 @@ fn hatch_interaction_aabb(hatch: &model::hatch_model::HatchModel) -> Option<[f64
 }
 
 fn mesh_interaction_aabb(set: &model::mesh_model::MeshLodSet) -> Option<[f64; 6]> {
+    if let Some(aabb) = set.instance_aabb {
+        return Some(aabb);
+    }
     let mut aabb = [
         f64::INFINITY,
         f64::INFINITY,
@@ -144,14 +149,10 @@ use acadrust::entities::{
     BoundaryEdge, BoundaryPath, Hatch as DxfHatch, PolylineEdge, Solid as DxfSolid,
 };
 use acadrust::objects::ObjectType;
+use acadrust::tables::normalize_name;
 use acadrust::types::Vector2;
 use acadrust::{CadDocument, EntityType, Handle, TableEntry};
 use glam;
-use truck_modeling::{
-    base::{BoundedCurve, ParameterDivision1D},
-    BSplineCurve as TruckBSpline, KnotVec, NurbsCurve, Point3, Vector4,
-};
-
 use iced::time::Duration;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::RefCell;
@@ -595,6 +596,7 @@ pub fn build_derived_caches(doc: &CadDocument) -> DerivedCaches {
 ///
 /// The callback is UI-agnostic and may run from Rayon workers. Callers should
 /// keep it cheap, normally just updating atomics.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn build_derived_caches_with_progress(
     doc: &CadDocument,
     progress: &(dyn Fn(u16) + Sync),
@@ -765,12 +767,12 @@ fn build_derived_caches_impl(
         })
         .collect();
 
-    // meshes (parallel tessellation). FACETRES (header.facet_resolution)
-    // scales the per-LOD segment counts so users with finer drawings get
-    // smoother solids; clamped to AutoCAD's [0.01, 10.0] range inside.
+    // FACETRES biases one shared chordal tolerance for all solids.
     // Top-level (layout-owned) solids are offset into the render frame; block
     // definition solids keep block-local coords for per-INSERT instancing. (#123)
     let facet_res = doc.header.facet_resolution;
+    let chordal_deflection =
+        crate::entities::solid3d::display_deflection(&doc.header, facet_res);
     let isolines = doc.header.isolines.max(0) as usize;
     // Real layout blocks come from the Layout objects' block_record handles —
     // `BlockRecord::is_layout()` is unreliable here (it flags ordinary blocks).
@@ -798,8 +800,14 @@ fn build_derived_caches_impl(
                 material_base_dir,
             );
             let top_level = layout_blocks.contains(&e.common().owner_handle);
-            let result = crate::entities::solid3d::tessellate_volume(e, color, facet_res, isolines)
-                .map(|mut mesh| {
+            let result = crate::entities::solid3d::tessellate_volume(
+                e,
+                color,
+                facet_res,
+                chordal_deflection,
+                isolines,
+            )
+            .map(|mut mesh| {
                 material.apply_to_with_face_overrides(
                     &mut mesh,
                     doc,
@@ -812,7 +820,7 @@ fn build_derived_caches_impl(
                 );
                 let mesh = if top_level { offset_mesh_lod_set(mesh) } else { mesh };
                 (handle, mesh, top_level)
-                });
+            });
             let done = detail_done.fetch_add(1, Ordering::Relaxed) + 1;
             if done & 0xff == 0 || done == detail_total {
                 report_detail(done);
@@ -857,6 +865,7 @@ fn build_derived_caches_impl(
 /// the loader thread. The temporary `Scene` never crosses threads (it contains
 /// `Rc`/`RefCell` state); only its Send-safe document and immutable prepared
 /// geometry are returned.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn prepare_open_geometry(
     doc: CadDocument,
     caches: &DerivedCaches,
@@ -868,10 +877,12 @@ pub fn prepare_open_geometry(
     scene.local_center = caches.local_center;
     scene.bg_color = model_bg;
     let cannoscale_value = scene.document.header.annotation_scale_value;
+    let unit_factor = scene.annotation_scale_unit_factor();
+
     scene.annotation_scale = if cannoscale_value > 1e-9 {
-        (1.0 / cannoscale_value) as f32
+        ((1.0 / cannoscale_value) / unit_factor) as f32
     } else {
-        1.0
+        (1.0 / unit_factor) as f32
     };
     scene.current_layout = "Model".to_string();
     let camera = scene.camera.borrow().clone();
@@ -1218,228 +1229,63 @@ fn offset_mesh_lod_set(mut set: MeshLodSet) -> MeshLodSet {
     set
 }
 
-/// Instance a block-local mesh into the render frame: apply the accumulated
-/// INSERT transform (block-local → world/DXF) then subtract world_offset, so a
-/// block scaled at the INSERT renders at the right size. Normals are rotated by
-/// the transform's linear part and re-normalized. (#123)
+/// Build a lightweight placement over immutable block-local geometry.
 fn transform_block_mesh_lod_set(
     set: &MeshLodSet,
     xform: &acadrust::types::Transform,
 ) -> MeshLodSet {
     use acadrust::types::Vector3;
-    let mut out = set.clone();
-    out.instance_transform = Some(*xform);
-    let transform_direction = |direction: [f32; 3]| {
-        let transformed = xform.apply_rotation(Vector3::new(
-            direction[0] as f64,
-            direction[1] as f64,
-            direction[2] as f64,
-        ));
-        let length = transformed.length();
-        if length > 1e-12 {
-            [
-                (transformed.x / length) as f32,
-                (transformed.y / length) as f32,
-                (transformed.z / length) as f32,
-            ]
-        } else {
-            direction
-        }
-    };
-    let scale_x = xform.apply_rotation(Vector3::UNIT_X).length();
-    let scale_y = xform.apply_rotation(Vector3::UNIT_Y).length();
-    let scale_z = xform.apply_rotation(Vector3::UNIT_Z).length();
-    let uniform_scale = (scale_x + scale_y + scale_z) / 3.0;
-    let is_uniform = (scale_x - uniform_scale).abs() <= uniform_scale.abs().max(1.0) * 1e-8
-        && (scale_y - uniform_scale).abs() <= uniform_scale.abs().max(1.0) * 1e-8
-        && (scale_z - uniform_scale).abs() <= uniform_scale.abs().max(1.0) * 1e-8;
-    if is_uniform {
-        let transform_split = |high: &mut [f32; 3], low: &mut [f32; 3]| {
-            let transformed = xform.apply(Vector3::new(
-                high[0] as f64 + low[0] as f64,
-                high[1] as f64 + low[1] as f64,
-                high[2] as f64 + low[2] as f64,
-            ));
-            *high = [
-                transformed.x as f32,
-                transformed.y as f32,
-                transformed.z as f32,
-            ];
-            *low = [
-                (transformed.x - high[0] as f64) as f32,
-                (transformed.y - high[1] as f64) as f32,
-                (transformed.z - high[2] as f64) as f32,
-            ];
-        };
-        for generator in &mut out.curved_gens {
-            match generator {
-                crate::scene::model::mesh_model::CurvedGen::Cone {
-                    base,
-                    base_low,
-                    axis,
-                    u_dir,
-                    v_dir,
-                    radius,
-                    h_max,
-                    ..
-                } => {
-                    transform_split(base, base_low);
-                    *axis = transform_direction(*axis);
-                    *u_dir = transform_direction(*u_dir);
-                    *v_dir = transform_direction(*v_dir);
-                    *radius *= uniform_scale as f32;
-                    *h_max *= uniform_scale as f32;
-                }
-                crate::scene::model::mesh_model::CurvedGen::Sphere {
-                    center,
-                    center_low,
-                    pole,
-                    u_dir,
-                    v_dir,
-                    radius,
-                    ..
-                } => {
-                    transform_split(center, center_low);
-                    *pole = transform_direction(*pole);
-                    *u_dir = transform_direction(*u_dir);
-                    *v_dir = transform_direction(*v_dir);
-                    *radius *= uniform_scale as f32;
-                }
-                crate::scene::model::mesh_model::CurvedGen::Torus {
-                    center,
-                    center_low,
-                    axis,
-                    u_dir,
-                    v_dir,
-                    major,
-                    minor,
-                    ..
-                } => {
-                    transform_split(center, center_low);
-                    *axis = transform_direction(*axis);
-                    *u_dir = transform_direction(*u_dir);
-                    *v_dir = transform_direction(*v_dir);
-                    *major *= uniform_scale as f32;
-                    *minor *= uniform_scale as f32;
+    let source = set.instance_source.clone().unwrap_or_else(|| {
+        std::sync::Arc::new(model::mesh_model::MeshInstanceSource {
+            handle: set.entity_handle().unwrap_or(Handle::new(0)),
+            lods: set.lods.clone(),
+            edge_verts: set.edge_verts.clone(),
+            edge_verts_low: set.edge_verts_low.clone(),
+            curved_gens: set.curved_gens.clone(),
+        })
+    });
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for x in [set.world_aabb[0], set.world_aabb[2]] {
+        for y in [set.world_aabb[1], set.world_aabb[3]] {
+            for z in [set.z_aabb[0], set.z_aabb[1]] {
+                let point = xform.apply(Vector3::new(x as f64, y as f64, z as f64));
+                for (axis, value) in [point.x, point.y, point.z].into_iter().enumerate() {
+                    bounds[axis] = bounds[axis].min(value);
+                    bounds[axis + 3] = bounds[axis + 3].max(value);
                 }
             }
         }
-    } else {
-        out.curved_gens.clear();
     }
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    for lod in &mut out.lods {
-        let has_low = lod.verts_low.len() == lod.verts.len();
-        if !has_low {
-            lod.verts_low = vec![[0.0; 3]; lod.verts.len()];
-        }
-        for (v, vl) in lod.verts.iter_mut().zip(lod.verts_low.iter_mut()) {
-            // Reconstruct the block-local f64, apply the INSERT transform and
-            // subtract world_offset in f64, then re-split into (high, low).
-            let w = xform.apply(Vector3::new(
-                v[0] as f64 + vl[0] as f64,
-                v[1] as f64 + vl[1] as f64,
-                v[2] as f64 + vl[2] as f64,
-            ));
-            let ax = w.x;
-            let ay = w.y;
-            let az = w.z;
-            let hx = ax as f32;
-            let hy = ay as f32;
-            let hz = az as f32;
-            *v = [hx, hy, hz];
-            *vl = [
-                (ax - hx as f64) as f32,
-                (ay - hy as f64) as f32,
-                (az - hz as f64) as f32,
-            ];
-            if hx < min_x {
-                min_x = hx;
-            }
-            if hy < min_y {
-                min_y = hy;
-            }
-            if hx > max_x {
-                max_x = hx;
-            }
-            if hy > max_y {
-                max_y = hy;
-            }
-        }
-        for n in &mut lod.normals {
-            let d = xform.apply_rotation(Vector3::new(n[0] as f64, n[1] as f64, n[2] as f64));
-            let len = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
-            if len > 1e-12 {
-                n[0] = (d.x / len) as f32;
-                n[1] = (d.y / len) as f32;
-                n[2] = (d.z / len) as f32;
-            }
-        }
+    MeshLodSet {
+        lods: Vec::new(),
+        material: set.material.clone(),
+        face_materials: set.face_materials.clone(),
+        visual_style: set.visual_style.clone(),
+        complete: set.complete,
+        edge_verts: Vec::new(),
+        edge_verts_low: Vec::new(),
+        curved_gens: Vec::new(),
+        metrics: set.metrics,
+        world_aabb: [
+            bounds[0] as f32,
+            bounds[1] as f32,
+            bounds[3] as f32,
+            bounds[4] as f32,
+        ],
+        z_aabb: [bounds[2] as f32, bounds[5] as f32],
+        instance_source: Some(source),
+        instance_transform: Some(*xform),
+        instance_handle: None,
+        instance_color: set.display_color(),
+        instance_aabb: bounds.iter().all(|value| value.is_finite()).then_some(bounds),
     }
-    // Apply the same INSERT transform to the feature edges.
-    {
-        let n = out.edge_verts.len();
-        if out.edge_verts_low.len() != n {
-            out.edge_verts_low = vec![[0.0; 3]; n];
-        }
-        for (v, vl) in out.edge_verts.iter_mut().zip(out.edge_verts_low.iter_mut()) {
-            let w = xform.apply(Vector3::new(
-                v[0] as f64 + vl[0] as f64,
-                v[1] as f64 + vl[1] as f64,
-                v[2] as f64 + vl[2] as f64,
-            ));
-            let (hx, hy, hz) = (w.x as f32, w.y as f32, w.z as f32);
-            *v = [hx, hy, hz];
-            *vl = [
-                (w.x - hx as f64) as f32,
-                (w.y - hy as f64) as f32,
-                (w.z - hz as f64) as f32,
-            ];
-        }
-    }
-    for silhouette in &mut out.stored_silhouettes {
-        silhouette.view_direction = transform_direction(silhouette.view_direction);
-        silhouette.up_vector = transform_direction(silhouette.up_vector);
-        let target = xform.apply(Vector3::new(
-            silhouette.target[0] as f64,
-            silhouette.target[1] as f64,
-            silhouette.target[2] as f64,
-        ));
-        silhouette.target = [target.x as f32, target.y as f32, target.z as f32];
-        let count = silhouette.edge_verts.len();
-        if silhouette.edge_verts_low.len() != count {
-            silhouette.edge_verts_low = vec![[0.0; 3]; count];
-        }
-        for (high, low) in silhouette
-            .edge_verts
-            .iter_mut()
-            .zip(silhouette.edge_verts_low.iter_mut())
-        {
-            let transformed = xform.apply(Vector3::new(
-                high[0] as f64 + low[0] as f64,
-                high[1] as f64 + low[1] as f64,
-                high[2] as f64 + low[2] as f64,
-            ));
-            *high = [
-                transformed.x as f32,
-                transformed.y as f32,
-                transformed.z as f32,
-            ];
-            *low = [
-                (transformed.x - high[0] as f64) as f32,
-                (transformed.y - high[1] as f64) as f32,
-                (transformed.z - high[2] as f64) as f32,
-            ];
-        }
-    }
-    if min_x.is_finite() {
-        out.world_aabb = [min_x, min_y, max_x, max_y];
-    }
-    out.recompute_aabb();
-    out
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1498,6 +1344,16 @@ struct SceneLight {
     web_profile: [f32; 8],
     web_rotation: [f32; 3],
     web_enabled: bool,
+}
+
+/// One-shot presentation-cache refresh scope for REDRAW/REDRAWALL. Resolved to
+/// concrete `ViewportInstance::instance_id`s at request time; `All` is the
+/// superset and dominates. `Active` = current-input viewport (paper sheet in
+/// paper space with nothing entered, D6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewportRefreshScope {
+    Active,
+    All,
 }
 
 pub struct Scene {
@@ -1666,8 +1522,7 @@ pub struct Scene {
             Arc<crate::scene::pick::interaction_index::InteractionIndex>,
         )>,
     >,
-    /// Auxiliary broad phase for objects that have no wire representation:
-    /// hatch-only and solid-only block instances.
+    /// Auxiliary broad phase for hatch-only objects.
     interaction_handle_index_cache: RefCell<
         Option<(
             u64,
@@ -1731,6 +1586,9 @@ pub struct Scene {
         RefCell<HashMap<(Handle, String, u64), (u64, Arc<Vec<HatchModel>>)>>,
     frozen_image_cache: RefCell<HashMap<(Handle, u64), (u64, Arc<Vec<ImageModel>>)>>,
     frozen_mesh_cache: RefCell<HashMap<(Handle, String, u64), (u64, Arc<Vec<MeshLodSet>>)>>,
+    /// Viewports that carry layer color/alpha/linetype/lineweight overrides.
+    /// Cached per geometry epoch so ordinary viewports can share render data.
+    viewport_style_override_cache: RefCell<Option<(u64, HashSet<Handle>)>>,
     /// Cached block-instance hatches for hit-testing, keyed by geometry_epoch.
     /// The set is geometry-derived, so a camera move or hover never invalidates
     /// the shared graph result.
@@ -1767,7 +1625,7 @@ pub struct Scene {
     pub viewcube_ucs: glam::Mat4,
     /// GPU render data for hatch fills, keyed by the DXF entity Handle.
     pub hatches: HashMap<Handle, HatchModel>,
-    /// GPU render data for solid meshes (truck Shell/Solid tessellation).
+    /// GPU render data for solid meshes (the kernel Shell/Solid tessellation).
     /// Top-level (layout-owned) solids only, stored in the offset-relative
     /// render frame and drawn flat.
     pub meshes: HashMap<Handle, MeshLodSet>,
@@ -1779,11 +1637,12 @@ pub struct Scene {
     /// owning block emits a transformed instance so a block placed at an
     /// INSERT scale renders at the right size. (#123)
     pub block_meshes: HashMap<Handle, MeshLodSet>,
-    /// Live truck B-reps for solids created this session by the Model tab,
-    /// keyed by entity handle. Backs the Design-group boolean tools (a solid
-    /// must be here to be combined). Not persisted — rebuilt only by creating
-    /// or combining primitives in-session.
-    pub solid_models: HashMap<Handle, truck_modeling::Solid>,
+    /// Live B-reps for solids created this session by the Model tab, keyed by
+    /// entity handle. Backs the Design-group boolean tools (a solid must be
+    /// here to be combined) and the exact-geometry save path, which writes
+    /// each one back out as ACIS rather than as facets. Not persisted —
+    /// rebuilt only by creating or combining primitives in-session.
+    pub solid_models: HashMap<Handle, cadkernel::brep::Body>,
     /// GPU render data for raster images (RasterImage entities), keyed by handle.
     pub images: HashMap<Handle, ImageModel>,
     /// The viewport that is currently "entered" (MSPACE mode).
@@ -1823,6 +1682,9 @@ pub struct Scene {
     /// `geometry_epoch`: a layer colour toggle can reuse the index, invalidate
     /// only its dependants, and avoid a whole-document scan on every toggle.
     dependency_index_cache: RefCell<Option<SceneDependencyIndex>>,
+    /// Boundary source → associative hatch handles. Source edits reuse this
+    /// index instead of scanning the document during every drag step.
+    associative_hatch_source_cache: RefCell<Option<HashMap<Handle, Vec<Handle>>>>,
     /// Tessellated block definitions in block-local coords, keyed by render
     /// background and block epoch. Model and Paper adapt black/white colours
     /// differently; retaining both variants prevents a full block rebuild on
@@ -1847,7 +1709,11 @@ pub struct Scene {
     /// without depending on the shader widget's internal `Program::State`
     /// (which can miss events under overlapping overlays).
     pub viewcube_hover: std::cell::Cell<Option<usize>>,
-    /// Wall time (ms) of the most recent wire re-tessellation — the work done
+    /// Pending REDRAW force set, keyed by viewport `instance_id`. Populated by
+    /// `request_refresh` and drained per-id by `refresh_consume` from whichever
+    /// builder owns that instance. Never touches geometry_epoch/block_epoch.
+    pending_refresh: std::cell::RefCell<rustc_hash::FxHashSet<u64>>,
+    /// Wall time (ms) of the most recent wire re-tessellation
     /// on a wire-cache miss in `model_tile_wires_arc` / `paper_sheet_wires_arc`.
     /// Stays at the last value while the cache is hit (idle pan/zoom on a warm
     /// cache reads ~0). Surfaced by the frame-budget HUD (Phase 5.3).
@@ -2010,6 +1876,7 @@ impl Scene {
             frozen_wipeout_cache: RefCell::new(HashMap::default()),
             frozen_image_cache: RefCell::new(HashMap::default()),
             frozen_mesh_cache: RefCell::new(HashMap::default()),
+            viewport_style_override_cache: RefCell::new(None),
             insert_hatch_cache: RefCell::new(None),
             paper_sheet_cache: RefCell::new(HashMap::default()),
             paper_viewport_cache: RefCell::new(HashMap::default()),
@@ -2034,11 +1901,13 @@ impl Scene {
             model_extents_cache: RefCell::new(None),
             entity_block_map_cache: RefCell::new(None),
             dependency_index_cache: RefCell::new(None),
+            associative_hatch_source_cache: RefCell::new(None),
             block_defn_cache: RefCell::new(HashMap::default()),
             entity_index_cache: RefCell::new(None),
             last_render_aspect: std::cell::Cell::new(16.0 / 9.0),
             last_world_per_pixel: std::cell::Cell::new(0.0),
             viewcube_hover: std::cell::Cell::new(None),
+            pending_refresh: std::cell::RefCell::new(rustc_hash::FxHashSet::default()),
             last_tess_ms: std::cell::Cell::new(0.0),
             last_tess_wires: std::cell::Cell::new(0),
             last_model_wire_gen: std::cell::Cell::new(0),
@@ -2162,7 +2031,7 @@ impl Scene {
             &self.document,
             &self.document.header.current_annotation_scale,
         );
-        let key = Self::resident_wire_key(
+        let key = self.resident_wire_key(
             block,
             self.bg_color,
             None,
@@ -2508,6 +2377,21 @@ impl Scene {
     }
 
     pub fn bump_entities(&mut self, changes: &[(Handle, ChangeKind)]) {
+        if changes.iter().any(|(handle, kind)| {
+            matches!(kind, ChangeKind::Removed)
+                || self
+                    .document
+                    .get_entity(*handle)
+                    .is_some_and(|entity| matches!(entity, EntityType::Hatch(_)))
+        }) {
+            self.associative_hatch_source_cache.borrow_mut().take();
+        }
+        let mut changes = changes.to_vec();
+        for change in self.refresh_associative_hatches(&changes) {
+            if !changes.iter().any(|(handle, _)| *handle == change.0) {
+                changes.push(change);
+            }
+        }
         if !changes.is_empty() {
             // A Modified delta can change layer/style/block references as well
             // as coordinates. Rebuild the reverse dependency map lazily on its
@@ -2526,14 +2410,14 @@ impl Scene {
                 .is_some_and(|entity| matches!(entity, EntityType::Light(_)))
         });
         if cached_light_changed || live_light_changed {
-            for (handle, _) in changes {
+            for &(handle, _) in &changes {
                 let exists = self
                     .document
-                    .get_entity(*handle)
+                    .get_entity(handle)
                     .is_some_and(|entity| matches!(entity, EntityType::Light(_)));
                 crate::entities::object_data::update_light_entity(
                     &mut self.object_data_cache,
-                    *handle,
+                    handle,
                     exists,
                 );
             }
@@ -2544,7 +2428,7 @@ impl Scene {
         {
             let mut tm = self.tess_memo.borrow_mut();
             let mut rm = self.resident_tess_memo.borrow_mut();
-            for &(h, k) in changes {
+            for &(h, k) in &changes {
                 // A changed or removed entity must re-tessellate; a fresh Add has
                 // no memo entry yet, so there is nothing to drop.
                 if matches!(k, ChangeKind::Modified | ChangeKind::Removed) {
@@ -2553,7 +2437,7 @@ impl Scene {
                 }
             }
         }
-        self.push_geometry_delta(epoch, changes.to_vec(), false);
+        self.push_geometry_delta(epoch, changes, false);
     }
 
     /// True when any changed handle belongs to an ordinary block definition
@@ -2615,6 +2499,64 @@ impl Scene {
         self.resident_tess_memo.borrow_mut().clear();
         // Can't name the changed handles → force every journal consumer to rebuild.
         self.push_geometry_delta(epoch, Vec::new(), true);
+    }
+
+    /// Stable per-viewport identity (mirrors the tag used by the renderer so
+    /// request resolution and builder consumption can never disagree — see
+    /// render.rs `instance_id` encoding).
+    pub fn instance_id_for(&self, inst: &ViewportInstance) -> u64 {
+        if let Some(t) = inst.tile_idx {
+            0x1000_0000_0000_0000 | (t as u64)
+        } else if inst.paper_sheet {
+            0x2000_0000_0000_0000
+        } else {
+            0x3000_0000_0000_0000 | inst.handle.value()
+        }
+    }
+
+    /// REDRAW core: resolve a scope to the concrete `instance_id`s it targets
+    /// and add them to the pending force set. `All` unions over `Active` so the
+    /// superset always wins (never shrinks a prior `All`). No DB / undo touch.
+    pub fn request_refresh(&self, scope: ViewportRefreshScope) {
+        let mut set = self.pending_refresh.borrow_mut();
+        if let ViewportRefreshScope::All = scope {
+            set.clear();
+            // All: every current tile in Model, else sheet + every paper content vp.
+            if self.current_layout == "Model" {
+                let tiles = self.model_tiles.borrow();
+                for (t, _) in tiles.iter().enumerate() {
+                    set.insert(0x1000_0000_0000_0000 | (t as u64));
+                }
+            } else {
+                set.insert(0x2000_0000_0000_0000); // sheet
+                let (_sheet, _sheet_h, content) = self.paper_viewport_handles();
+                for h in content.iter() {
+                    set.insert(0x3000_0000_0000_0000 | h.value());
+                }
+            }
+        } else if self.current_layout != "Model" {
+            // Active in paper: entered content vp, else the sheet (D6(a)).
+            match self.active_viewport {
+                Some(h) => { set.insert(0x3000_0000_0000_0000 | h.value()); }
+                None => { set.insert(0x2000_0000_0000_0000); }
+            }
+        } else {
+            // Active in Model: the active tile (always resolvable).
+            let active = self.active_model_tile.get();
+            set.insert(0x1000_0000_0000_0000 | (active as u64));
+        }
+    }
+
+    /// True while any force is still pending (never cleared falsely).
+    #[cfg(test)]
+    pub fn refresh_pending_any(&self) -> bool {
+        !self.pending_refresh.borrow().is_empty()
+    }
+
+    /// Builder hook: if `instance_id` has a pending force, mark it forced and
+    /// remove it (one-shot per id). Returns whether to set force_rasterize.
+    pub(crate) fn refresh_consume(&self, instance_id: u64) -> bool {
+        self.pending_refresh.borrow_mut().remove(&instance_id)
     }
 
     /// Drop a single entity from the tessellation memo so the next render
@@ -2718,18 +2660,28 @@ impl Scene {
         })
     }
 
-    /// Re-evaluate every cached mesh's color through `render_style` so a
-    /// Register a Model-tab solid: cache its truck B-rep (for boolean ops) and
-    /// tessellate it into the shaded mesh pipeline under `handle`. The solid is
-    /// in the same offset-relative frame the mesh pipeline uses, so the mesh is
-    /// stored as-is (Model-tab geometry is authored at world_offset 0).
-    pub fn register_solid_model(&mut self, handle: Handle, solid: truck_modeling::Solid) {
-        let entity = self.document.get_entity(handle);
-        let color = entity
+    /// Cache and display a Model-tab kernel solid.
+    pub fn register_solid_model(&mut self, handle: Handle, solid: cadkernel::brep::Body) {
+        let color = self
+            .document
+            .get_entity(handle)
             .map(|e| self.render_style(e).0)
             .unwrap_or([0.8, 0.8, 0.85, 1.0]);
-        if let Some(mut set) = crate::scene::model::solid_model::mesh_from_solid(&solid, color) {
-            if let Some(entity) = entity {
+        if let Some((mut set, wires, center)) =
+            crate::scene::model::solid_model::display_from_solid(&solid, color)
+        {
+            if let Some(EntityType::Solid3D(entity)) = self.document.get_entity_mut(handle) {
+                entity.point_of_reference = acadrust::types::Vector3::new(
+                    center[0], center[1], center[2],
+                );
+                entity.wires = wires;
+                entity.silhouettes.clear();
+            }
+            let name = handle.value().to_string();
+            for mesh in &mut set.lods {
+                mesh.name = name.clone();
+            }
+            if let Some(entity) = self.document.get_entity(handle) {
                 crate::scene::model::material_model::resolve_material_with_base(
                     &self.document,
                     entity,
@@ -2749,6 +2701,8 @@ impl Scene {
                 );
             }
             self.meshes.insert(handle, set);
+        } else {
+            self.meshes.remove(&handle);
         }
         self.solid_models.insert(handle, solid);
         // Only this solid's mesh changed — report just its handle so the mesh /
@@ -3247,9 +3201,12 @@ impl Scene {
         let ((x0, y0), (x1, y1)) = self.paper_limits()?;
         let (x0, y0, x1, y1) = (x0 as f32, y0 as f32, x1 as f32, y1 as f32);
         Some(HatchModel {
+            render_instance: None,
             world_origin: [0.0, 0.0],
             boundary: Arc::new(vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]),
             boundary_wcs: None,
+            boundary_exterior: None,
+            boundary_sources: None,
             pattern: crate::scene::model::hatch_model::HatchPattern::Solid,
             name: "SOLID".to_string(),
             color: self.paper_bg_color,
@@ -3617,6 +3574,26 @@ impl Scene {
             Self::DEFAULT_METRIC_SCALES
         }
     }
+    /// Conversion from one drawing unit to the paper unit used by the
+    /// standard annotation-scale family: millimetres for metric drawings
+    /// and inches for imperial drawings.
+    ///
+    /// The built-in scale factors are defined assuming model and paper use
+    /// the same base unit. A drawing in metres therefore needs an extra
+    /// factor of 1000 when its paper side is measured in millimetres.
+    pub(crate) fn annotation_scale_unit_factor(&self) -> f64 {
+        let paper_unit = if self.prefers_imperial_scales() == Some(true) {
+            1 // Inches
+        } else {
+            4 // Millimeters
+        };
+
+        crate::modules::draw::units::conversion_factor(
+            self.document.header.insertion_units,
+            paper_unit,
+        )
+        .unwrap_or(1.0)
+    }
 
     fn is_architectural_scale_name(name: &str) -> bool {
         name.contains('=') && name.contains('"') && name.contains('\'')
@@ -3675,6 +3652,7 @@ impl Scene {
     }
 
     pub fn scale_list(&self) -> Vec<(String, f32, f64)> {
+        let unit_factor = self.annotation_scale_unit_factor();
         let mut list: Vec<(String, f32, f64)> = self
             .document
             .objects
@@ -3689,7 +3667,11 @@ impl Scene {
                         && !s.name.contains('|')
                         && !s.name.to_ascii_uppercase().ends_with("_XREF") =>
                 {
-                    Some((s.name.clone(), s.inverse_factor() as f32, s.factor()))
+                    Some((
+                        s.name.clone(),
+                        (s.inverse_factor() / unit_factor) as f32,
+                        s.factor() * unit_factor,
+                    ))
                 }
                 _ => None,
             })
@@ -3701,10 +3683,14 @@ impl Scene {
             // annotation / viewport scale picker would be empty and so appear
             // broken. Substitute the standard ratio set — file scales still
             // win whenever the drawing actually defines any. (#154)
+
             list = self
                 .default_scales()
                 .iter()
-                .map(|&(label, vp)| (label.to_string(), (1.0 / vp) as f32, vp))
+                .map(|&(label, base_vp)| {
+                    let vp = base_vp * unit_factor;
+                    (label.to_string(), (1.0 / vp) as f32, vp)
+                })
                 .collect();
         }
         list
@@ -3742,10 +3728,15 @@ impl Scene {
             }
         });
         if !has_matching_family {
+            let unit_factor = self.annotation_scale_unit_factor();
+
             visible.extend(
                 self.default_scales()
                     .iter()
-                    .map(|&(label, vp)| (label.to_string(), (1.0 / vp) as f32, vp)),
+                    .map(|&(label, base_vp)| {
+                        let vp = base_vp * unit_factor;
+                        (label.to_string(), (1.0 / vp) as f32, vp)
+                    }),
             );
         }
 
@@ -3873,14 +3864,25 @@ impl Scene {
 
     pub fn set_annotation_scale_named(&mut self, name: &str) -> Option<Handle> {
         let handle = self.scale_handle_ensuring(name)?;
-        let ObjectType::Scale(scale) = self.document.objects.get(&handle)? else {
-            return None;
+        let unit_factor = self.annotation_scale_unit_factor();
+
+        let (scale_name, scale_factor, multiplier) = {
+            let ObjectType::Scale(scale) = self.document.objects.get(&handle)? else {
+                return None;
+            };
+
+            (
+                scale.name.clone(),
+                scale.factor(),
+                scale.inverse_factor() / unit_factor,
+            )
         };
-        let multiplier = scale.inverse_factor();
+
         self.annotation_scale = multiplier as f32;
-        self.document.header.current_annotation_scale = scale.name.clone();
-        self.document.header.annotation_scale_value = scale.factor();
+        self.document.header.current_annotation_scale = scale_name;
+        self.document.header.annotation_scale_value = scale_factor;
         self.invalidate_annotation_dependencies();
+
         Some(handle)
     }
 
@@ -4038,6 +4040,7 @@ impl Scene {
                 return Some(h);
             }
         }
+
         let fallback = self
             .default_scales()
             .iter()
@@ -4487,9 +4490,13 @@ impl Scene {
     }
 
     fn viewport_annotation_multiplier(&self, viewport: Handle) -> f32 {
+        let unit_factor = self.annotation_scale_unit_factor();
+
         self.viewport_scale_handle(viewport)
             .and_then(|handle| match self.document.objects.get(&handle) {
-                Some(ObjectType::Scale(scale)) => Some(scale.inverse_factor() as f32),
+                Some(ObjectType::Scale(scale)) => {
+                    Some((scale.inverse_factor() / unit_factor) as f32)
+                }
                 _ => None,
             })
             .unwrap_or(self.annotation_scale)
@@ -4516,27 +4523,45 @@ impl Scene {
     }
 
     pub fn set_viewport_scale_named(&mut self, name: &str) -> Option<Handle> {
+        let viewport = self.explicit_viewport_handle()?;
+        self.set_viewport_scale_named_for(viewport, name)
+    }
+
+    pub fn set_viewport_scale_named_for(
+        &mut self,
+        viewport: Handle,
+        name: &str,
+    ) -> Option<Handle> {
         let scale_handle = self.scale_handle_ensuring(name)?;
+        let unit_factor = self.annotation_scale_unit_factor();
+
         let factor = match self.document.objects.get(&scale_handle) {
-            Some(ObjectType::Scale(scale)) => scale.factor(),
+            Some(ObjectType::Scale(scale)) => scale.factor() * unit_factor,
             _ => return None,
         };
-        let viewport = self.explicit_viewport_handle()?;
+
         let locked = matches!(
             self.document.get_entity(viewport),
             Some(EntityType::Viewport(vp)) if vp.status.locked
         );
+
         if locked || factor <= 1.0e-9 {
             return None;
         }
+
         if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(viewport) {
             vp.custom_scale = factor;
             vp.view_height = vp.height / factor;
+        } else {
+            return None;
         }
+
         self.document
             .set_viewport_annotation_scale(viewport, scale_handle);
+
         self.resident_wire_sets.borrow_mut().clear();
         self.bump_geometry();
+
         Some(scale_handle)
     }
 
@@ -4545,14 +4570,25 @@ impl Scene {
         let EntityType::Viewport(vp) = self.document.get_entity(viewport)? else {
             return None;
         };
+
         let scale = self.viewport_scale_handle(viewport)?;
         let ObjectType::Scale(scale) = self.document.objects.get(&scale)? else {
             return None;
         };
-        let effective = vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
-        Some((effective - scale.factor()).abs() <= 1.0e-6 * scale.factor().max(1.0))
-    }
 
+        let effective = vp_effective_scale(
+            vp.custom_scale,
+            vp.view_height,
+            vp.height,
+        );
+
+        let expected = scale.factor() * self.annotation_scale_unit_factor();
+
+        Some(
+            (effective - expected).abs()
+                <= 1.0e-6 * expected.max(1.0),
+        )
+    }
     pub fn sync_viewport_annotation_scale(&mut self) -> bool {
         let Some(viewport) = self.explicit_viewport_handle() else {
             return false;
@@ -4560,8 +4596,10 @@ impl Scene {
         let Some(scale_handle) = self.viewport_scale_handle(viewport) else {
             return false;
         };
+        let unit_factor = self.annotation_scale_unit_factor();
+
         let factor = match self.document.objects.get(&scale_handle) {
-            Some(ObjectType::Scale(scale)) => scale.factor(),
+            Some(ObjectType::Scale(scale)) => scale.factor() * unit_factor,
             _ => return false,
         };
         let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(viewport) else {
@@ -4763,7 +4801,7 @@ impl Scene {
             self.paper_bg_color
         };
         let all_visible = self.annotation_all_visible();
-        let key = Self::resident_wire_key(
+        let key = self.resident_wire_key(
             block,
             bg,
             anno_scale_override,
@@ -4837,9 +4875,6 @@ impl Scene {
         // spaces or re-scaling a viewport can't accumulate dead full sets.
         let cur_epoch = self.geometry_epoch;
         sets.retain(|_, set| set.epoch == cur_epoch);
-        if sets.len() > 8 {
-            sets.clear();
-        }
         sets.insert(
             key,
             ResidentWireSet {
@@ -4853,6 +4888,7 @@ impl Scene {
     }
 
     fn resident_wire_key(
+        &self,
         block: Handle,
         bg: [f32; 4],
         anno_scale_override: Option<f32>,
@@ -4873,7 +4909,7 @@ impl Scene {
             .unwrap_or(u64::MAX));
         mix(annotation_scale_handle.map(|handle| handle.value()).unwrap_or(0));
         mix(all_visible as u64);
-        mix(style_viewport.map(|handle| handle.value()).unwrap_or(0));
+        mix(self.viewport_style_key(style_viewport));
         match frozen_layers {
             Some(frozen) => {
                 let mut signature = 0u64;
@@ -4975,7 +5011,7 @@ impl Scene {
         frozen_layers: Option<&HashSet<Handle>>,
         style_viewport: Option<Handle>,
     ) -> Option<Arc<Vec<WireModel>>> {
-        if style_viewport.is_some() {
+        if self.viewport_style_key(style_viewport) != 0 {
             return None;
         }
         let perf = crate::perf::enabled();
@@ -5874,6 +5910,7 @@ impl Scene {
         )
         .with_viewport(viewport);
         let mut models = Vec::new();
+        let mut image_sources = rustc_hash::FxHashMap::default();
         let root = if self.block_edit_block.is_none() {
             viewport.map(|viewport| render_graph::SceneRoot::Viewport {
                 paper_block: self.current_layout_block_handle(),
@@ -5931,6 +5968,21 @@ impl Scene {
                             (point.z - vertex.pos[2] as f64) as f32,
                         ];
                     }
+                    let matrix = &context.transform.matrix.m;
+                    let linear = [
+                        matrix[0][0].to_bits(), matrix[0][1].to_bits(), matrix[0][2].to_bits(),
+                        matrix[1][0].to_bits(), matrix[1][1].to_bits(), matrix[1][2].to_bits(),
+                        matrix[2][0].to_bits(), matrix[2][1].to_bits(), matrix[2][2].to_bits(),
+                    ];
+                    let source_id = *image_sources
+                        .entry((handle.value(), linear))
+                        .or_insert_with(crate::scene::model::instance_model::next_source_id);
+                    placed.render_instance = Some(
+                        crate::scene::model::instance_model::RenderInstance {
+                            source_id,
+                            translation: [matrix[0][3], matrix[1][3], matrix[2][3]],
+                        },
+                    );
                 }
                 placed.draw_depth = context.draw_depth(handle, depth_map.as_ref());
                 models.push(placed);
@@ -6134,15 +6186,11 @@ impl Scene {
         }
         let mut lookup: HashMap<Handle, Vec<u32>> = HashMap::default();
         for (index, set) in meshes.iter().enumerate() {
-            let Some(value) = set
-                .lods
-                .first()
-                .and_then(|mesh| mesh.name.parse::<u64>().ok())
-            else {
+            let Some(handle) = set.entity_handle() else {
                 continue;
             };
             lookup
-                .entry(Handle::new(value))
+                .entry(handle)
                 .or_default()
                 .push(index as u32);
         }
@@ -6262,6 +6310,46 @@ impl Scene {
         sig
     }
 
+    fn viewport_style_key(&self, viewport: Option<Handle>) -> u64 {
+        let Some(viewport) = viewport.filter(|handle| handle.is_valid()) else {
+            return 0;
+        };
+        let stale = self
+            .viewport_style_override_cache
+            .borrow()
+            .as_ref()
+            .map(|(epoch, _)| *epoch != self.geometry_epoch)
+            .unwrap_or(true);
+        if stale {
+            use acadrust::objects::KnownXRecordKind;
+            let kinds = [
+                KnownXRecordKind::LayerViewportAlphaOverride,
+                KnownXRecordKind::LayerViewportColorOverride,
+                KnownXRecordKind::LayerViewportLinetypeOverride,
+                KnownXRecordKind::LayerViewportLineweightOverride,
+            ];
+            let mut overridden = HashSet::default();
+            for layer in self.document.layers.iter() {
+                for kind in kinds {
+                    overridden.extend(
+                        self.document
+                            .layer_viewport_overrides(layer.handle, kind)
+                            .into_iter()
+                            .map(|(handle, _)| handle),
+                    );
+                }
+            }
+            *self.viewport_style_override_cache.borrow_mut() =
+                Some((self.geometry_epoch, overridden));
+        }
+        self.viewport_style_override_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, overridden)| overridden.contains(&viewport))
+            .then_some(viewport.value())
+            .unwrap_or(0)
+    }
+
     /// Hatch / 2-D-solid fills for a content viewport, with its frozen layers
     /// removed. Cached per frozen-set signature (viewports sharing a frozen set
     /// share the build). No frozen layers → the shared unfiltered set.
@@ -6278,7 +6366,7 @@ impl Scene {
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
             ^ u64::from(all_visible).rotate_left(61)
-            ^ viewport.value().rotate_left(23);
+            ^ self.viewport_style_key(Some(viewport)).rotate_left(23);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, self.current_layout.clone(), sig);
         let sel = self.selected_hatch_sig();
@@ -6313,8 +6401,7 @@ impl Scene {
         let scale = self.viewport_scale_handle(viewport);
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
-            ^ u64::from(all_visible).rotate_left(61)
-            ^ viewport.value().rotate_left(23);
+            ^ u64::from(all_visible).rotate_left(61);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, self.current_layout.clone(), sig);
         if let Some((e, arc)) = self.frozen_wipeout_cache.borrow().get(&key) {
@@ -6348,7 +6435,7 @@ impl Scene {
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
             ^ u64::from(all_visible).rotate_left(61)
-            ^ viewport.value().rotate_left(23);
+            ^ self.viewport_style_key(Some(viewport)).rotate_left(23);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, sig);
         if let Some((e, arc)) = self.frozen_image_cache.borrow().get(&key) {
@@ -6383,7 +6470,7 @@ impl Scene {
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
             ^ u64::from(all_visible).rotate_left(61)
-            ^ viewport.value().rotate_left(23);
+            ^ self.viewport_style_key(Some(viewport)).rotate_left(23);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, self.current_layout.clone(), sig);
         if let Some((e, arc)) = self.frozen_mesh_cache.borrow().get(&key) {
@@ -6405,8 +6492,7 @@ impl Scene {
     }
 
     /// True when `handle`'s entity sits on a locked layer. Locked objects stay
-    /// visible and snappable but cannot be selected or modified — callers in
-    /// the pick / modify paths consult this to skip them.
+    /// visible, snappable and selectable, but mutation paths must skip them.
     pub fn is_layer_locked(&self, handle: Handle) -> bool {
         self.document
             .get_entity(handle)
@@ -6455,18 +6541,6 @@ impl Scene {
         true
     }
 
-    fn mesh_visible_for_interaction(&self, handle: Handle) -> bool {
-        self.mesh_entity_visible(handle)
-            && self.document.get_entity(handle).is_some_and(|entity| {
-                !self.interaction_layer_frozen(&entity.common().layer)
-                    && self.belongs_to_visible_block(
-                        handle,
-                        entity.common().owner_handle,
-                        self.interaction_block_handle(),
-                    )
-            })
-    }
-
     /// One transformed mesh per block-definition solid instance reached from an
     /// INSERT owned by `layout_block`. Nested INSERTs accumulate their
     /// transform. Empty when no block solids exist. (#123)
@@ -6506,8 +6580,7 @@ impl Scene {
                     return;
                 };
                 let inherit = self.mesh_inherit_for_path(&context.insert_path);
-                let own_alpha =
-                    set.lods.first().map(|mesh| mesh.color[3]).unwrap_or(1.0);
+                let own_alpha = set.display_color().map_or(1.0, |color| color[3]);
                 let mut transformed =
                     transform_block_mesh_lod_set(set, &context.transform);
                 if let Some(color) = self.block_mesh_override_color(
@@ -6516,9 +6589,7 @@ impl Scene {
                     inherit.as_ref(),
                     own_alpha,
                 ) {
-                    for mesh in &mut transformed.lods {
-                        mesh.color = color;
-                    }
+                    transformed.instance_color = Some(color);
                     if let Some(material) = transformed.material.as_mut() {
                         if material.handle.is_none() {
                             material.diffuse = color;
@@ -6534,10 +6605,7 @@ impl Scene {
                         self.material_base_dir.as_deref(),
                     );
                 }
-                let root_name = context.root_handle.value().to_string();
-                for mesh in &mut transformed.lods {
-                    mesh.name = root_name.clone();
-                }
+                transformed.instance_handle = Some(context.root_handle);
                 out.push(transformed);
             },
         );
@@ -7414,20 +7482,6 @@ impl Scene {
                 }
             }
         }
-        for set in self.interaction_meshes_arc().iter() {
-            let Some(mesh) = set.lods.first() else {
-                continue;
-            };
-            let Ok(handle) = mesh.name.parse::<u64>() else {
-                continue;
-            };
-            if !self.mesh_visible_for_interaction(Handle::new(handle)) {
-                continue;
-            }
-            if let Some(aabb) = mesh_interaction_aabb(set) {
-                entries.push((handle, aabb));
-            }
-        }
         let index =
             Arc::new(crate::scene::pick::interaction_index::InteractionHandleIndex::build(entries));
         *self.interaction_handle_index_cache.borrow_mut() =
@@ -7642,7 +7696,6 @@ impl Scene {
             .collect();
         let insert_hatches = self.insert_hatches_for_click();
         let meshes = self.interaction_meshes_arc();
-        let mesh_lookup = self.mesh_pick_lookup(&meshes);
         handles.extend(
             self.interaction_handle_index()
                 .query_xy(aabb)
@@ -7650,31 +7703,20 @@ impl Scene {
                 .filter_map(|value| {
                     let handle = Handle::new(value);
                     (self.hatch_visible_for_interaction(handle)
-                        || insert_hatches.contains_key(&handle)
-                        || (mesh_lookup.contains_key(&handle)
-                            && self.mesh_visible_for_interaction(handle)))
+                        || insert_hatches.contains_key(&handle))
                     .then_some(handle)
                 }),
         );
+        handles.extend(meshes.iter().filter_map(|set| {
+            let handle = set.entity_handle()?;
+            let bounds = mesh_interaction_aabb(set)?;
+            (bounds[3] >= aabb[0]
+                && bounds[0] <= aabb[2]
+                && bounds[4] >= aabb[1]
+                && bounds[1] <= aabb[3])
+                .then_some(handle)
+        }));
         handles
-    }
-
-    /// True when any handle resolves to an ACIS volume entity (3D solid /
-    /// region / body / surface) — i.e. one whose render geometry is a cached
-    /// mesh that must be re-tessellated after an edit.
-    pub fn any_solid(&self, handles: &[Handle]) -> bool {
-        handles.iter().any(|&h| {
-            matches!(
-                self.document.get_entity(h),
-                Some(EntityType::Solid3D(_))
-                    | Some(EntityType::Region(_))
-                    | Some(EntityType::Body(_))
-                    | Some(EntityType::Surface(_))
-                    | Some(EntityType::Mesh(_))
-                    | Some(EntityType::PolygonMesh(_))
-                    | Some(EntityType::PolyfaceMesh(_))
-            )
-        })
     }
 
     /// Top-level solid handles caught by a rectangular selection box.
@@ -7686,22 +7728,17 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
-        candidate_handles: Option<&HashSet<Handle>>,
+        _candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
         let meshes = self.interaction_meshes_arc();
         let lookup = self.mesh_pick_lookup(&meshes);
-        let handles: Vec<Handle> = candidate_handles.map_or_else(
-            || lookup.keys().copied().collect(),
-            |candidates| candidates.iter().copied().collect(),
-        );
+        let handles: Vec<Handle> = lookup.keys().copied().collect();
         let mut out = Vec::new();
         for handle in handles {
-            if !self.mesh_visible_for_interaction(handle)
-                || matches!(
-                    self.document.get_entity(handle),
-                    Some(EntityType::Insert(_))
-                )
-            {
+            if matches!(
+                self.document.get_entity(handle),
+                Some(EntityType::Insert(_))
+            ) {
                 continue;
             }
             let Some(indices) = lookup.get(&handle) else {
@@ -7711,12 +7748,12 @@ impl Scene {
                 .iter()
                 .filter_map(|&index| meshes.get(index as usize))
                 .any(|set| {
-                    set.lods.first().is_some_and(|mesh| {
+                    set.geometry_lods().first().is_some_and(|mesh| {
                         !pick::hit_test::mesh_box_hit(
                             a,
                             b,
                             crossing,
-                            std::iter::once((handle, mesh)),
+                            std::iter::once((handle, mesh, set.instance_transform)),
                             view_rot,
                             eye,
                             bounds,
@@ -7849,7 +7886,6 @@ impl Scene {
             ));
         }
         handles.retain(|&h| self.passes_selection_filter(h));
-        handles.retain(|&h| !self.is_layer_locked(h));
         handles
     }
 
@@ -7860,22 +7896,17 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
-        candidate_handles: Option<&HashSet<Handle>>,
+        _candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
         let meshes = self.interaction_meshes_arc();
         let lookup = self.mesh_pick_lookup(&meshes);
-        let handles: Vec<Handle> = candidate_handles.map_or_else(
-            || lookup.keys().copied().collect(),
-            |candidates| candidates.iter().copied().collect(),
-        );
+        let handles: Vec<Handle> = lookup.keys().copied().collect();
         let mut out = Vec::new();
         for handle in handles {
-            if !self.mesh_visible_for_interaction(handle)
-                || matches!(
-                    self.document.get_entity(handle),
-                    Some(EntityType::Insert(_))
-                )
-            {
+            if matches!(
+                self.document.get_entity(handle),
+                Some(EntityType::Insert(_))
+            ) {
                 continue;
             }
             let Some(indices) = lookup.get(&handle) else {
@@ -7885,11 +7916,11 @@ impl Scene {
                 .iter()
                 .filter_map(|&index| meshes.get(index as usize))
                 .any(|set| {
-                    set.lods.first().is_some_and(|mesh| {
+                    set.geometry_lods().first().is_some_and(|mesh| {
                         !pick::hit_test::mesh_poly_hit(
                             poly,
                             crossing,
-                            std::iter::once((handle, mesh)),
+                            std::iter::once((handle, mesh, set.instance_transform)),
                             view_rot,
                             eye,
                             bounds,
@@ -7927,6 +7958,34 @@ impl Scene {
         )
     }
 
+    pub fn view_center_surface_pivot(
+        &self,
+        bounds: iced::Rectangle,
+    ) -> Option<glam::DVec3> {
+        let camera = self.camera.borrow();
+        let view_rot = camera.view_proj_rte(bounds);
+        let eye = camera.eye();
+        drop(camera);
+        let meshes = self.interaction_meshes_arc();
+        let center = iced::Point::new(bounds.width * 0.5, bounds.height * 0.5);
+        pick::hit_test::mesh_click_point(
+            center,
+            meshes.iter().filter_map(|set| {
+                let handle = set.entity_handle()?;
+                let mesh = set.geometry_lods().first()?;
+                Some((
+                    handle,
+                    mesh,
+                    set.instance_transform,
+                    mesh_interaction_aabb(set)?,
+                ))
+            }),
+            view_rot,
+            eye,
+            bounds,
+        )
+    }
+
     /// Hover may use the coarsest cached solid LOD. Click selection keeps the
     /// full-resolution mesh, while rollover only needs a stable parent handle
     /// and must stay within an interactive frame budget.
@@ -7954,60 +8013,34 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
-        candidate_handles: Option<&HashSet<Handle>>,
+        _candidate_handles: Option<&HashSet<Handle>>,
         coarse_lod: bool,
     ) -> Option<Handle> {
-        // Reuse the renderer's expanded mesh set (top-level solids + per-INSERT
-        // block instances), cached per geometry epoch — so hover no longer
-        // re-expands every block instance on each move. Every `MeshLodSet`
-        // carries its handle (in `mesh.name`) and a 3D AABB.
+        // Reuse the renderer's cached top-level and block-instance mesh set.
         let meshes = self.interaction_meshes_arc();
-        let lookup = candidate_handles.map(|_| self.mesh_pick_lookup(&meshes));
-        // Candidate handles already came from the precise f64 interaction BVH.
-        // When no index is active the source is small/non-resident, so exact
-        // triangles are safer than reintroducing the old f32 AABB precision loss.
-        let mut sets: Vec<(Handle, &MeshLodSet)> = Vec::new();
-        if let (Some(handles), Some(lookup)) = (candidate_handles, lookup.as_ref()) {
-            for handle in handles {
-                if !self.mesh_visible_for_interaction(*handle) {
-                    continue;
-                }
-                let Some(indices) = lookup.get(handle) else {
-                    continue;
-                };
-                sets.extend(
-                    indices
-                        .iter()
-                        .filter_map(|&index| meshes.get(index as usize).map(|set| (*handle, set))),
-                );
-            }
-        } else {
-            sets.extend(meshes.iter().filter_map(|set| {
-                let handle = set
-                    .lods
-                    .first()?
-                    .name
-                    .parse::<u64>()
-                    .ok()
-                    .map(Handle::new)?;
-                self.mesh_visible_for_interaction(handle)
-                    .then_some((handle, set))
-            }));
-        }
-        if coarse_lod {
-            return pick::hit_test::mesh_click_hit(
-                cursor,
-                sets.iter()
-                    .filter_map(|(handle, set)| set.lods.last().map(|mesh| (*handle, mesh))),
-                view_rot,
-                eye,
-                bounds,
-            );
-        }
+        let sets: Vec<(Handle, &MeshLodSet)> = meshes
+            .iter()
+            .filter_map(|set| {
+                let handle = set.entity_handle()?;
+                Some((handle, set))
+            })
+            .collect();
         pick::hit_test::mesh_click_hit(
             cursor,
-            sets.iter()
-                .filter_map(|(handle, set)| set.lods.first().map(|mesh| (*handle, mesh))),
+            sets.iter().filter_map(|(handle, set)| {
+                let lods = set.geometry_lods();
+                let mesh = if coarse_lod {
+                    lods.last()?
+                } else {
+                    lods.first()?
+                };
+                Some((
+                    *handle,
+                    mesh,
+                    set.instance_transform,
+                    mesh_interaction_aabb(set)?,
+                ))
+            }),
             view_rot,
             eye,
             bounds,
@@ -8026,24 +8059,20 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
-        candidate_handles: Option<&HashSet<Handle>>,
+        _candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
         if self.block_meshes.is_empty() {
             return Vec::new();
         }
         let meshes = self.interaction_meshes_arc();
         let lookup = self.mesh_pick_lookup(&meshes);
-        let handles: Vec<Handle> = candidate_handles.map_or_else(
-            || lookup.keys().copied().collect(),
-            |candidates| candidates.iter().copied().collect(),
-        );
+        let handles: Vec<Handle> = lookup.keys().copied().collect();
         let mut out = Vec::new();
         for handle in handles {
             if !matches!(
                 self.document.get_entity(handle),
                 Some(EntityType::Insert(_))
-            ) || !self.mesh_visible_for_interaction(handle)
-            {
+            ) {
                 continue;
             }
             let Some(indices) = lookup.get(&handle) else {
@@ -8053,12 +8082,12 @@ impl Scene {
                 .iter()
                 .filter_map(|&index| meshes.get(index as usize))
                 .any(|set| {
-                    set.lods.first().map_or(false, |m| {
+                    set.geometry_lods().first().is_some_and(|mesh| {
                         !pick::hit_test::mesh_box_hit(
                             a,
                             b,
                             crossing,
-                            std::iter::once((handle, m)),
+                            std::iter::once((handle, mesh, set.instance_transform)),
                             view_rot,
                             eye,
                             bounds,
@@ -8081,24 +8110,20 @@ impl Scene {
         view_rot: glam::Mat4,
         eye: glam::DVec3,
         bounds: iced::Rectangle,
-        candidate_handles: Option<&HashSet<Handle>>,
+        _candidate_handles: Option<&HashSet<Handle>>,
     ) -> Vec<Handle> {
         if self.block_meshes.is_empty() {
             return Vec::new();
         }
         let meshes = self.interaction_meshes_arc();
         let lookup = self.mesh_pick_lookup(&meshes);
-        let handles: Vec<Handle> = candidate_handles.map_or_else(
-            || lookup.keys().copied().collect(),
-            |candidates| candidates.iter().copied().collect(),
-        );
+        let handles: Vec<Handle> = lookup.keys().copied().collect();
         let mut out = Vec::new();
         for handle in handles {
             if !matches!(
                 self.document.get_entity(handle),
                 Some(EntityType::Insert(_))
-            ) || !self.mesh_visible_for_interaction(handle)
-            {
+            ) {
                 continue;
             }
             let Some(indices) = lookup.get(&handle) else {
@@ -8108,11 +8133,11 @@ impl Scene {
                 .iter()
                 .filter_map(|&index| meshes.get(index as usize))
                 .any(|set| {
-                    set.lods.first().map_or(false, |m| {
+                    set.geometry_lods().first().is_some_and(|mesh| {
                         !pick::hit_test::mesh_poly_hit(
                             poly,
                             crossing,
-                            std::iter::once((handle, m)),
+                            std::iter::once((handle, mesh, set.instance_transform)),
                             view_rot,
                             eye,
                             bounds,
@@ -8324,21 +8349,6 @@ impl Scene {
         let paper = anno_scale_override.is_some();
         let blk_cache = self.block_cache_arc_for(annotation_scale_handle, all_visible, style_viewport);
         let blk_ref: &cache::block_cache::BlockCache = &blk_cache;
-        // Zoom-adaptive curve sampling for top-level Edge tessellation. Target
-        // ~0.5 px chord height — far-out arcs that used to emit hundreds of
-        // segments now collapse to a handful. The guard clears the override
-        // when this scope exits so off-render tessellation (snap previews,
-        // hit-test, block_cache rebuild) sees the default.
-        struct CurveTolGuard;
-        impl Drop for CurveTolGuard {
-            fn drop(&mut self) {
-                crate::scene::convert::truck_tess::set_curve_tol_override(None);
-            }
-        }
-        let _tol_guard = wpp.map(|w| {
-            crate::scene::convert::truck_tess::set_curve_tol_override(Some((w * 0.5) as f64));
-            CurveTolGuard
-        });
         // Per-entity tessellation memo. Same classify/tessellate logic, two
         // SEPARATE stores so they can't thrash each other:
         //   * culled path (`view_aabb == Some`) → `tess_memo`, guard keyed on the
@@ -8584,7 +8594,7 @@ impl Scene {
             .document
             .block_records
             .iter()
-            .map(|record| (record.handle, record.name.to_ascii_uppercase()))
+            .map(|record| (record.handle, normalize_name(&record.name)))
             .collect();
         let membership: HashMap<Handle, Handle> = self
             .document
@@ -8611,7 +8621,7 @@ impl Scene {
             let EntityType::Insert(insert) = entity else {
                 continue;
             };
-            let target = insert.block_name.to_ascii_uppercase();
+            let target = normalize_name(&insert.block_name);
             let common = &insert.common;
             let owner = if common.owner_handle.is_null() {
                 membership
@@ -8695,7 +8705,7 @@ impl Scene {
                 extend_category(&mut index.annotation_geometry);
             }
             let add = |map: &mut HashMap<String, DependencyTargets>, name: &str| {
-                let target = map.entry(name.to_ascii_uppercase()).or_default();
+                let target = map.entry(normalize_name(name)).or_default();
                 target.render_handles.extend(render_handles.iter().copied());
                 target.source_handles.insert(common.handle);
                 target.touches_block_definition |= inside_block;
@@ -8834,7 +8844,7 @@ impl Scene {
         };
         let mut combined = DependencyTargets::default();
         for name in names {
-            let Some(target) = map.get(&name.to_ascii_uppercase()) else {
+            let Some(target) = map.get(&normalize_name(name)) else {
                 continue;
             };
             combined
@@ -9159,8 +9169,8 @@ impl Scene {
 
     /// The AABB centre of the current selection, in absolute world coordinates
     /// (same space as `Camera::target`) — the point the 3D view orbits around
-    /// when something is selected. `None` when nothing is selected; the caller
-    /// then orbits about the point under the cursor. (#229)
+    /// when something is selected. `None` keeps the current camera target as
+    /// the orbit centre. (#229)
     pub fn orbit_pivot(&self) -> Option<glam::DVec3> {
         if self.selected.is_empty() {
             return None;
@@ -9184,9 +9194,16 @@ impl Scene {
             self.annotation_all_visible(),
             None,
         );
-        let mut min = glam::DVec2::splat(f64::INFINITY);
-        let mut max = glam::DVec2::splat(f64::NEG_INFINITY);
+        let mut min = glam::DVec3::splat(f64::INFINITY);
+        let mut max = glam::DVec3::splat(f64::NEG_INFINITY);
         let mut any = false;
+        let mut include = |point: glam::DVec3| {
+            if point.is_finite() {
+                min = min.min(point);
+                max = max.max(point);
+                any = true;
+            }
+        };
         for wire in &wires {
             let Some(h) = Self::handle_from_wire_name(&wire.name) else {
                 continue;
@@ -9194,17 +9211,33 @@ impl Scene {
             if !self.selected.contains(&h) {
                 continue;
             }
-            for &[x, y, _] in &wire.points {
-                if x.is_finite() && y.is_finite() {
-                    min = min.min(glam::DVec2::new(x as f64, y as f64));
-                    max = max.max(glam::DVec2::new(x as f64, y as f64));
-                    any = true;
-                }
+            for (index, &[x, y, z]) in wire.points.iter().enumerate() {
+                let [lx, ly, lz] = wire
+                    .points_low
+                    .get(index)
+                    .copied()
+                    .unwrap_or([0.0; 3]);
+                include(glam::DVec3::new(
+                    x as f64 + lx as f64,
+                    y as f64 + ly as f64,
+                    z as f64 + lz as f64,
+                ));
+            }
+        }
+        for set in self.interaction_meshes_arc().iter() {
+            let Some(handle) = set.entity_handle() else {
+                continue;
+            };
+            if !self.selected.contains(&handle) {
+                continue;
+            }
+            if let Some(aabb) = mesh_interaction_aabb(set) {
+                include(glam::DVec3::new(aabb[0], aabb[1], aabb[2]));
+                include(glam::DVec3::new(aabb[3], aabb[4], aabb[5]));
             }
         }
         if any {
-            let c = (min + max) * 0.5;
-            Some(glam::DVec3::new(c.x, c.y, 0.0))
+            Some((min + max) * 0.5)
         } else {
             None
         }
@@ -10097,5 +10130,82 @@ mod delta_undo_tests {
             copy_img
         );
         assert_eq!(ms_occurrences(&scene, copy_h), 1);
+    }
+}
+
+#[cfg(test)]
+mod redraw_tests {
+    use super::*;
+
+    fn tile_inst(idx: usize, active: bool) -> ViewportInstance {
+        ViewportInstance {
+            handle: Handle::NULL,
+            tile_idx: Some(idx),
+            screen_rect: iced::Rectangle { x: 0.0, y: 0.0, width: 1.0, height: 1.0 },
+            camera: Camera::default(),
+            render_mode: acadrust::entities::ViewportRenderMode::Wireframe2D,
+            active,
+            grid_on: false,
+            paper_sheet: false,
+        }
+    }
+
+    #[test]
+    fn request_resolves_to_instance_ids_and_consumes_per_id() {
+        let scene = Scene::new(); // default: one model tile, index 0, active
+        let geom_before = scene.geometry_epoch;
+        let block_before = scene.block_epoch;
+
+        // Active -> the active model tile's instance_id.
+        scene.request_refresh(ViewportRefreshScope::Active);
+        let active_id = scene.instance_id_for(&tile_inst(0, true));
+        assert!(scene.refresh_pending_any(), "a request must be pending");
+        assert!(scene.refresh_consume(active_id), "active tile id must be consumed");
+        assert!(!scene.refresh_consume(active_id), "second consume for the same id is empty (one-shot per id)");
+        assert!(!scene.refresh_pending_any(), "id set empty after its only target consumed it");
+
+        // REDRAW never touches geometry / block epochs.
+        assert_eq!(scene.geometry_epoch, geom_before, "REDRAW must not bump geometry_epoch");
+        assert_eq!(scene.block_epoch, block_before, "REDRAW must not bump block_epoch");
+    }
+
+    #[test]
+    fn all_extinguishes_and_then_resurrects_active_after_consumption() {
+        let scene = Scene::new();
+        let t0 = scene.instance_id_for(&tile_inst(0, false));
+
+        scene.request_refresh(ViewportRefreshScope::Active);
+        assert!(scene.refresh_consume(t0), "Active targeted tile 0");
+        assert!(!scene.refresh_pending_any(), "Active consumed: set now empty");
+
+        // A subsequent All must re-establish membership even after the Active
+        // request was fully drained (the superset is resolved at request time).
+        scene.request_refresh(ViewportRefreshScope::All);
+        assert!(scene.refresh_pending_any(), "All re-pends after Active was consumed");
+        assert!(scene.refresh_consume(t0), "All must re-force tile 0 after Active drained");
+    }
+
+    #[test]
+    fn all_targets_every_existing_model_tile() {
+        let mut scene = Scene::new();
+        // Create MULTIPLE real model tiles through the public split API so the
+        // test exercises the per-id REDRAWALL guarantee (the very reason for the
+        // FxHashSet design): every EXISTING tile id must be targeted and drained.
+        scene.split_active_pane(false); // 2 tiles
+        scene.split_active_pane(false); // 3 tiles
+        assert!(scene.model_tiles.borrow().len() >= 3, "split must have produced tiles");
+
+        scene.request_refresh(ViewportRefreshScope::All);
+        for idx in 0..scene.model_tiles.borrow().len() {
+            let id = scene.instance_id_for(&tile_inst(idx, false));
+            assert!(
+                scene.refresh_consume(id),
+                "All must target EXISTING tile {idx}, not just tile 0"
+            );
+        }
+        assert!(!scene.refresh_pending_any(), "All drained every existing tile");
+        // A tile index that does not exist must NOT be drained.
+        let ghost = scene.instance_id_for(&tile_inst(99, false));
+        assert!(!scene.refresh_consume(ghost), "nonexistent tile 99 has no membership");
     }
 }

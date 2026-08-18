@@ -30,6 +30,7 @@ impl OpenCADStudio {
                                 .selected_entities()
                                 .iter()
                                 .map(|(h, _)| *h)
+                                .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                                 .collect();
                             let mut found = false;
                             for sh in &selected_handles {
@@ -214,6 +215,37 @@ impl OpenCADStudio {
                 return Some(Task::done(Message::ToggleLayoutTabs));
             }
 
+            // ── REDRAW / REGEN ──────────────────────────────────────────────
+            // REDRAW — force a full re-rasterize of the current viewport next
+            // frame, WITHOUT touching the DB (never bumps geometry_epoch /
+            // block_epoch, never pushes undo). Scope: Active. This arm does not
+            // itself clear previews or cancel commands (the normal non-transparent
+            // dispatch teardown, commands/mod.rs:90-96, governs that separately);
+            // it only queues a per-viewport cache invalidation.
+            "REDRAW" => {
+                use crate::scene::ViewportRefreshScope;
+                self.tabs[i].scene.request_refresh(ViewportRefreshScope::Active);
+                self.command_line.push_output("REDRAW: viewport refreshed.");
+                return Some(Task::none());
+            }
+            // REDRAWALL — force re-rasterize of every generated viewport.
+            "REDRAWALL" => {
+                use crate::scene::ViewportRefreshScope;
+                self.tabs[i].scene.request_refresh(ViewportRefreshScope::All);
+                self.command_line.push_output("REDRAWALL: viewports refreshed.");
+                return Some(Task::none());
+            }
+            // REGEN — full model regeneration (bump_geometry: geometry_epoch AND
+            // block_epoch; C4). No undo, no DB mutation, so do NOT touch
+            // self.tabs[i].dirty — a newly opened drawing must not become
+            // "modified" merely because tessellation caches were invalidated (C7).
+            // REGENALL is functionally identical (C5).
+            "REGEN" | "REGENALL" => {
+                self.tabs[i].scene.bump_geometry();
+                self.command_line.push_output("REGEN: regenerated model.");
+                return Some(Task::none());
+            }
+
             // ── Drafting aids — same toggles the status-bar pills drive, also
             //    reachable by name from the command line. ─────────────────────────
             // GRID — show / hide the reference grid.
@@ -358,8 +390,20 @@ impl OpenCADStudio {
                         "SET" => {
                             let app = parts.get(1).copied().unwrap_or("OpenCADStudio");
                             let val = parts.get(2).copied().unwrap_or("");
+                            let editable: Vec<_> = selected_handles
+                                .iter()
+                                .copied()
+                                .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
+                                .collect();
+                            if editable.is_empty() {
+                                self.command_line.push_error(
+                                    crate::t!("XDATA: selected entities are on locked layers.")
+                                        .as_ref(),
+                                );
+                                return Some(Task::none());
+                            }
                             self.push_undo_snapshot(i, "XDATA SET");
-                            for sh in &selected_handles {
+                            for sh in &editable {
                                 if let Some(entity) =
                                     self.tabs[i].scene.document.get_entity_mut(*sh)
                                 {
@@ -371,13 +415,25 @@ impl OpenCADStudio {
                             self.tabs[i].dirty = true;
                             self.command_line.push_output(crate::tf!(
                                 "XDATA: set [{app}] = \"{val}\" on {} entity/entities.",
-                                selected_handles.len()
+                                editable.len()
                             ).as_ref());
                         }
                         "CLEAR" => {
                             let app_filter = parts.get(1).copied();
+                            let editable: Vec<_> = selected_handles
+                                .iter()
+                                .copied()
+                                .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
+                                .collect();
+                            if editable.is_empty() {
+                                self.command_line.push_error(
+                                    crate::t!("XDATA: selected entities are on locked layers.")
+                                        .as_ref(),
+                                );
+                                return Some(Task::none());
+                            }
                             self.push_undo_snapshot(i, "XDATA CLEAR");
-                            for sh in &selected_handles {
+                            for sh in &editable {
                                 if let Some(entity) =
                                     self.tabs[i].scene.document.get_entity_mut(*sh)
                                 {
@@ -411,7 +467,7 @@ impl OpenCADStudio {
             }
 
             // BOX / SPHERE / CYLINDER / CONE / WEDGE / TORUS are handled by the
-            // Model-tab primitive command above (with truck boolean caching).
+            // Model-tab primitive command above (with the kernel boolean caching).
 
             // ── EXTRUDE ────────────────────────────────────────────────────
             // PRESSPULL on a closed boundary creates a solid by extruding it to a
@@ -575,6 +631,7 @@ impl OpenCADStudio {
                     .selected_entities()
                     .iter()
                     .map(|(h, _)| *h)
+                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
                 if handles.is_empty() {
                     self.command_line
@@ -681,6 +738,7 @@ impl OpenCADStudio {
                     .selected_entities()
                     .iter()
                     .map(|(h, _)| *h)
+                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
                 if handles.is_empty() {
                     self.command_line
@@ -740,8 +798,13 @@ impl OpenCADStudio {
                     self.command_line.push_info(crate::t!("Usage: HYPERLINK <url>   (select objects first)").as_ref());
                     return Some(Task::none());
                 }
-                let handles: Vec<acadrust::Handle> =
-                    self.tabs[i].scene.selected_entities().iter().map(|(h, _)| *h).collect();
+                let handles: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .iter()
+                    .map(|(h, _)| *h)
+                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
+                    .collect();
                 if handles.is_empty() {
                     self.command_line.push_error(crate::t!("HYPERLINK: select objects first.").as_ref());
                     return Some(Task::none());
@@ -791,6 +854,7 @@ impl OpenCADStudio {
                     .selected_entities()
                     .iter()
                     .map(|(h, _)| *h)
+                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
                 if handles.is_empty() {
                     self.command_line
@@ -913,6 +977,7 @@ impl OpenCADStudio {
                     .selected_entities()
                     .iter()
                     .map(|(handle, _)| *handle)
+                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
                 if handles.is_empty() {
                     self.command_line
@@ -1228,4 +1293,68 @@ fn parse_landxml_cgpoints(xml: &str) -> Vec<[f64; 3]> {
         rest = &body[close + "</CgPoint>".len()..];
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::OpenCADStudio;
+
+    fn fresh_app() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app
+    }
+
+    #[test]
+    fn redraw_requests_and_leaves_geometry_untouched() {
+        let mut app = fresh_app();
+        let i = app.active_tab;
+        let geom_before = app.tabs[i].scene.geometry_epoch;
+        let block_before = app.tabs[i].scene.block_epoch;
+        let _ = app.run_command_line("REDRAW");
+        assert!(
+            app.tabs[i].scene.refresh_pending_any(),
+            "REDRAW must leave a pending force request"
+        );
+        assert_eq!(app.tabs[i].scene.geometry_epoch, geom_before, "REDRAW must not regen");
+        assert_eq!(app.tabs[i].scene.block_epoch, block_before, "REDRAW must not regen blocks");
+    }
+
+    #[test]
+    fn aliases_route_like_full_verbs() {
+        let mut full = fresh_app();
+        let mut short = fresh_app();
+        let _ = full.run_command_line("REDRAW");
+        let _ = short.run_command_line("R");
+        let i = full.active_tab;
+        assert!(short.tabs[i].scene.refresh_pending_any(), "'R' must trigger REDRAW");
+        assert_eq!(
+            short.tabs[i].scene.refresh_pending_any(),
+            full.tabs[i].scene.refresh_pending_any(),
+            "'R' and 'REDRAW' must leave the same refresh state"
+        );
+    }
+
+    #[test]
+    fn redrawall_marks_all_tiles() {
+        let mut app = fresh_app();
+        let i = app.active_tab;
+        let _ = app.run_command_line("REDRAWALL");
+        assert!(app.tabs[i].scene.refresh_pending_any(), "REDRAWALL must leave a force request");
+    }
+
+    #[test]
+    fn regen_rebuilds_but_does_not_dirty_document() {
+        let mut app = fresh_app();
+        let i = app.active_tab;
+        let geom_before = app.tabs[i].scene.geometry_epoch;
+        let block_before = app.tabs[i].scene.block_epoch;
+        app.tabs[i].dirty = false;
+        let _ = app.run_command_line("REGEN");
+        assert_ne!(app.tabs[i].scene.geometry_epoch, geom_before, "REGEN must regenerate geometry");
+        assert_ne!(app.tabs[i].scene.block_epoch, block_before, "REGEN must regenerate block epoch");
+        assert!(!app.tabs[i].dirty, "REGEN must NOT mark the document as modified (no DB change)");
+        let _ = app.run_command_line("REGENALL");
+        assert!(!app.tabs[i].dirty, "REGENALL must not dirty the document either");
+    }
 }

@@ -220,14 +220,13 @@ fn plot_scene_content(
 }
 
 impl OpenCADStudio {
-    /// Before a save, give every cached truck solid that still has no ACIS
+    /// Before a save, give every cached solid that still has no ACIS
     /// geometry (EXTRUDE/REVOLVE/SWEEP/LOFT/boolean results) an exact modeler
-    /// body derived from its truck B-rep, so the written DWG/DXF carries real
+    /// body derived from its B-rep, so the written DWG/DXF carries real
     /// 3-D geometry other CAD apps can open instead of an empty data stream.
-    /// Curved solids that the exact planar path can't yet express are left
-    /// untouched (handled by the NURBS path).
-    #[cfg(feature = "solid3d")]
-    fn sync_truck_solids_to_acis(&mut self, i: usize) {
+    /// A body holding something the kernel has no ACIS record form for is
+    /// left untouched rather than written out half-complete.
+    fn sync_solid_models_to_acis(&mut self, i: usize) {
         use acadrust::EntityType;
         let scene = &mut self.tabs[i].scene;
         let targets: Vec<acadrust::Handle> = scene
@@ -255,9 +254,6 @@ impl OpenCADStudio {
             }
         }
     }
-
-    #[cfg(not(feature = "solid3d"))]
-    fn sync_truck_solids_to_acis(&mut self, _i: usize) {}
 
     /// Snapshot the persisted UI preferences from live state.
     pub(in crate::app) fn current_settings(&self) -> crate::app::settings::UserSettings {
@@ -481,12 +477,22 @@ impl OpenCADStudio {
     }
 
     /// Background task: fetch `owner/repo`'s installable releases and their
-    /// manifest API versions.
+    /// manifest API versions. The fetch runs on its own OS thread because the
+    /// several sequential HTTP requests inside `fetch_release_info` would
+    /// otherwise block the async executor and serialise all repo fetches.
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::app) fn fetch_releases_task(&self, repo: String) -> Task<Message> {
         let label = repo.clone();
         Task::perform(
-            async move { crate::plugin::marketplace::fetch_release_info(&repo) },
+            async move {
+                let (tx, rx) = iced::futures::channel::oneshot::channel();
+                std::thread::spawn(move || {
+                    let result = crate::plugin::marketplace::fetch_release_info(&repo);
+                    let _ = tx.send(result);
+                });
+                rx.await
+                    .unwrap_or_else(|_| Err("release fetch thread died".into()))
+            },
             move |res| Message::PluginReleasesFetched(label, res),
         )
     }
@@ -557,10 +563,10 @@ impl OpenCADStudio {
                 section: self.start_section,
             },
             statusbar: self.statusbar_config.clone(),
-            properties: crate::app::config::PropertiesDockConfig {
-                side: self.properties_side,
-                width: self.properties_width,
-                auto_collapse: self.properties_auto_collapse,
+            dock: {
+                let mut dock = self.dock.clone();
+                dock.ensure_settings();
+                dock
             },
             annotation_auto_scale: self.annotation_auto_scale,
             ribbon: crate::app::config::RibbonConfig {
@@ -599,13 +605,9 @@ impl OpenCADStudio {
         // (`refresh_recent_thumbs`) — never here on the boot path.
         self.start_section = cfg.start.section;
         self.statusbar_config = cfg.statusbar;
-        self.properties_side = cfg.properties.side;
-        self.properties_width = if cfg.properties.width.is_finite() {
-            cfg.properties.width.clamp(220.0, 600.0)
-        } else {
-            250.0
-        };
-        self.properties_auto_collapse = cfg.properties.auto_collapse;
+        let mut dock = cfg.dock;
+        dock.ensure_settings();
+        self.dock = dock;
         self.annotation_auto_scale = cfg.annotation_auto_scale.clamp(-4, 4);
         self.ribbon.set_collapse_mode(cfg.ribbon.collapse);
         self.plot_dialog = cfg.plot;
@@ -707,6 +709,30 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     .is_some_and(|p| p == want)
             })
         }
+    }
+
+    /// Read through this session's lease when it covers `path`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) fn read_drawing(
+        &self,
+        path: &std::path::Path,
+    ) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let lease = self
+            .tab_showing(path)
+            .and_then(|i| self.tabs[i].edit_lease.as_ref());
+        let leased = match lease {
+            Some(lease) => lease.reader()?,
+            None => None,
+        };
+        let Some(mut reader) = leased else {
+            return std::fs::read(path);
+        };
+        reader.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        Ok(bytes)
     }
 
     /// Start the next drawing a second launch handed us, if any.
@@ -849,7 +875,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             ));
         }
 
-        let destination_lease = if path_changed {
+        let mut destination_lease = if path_changed {
             match crate::io::edit_lock::EditLease::acquire(&path) {
                 Ok(lease) => Some(lease),
                 Err(crate::io::edit_lock::EditLeaseError::Locked(error)) => {
@@ -867,21 +893,17 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         };
 
         let expected_fingerprint = if path_changed {
-            match crate::io::edit_lock::FileFingerprint::capture(&path) {
-                Ok(fingerprint) => Some(fingerprint),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => {
-                    return Err(crate::io::SaveFailure::other(format!(
-                        "could not verify {} before saving: {error}",
-                        path.display()
-                    )));
-                }
-            }
+            None
         } else {
-            self.tabs[i].disk_fingerprint.clone().or_else(|| {
-                crate::io::edit_lock::FileFingerprint::capture(&path).ok()
-            })
+            self.tabs[i].disk_fingerprint.clone()
         };
+        let lease = if path_changed {
+            destination_lease.as_mut()
+        } else {
+            self.tabs[i].edit_lease.as_mut()
+        };
+        let (expected_fingerprint, verify_reader) =
+            Self::native_save_verification(&path, lease, expected_fingerprint)?;
 
         self.prepare_native_save(i);
         let version = self.tabs[i].scene.document.version;
@@ -892,6 +914,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             version,
             self.backup_on_save,
             expected_fingerprint,
+            verify_reader,
         )?;
 
         if set_current_path {
@@ -1104,6 +1127,34 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.tabs[i].scene.material_base_dir =
                     path.parent().map(std::path::Path::to_path_buf);
                 self.tabs[i].scene.document = doc;
+                // DWG stores CLAYER as a layer handle. Resolve that handle back to
+                // the layer name after opening so the per-tab creation state and
+                // header name stay in sync. DXF already provides current_layer_name,
+                // so keep it as a fallback.
+                let current_layer = {
+                    let doc = &self.tabs[i].scene.document;
+
+                    doc.layers
+                        .iter()
+                        .find(|layer| layer.handle == doc.header.current_layer_handle)
+                        .map(|layer| (layer.name.clone(), layer.handle))
+                        .or_else(|| {
+                            doc.layers
+                                .get(&doc.header.current_layer_name)
+                                .map(|layer| (layer.name.clone(), layer.handle))
+                        })
+                        .or_else(|| {
+                            doc.layers
+                                .get("0")
+                                .map(|layer| (layer.name.clone(), layer.handle))
+                        })
+                };
+
+                if let Some((name, handle)) = current_layer {
+                    self.tabs[i].scene.document.header.current_layer_name = name.clone();
+                    self.tabs[i].scene.document.header.current_layer_handle = handle;
+                    self.tabs[i].active_layer = name;
+                }
                 // A file saved without the built-in Standard styles (foreign
                 // or damaged) gets them re-seeded so nothing dangles (#366).
                 crate::app::style_ops::ensure_standard_styles(
@@ -1124,13 +1175,20 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     crate::scene::text::ttf_glyph::clear_fallback_cache();
                 }
                 // Current model-space annotation scale comes from the drawing's
-                // CANNOSCALEVALUE (paper/drawing factor); the multiplier we use
-                // for text/dim sizing is its inverse (1:50 -> 0.02 -> 50.0).
+                // CANNOSCALEVALUE (paper/drawing factor). Convert its inverse into
+                // drawing units as well: metric annotation sizes are paper millimetres
+                // and imperial annotation sizes are paper inches.
+                // Current model-space annotation scale comes from the drawing's
+                // CANNOSCALEVALUE (paper/drawing factor). Convert its paper unit into
+                // the drawing's INSUNITS as well, so e.g. a metre drawing uses
+                // 0.001 model units for 1 mm of paper at 1:1.
                 let cannoscale_value = self.tabs[i].scene.document.header.annotation_scale_value;
+                let unit_factor = self.tabs[i].scene.annotation_scale_unit_factor();
+
                 self.tabs[i].scene.annotation_scale = if cannoscale_value > 1e-9 {
-                    (1.0 / cannoscale_value) as f32
+                    ((1.0 / cannoscale_value) / unit_factor) as f32
                 } else {
-                    1.0
+                    (1.0 / unit_factor) as f32
                 };
 
                 // Open-time breakdown so regressions are visible immediately.
@@ -1340,7 +1398,58 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         self.stamp_header_sysvars(i);
         self.tabs[i].scene.document.header.user_real1 =
             self.tabs[i].scene.annotation_scale as f64;
-        self.sync_truck_solids_to_acis(i);
+        self.sync_solid_models_to_acis(i);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_save_verification(
+        path: &std::path::Path,
+        mut lease: Option<&mut crate::io::edit_lock::EditLease>,
+        expected: Option<crate::io::edit_lock::FileFingerprint>,
+    ) -> Result<
+        (
+            Option<crate::io::edit_lock::FileFingerprint>,
+            Option<std::fs::File>,
+        ),
+        crate::io::SaveFailure,
+    > {
+        let expected = match expected {
+            Some(expected) => Some(expected),
+            None => {
+                let captured = match lease.as_deref_mut() {
+                    Some(lease) => match lease.fingerprint() {
+                        Ok(Some(fingerprint)) => Ok(fingerprint),
+                        Ok(None) => crate::io::edit_lock::FileFingerprint::capture(path),
+                        Err(error) => Err(error),
+                    },
+                    None => crate::io::edit_lock::FileFingerprint::capture(path),
+                };
+                match captured {
+                    Ok(fingerprint) => Some(fingerprint),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => {
+                        return Err(crate::io::SaveFailure::other(format!(
+                            "could not verify {} before saving: {error}",
+                            path.display()
+                        )));
+                    }
+                }
+            }
+        };
+        let reader = if expected.is_some() {
+            match lease.as_deref() {
+                Some(lease) => lease.reader().map_err(|error| {
+                    crate::io::SaveFailure::other(format!(
+                        "could not verify {} before saving: {error}",
+                        path.display()
+                    ))
+                })?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        Ok((expected, reader))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -1495,16 +1604,58 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         let previous_autosave =
             (purpose != crate::app::SavePurpose::Autosave).then(|| self.autosave_target(i));
         let backup = purpose != crate::app::SavePurpose::Autosave && self.backup_on_save;
-        let expected_fingerprint =
-            if check_external_change && purpose != crate::app::SavePurpose::Autosave {
-                if set_current_path {
-                    crate::io::edit_lock::FileFingerprint::capture(&path).ok()
-                } else {
-                    self.tabs[i].disk_fingerprint.clone()
-                }
-            } else {
+        let verification = if check_external_change
+            && purpose != crate::app::SavePurpose::Autosave
+        {
+            let expected = if set_current_path {
                 None
+            } else {
+                self.tabs[i].disk_fingerprint.clone()
             };
+            if self.pending_save_leases.contains_key(&tab_id) {
+                Self::native_save_verification(
+                    &path,
+                    self.pending_save_leases.get_mut(&tab_id),
+                    expected,
+                )
+            } else if destination_is_current {
+                Self::native_save_verification(
+                    &path,
+                    self.tabs[i].edit_lease.as_mut(),
+                    expected,
+                )
+            } else {
+                Self::native_save_verification(&path, None, expected)
+            }
+        } else {
+            Ok((None, None))
+        };
+        let (expected_fingerprint, verify_reader) = match verification {
+            Ok(verification) => verification,
+            Err(error) => {
+                return Task::perform(
+                    async move {
+                        crate::app::SaveOutcome {
+                            job_id,
+                            tab_id,
+                            epoch,
+                            revision,
+                            camera_generation,
+                            path,
+                            version,
+                            previous_autosave,
+                            set_current_path,
+                            purpose,
+                            continuation,
+                            thumbnail_key,
+                            refreshed_preview: None,
+                            result: Err(error),
+                        }
+                    },
+                    Message::SaveFinished,
+                );
+            }
+        };
         let worker_path = path.clone();
 
         Task::perform(
@@ -1535,6 +1686,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         version,
                         backup,
                         expected_fingerprint,
+                        verify_reader,
                     );
                     (result, refreshed_preview)
                 })
@@ -2032,7 +2184,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     let close = self.close_save_dialog_window();
                     sync_annotation_scale_header(&mut self.tabs[i].scene);
                     self.stamp_header_sysvars(i);
-                    self.sync_truck_solids_to_acis(i);
+                    self.sync_solid_models_to_acis(i);
                     self.stamp_thumbnail(i, version);
                     let mut recent_task = Task::none();
                     let saved = match crate::io::save_to_bytes(
@@ -3323,9 +3475,6 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 Task::none()
             }
             M::SetCurrent => {
-                if self.print_all_options {
-                    return Task::none();
-                }
                 self.apply_dialog_to_layout();
                 self.command_line.push_info(crate::t!("Page setup applied to the layout.").as_ref());
                 Task::none()
@@ -3428,7 +3577,6 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 self.plot_dialog.name_rename = false;
                 Task::none()
             }
-            M::Preview if self.print_all_options => Task::none(),
             M::Preview => self.on_plot_dlg_commit(true),
             M::Commit if self.print_all_options => {
                 if self.plot_dialog.style_missing {
@@ -4129,8 +4277,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                         if let Ok(sc) = self.ps_screening_buf.trim().parse::<u8>() {
                             entry.screening = sc.min(100);
                         }
-                        self.command_line
-                            .push_output(crate::tf!("Plot style ACI {aci} updated.").as_ref());
+
                     }
                 } else {
                     // No table loaded: create an identity table and apply.
@@ -4170,15 +4317,16 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     .unwrap_or("export.ctb".into());
                 Task::perform(
                     async move {
-                        let mut dialog = crate::sys::file_dialog()
+                        let dialog = crate::sys::file_dialog()
                             .set_title("Save Plot Style Table")
                             .set_file_name(&default_name)
                             .add_filter("Plot Style Files", &["ctb", "CTB"])
                             .add_filter("All Files", &["*"]);
                         #[cfg(not(target_arch = "wasm32"))]
-                        if let Ok(dir) = crate::io::plot_style::ensure_plot_styles_dir() {
-                            dialog = dialog.set_directory(dir);
-                        }
+                        let dialog = match crate::io::plot_style::ensure_plot_styles_dir() {
+                            Ok(dir) => dialog.set_directory(dir),
+                            Err(_) => dialog,
+                        };
                         dialog.save_file().await
                             .map(|h| crate::sys::handle_path(&h))
                     },

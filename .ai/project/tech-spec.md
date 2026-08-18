@@ -11,13 +11,13 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The current locally integrated upstream candidate is Open CAD Studio `0.9.4` at
-post-tag revision `f57c258ada7a76731f6a0a7894752ee1665ce334` (2026-08-09).
-This includes 44 additional commits after tag `v0.9.4`; therefore the exact Git
+The current locally integrated upstream candidate is Open CAD Studio `0.9.6` at
+post-tag revision `403247cbc3c4348987e9a61ef7aced01b7692f5e` (2026-08-17).
+This includes 29 additional commits after tag `v0.9.6`; therefore the exact Git
 revision, not only the application version string, identifies the build. The
-application now reaches the OpenAEC CAD stack through `acadifc` revision
-`fe98e425578c54facd021d8df74d86052b2f848b`; its lock file also pins the
-re-exported codec/kernel dependencies used by that revision.
+application pins the CAD codec directly at `cadcodec` revision
+`931c4ab0c590b755e280bed318a35f41c57b139f` and the geometry kernel at
+`cadkernel` revision `efc77f5d18375467c3cc2c256a22759bb5f9cb54`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
 builder baseline remains the official `rust:1.92.0-bookworm` image.
@@ -42,10 +42,11 @@ builder baseline remains the official `rust:1.92.0-bookworm` image.
 
 ## Important web limitations
 
-The upstream web build disables the default `solid3d` feature because its native
-dependencies do not cross-compile to WASM. Upstream also documents browser
-limitations compared with the native desktop build. The private web runtime
-must not be described as feature-equivalent to the native application.
+Upstream v0.9.5 retired the native-only `solid3d` feature gate and moved solid
+geometry to the pure-Rust kernel, so the web build now includes kernel-backed
+solid modeling. Browser file access, printing, native plugins, external
+processes, and some platform integrations remain different from desktop; keep
+the private web runtime documentation aligned with `docs/native-vs-web.md`.
 
 ## Repository target structure
 

@@ -111,7 +111,45 @@ impl Scene {
         let _ = self.document.layers.add(layer);
     }
 
-    pub fn add_entity(&mut self, mut entity: EntityType) -> Handle {
+    pub fn add_entity(&mut self, entity: EntityType) -> Handle {
+        self.add_entity_internal(entity, true)
+    }
+
+    /// Batch-add several entities, publishing geometry changes once at the end.
+    /// This is the fast path used by plugin `add_entities` requests.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn add_entities(&mut self, entities: Vec<EntityType>) -> Vec<Handle> {
+        let mut handles = Vec::with_capacity(entities.len());
+        let mut changes = Vec::with_capacity(entities.len());
+        let mut needs_geometry_bump = false;
+
+        for entity in entities {
+            let affects_blocks = matches!(
+                &entity,
+                EntityType::Block(_) | EntityType::BlockEnd(_)
+            );
+            let handle = self.add_entity_internal(entity, false);
+            handles.push(handle);
+            if handle.is_null() {
+                continue;
+            }
+            if affects_blocks {
+                needs_geometry_bump = true;
+            } else {
+                changes.push((handle, ChangeKind::Added));
+            }
+        }
+
+        if needs_geometry_bump {
+            self.bump_geometry();
+        } else if !changes.is_empty() {
+            self.bump_entities(&changes);
+        }
+
+        handles
+    }
+
+    fn add_entity_internal(&mut self, mut entity: EntityType, bump: bool) -> Handle {
         // Only block sentinels mutate a block definition and require rebuilding
         // the block cache. A top-level INSERT merely references an existing
         // definition, so adding it can patch just that new render handle.
@@ -136,6 +174,8 @@ impl Scene {
         };
         let image_seed = self.image_seed_for(&entity);
         let facet_res = self.document.header.facet_resolution;
+        let chordal_deflection =
+            crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
             &entity,
@@ -148,8 +188,14 @@ impl Scene {
                 | EntityType::PolyfaceMesh(_)
         ) {
             let color = self.render_style(&entity).0;
-            crate::entities::solid3d::tessellate_volume(&entity, color, facet_res, isolines)
-                .map(|m| offset_mesh_lod_set(m))
+            crate::entities::solid3d::tessellate_volume(
+                &entity,
+                color,
+                facet_res,
+                chordal_deflection,
+                isolines,
+            )
+            .map(offset_mesh_lod_set)
         } else {
             None
         };
@@ -248,15 +294,25 @@ impl Scene {
                     self.poison_undo_recording();
                 }
             }
-            if affects_blocks {
-                self.bump_geometry();
-            } else {
-                // Plain top-level add: name the new handle so every derived cache
-                // patches in just this one entity instead of rebuilding.
-                self.bump_entities(&[(handle, ChangeKind::Added)]);
+            if bump {
+                if affects_blocks {
+                    self.bump_geometry();
+                } else {
+                    // Plain top-level add: name the new handle so every derived cache
+                    // patches in just this one entity instead of rebuilding.
+                    self.bump_entities(&[(handle, ChangeKind::Added)]);
+                }
             }
         }
         handle
+    }
+
+    pub fn rename_layer(&mut self, old: &str, new: &str) -> bool {
+        if self.document.rename_layer(old, new).is_err() {
+            return false;
+        }
+        self.invalidate_dependency_index();
+        true
     }
 
     /// Rename a block definition: re-key its record, update the Block marker's
@@ -319,6 +375,9 @@ impl Scene {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn update_entity(&mut self, mut entity: EntityType) -> bool {
         let handle = entity.common().handle;
+        if self.is_layer_locked(handle) {
+            return false;
+        }
         let Some(existing) = self.document.get_entity(handle) else {
             return false;
         };
@@ -357,6 +416,8 @@ impl Scene {
         };
         let image_seed = self.image_seed_for(&entity);
         let facet_res = self.document.header.facet_resolution;
+        let chordal_deflection =
+            crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
         let isolines = self.document.header.isolines.max(0) as usize;
         let mesh_seed = if matches!(
             &entity,
@@ -369,8 +430,14 @@ impl Scene {
                 | EntityType::PolyfaceMesh(_)
         ) {
             let color = self.render_style(&entity).0;
-            crate::entities::solid3d::tessellate_volume(&entity, color, facet_res, isolines)
-                .map(|m| offset_mesh_lod_set(m))
+            crate::entities::solid3d::tessellate_volume(
+                &entity,
+                color,
+                facet_res,
+                chordal_deflection,
+                isolines,
+            )
+            .map(offset_mesh_lod_set)
         } else {
             None
         };
@@ -475,6 +542,11 @@ impl Scene {
             self.images.insert(handle, model);
         }
         self.refresh_meshes_for_handles(&[handle]);
+        if let Some(operation) = self.document.solid_history_operation(handle).cloned() {
+            if let Ok(body) = cadkernel::acis::rebuild_body(&operation) {
+                self.solid_models.insert(handle, body);
+            }
+        }
     }
 
     /// Re-tessellate only the named ACIS entities. The former edit path
@@ -533,6 +605,8 @@ impl Scene {
                 })
                 .collect();
         let facet_res = self.document.header.facet_resolution;
+        let chordal_deflection =
+            crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
         let isolines = self.document.header.isolines.max(0) as usize;
         use crate::par::prelude::*;
         let built: Vec<(Handle, MeshLodSet, bool)> = entries
@@ -542,6 +616,7 @@ impl Scene {
                     entity.as_ref(),
                     color,
                     facet_res,
+                    chordal_deflection,
                     isolines,
                 )
                 .map(|mut mesh| {
@@ -671,7 +746,12 @@ impl Scene {
 
         let mut insert = DxfInsert::new(name, acadrust::types::Vector3::ZERO);
         acadrust::Entity::apply_transform(&mut insert, block_to_world);
-        Ok(self.add_entity(EntityType::Insert(insert)))
+        let insert_handle = self.add_entity(EntityType::Insert(insert));
+        // A new block definition landed in the document; advance the block
+        // epoch so consumers (the block palette stale check) notice it even
+        // when the panel stays open. Mirrors `define_block_from_owned_entities`.
+        self.bump_geometry();
+        Ok(insert_handle)
     }
 
     /// Define a new block named `name` from `entities` (owned, not yet in the
@@ -1094,6 +1174,7 @@ impl Scene {
         .with_viewport(viewport);
         let mut hatch_block_memo = std::collections::HashMap::new();
         let mut models = Vec::new();
+        let mut hatch_sources = rustc_hash::FxHashMap::default();
         graph.walk_root(
             self.render_scene_root(layout_block),
             |entity, context| {
@@ -1180,6 +1261,35 @@ impl Scene {
                 if tint_selected && self.selected.contains(&context.root_handle) {
                     model.color = [0.15, 0.55, 1.00, model.color[3]];
                 }
+                let matrix = &context.transform.matrix.m;
+                let linear = [
+                    matrix[0][0].to_bits(), matrix[0][1].to_bits(), matrix[0][2].to_bits(),
+                    matrix[1][0].to_bits(), matrix[1][1].to_bits(), matrix[1][2].to_bits(),
+                    matrix[2][0].to_bits(), matrix[2][1].to_bits(), matrix[2][2].to_bits(),
+                ];
+                let key = (
+                    source_hatch.common.handle.value(),
+                    linear,
+                    model
+                        .boundary
+                        .iter()
+                        .flat_map(|point| point.map(f32::to_bits))
+                        .collect::<Vec<_>>(),
+                    model.color.map(f32::to_bits),
+                    model.angle_offset.to_bits(),
+                    model.scale.to_bits(),
+                    model.line_weight_px.to_bits(),
+                    model.aci,
+                );
+                let source_id = *hatch_sources
+                    .entry(key)
+                    .or_insert_with(crate::scene::model::instance_model::next_source_id);
+                model.render_instance = Some(
+                    crate::scene::model::instance_model::RenderInstance {
+                        source_id,
+                        translation: [matrix[0][3], matrix[1][3], matrix[2][3]],
+                    },
+                );
                 models.push(model);
             },
         );
@@ -1228,6 +1338,7 @@ impl Scene {
             depth_map.as_ref(),
         );
         let mut models = Vec::new();
+        let mut wipeout_sources = rustc_hash::FxHashMap::default();
         graph.walk_root(
             self.render_scene_root(target_block),
             |entity, context| {
@@ -1274,9 +1385,38 @@ impl Scene {
                 } else {
                     bg_color
                 };
+                let render_instance = if context.is_instanced() {
+                    let matrix = &context.transform.matrix.m;
+                    let linear = [
+                        matrix[0][0].to_bits(), matrix[0][1].to_bits(), matrix[0][2].to_bits(),
+                        matrix[1][0].to_bits(), matrix[1][1].to_bits(), matrix[1][2].to_bits(),
+                        matrix[2][0].to_bits(), matrix[2][1].to_bits(), matrix[2][2].to_bits(),
+                    ];
+                    let key = (
+                        source.common.handle.value(),
+                        linear,
+                        boundary
+                            .iter()
+                            .flat_map(|point| point.map(f32::to_bits))
+                            .collect::<Vec<_>>(),
+                        color.map(f32::to_bits),
+                    );
+                    let source_id = *wipeout_sources.entry(key).or_insert_with(
+                        crate::scene::model::instance_model::next_source_id,
+                    );
+                    Some(crate::scene::model::instance_model::RenderInstance {
+                        source_id,
+                        translation: [matrix[0][3], matrix[1][3], matrix[2][3]],
+                    })
+                } else {
+                    None
+                };
                 models.push(HatchModel {
+                    render_instance,
                     boundary: Arc::new(boundary),
                     boundary_wcs: None,
+                    boundary_exterior: None,
+                    boundary_sources: None,
                     pattern: model::hatch_model::HatchPattern::Solid,
                     name: "WIPEOUT_FILL".into(),
                     color,
@@ -1381,6 +1521,7 @@ impl Scene {
         }
 
         let mut boundary: Vec<[f64; 2]> = Vec::new();
+        let mut boundary_exterior = Vec::new();
 
         for path in &dxf.paths {
             // Skip TEXTBOX boundary paths (flag bit 3). These are text
@@ -1398,214 +1539,14 @@ impl Scene {
 
             let mut edge_polys: Vec<Vec<[f64; 2]>> = Vec::new();
             for edge in &path.edges {
-                match edge {
-                    BoundaryEdge::Polyline(poly) => {
-                        let verts = &poly.vertices;
-                        let count = verts.len();
-                        if count == 0 {
-                            continue;
-                        }
-                        let seg_count = if poly.is_closed {
-                            count
-                        } else {
-                            count.saturating_sub(1)
-                        };
-                        for i in 0..seg_count {
-                            let v0 = &verts[i];
-                            let v1 = &verts[(i + 1) % count];
-                            let bulge = v0.z;
-                            // Tess in f64 to preserve ~1 cm precision at
-                            // UTM-scale WCS (the f32 path used to produce
-                            // visibly wavy hatch arcs at 1e5+ magnitude).
-                            let arc = if bulge.abs() < 1e-9 {
-                                None
-                            } else {
-                                crate::entities::common::BulgeArc::from_bulge(
-                                    [v0.x, v0.y],
-                                    [v1.x, v1.y],
-                                    bulge,
-                                )
-                            };
-                            let Some(arc) = arc else {
-                                boundary.push(to_xy(v0.x, v0.y));
-                                continue;
-                            };
-                            let segs = convert::tess_util::arc_segments(
-                                arc.radius,
-                                arc.sweep.abs(),
-                                convert::tess_util::fill_chord_tol(arc.radius),
-                            );
-                            for j in 0..segs {
-                                let s = arc.sample(j as f64 / segs as f64);
-                                boundary.push(to_xy(s[0], s[1]));
-                            }
-                        }
-                        if poly.is_closed {
-                            if let Some(&first) = boundary.get(path_start) {
-                                boundary.push(first);
-                            }
-                        }
-                    }
-                    BoundaryEdge::Line(line) => {
-                        edge_polys.push(vec![
-                            to_xy(line.start.x, line.start.y),
-                            to_xy(line.end.x, line.end.y),
-                        ]);
-                    }
-                    BoundaryEdge::CircularArc(arc) => {
-                        let (sa, span) = convert::tess_util::arc_signed_span(
-                            arc.start_angle,
-                            arc.end_angle,
-                            arc.counter_clockwise,
-                        );
-                        let segs = convert::tess_util::arc_segments(
-                            arc.radius,
-                            span.abs(),
-                            convert::tess_util::fill_chord_tol(arc.radius),
-                        );
-                        let mut pts = Vec::with_capacity(segs as usize + 1);
-                        for i in 0..=segs {
-                            let t = sa + span * (i as f64 / segs as f64);
-                            pts.push(to_xy(
-                                arc.center.x + arc.radius * t.cos(),
-                                arc.center.y + arc.radius * t.sin(),
-                            ));
-                        }
-                        edge_polys.push(pts);
-                    }
-                    BoundaryEdge::EllipticArc(ell) => {
-                        let r_maj = (ell.major_axis_endpoint.x * ell.major_axis_endpoint.x
-                            + ell.major_axis_endpoint.y * ell.major_axis_endpoint.y)
-                            .sqrt();
-                        let r_min = r_maj * ell.minor_axis_ratio;
-                        let rot = ell
-                            .major_axis_endpoint
-                            .y
-                            .atan2(ell.major_axis_endpoint.x);
-                        let (sa, span) = convert::tess_util::arc_signed_span(
-                            ell.start_angle,
-                            ell.end_angle,
-                            ell.counter_clockwise,
-                        );
-                        let segs = convert::tess_util::arc_segments(
-                            r_maj,
-                            span.abs(),
-                            convert::tess_util::fill_chord_tol(r_maj),
-                        );
-                        let (cr, sr) = (rot.cos(), rot.sin());
-                        let mut pts = Vec::with_capacity(segs as usize + 1);
-                        for i in 0..=segs {
-                            let t = sa + span * (i as f64 / segs as f64);
-                            let lx = r_maj * t.cos();
-                            let ly = r_min * t.sin();
-                            pts.push(to_xy(
-                                ell.center.x + lx * cr - ly * sr,
-                                ell.center.y + lx * sr + ly * cr,
-                            ));
-                        }
-                        edge_polys.push(pts);
-                    }
-                    BoundaryEdge::Spline(spline) => {
-                        // DXF spline control_points pack (x, y, weight) into
-                        // a Vector3 — the z field is the rational weight, NOT
-                        // a Z coordinate. The legacy code dropped weight and
-                        // sampled with a fixed 16 segments; both bugs
-                        // produced visibly wrong fill regions for spline-
-                        // bounded hatches (especially block-internal ones,
-                        // where boundaries are often spline curves with
-                        // rational weights and short cubic segments).
-                        //
-                        // Build a NurbsCurve when `rational`, otherwise a
-                        // plain BSplineCurve, and sample adaptively via
-                        // truck's `parameter_division` at the same chord
-                        // tolerance the fill polygon uses for arcs.
-                        let degree = spline.degree.max(0) as usize;
-                        let knot_vec = if !spline.knots.is_empty() {
-                            KnotVec::from(spline.knots.clone())
-                        } else if spline.control_points.len() >= degree + 1 {
-                            KnotVec::uniform_knot(degree, spline.control_points.len() - 1)
-                        } else {
-                            KnotVec::from(vec![])
-                        };
-                        let knot_ok = spline.control_points.len() >= 2
-                            && degree >= 1
-                            && knot_vec.len() == spline.control_points.len() + degree + 1;
-
-                        // Rough chord-tolerance: 0.1% of the control-poly
-                        // diagonal so adaptive sampling produces enough
-                        // points to follow the curve without exploding on
-                        // huge splines.
-                        let (mut sp_min_x, mut sp_min_y) = (f64::INFINITY, f64::INFINITY);
-                        let (mut sp_max_x, mut sp_max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
-                        for cp in &spline.control_points {
-                            sp_min_x = sp_min_x.min(cp.x);
-                            sp_min_y = sp_min_y.min(cp.y);
-                            sp_max_x = sp_max_x.max(cp.x);
-                            sp_max_y = sp_max_y.max(cp.y);
-                        }
-                        let diag = ((sp_max_x - sp_min_x).powi(2)
-                            + (sp_max_y - sp_min_y).powi(2))
-                        .sqrt();
-                        let tol = convert::tess_util::fill_chord_tol(diag.max(1.0));
-
-                        let mut epts: Vec<[f64; 2]> = Vec::new();
-                        let mut sampled = false;
-                        if knot_ok {
-                            if spline.rational {
-                                // NURBS: pack (x, y, 0, w) into Vector4.
-                                let cps: Vec<Vector4> = spline
-                                    .control_points
-                                    .iter()
-                                    .map(|p| {
-                                        let w = if p.z.abs() > 1e-12 { p.z } else { 1.0 };
-                                        Vector4::new(p.x * w, p.y * w, 0.0, w)
-                                    })
-                                    .collect();
-                                let bspl = TruckBSpline::new(knot_vec.clone(), cps);
-                                let curve = NurbsCurve::new(bspl);
-                                let (t0, t1) = curve.range_tuple();
-                                let (_, pts) = curve.parameter_division((t0, t1), tol);
-                                for p in pts {
-                                    epts.push(to_xy(p.x, p.y));
-                                }
-                                sampled = true;
-                            } else {
-                                let cps: Vec<Point3> = spline
-                                    .control_points
-                                    .iter()
-                                    .map(|p| Point3::new(p.x, p.y, 0.0))
-                                    .collect();
-                                let bspl = TruckBSpline::new(knot_vec, cps);
-                                let (t0, t1) = bspl.range_tuple();
-                                let (_, pts) = bspl.parameter_division((t0, t1), tol);
-                                for p in pts {
-                                    epts.push(to_xy(p.x, p.y));
-                                }
-                                sampled = true;
-                            }
-                        }
-                        if !sampled {
-                            // Fallback: prefer fit_points (which lie on the
-                            // curve) over control_points (which usually
-                            // don't). A control-point polyline would draw
-                            // the convex-hull silhouette — visibly wrong.
-                            let pts: &[_] = if !spline.fit_points.is_empty() {
-                                &spline.fit_points
-                            } else {
-                                &[]
-                            };
-                            if !pts.is_empty() {
-                                for p in pts {
-                                    epts.push(to_xy(p.x, p.y));
-                                }
-                            } else {
-                                for cp in &spline.control_points {
-                                    epts.push(to_xy(cp.x, cp.y));
-                                }
-                            }
-                        }
-                        edge_polys.push(epts);
-                    }
+                if let Some(curve) = crate::entities::hatch::edge_curve(edge) {
+                    edge_polys.push(
+                        curve
+                            .tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE)
+                            .into_iter()
+                            .map(|point| to_xy(point[0], point[1]))
+                            .collect(),
+                    );
                 }
             }
             boundary.extend(chain_path_edges(edge_polys));
@@ -1614,6 +1555,7 @@ impl Scene {
                 boundary.truncate(before_path);
                 continue;
             }
+            boundary_exterior.push(path.flags.is_external() || path.flags.is_outermost());
             if boundary.len() >= path_start + 3 {
                 let first = boundary[path_start];
                 let last = *boundary.last().unwrap();
@@ -1625,6 +1567,11 @@ impl Scene {
 
         if boundary.is_empty() {
             return None;
+        }
+        if !boundary_exterior.iter().any(|role| *role) {
+            if let Some(first) = boundary_exterior.first_mut() {
+                *first = true;
+            }
         }
         // The batched hatch renderer keeps boundaries in a GPU storage
         // buffer (no fixed length), so a hatch with many island loops must
@@ -1817,8 +1764,17 @@ impl Scene {
             .collect();
 
         Some(HatchModel {
+            render_instance: None,
             boundary: std::sync::Arc::new(boundary_f32),
             boundary_wcs: None,
+            boundary_exterior: Some(std::sync::Arc::new(boundary_exterior)),
+            boundary_sources: Some(std::sync::Arc::new(
+                dxf.paths
+                    .iter()
+                    .filter(|path| path.flags.bits() & 8 == 0)
+                    .map(|path| path.boundary_handles.clone())
+                    .collect(),
+            )),
             pattern,
             name,
             // A gradient starts from its first stop; other fills use the
@@ -2028,6 +1984,8 @@ impl Scene {
 
         use crate::par::prelude::*;
         let facet_res = self.document.header.facet_resolution;
+        let chordal_deflection =
+            crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
         let isolines = self.document.header.isolines.max(0) as usize;
         // Top-level solids: offset into the render frame, drawn flat.
         // Block-definition solids: keep block-local coords for per-INSERT
@@ -2035,7 +1993,14 @@ impl Scene {
         let built: Vec<(Handle, MeshLodSet, bool)> = entries
             .into_par_iter()
             .filter_map(|(handle, entity, color, top_level)| {
-                crate::entities::solid3d::tessellate_volume(&entity, color, facet_res, isolines).map(|mut mesh| {
+                crate::entities::solid3d::tessellate_volume(
+                    &entity,
+                    color,
+                    facet_res,
+                    chordal_deflection,
+                    isolines,
+                )
+                .map(|mut mesh| {
                     let material = crate::scene::model::material_model::resolve_material_with_base(
                         &self.document,
                         &entity,
@@ -2121,8 +2086,11 @@ impl Scene {
             })
             .collect();
         HatchModel {
+            render_instance: None,
             boundary: std::sync::Arc::new(boundary),
             boundary_wcs: None,
+            boundary_exterior: None,
+            boundary_sources: None,
             pattern: model::hatch_model::HatchPattern::Solid,
             name: "SOLID".into(),
             color,
@@ -2135,79 +2103,148 @@ impl Scene {
         }
     }
 
-    pub fn add_hatch(&mut self, model: HatchModel) -> Handle {
+    pub fn add_hatch(
+        &mut self,
+        model: HatchModel,
+        layer: Option<&str>,
+        entity_style: Option<(acadrust::types::Color, acadrust::types::Transparency)>,
+    ) -> Handle {
         let mut dxf = DxfHatch::new();
         dxf.is_solid = matches!(
             model.pattern,
             crate::scene::model::hatch_model::HatchPattern::Solid
         );
-        // Prefer the command-supplied exact f64 boundary so a typed vertex is
-        // persisted without f32 quantization (issue #311). Falling back to the
-        // render-side `boundary`, the points arrive in local render space
-        // (world_offset already subtracted), so add `world_origin` back —
-        // otherwise the boundary wire lands `world_offset` away from the fill.
-        // Build one DXF boundary path per ring. The command layer separates
-        // the outer boundary from its holes with NaN sentinels in
-        // `boundary_wcs`; split on those so nested hatches (e.g. a small
-        // rectangle inside a big one) persist with real holes instead of a
-        // single self-intersecting polyline. Only the FIRST ring carries the
-        // external / outermost flags — every later ring is a hole and must not
-        // be flagged external, or DXF/DWG consumers treat the inner loop as
-        // another outer island rather than a hole.
-        if let Some(wcs) = &model.boundary_wcs {
-            let mut ring: Vec<Vector2> = Vec::new();
-            let mut first = true;
-            let mut push_ring = |r: &mut Vec<Vector2>, is_outer: bool| {
-                if !r.is_empty() {
-                    let edge = PolylineEdge::new(std::mem::take(r), true);
-                    let mut path = if is_outer {
-                        let mut p = BoundaryPath::external();
-                        p.flags = acadrust::entities::hatch::BoundaryPathFlags::from_bits(
-                            p.flags.bits()
-                                | acadrust::entities::hatch::BoundaryPathFlags::OUTERMOST.bits(),
-                        );
-                        p
-                    } else {
-                        BoundaryPath::new()
-                    };
-                    path.add_edge(BoundaryEdge::Polyline(edge));
-                    dxf.paths.push(path);
-                }
-            };
-            for &[x, y] in wcs.iter() {
-                if x.is_finite() && y.is_finite() {
-                    ring.push(Vector2::new(x, y));
-                } else {
-                    let is_outer = first;
-                    first = false;
-                    push_ring(&mut ring, is_outer);
-                }
-            }
-            push_ring(&mut ring, first);
-        }
-        if dxf.paths.is_empty() {
-            let wx = model.world_origin[0];
-            let wy = model.world_origin[1];
-            let verts: Vec<Vector2> = model
+        // Prefer exact command geometry; otherwise reconstruct every ring from
+        // the render offsets without dropping its separators.
+        // Build one DXF path per NaN-separated ring and retain each outer/hole role.
+        let reconstructed_wcs: Vec<[f64; 2]> = if model.boundary_wcs.is_none() {
+            let [wx, wy] = model.world_origin;
+            model
                 .boundary
                 .iter()
-                .filter(|v| v[0].is_finite() && v[1].is_finite())
-                .map(|&[x, y]| Vector2::new(x as f64 + wx, y as f64 + wy))
-                .collect();
-            let edge = PolylineEdge::new(verts, true);
-            let mut path = BoundaryPath::external();
-            path.add_edge(BoundaryEdge::Polyline(edge));
-            dxf.paths.push(path);
+                .map(|&[x, y]| {
+                    if x.is_finite() && y.is_finite() {
+                        [x as f64 + wx, y as f64 + wy]
+                    } else {
+                        [f64::NAN, f64::NAN]
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let wcs = model
+            .boundary_wcs
+            .as_deref()
+            .map(|points| points.as_slice())
+            .unwrap_or(reconstructed_wcs.as_slice());
+        let mut ring: Vec<Vector2> = Vec::new();
+        let mut first = true;
+        let mut ring_index = 0usize;
+        let mut push_ring = |r: &mut Vec<Vector2>, is_outer: bool, index: usize| {
+            if !r.is_empty() {
+                let edge = PolylineEdge::new(std::mem::take(r), true);
+                let mut path = if is_outer {
+                    let mut p = BoundaryPath::external();
+                    p.flags = acadrust::entities::hatch::BoundaryPathFlags::from_bits(
+                        p.flags.bits()
+                            | acadrust::entities::hatch::BoundaryPathFlags::OUTERMOST.bits(),
+                    );
+                    p
+                } else {
+                    BoundaryPath::new()
+                };
+                path.add_edge(BoundaryEdge::Polyline(edge));
+                if let Some(handles) = model
+                    .boundary_sources
+                    .as_deref()
+                    .and_then(|sources| sources.get(index))
+                {
+                    for &handle in handles {
+                        if handle.is_valid() {
+                            path.add_boundary_handle(handle);
+                        }
+                    }
+                }
+                dxf.paths.push(path);
+            }
+        };
+        for &[x, y] in wcs {
+            if x.is_finite() && y.is_finite() {
+                ring.push(Vector2::new(x, y));
+            } else {
+                let is_outer = model
+                    .boundary_exterior
+                    .as_deref()
+                    .and_then(|roles| roles.get(ring_index))
+                    .copied()
+                    .unwrap_or(first);
+                first = false;
+                if !ring.is_empty() {
+                    push_ring(&mut ring, is_outer, ring_index);
+                    ring_index += 1;
+                }
+            }
         }
-        if let Some(entry) = crate::scene::model::hatch_patterns::find(&model.name) {
-            dxf.pattern = crate::scene::model::hatch_patterns::build_dxf_pattern(entry);
-        }
-        dxf.pattern_angle = model.angle_offset as f64;
-        dxf.pattern_scale = if model.scale.abs() > 1e-6 {
+        let is_outer = model
+            .boundary_exterior
+            .as_deref()
+            .and_then(|roles| roles.get(ring_index))
+            .copied()
+            .unwrap_or(first);
+        push_ring(&mut ring, is_outer, ring_index);
+        dxf.is_associative = dxf
+            .paths
+            .iter()
+            .any(|path| !path.boundary_handles.is_empty());
+        let pattern_scale = if model.scale.abs() > 1e-6 {
             model.scale as f64
         } else {
             1.0
         };
+        if let crate::scene::model::hatch_model::HatchPattern::Pattern(families) = &model.pattern {
+            let mut pattern = acadrust::entities::HatchPattern::new(&model.name);
+            let rotation = model.angle_offset as f64;
+            let (rotation_sin, rotation_cos) = rotation.sin_cos();
+            for family in families {
+                let family_angle = (family.angle_deg as f64).to_radians();
+                let angle = family_angle + rotation;
+                let (family_sin, family_cos) = family_angle.sin_cos();
+                let local_offset_x = family.dx as f64 * family_cos
+                    - family.dy as f64 * family_sin;
+                let local_offset_y = family.dx as f64 * family_sin
+                    + family.dy as f64 * family_cos;
+                let base_x = family.x0 as f64 * pattern_scale;
+                let base_y = family.y0 as f64 * pattern_scale;
+                pattern.lines.push(acadrust::entities::HatchPatternLine {
+                    angle,
+                    base_point: Vector2::new(
+                        model.world_origin[0]
+                            + base_x * rotation_cos
+                            - base_y * rotation_sin,
+                        model.world_origin[1]
+                            + base_x * rotation_sin
+                            + base_y * rotation_cos,
+                    ),
+                    offset: Vector2::new(
+                        (local_offset_x * rotation_cos
+                            - local_offset_y * rotation_sin)
+                            * pattern_scale,
+                        (local_offset_x * rotation_sin
+                            + local_offset_y * rotation_cos)
+                            * pattern_scale,
+                    ),
+                    dash_lengths: family
+                        .dashes
+                        .iter()
+                        .map(|dash| *dash as f64 * pattern_scale)
+                        .collect(),
+                });
+            }
+            dxf.pattern = pattern;
+        }
+        dxf.pattern_angle = model.angle_offset as f64;
+        dxf.pattern_scale = pattern_scale;
         // A gradient fill must be encoded on the DXF entity itself: the render
         // model is rebuilt from the entity below (`add_entity` →
         // `hatch_model_from_dxf`), so a gradient kept only on the command's
@@ -2252,14 +2289,23 @@ impl Scene {
                 },
             ];
         }
-
         // `add_entity` already builds the render model from the DXF entity via
         // `hatch_model_from_dxf` and inserts it with a correct `world_origin`
         // (AABB-centred) for the relative-to-eye fill. The command-built `model`
         // carries `world_origin: [0, 0]`, which after the world_offset removal
         // leaves the fill mis-placed and effectively invisible until a later
         // edit rebuilds it from the DXF — so keep the seed, don't overwrite it.
-        self.add_entity(EntityType::Hatch(dxf))
+        let mut entity = EntityType::Hatch(dxf);
+
+        if let Some(layer) = layer {
+            entity.as_entity_mut().set_layer(layer.to_string());
+        }
+        if let Some((color, transparency)) = entity_style {
+            entity.common_mut().color = color;
+            entity.common_mut().transparency = transparency;
+        }
+
+        self.add_entity(entity)
     }
 
     pub fn clear(&mut self) {
@@ -2270,6 +2316,7 @@ impl Scene {
         self.preview_text = vec![];
         self.current_layout = "Model".to_string();
         self.hatches = HashMap::default();
+        self.associative_hatch_source_cache.borrow_mut().take();
         self.images = HashMap::default();
         self.meshes = HashMap::default();
         self.block_meshes = HashMap::default();

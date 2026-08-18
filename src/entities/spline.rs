@@ -1,17 +1,14 @@
 use acadrust::entities::Spline;
 use crate::t;
-use truck_modeling::{
-    base::{BoundedCurve, ParameterDivision1D, ParametricCurve, Vector4},
-    builder, BSplineCurve, Curve, Edge, KnotVec, NurbsCurve, Point3, Wire,
-};
+use cadkernel::space::NurbsCurve3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, parse_f64, ro_prop as ro, square_grip};
-use crate::entities::traits::TruckConvertible;
-use crate::scene::convert::acad_to_truck::{TruckEntity, TruckObject};
+use crate::entities::traits::RenderConvertible;
+use crate::scene::convert::acad_to_render::{RenderEntity, RenderObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
 
-fn to_truck(spl: &Spline) -> TruckEntity {
+fn to_render(spl: &Spline) -> RenderEntity {
     let n = spl.control_points.len();
     if n < 2 {
         // A fit-point spline (DWG scenario 2 / R2013+) stores only the points
@@ -57,60 +54,24 @@ fn to_truck(spl: &Spline) -> TruckEntity {
             } else {
                 spl.fit_points.iter().map(|p| [p.x, p.y, p.z]).collect()
             };
-            return TruckEntity {
+            return RenderEntity {
                 pick_tris: Vec::new(),
-                object: TruckObject::Lines(pts),
+                object: RenderObject::Lines(pts),
                 snap_pts,
                 tangent_geoms: vec![],
                 key_vertices,
                 fill_tris: vec![],
             };
         }
-        return TruckEntity {
+        return RenderEntity {
             pick_tris: Vec::new(),
-            object: TruckObject::Point(builder::vertex(Point3::new(0.0, 0.0, 0.0))),
+            object: RenderObject::Lines(Vec::new()),
             snap_pts: vec![],
             tangent_geoms: vec![],
             key_vertices: vec![],
             fill_tris: vec![],
         };
     }
-
-    let knot_vec = if !spl.knots.is_empty() {
-        KnotVec::from(spl.knots.clone())
-    } else {
-        KnotVec::uniform_knot(spl.degree as usize, n - 1)
-    };
-
-    // Use rational NURBS when weights are provided (circles/conics stored as NURBS).
-    let use_nurbs = !spl.weights.is_empty() && spl.weights.len() == n;
-    let (p_start, p_end, curve) = if use_nurbs {
-        let homo_pts: Vec<Vector4> = spl
-            .control_points
-            .iter()
-            .zip(spl.weights.iter())
-            .map(|(p, &w)| {
-                let w = if w.abs() < 1e-12 { 1.0 } else { w };
-                Vector4::new(p.x * w, p.y * w, p.z * w, w)
-            })
-            .collect();
-        let nurbs = NurbsCurve::new(BSplineCurve::new(knot_vec, homo_pts));
-        let (t0, t1) = nurbs.range_tuple();
-        (nurbs.subs(t0), nurbs.subs(t1), Curve::NurbsCurve(nurbs))
-    } else {
-        let ctrl_pts: Vec<Point3> = spl
-            .control_points
-            .iter()
-            .map(|p| Point3::new(p.x, p.y, p.z))
-            .collect();
-        let bspline = BSplineCurve::new(knot_vec, ctrl_pts);
-        let (t0, t1) = bspline.range_tuple();
-        (
-            bspline.subs(t0),
-            bspline.subs(t1),
-            Curve::BSplineCurve(bspline),
-        )
-    };
 
     // Snap sources from the spline's own curve. A spline is not a chain of
     // straight segments, so nothing goes in `key_vertices`: consecutive
@@ -149,30 +110,27 @@ fn to_truck(spl: &Spline) -> TruckEntity {
         }
     };
 
+    // Sampled through the spline's own curve — the same definition EXTRUDE
+    // and REVOLVE read — and closed back onto its start when the flags say
+    // it is periodic and the two ends do not already meet.
     let is_closed = spl.flags.closed || spl.flags.periodic;
-    let gap = {
-        let dx = (p_end.x - p_start.x) as f32;
-        let dy = (p_end.y - p_start.y) as f32;
-        let dz = (p_end.z - p_start.z) as f32;
-        (dx * dx + dy * dy + dz * dz).sqrt()
-    };
+    let mut points = crate::entities::curve::spline_curve(spl)
+        .map(|planar| crate::entities::curve::curve_points(&planar))
+        .unwrap_or_else(|| measurement_polyline(spl));
+    if is_closed {
+        if let (Some(first), Some(last)) = (points.first().copied(), points.last().copied()) {
+            let gap = ((last[0] - first[0]).powi(2)
+                + (last[1] - first[1]).powi(2)
+                + (last[2] - first[2]).powi(2))
+            .sqrt();
+            if gap > 1e-6 {
+                points.push(first);
+            }
+        }
+    }
+    let object = RenderObject::Lines(points);
 
-    let object = if is_closed && gap > 1e-6 {
-        let v_start = builder::vertex(p_start);
-        let v_end = builder::vertex(p_end);
-        let v_close = builder::vertex(p_start);
-        let main_edge = Edge::new(&v_start, &v_end, curve);
-        let close_edge = builder::line(&v_end, &v_close);
-        let wire: Wire = [main_edge, close_edge].into_iter().collect();
-        TruckObject::Contour(wire)
-    } else {
-        let v_start = builder::vertex(p_start);
-        let v_end = builder::vertex(p_end);
-        let edge = Edge::new(&v_start, &v_end, curve);
-        TruckObject::Curve(edge)
-    };
-
-    TruckEntity {
+    RenderEntity {
         pick_tris: Vec::new(),
         object,
         snap_pts,
@@ -199,57 +157,23 @@ pub(crate) fn measurement_polyline(spl: &Spline) -> Vec<[f64; 3]> {
     if degree == 0 || degree >= count {
         return spl.control_points.iter().map(|p| [p.x, p.y, p.z]).collect();
     }
-    let knot_vec = if spl.knots.len() == count + degree + 1 {
-        KnotVec::from(spl.knots.clone())
-    } else {
-        KnotVec::uniform_knot(degree, count - 1)
-    };
-
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    for point in &spl.control_points {
-        min[0] = min[0].min(point.x);
-        min[1] = min[1].min(point.y);
-        min[2] = min[2].min(point.z);
-        max[0] = max[0].max(point.x);
-        max[1] = max[1].max(point.y);
-        max[2] = max[2].max(point.z);
-    }
-    let diagonal = ((max[0] - min[0]).powi(2)
-        + (max[1] - min[1]).powi(2)
-        + (max[2] - min[2]).powi(2))
-    .sqrt();
-    let tolerance = crate::scene::convert::tess_util::fill_chord_tol(diagonal.max(1.0));
-
-    if spl.weights.len() == count {
-        let controls = spl
-            .control_points
+    // The kernel's space curve holds rational and polynomial curves alike.
+    let controls: Vec<[f64; 3]> = spl
+        .control_points
+        .iter()
+        .map(|point| [point.x, point.y, point.z])
+        .collect();
+    let weights = (spl.weights.len() == count).then(|| {
+        spl.weights
             .iter()
-            .zip(&spl.weights)
-            .map(|(point, &weight)| {
-                let weight = if weight.abs() < 1e-12 { 1.0 } else { weight };
-                Vector4::new(
-                    point.x * weight,
-                    point.y * weight,
-                    point.z * weight,
-                    weight,
-                )
-            })
-            .collect::<Vec<_>>();
-        let curve = NurbsCurve::new(BSplineCurve::new(knot_vec, controls));
-        let range = curve.range_tuple();
-        let (_, points) = curve.parameter_division(range, tolerance);
-        points.into_iter().map(|point| [point.x, point.y, point.z]).collect()
-    } else {
-        let controls = spl
-            .control_points
-            .iter()
-            .map(|point| Point3::new(point.x, point.y, point.z))
-            .collect::<Vec<_>>();
-        let curve = BSplineCurve::new(knot_vec, controls);
-        let range = curve.range_tuple();
-        let (_, points) = curve.parameter_division(range, tolerance);
-        points.into_iter().map(|point| [point.x, point.y, point.z]).collect()
+            .map(|weight| if weight.abs() < 1e-12 { 1.0 } else { *weight })
+            .collect()
+    });
+    match NurbsCurve3::new(degree, controls, spl.knots.clone(), weights) {
+        Some(curve) => {
+            curve.tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE)
+        }
+        None => spl.control_points.iter().map(|p| [p.x, p.y, p.z]).collect(),
     }
 }
 
@@ -257,7 +181,6 @@ pub(crate) fn measurement_polyline(spl: &Spline) -> Vec<[f64; 3]> {
 /// passes through every input point; open ends use reflected phantom points so
 /// they don't kink, closed curves wrap around.
 fn catmull_rom_polyline(pts: &[acadrust::types::Vector3], closed: bool) -> Vec<[f64; 3]> {
-    const STEPS: usize = 16;
     let n = pts.len();
     if n < 2 {
         return pts.iter().map(|p| [p.x, p.y, p.z]).collect();
@@ -272,7 +195,7 @@ fn catmull_rom_polyline(pts: &[acadrust::types::Vector3], closed: bool) -> Vec<[
         [pts[j].x, pts[j].y, pts[j].z]
     };
     let seg_count = if closed { n } else { n - 1 };
-    let mut out: Vec<[f64; 3]> = Vec::with_capacity(seg_count * STEPS + 1);
+    let mut out = Vec::new();
     for seg in 0..seg_count {
         let p1 = get(seg as isize);
         let p2 = get(seg as isize + 1);
@@ -295,15 +218,7 @@ fn catmull_rom_polyline(pts: &[acadrust::types::Vector3], closed: bool) -> Vec<[
         } else {
             get(seg as isize + 2)
         };
-        // Emit t in [0, 1); the final segment also emits t = 1 so the curve
-        // closes onto the last point (no duplicate shared vertices otherwise).
-        let last = if seg == seg_count - 1 {
-            STEPS
-        } else {
-            STEPS - 1
-        };
-        for s in 0..=last {
-            let t = s as f64 / STEPS as f64;
+        let point_at = |t: f64| {
             let (t2, t3) = (t * t, t * t * t);
             let mut q = [0.0f64; 3];
             for k in 0..3 {
@@ -313,8 +228,24 @@ fn catmull_rom_polyline(pts: &[acadrust::types::Vector3], closed: bool) -> Vec<[
                         + (2.0 * p0[k] - 5.0 * p1[k] + 4.0 * p2[k] - p3[k]) * t2
                         + (-p0[k] + 3.0 * p1[k] - 3.0 * p2[k] + p3[k]) * t3);
             }
-            out.push(q);
-        }
+            q
+        };
+        let tangent_at = |t: f64| {
+            let mut q = [0.0; 3];
+            for k in 0..3 {
+                let a = -p0[k] + p2[k];
+                let b = 2.0 * p0[k] - 5.0 * p1[k] + 4.0 * p2[k] - p3[k];
+                let c = -p0[k] + 3.0 * p1[k] - 3.0 * p2[k] + p3[k];
+                q[k] = 0.5 * (a + 2.0 * b * t + 3.0 * c * t * t);
+            }
+            q
+        };
+        let sampled = cadkernel::tessellation::sample_curve3_angle(
+            point_at,
+            tangent_at,
+            cadkernel::tessellation::DEFAULT_ANGLE,
+        );
+        out.extend(sampled.into_iter().skip(usize::from(seg > 0)));
     }
     out
 }
@@ -400,12 +331,9 @@ fn fit_spline_polyline(spl: &Spline) -> Vec<[f64; 3]> {
     }
 
     // Evaluate each segment as a cubic Hermite (dP/du = slope · h_i).
-    const STEPS: usize = 32;
-    let mut out = Vec::with_capacity((n - 1) * STEPS + 1);
+    let mut out = Vec::new();
     for i in 0..n - 1 {
-        let last = if i == n - 2 { STEPS } else { STEPS - 1 };
-        for s in 0..=last {
-            let u = s as f64 / STEPS as f64;
+        let point_at = |u: f64| {
             let (u2, u3) = (u * u, u * u * u);
             let h00 = 2.0 * u3 - 3.0 * u2 + 1.0;
             let h10 = u3 - 2.0 * u2 + u;
@@ -417,8 +345,30 @@ fn fit_spline_polyline(spl: &Spline) -> Vec<[f64; 3]> {
                 let m1 = slopes[k][i + 1] * h[i];
                 q[k] = h00 * p[i][k] + h10 * m0 + h01 * p[i + 1][k] + h11 * m1;
             }
-            out.push(q);
-        }
+            q
+        };
+        let tangent_at = |u: f64| {
+            let u2 = u * u;
+            let (h00, h10, h01, h11) = (
+                6.0 * u2 - 6.0 * u,
+                3.0 * u2 - 4.0 * u + 1.0,
+                -6.0 * u2 + 6.0 * u,
+                3.0 * u2 - 2.0 * u,
+            );
+            let mut q = [0.0; 3];
+            for k in 0..3 {
+                let m0 = slopes[k][i] * h[i];
+                let m1 = slopes[k][i + 1] * h[i];
+                q[k] = h00 * p[i][k] + h10 * m0 + h01 * p[i + 1][k] + h11 * m1;
+            }
+            q
+        };
+        let sampled = cadkernel::tessellation::sample_curve3_angle(
+            point_at,
+            tangent_at,
+            cadkernel::tessellation::DEFAULT_ANGLE,
+        );
+        out.extend(sampled.into_iter().skip(usize::from(i > 0)));
     }
     out
 }
@@ -651,9 +601,9 @@ fn apply_transform(spline: &mut Spline, t: &EntityTransform) {
     });
 }
 
-impl TruckConvertible for Spline {
-    fn to_truck(&self, _document: &acadrust::CadDocument) -> Option<TruckEntity> {
-        Some(to_truck(self))
+impl RenderConvertible for Spline {
+    fn to_render(&self, _document: &acadrust::CadDocument) -> Option<RenderEntity> {
+        Some(to_render(self))
     }
 }
 
@@ -712,7 +662,7 @@ impl crate::entities::traits::Grippable for Spline {
                         * 0.5;
                     self.weights.insert(i1, w);
                 }
-                // Clear knots so to_truck rebuilds a uniform knot vector
+                // Clear knots so to_render rebuilds a uniform knot vector
                 // for the new CV count.
                 self.knots.clear();
             }

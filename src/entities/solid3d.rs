@@ -1,13 +1,9 @@
 // Grippable + PropertyEditable for Solid3D, Region, Body.
 //
-// Geometry lives in ACIS data — we cannot edit it via the properties panel.
-// We expose the point_of_reference as a translate grip and show ACIS size
-// as read-only info.  Grip translate also updates wire points so the wire
-// fallback stays in sync; the caller (scene/mod.rs apply_grip) translates
-// the MeshModel vertices to match.
+// Shared grips and properties for modeler entities.
 
 use acadrust::entities::{Body, Region, Solid3D, Surface};
-use acadrust::kernel::space::polygon;
+use cadkernel::space::polygon;
 use crate::t;
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_prop as edit, parse_f64, ro_prop as ro};
@@ -745,15 +741,38 @@ impl PropertyEditable for Surface {
 
 // ── Accessors for the Solid3D / Region / Body trio ─────────────────────────
 //
-// These three entity types share a common subset of fields (ACIS data
-// + point_of_reference + wires fallback). Code that needs to treat them
-// uniformly (mesh tess dispatch, fallback wires, grip translate) used
-// to repeat a three-arm `match entity` block at every callsite — the
-// helpers below collapse those to a single call.
+// These entity types share ACIS data and a point of reference.
 
 use crate::scene::model::mesh_model::MeshLodSet;
 use crate::scene::convert::solid3d_tess;
 use acadrust::{types::Vector3, EntityType};
+
+const DISPLAY_DEFLECTION_COEFFICIENT: f64 = 2.5e-4;
+
+/// Shared world-space chord tolerance for solid display.
+pub fn display_deflection(
+    header: &acadrust::document::HeaderVariables,
+    facet_res: f64,
+) -> Option<f64> {
+    let low = header.model_space_extents_min;
+    let high = header.model_space_extents_max;
+    let spans = [high.x - low.x, high.y - low.y, high.z - low.z];
+    let span = spans
+        .into_iter()
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .fold(0.0, f64::max);
+    if !span.is_finite() || span <= 0.0 || span > 1.0e16 {
+        return None;
+    }
+    let resolution = if facet_res.is_finite() && facet_res > 0.0 {
+        facet_res.clamp(0.01, 10.0)
+    } else {
+        1.0
+    };
+    Some(
+        (span * DISPLAY_DEFLECTION_COEFFICIENT / resolution.max(1.0).sqrt()).max(1e-9),
+    )
+}
 
 /// `point_of_reference` of an ACIS-backed volume entity, if applicable.
 pub fn point_of_reference(e: &EntityType) -> Option<&Vector3> {
@@ -766,90 +785,44 @@ pub fn point_of_reference(e: &EntityType) -> Option<&Vector3> {
     }
 }
 
-/// Pre-stored edge-wire fallback list (used when the SAT/SAB kernel
-/// can't produce a mesh — drawings authored by SOLVIEW / 3DPLOT carry
-/// these explicitly).
-pub fn fallback_wires(e: &EntityType) -> Option<&[acadrust::entities::Wire]> {
-    match e {
-        EntityType::Solid3D(s) => Some(&s.wires),
-        EntityType::Region(r) => Some(&r.wires),
-        EntityType::Body(b) => Some(&b.wires),
-        EntityType::Surface(s) => Some(&s.wires),
-        _ => None,
-    }
-}
-
-pub fn wire_point(
-    wire: &acadrust::entities::Wire,
-    point: &acadrust::types::Vector3,
-) -> acadrust::types::Vector3 {
-    if !wire.has_transform {
-        return *point;
-    }
-    let x = point.x * wire.scale.x;
-    let y = point.y * wire.scale.y;
-    let z = point.z * wire.scale.z;
-    acadrust::types::Vector3::new(
-        wire.translation.x
-            + wire.x_axis.x * x
-            + wire.y_axis.x * y
-            + wire.z_axis.x * z,
-        wire.translation.y
-            + wire.x_axis.y * x
-            + wire.y_axis.y * y
-            + wire.z_axis.y * z,
-        wire.translation.z
-            + wire.x_axis.z * x
-            + wire.y_axis.z * y
-            + wire.z_axis.z * z,
-    )
-}
-
-/// Whether every ACIS face uses a surface family the mesh pipeline can decode.
-/// Unsupported or unresolved faces must keep their display-cache wires visible;
-/// otherwise a parseable but incomplete shell looks like a valid solid.
-pub fn acis_has_complete_surface_support(e: &EntityType) -> bool {
-    let sat = match e {
-        EntityType::Solid3D(s) => s.acis_data.parse(),
-        EntityType::Region(r) => r.acis_data.parse(),
-        EntityType::Body(b) => b.acis_data.parse(),
-        EntityType::Surface(s) => s.acis_data.parse(),
-        _ => None,
-    };
-    let Some(sat) = sat else {
-        return false;
-    };
-    let faces = sat.faces();
-    !faces.is_empty()
-        && faces.iter().all(|face| {
-            sat.resolve(face.surface()).is_some_and(|surface| {
-                matches!(
-                    surface.entity_type.as_str(),
-                    "plane-surface"
-                        | "cone-surface"
-                        | "sphere-surface"
-                        | "torus-surface"
-                        | "spline-surface"
-                        | "meshsurf-surface"
-                        | "bs3-surface"
-                )
-            })
-        })
-}
-
 /// Build material-aware shaded geometry for every standard 3-D solid/surface
 /// and mesh family, returning `None` when decoded geometry is unusable.
 pub fn tessellate_volume(
     e: &EntityType,
     color: [f32; 4],
     facet_res: f64,
+    chordal_deflection: Option<f64>,
     isolines: usize,
 ) -> Option<MeshLodSet> {
     match e {
-        EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(s, color, facet_res, isolines),
-        EntityType::Region(r) => solid3d_tess::tessellate_region(r, color, facet_res, isolines),
-        EntityType::Body(b) => solid3d_tess::tessellate_body(b, color, facet_res, isolines),
-        EntityType::Surface(s) => solid3d_tess::tessellate_surface(s, color, facet_res, isolines),
+        EntityType::Solid3D(s) => solid3d_tess::tessellate_solid3d(
+            s,
+            color,
+            facet_res,
+            chordal_deflection,
+            isolines,
+        ),
+        EntityType::Region(r) => solid3d_tess::tessellate_region(
+            r,
+            color,
+            facet_res,
+            chordal_deflection,
+            isolines,
+        ),
+        EntityType::Body(b) => solid3d_tess::tessellate_body(
+            b,
+            color,
+            facet_res,
+            chordal_deflection,
+            isolines,
+        ),
+        EntityType::Surface(s) => solid3d_tess::tessellate_surface(
+            s,
+            color,
+            facet_res,
+            chordal_deflection,
+            isolines,
+        ),
         EntityType::Mesh(_) | EntityType::PolygonMesh(_) | EntityType::PolyfaceMesh(_) => {
             crate::entities::mesh::tessellate_shaded_mesh(e, color)
         }

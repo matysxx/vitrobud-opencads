@@ -12,6 +12,14 @@ language =
     .portuguese = Português (Brasil)
     .arabic = العربية
     .japanese = 日本語
+    .korean = 한국어
+    .czech = Čeština
+    .italian = Italiano
+    .finnish = Suomi
+    .hungarian = Magyar
+    .polish = Polski
+    .chinese-traditional = 繁體中文
+    .bulgarian = Български
 
 action =
     .close = Fechar
