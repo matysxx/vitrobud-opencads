@@ -54,8 +54,8 @@ and a closed bulged polyline in both consumers. Do not add customer drawings to
 the public repository.
 
 The current implementation uses an isolated application-side compatibility
-writer because the pinned `acadifc` revision documents R12 but does not model
-`AC1009` in `DxfVersion`; its general writer also emits post-R12 sections. The
-generic version-model, writer and reader
-corrections should be proposed upstream; the command and its fail-safe
-manufacturing policy remain in Open CAD Studio.
+writer alongside the directly pinned `cadcodec` dependency. The normal codec
+writer serves ordinary DWG/DXF save targets, while this command deliberately
+emits the smaller, verified `AC1009` manufacturing profile described above.
+Generic codec corrections should be proposed upstream; the separate command
+and its fail-safe manufacturing policy remain a maintained-fork feature.

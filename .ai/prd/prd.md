@@ -31,3 +31,5 @@
   (`13-upstream-sync-f57c258a/`)
 - `OCSSTACK-14` — Sync reviewed upstream revision `403247cb`
   (`14-upstream-sync-403247cb/`)
+- `OCSSTACK-15` — Close public container documentation gaps
+  (`15-container-documentation/`)

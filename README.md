@@ -61,16 +61,22 @@ This repository preserves upstream history and adds an anonymized, reusable
 rootless-Podman web stack. Delivery follows `local → GitHub → server`; private
 runtime configuration, certificates, hostnames, and CAD data stay outside Git.
 
+The target runtime is an unprivileged Debian host. It checks out one verified
+full GitHub commit, builds the matching OCI image locally, and runs only this
+stack with rootless Podman. Autostart is managed by `systemd --user`; global
+Podman, global systemd, and unrelated stacks are outside the rollout boundary.
+TLS, certificates, local DNS, and the reverse proxy remain external.
+
 ```bash
 cp .env.dist .env
 cp src/.env.dist src/.env
 ./dev-ops/setup
 ```
 
-The external reverse proxy owns HTTPS. See the [container quick start](docs/container-quickstart.md),
-[deployment plan](docs/deployment-plan.md), [upstream maintenance](docs/upstream-maintenance.md),
-and [infrastructure runbook](docs/infrastructure-runbook.md). LDAP and Nextcloud
-integration remain intentionally deferred.
+Start with the [container documentation index](docs/README.md). It links the
+quick start, deployment and rollback procedures, upstream maintenance,
+infrastructure contract, privacy boundary, backup model, and DXF R12 guide.
+LDAP and Nextcloud integration remain intentionally deferred.
 
 ## Highlights
 
