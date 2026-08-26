@@ -82,6 +82,8 @@ pub struct GripPopup {
     pub anchor: iced::Point,
     pub items: Vec<crate::scene::model::object::GripMenuItem>,
     pub selected: usize,
+    /// Whether a click-opened menu stays visible away from its grip.
+    pub pinned: bool,
 }
 
 /// Pending follow-up value for grip-menu actions that need a number
@@ -475,6 +477,18 @@ pub(super) struct OpenCADStudio {
     /// The `a` channel is always 1.0.
     default_bg_color: Option<[f32; 4]>,
     default_paper_bg_color: Option<[f32; 4]>,
+    /// CLIPROMPTLINES: how many temporary prompt lines for a single command
+    /// are displayed above the command window (0–50, Registry, default 3).
+    cliprompt_lines: i32,
+    /// MRU list of block names inserted via INSERT, most recent first, capped to 20.
+    block_mru: Vec<String>,
+    /// Insertion frequency per block name (uppercase key → count), capped.
+    block_freq: std::collections::HashMap<String, u32>,
+    /// Last time block-usage was flushed to disk (debounce per 2.4).
+    #[cfg(not(target_arch = "wasm32"))]
+    block_usage_last_persist: Option<std::time::Instant>,
+    #[cfg(target_arch = "wasm32")]
+    block_usage_last_persist: Option<()>,
     /// `true` after a bare `VPORTS` in model space — the next command-line
     /// entry is treated as the tiled-config option (SIngle/2H/2V/4).
     awaiting_vports: bool,
@@ -606,6 +620,12 @@ pub(super) struct OpenCADStudio {
     /// OS window Id for the floating Layer Properties Manager (None when closed).
     /// OS window Id of the primary application window.
     main_window: Option<window::Id>,
+    /// Hides drawing UI overlays for one thumbnail capture frame.
+    thumbnail_capture_clean: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_native_thumbnail_save: Option<PendingNativeThumbnailSave>,
+    #[cfg(target_arch = "wasm32")]
+    pending_web_thumbnail_save: Option<PendingWebThumbnailSave>,
     // ── Floating panel windows ────────────────────────────────────────────
     /// Active `iced_aw` colour picker: destination plus its initial colour.
     color_pick_target: Option<(ColorPickTarget, AcadColor)>,
@@ -756,6 +776,9 @@ pub(super) struct OpenCADStudio {
     ctrl_down: bool,
     /// Open in-place MText editor (toolbar + text area + live preview), if any.
     mtext_editor: Option<mtext_editor::MTextEditorState>,
+    /// Return rich text to a suspended drawing command.
+    command_mtext_input: bool,
+    pending_command_editor_text: Option<String>,
     /// Open in-place single-line TEXT editor (plain text-entry box), if any.
     text_inline: Option<text_inline::TextInlineState>,
     /// Cursor-anchored one-shot snap override menu (Shift+RMB): the canvas
@@ -787,16 +810,21 @@ pub(super) struct OpenCADStudio {
     /// Snapshot of the dialog's settings taken when it opened, restored by the
     /// `<previous>` list entry.
     plot_prev: Option<crate::ui::window::plot::PlotDialogState>,
+    /// Full source settings behind the fields currently shown in Plot.
+    plot_setup_template: Option<acadrust::objects::PlotSettings>,
     /// Paper layouts shown by Print All, in tab order with their selection.
     print_all_layouts: Vec<(String, bool)>,
     /// True while the Plot dialog is editing settings for Print All.
     print_all_options: bool,
+    /// True when Print All should override each layout's page setup.
+    print_all_settings_override: bool,
     /// Settings restored when the Print All options dialog is cancelled.
     print_all_options_prev: Option<crate::ui::window::plot::PlotDialogState>,
     /// Plot style restored together with cancelled Print All options.
     print_all_plot_style_prev: Option<Option<crate::io::plot_style::PlotStyleTable>>,
     /// Plot window restored together with cancelled Print All options.
     print_all_plot_window_prev: Option<Option<(f64, f64, f64, f64)>>,
+    print_all_plot_setup_prev: Option<Option<acadrust::objects::PlotSettings>>,
 
     // ── Plot Style Table ──────────────────────────────────────────────────
     /// Currently loaded CTB/STB table (None = no override).
@@ -1131,6 +1159,28 @@ pub(super) enum SaveContinuation {
 
 #[derive(Debug, Clone)]
 #[cfg(not(target_arch = "wasm32"))]
+pub(super) struct PendingNativeThumbnailSave {
+    tab_id: u64,
+    path: PathBuf,
+    version: acadrust::DxfVersion,
+    purpose: SavePurpose,
+    continuation: SaveContinuation,
+    set_current_path: bool,
+    check_external_change: bool,
+}
+
+#[derive(Debug, Clone)]
+#[cfg(target_arch = "wasm32")]
+pub(super) struct PendingWebThumbnailSave {
+    tab_id: u64,
+    filename: String,
+    ext: String,
+    version: acadrust::DxfVersion,
+    bounds: iced::Rectangle,
+}
+
+#[derive(Debug, Clone)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) struct PendingSaveFailure {
     tab_id: u64,
     path: PathBuf,
@@ -1152,16 +1202,6 @@ pub(super) struct PendingExternalChange {
     set_current_path: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) struct ThumbnailCacheKey {
-    epoch: u64,
-    camera_generation: u64,
-    bg_color: [u32; 4],
-    png: bool,
-    viewport: [u32; 2],
-}
-
 #[derive(Debug, Clone)]
 #[cfg(not(target_arch = "wasm32"))]
 pub struct SaveOutcome {
@@ -1176,7 +1216,6 @@ pub struct SaveOutcome {
     set_current_path: bool,
     purpose: SavePurpose,
     continuation: SaveContinuation,
-    thumbnail_key: Option<ThumbnailCacheKey>,
     refreshed_preview: Option<Option<acadrust::Preview>>,
     result: Result<(), crate::io::SaveFailure>,
 }
@@ -1199,6 +1238,8 @@ pub enum ColorPickTarget {
     Properties,
     /// Selected entities' background colour (hatch / MTEXT background row).
     PropertiesBg,
+    /// A named per-entity Properties colour field.
+    PropertiesField(String),
     /// Current creation colour (ribbon).
     Ribbon,
     /// A layer's colour, by panel row index.
@@ -1913,9 +1954,23 @@ pub enum Message {
     AecDropBack,
     /// Periodic autosave tick — write `.sv$` recovery files for dirty tabs.
     AutoSave,
+    /// A clean viewport frame is ready for thumbnail capture.
+    ThumbnailCaptureFrame,
+    /// Restore drawing UI after the compositor screenshot is captured.
+    ThumbnailCaptureFinished,
     /// Native background save/autosave completed.
     #[cfg(not(target_arch = "wasm32"))]
     SaveFinished(SaveOutcome),
+    /// Web viewport capture completed; serialize and download the drawing.
+    #[cfg(target_arch = "wasm32")]
+    WebSaveScreenshot {
+        tab_id: u64,
+        filename: String,
+        ext: String,
+        version: acadrust::DxfVersion,
+        bounds: Option<iced::Rectangle>,
+        screenshot: Option<iced::window::Screenshot>,
+    },
     /// Retry the failed save after the other application releases the file.
     #[cfg(not(target_arch = "wasm32"))]
     SaveFileInUseRetry,
@@ -1970,9 +2025,9 @@ pub enum Message {
     },
     /// A widget captured Up/Down; resolve it only if the command input owns
     /// keyboard focus.
-    CommandLineArrowProbe { direction: ArrowKey },
+    CommandLineArrowProbe { direction: ArrowKey, extend_selection: bool },
     /// Result of the command-input focus query for a captured Up/Down key.
-    CommandLineArrowResolved { direction: ArrowKey, focused: bool },
+    CommandLineArrowResolved { direction: ArrowKey, focused: bool, extend_selection: bool },
     /// Toggle the dropdown listing the full command-line history.
     CommandHistoryToggle,
     /// Grab/move/release the expanded history panel's top resize edge.
@@ -2011,6 +2066,7 @@ pub enum Message {
     LayerToggleVisible(usize),
     LayerToggleLock(usize),
     LayerToggleFreeze(usize),
+    LayerTogglePlot(usize),
     /// Sort the Layer Manager table by a clicked column header.
     LayerSort(crate::ui::window::layers::LayerSortCol),
     /// Toggle per-viewport freeze: (layer_index, vp_col_index)
@@ -3124,6 +3180,10 @@ impl OpenCADStudio {
             savetime_min: 10,
             default_bg_color: None,
             default_paper_bg_color: None,
+            cliprompt_lines: 3,
+            block_mru: Vec::new(),
+            block_freq: std::collections::HashMap::new(),
+            block_usage_last_persist: None,
             awaiting_vports: false,
             pending_setvar: None,
             ucs_icon_hover: false,
@@ -3165,6 +3225,11 @@ impl OpenCADStudio {
             show_layout_tabs: true,
             last_point: None,
             main_window: None,
+            thumbnail_capture_clean: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_native_thumbnail_save: None,
+            #[cfg(target_arch = "wasm32")]
+            pending_web_thumbnail_save: None,
             color_pick_target: None,
             color_picker_tab: ColorPickerTab::Index,
             recent_colors: Vec::new(),
@@ -3218,6 +3283,8 @@ impl OpenCADStudio {
             ctrl_down: false,
             cont_anchor: None,
             mtext_editor: None,
+            command_mtext_input: false,
+            pending_command_editor_text: None,
             text_inline: None,
             snap_override_popup: None,
             axis_lock_dir: None,
@@ -3232,11 +3299,14 @@ impl OpenCADStudio {
             plot_orientation: crate::io::paper_sizes::Orientation::Landscape,
             plot_dialog: crate::ui::window::plot::PlotDialogState::default(),
             plot_prev: None,
+            plot_setup_template: None,
             print_all_layouts: Vec::new(),
             print_all_options: false,
+            print_all_settings_override: false,
             print_all_options_prev: None,
             print_all_plot_style_prev: None,
             print_all_plot_window_prev: None,
+            print_all_plot_setup_prev: None,
             opening: None,
             open_job_serial: 0,
             recovery_report: None,
@@ -3730,6 +3800,7 @@ pub fn run_web() -> iced::Result {
     .subscription(OpenCADStudio::subscription)
     .title(|_state: &OpenCADStudio| "Open CAD Studio".to_string())
     .theme(|state: &OpenCADStudio| state.active_theme.clone())
+    .backend(iced::Backend::Hardware(iced::backend::Api::OpenGL))
     .font(iced_aw::ICED_AW_FONT_BYTES)
     .run()
 }

@@ -14,7 +14,7 @@ use crate::scene::pick::grip::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::plugin::v4_support;
-use crate::scene::model::object::GripApply;
+use crate::scene::model::object::{GripApply, PropValue};
 use crate::scene::{
     self, hover_id, CubeRegion, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX,
 };
@@ -202,6 +202,16 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         // Command-line entry is shown uppercase.
                         self.command_line.input.push_str(&s.to_uppercase());
                         self.command_line.cancel_history_navigation();
+                        // Live incremental search for INSERT/MINSERT (see CommandInput)
+                        let live = self.command_line.input.clone();
+                        let i = self.active_tab;
+                        let (should_update, opts, prompt) = if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
+                            if cmd.on_live_input(&live) { (true, cmd.options(), cmd.prompt()) } else { (false, Vec::new(), String::new()) }
+                        } else { (false, Vec::new(), String::new()) };
+                        if should_update {
+                            self.command_line.set_step_options(opts);
+                            if let Some(last) = self.command_line.history.last_mut() { if last.pinned { last.text = prompt; } }
+                        }
                     }
                 }
                 self.command_line.autocomplete_cursor = None;
@@ -231,6 +241,18 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 self.command_line.input.pop();
                 self.command_line.autocomplete_cursor = None;
                 self.command_line.cancel_history_navigation();
+                // Live incremental search for INSERT/MINSERT
+                {
+                    let live = self.command_line.input.clone();
+                    let i = self.active_tab;
+                    let (should_update, opts, prompt) = if let Some(cmd) = self.tabs[i].active_cmd.as_mut() {
+                        if cmd.on_live_input(&live) { (true, cmd.options(), cmd.prompt()) } else { (false, Vec::new(), String::new()) }
+                    } else { (false, Vec::new(), String::new()) };
+                    if should_update {
+                        self.command_line.set_step_options(opts);
+                        if let Some(last) = self.command_line.history.last_mut() { if last.pinned { last.text = prompt; } }
+                    }
+                }
                 self.focus_cmd_input()
     }
 
@@ -1140,9 +1162,35 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 if matches!(
                     item.action,
                     GripMenuAction::Stretch
+                        | GripMenuAction::MoveWithDimLine
                         | GripMenuAction::MoveWithLeader
                         | GripMenuAction::MoveIndependent
                 ) {
+                    let is_dimension = matches!(
+                        self.tabs[i].scene.document.get_entity(popup.handle),
+                        Some(acadrust::EntityType::Dimension(_))
+                    );
+                    if is_dimension {
+                        let movement = match item.action {
+                            GripMenuAction::MoveWithDimLine => Some("Keep dim line with text"),
+                            GripMenuAction::MoveWithLeader => Some("Move text, add leader"),
+                            GripMenuAction::MoveIndependent => Some("Move text, no leader"),
+                            _ => None,
+                        };
+                        if let Some(movement) = movement {
+                            crate::entities::dim_override::set_property(
+                                &mut self.tabs[i].scene.document,
+                                popup.handle,
+                                "dim_text_movement",
+                                movement,
+                            );
+                            self.tabs[i].dirty = true;
+                            self.tabs[i].scene.bump_entities(&[(
+                                popup.handle,
+                                crate::scene::ChangeKind::Modified,
+                            )]);
+                        }
+                    }
                     // Stretch / Move = grab this grip. Engage it so the next
                     // click places it (click-move-click) — same as picking the
                     // grip directly in the viewport. Without this the menu just
@@ -1153,13 +1201,18 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         .zip(self.tabs[i].selected_grips.iter())
                         .find(|(owner, g)| **owner == popup.handle && g.id == popup.grip_id)
                     {
-                        // "Move with Leader" drags the whole multileader; the
-                        // others move just the picked grip.
+                        // Only multileaders use the whole-object grip.
+                        let is_multileader = matches!(
+                            self.tabs[i].scene.document.get_entity(popup.handle),
+                            Some(acadrust::EntityType::MultiLeader(_))
+                        );
                         let (grip_id, is_translate) =
-                            if matches!(item.action, GripMenuAction::MoveWithLeader) {
+                            if matches!(item.action, GripMenuAction::MoveWithLeader)
+                                && is_multileader
+                            {
                                 (crate::entities::multileader::MOVE_ALL_GRIP, true)
                             } else {
-                                (popup.grip_id, g.is_midpoint)
+                                (popup.grip_id, if is_dimension { false } else { g.is_midpoint })
                             };
                         self.tabs[i].active_grip = Some(GripEdit::single(
                             popup.handle,
@@ -1322,6 +1375,27 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     }
                 }
                 // One-shot action — apply immediately.
+                let unchanged = self.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(popup.handle)
+                    .is_some_and(|entity| match (item.action, entity) {
+                        (GripMenuAction::ShowFit, acadrust::EntityType::Spline(spline)) => {
+                            !spline.cv_frame_visible
+                                && crate::entities::spline::uses_fit_method(spline)
+                        }
+                        (
+                            GripMenuAction::ShowControlVertices,
+                            acadrust::EntityType::Spline(spline),
+                        ) => {
+                            spline.cv_frame_visible
+                                || !crate::entities::spline::uses_fit_method(spline)
+                        }
+                        _ => false,
+                    });
+                if unchanged {
+                    return Task::none();
+                }
                 self.push_undo_snapshot(i, item.label);
                 // For Add Leader, the new arrow becomes the last grip; remember
                 // its id so we can grab it for placement right after.
@@ -1651,9 +1725,18 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         }
                     }
                     StyleKey::MLeaderStyle => {
-                        self.ribbon.active_mleader_style = name.clone();
                         let i = self.active_tab;
-                        self.tabs[i].active_mleader_style = name;
+
+                        self.ribbon.active_mleader_style = name.clone();
+                        self.tabs[i].active_mleader_style = name.clone();
+
+                        self.tabs[i]
+                            .scene
+                            .document
+                            .header
+                            .current_mleader_style_name = name;
+
+                        self.tabs[i].dirty = true;
                     }
                     StyleKey::TableStyle => {
                         self.ribbon.active_table_style = name;
@@ -1705,6 +1788,9 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     entry.gpu,
                                     crate::scene::model::hatch_model::HatchPattern::Solid
                                 );
+                                dxf.pattern_type =
+                                    acadrust::entities::HatchPatternType::Predefined;
+                                dxf.gradient_color.enabled = false;
                             }
                             if let Some(model) = self.tabs[i].scene.hatches.get_mut(&handle) {
                                 model.pattern = entry.gpu.clone();
@@ -1728,9 +1814,111 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
         let handles = self.property_target_handles(i);
 
         if !handles.is_empty() {
+            if matches!(
+                field,
+                "spline_method"
+                    | "knot_param"
+                    | "cv_frame"
+                    | "fill_type"
+                    | "gradient_type"
+                    | "style"
+                    | "pattern_type_label"
+            ) {
+                let unchanged = handles.iter().all(|handle| {
+                    match self.tabs[i].scene.document.get_entity(*handle) {
+                        Some(acadrust::EntityType::Spline(spline)) => match field {
+                            "spline_method" => {
+                                value
+                                    == if crate::entities::spline::shows_fit_points(spline) {
+                                        "Fit"
+                                    } else {
+                                        "Control Vertices"
+                                    }
+                            }
+                            "knot_param" => {
+                                let current = match spline.knot_parameterization {
+                                    0 => "Chord",
+                                    1 => "Square Root",
+                                    2 => "Uniform",
+                                    _ => "Custom",
+                                };
+                                value == current
+                            }
+                            "cv_frame" => {
+                                value
+                                    == if spline.cv_frame_visible {
+                                        "Show"
+                                    } else {
+                                        "Hide"
+                                    }
+                            }
+                            _ => false,
+                        },
+                        Some(acadrust::EntityType::Hatch(hatch)) => match field {
+                            "fill_type" => {
+                                value
+                                    == if hatch.gradient_color.is_single_color {
+                                        "One color"
+                                    } else {
+                                        "Two color"
+                                    }
+                            }
+                            "gradient_type" => {
+                                let (kind, inverted) =
+                                    crate::scene::model::hatch_model::GradientKind::from_name(
+                                        &hatch.gradient_color.name,
+                                    );
+                                value == kind.choice_label(inverted)
+                            }
+                            "style" => {
+                                value
+                                    == match hatch.style {
+                                        acadrust::entities::HatchStyleType::Normal => "Normal",
+                                        acadrust::entities::HatchStyleType::Outer => "Outer",
+                                        acadrust::entities::HatchStyleType::Ignore => "Ignore",
+                                    }
+                            }
+                            "pattern_type_label" => {
+                                value
+                                    == match hatch.pattern_type {
+                                        acadrust::entities::HatchPatternType::Predefined => {
+                                            "Predefined"
+                                        }
+                                        acadrust::entities::HatchPatternType::UserDefined => {
+                                            "User Defined"
+                                        }
+                                        acadrust::entities::HatchPatternType::Custom => "Custom",
+                                    }
+                            }
+                            _ => false,
+                        },
+                        _ => false,
+                    }
+                });
+                if unchanged {
+                    return Task::none();
+                }
+            }
             self.push_undo_snapshot(i, "CHPROP");
 
-            if field == "vscale_std" {
+            if field.starts_with("dim_") {
+                for &handle in &handles {
+                    if self.tabs[i].scene.is_layer_locked(handle) {
+                        continue;
+                    }
+                    if matches!(
+                        self.tabs[i].scene.document.get_entity(handle),
+                        Some(acadrust::EntityType::Dimension(_))
+                    ) {
+                        crate::entities::dim_override::set_property(
+                            &mut self.tabs[i].scene.document,
+                            handle,
+                            field,
+                            &value,
+                        );
+                    }
+                }
+            } else if field == "vscale_std" {
                 for &handle in &handles {
                     if matches!(
                         self.tabs[i].scene.document.get_entity(handle),
@@ -2000,7 +2188,43 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                 self.tabs[i].scene.bump_entities(&changes);
                             }
                         }
+                    } else if field == "tbl_style_handle" {
+                        let style_handle = self.tabs[i]
+                            .scene
+                            .document
+                            .objects
+                            .iter()
+                            .find_map(|(handle, object)| match object {
+                                acadrust::objects::ObjectType::TableStyle(style)
+                                    if style.name.eq_ignore_ascii_case(value.trim()) =>
+                                {
+                                    Some(*handle)
+                                }
+                                _ => None,
+                            });
+                        if let Some(style_handle) = style_handle {
+                            for &handle in &handles {
+                                if let Some(acadrust::EntityType::Table(table)) =
+                                    self.tabs[i].scene.document.get_entity_mut(handle)
+                                {
+                                    table.table_style_handle = Some(style_handle);
+                                }
+                            }
+                        }
+                    } else if field == "transparency" {
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                                crate::scene::view::dispatch::apply_common_prop(entity, "transparency", &value);
+                            }
+                        }
                     } else if field == "plot_style" {
+                        if self.tabs[i].scene.document.header.plotstyle_mode {
+                            self.refresh_properties();
+                            return Task::none();
+                        }
                         // Named plot-style pick: ByLayer / ByBlock clear the
                         // handle; a named style resolves through the drawing's
                         // ACAD_PLOTSTYLENAME dictionary to its placeholder handle.
@@ -2028,6 +2252,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     }
                                     "ByBlock" => {
                                         common.plotstyle_flags = 1;
+                                        common.plotstyle_handle = None;
+                                    }
+                                    "Normal" => {
+                                        common.plotstyle_flags = 2;
                                         common.plotstyle_handle = None;
                                     }
                                     _ => {
@@ -2070,6 +2298,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                         common.material_flags = 1;
                                         common.material_handle = None;
                                     }
+                                    "Global" => {
+                                        common.material_flags = 2;
+                                        common.material_handle = None;
+                                    }
                                     _ => {
                                         if let Some(h) = mat_handle {
                                             common.material_flags = 3;
@@ -2086,6 +2318,20 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             crate::command::WorkingPlane::default()
                         };
                         for &handle in &handles {
+                            let mline_style = self.tabs[i]
+                                .scene
+                                .document
+                                .get_entity(handle)
+                                .and_then(|entity| match entity {
+                                    acadrust::EntityType::MLine(mline) => {
+                                        crate::entities::mline::resolved_mline_style(
+                                            mline,
+                                            &self.tabs[i].scene.document,
+                                        )
+                                        .cloned()
+                                    }
+                                    _ => None,
+                                });
                             if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle)
                             {
                                 crate::scene::view::dispatch::apply_geom_prop_in_working_plane(
@@ -2094,12 +2340,89 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     &value,
                                     plane,
                                 );
+                                if matches!(field, "ml_justification" | "ml_scale") {
+                                    if let (
+                                        acadrust::EntityType::MLine(mline),
+                                        Some(style),
+                                    ) = (entity, mline_style.as_ref())
+                                    {
+                                        crate::modules::draw::draw::mline::sync_mline_element_parameters(
+                                            mline, style,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if field.starts_with("tbl_") {
+                        for &handle in &handles {
+                            if let Some(acadrust::EntityType::Table(table)) =
+                                self.tabs[i].scene.document.get_entity_mut(handle)
+                            {
+                                table.block_record_handle = None;
                             }
                         }
                     }
                     self.invalidate_property_targets(i, &handles);
                     self.tabs[i].dirty = true;
+                    self.tabs[i].properties.edit_choice_open = false;
+                    if field == "spline_method" {
+                        self.tabs[i].properties.prop_vertex = 0;
+                        self.tabs[i].properties.prop_vertex_indicator_active = false;
+                    }
                     self.refresh_properties();
+                } else {
+                    match field {
+                        "transparency" => {
+                            self.tabs[i].dirty = true;
+                            self.refresh_properties();
+                        }
+                        "material" => {
+                            let mat_handle: Option<acadrust::Handle> = self.tabs[i]
+                                .scene
+                                .document
+                                .objects
+                                .iter()
+                                .find_map(|(h, o)| match o {
+                                    acadrust::objects::ObjectType::Material(m) if m.name == value => {
+                                        Some(*h)
+                                    }
+                                    _ => None,
+                                });
+                            match value.as_str() {
+                                "ByLayer" | "ByBlock" | "Global" => {
+                                    self.tabs[i].scene.document.header.current_material_handle =
+                                        acadrust::Handle::NULL;
+                                }
+                                _ => {
+                                    if let Some(h) = mat_handle {
+                                        self.tabs[i].scene.document.header.current_material_handle =
+                                            h;
+                                    }
+                                }
+                            }
+                            self.tabs[i].dirty = true;
+                            self.refresh_properties();
+                        }
+                        "plot_style" => {
+                            if self.tabs[i].scene.document.header.plotstyle_mode {
+                                self.refresh_properties();
+                                return Task::none();
+                            }
+                            match value.as_str() {
+                                "ByBlock" => {
+                                    self.tabs[i].scene.document.header.current_plotstyle_type = 1
+                                }
+                                "Normal" => {
+                                    self.tabs[i].scene.document.header.current_plotstyle_type = 2
+                                }
+                                _ => self.tabs[i].scene.document.header.current_plotstyle_type = 0,
+                            }
+                            self.tabs[i].dirty = true;
+                            self.refresh_properties();
+                        }
+                        _ => {}
+                    }
                 }
                 Task::none()
     }
@@ -2109,20 +2432,81 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 self.tabs[i].properties.active_field = None;
                 let handles = self.property_target_handles(i);
                 if !handles.is_empty() {
+                    let evaluates_expression = self.tabs[i]
+                        .properties
+                        .sections
+                        .iter()
+                        .flat_map(|section| section.props.iter())
+                        .find(|property| property.field == field)
+                        .is_some_and(|property| {
+                            matches!(property.value, PropValue::EditText(_))
+                        });
                     if let Some(raw_val) = self.tabs[i]
                         .properties
                         .edit_buf
                         .remove(&crate::ui::properties::FieldKey::Geom(field))
                     {
-                        // Block names are free-form text — a name like "10-5"
-                        // must not be arithmetic-evaluated.
-                        let val = if field == "block" {
-                            raw_val
-                        } else {
+                        let val = if evaluates_expression {
                             crate::app::expr_eval::eval_to_string(&raw_val)
+                        } else {
+                            raw_val
                         };
+                        if matches!(field, "current_fit_point" | "current_control_point") {
+                            let count = handles
+                                .iter()
+                                .filter_map(|handle| {
+                                    let entity = self.tabs[i].scene.document.get_entity(*handle)?;
+                                    match (field, entity) {
+                                        (
+                                            "current_fit_point",
+                                            acadrust::EntityType::Spline(spline),
+                                        ) => Some(spline.fit_points.len()),
+                                        (
+                                            "current_control_point",
+                                            acadrust::EntityType::Spline(spline),
+                                        ) => Some(
+                                            crate::entities::spline::control_vertex_count(spline),
+                                        ),
+                                        _ => None,
+                                    }
+                                })
+                                .min()
+                                .unwrap_or(0);
+                            if let Ok(requested) = val.trim().parse::<usize>() {
+                                if count > 0 {
+                                    let next = requested.clamp(1, count) - 1;
+                                    self.tabs[i].properties.prop_vertex = next;
+                                    self.tabs[i].properties.prop_vertex_indicator_active = true;
+                                }
+                            }
+                            self.refresh_properties();
+                            return Task::none();
+                        }
                         self.push_undo_snapshot(i, "CHPROP");
-                        if field == "block" {
+                        if field == "tbl_style_handle" {
+                            let style_handle = self.tabs[i]
+                                .scene
+                                .document
+                                .objects
+                                .iter()
+                                .find_map(|(handle, object)| match object {
+                                    acadrust::objects::ObjectType::TableStyle(style)
+                                        if style.name.eq_ignore_ascii_case(val.trim()) =>
+                                    {
+                                        Some(*handle)
+                                    }
+                                    _ => None,
+                                });
+                            if let Some(style_handle) = style_handle {
+                                for &handle in &handles {
+                                    if let Some(acadrust::EntityType::Table(table)) =
+                                        self.tabs[i].scene.document.get_entity_mut(handle)
+                                    {
+                                        table.table_style_handle = Some(style_handle);
+                                    }
+                                }
+                            }
+                        } else if field == "block" {
                             // Name row on a block reference: an existing name
                             // re-points the selected inserts; a new one renames
                             // the definition they share. Commit closes the list.
@@ -2168,6 +2552,19 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     continue;
                                 }
                                 match field {
+                                    _ if field.starts_with("dim_") => {
+                                        if matches!(
+                                            self.tabs[i].scene.document.get_entity(handle),
+                                            Some(acadrust::EntityType::Dimension(_))
+                                        ) {
+                                            crate::entities::dim_override::set_property(
+                                                &mut self.tabs[i].scene.document,
+                                                handle,
+                                                field,
+                                                &val,
+                                            );
+                                        }
+                                    }
                                     "hyperlink" => {
                                         // Stored in the standard PE_URL XDATA
                                         // record; an empty value clears it.
@@ -2248,6 +2645,20 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                             )
                                             .is_none()
                                         {
+                                            let mline_style = self.tabs[i]
+                                                .scene
+                                                .document
+                                                .get_entity(handle)
+                                                .and_then(|entity| match entity {
+                                                    acadrust::EntityType::MLine(mline) => {
+                                                        crate::entities::mline::resolved_mline_style(
+                                                            mline,
+                                                            &self.tabs[i].scene.document,
+                                                        )
+                                                        .cloned()
+                                                    }
+                                                    _ => None,
+                                                });
                                             if let Some(entity) = self.tabs[i]
                                                 .scene
                                                 .document
@@ -2259,9 +2670,29 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                     &val,
                                                     plane,
                                                 );
+                                                if field == "ml_scale" {
+                                                    if let (
+                                                        acadrust::EntityType::MLine(mline),
+                                                        Some(style),
+                                                    ) = (entity, mline_style.as_ref())
+                                                    {
+                                                        crate::modules::draw::draw::mline::sync_mline_element_parameters(
+                                                            mline, style,
+                                                        );
+                                                    }
+                                                }
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                        if field.starts_with("tbl_") {
+                            for &handle in &handles {
+                                if let Some(acadrust::EntityType::Table(table)) =
+                                    self.tabs[i].scene.document.get_entity_mut(handle)
+                                {
+                                    table.block_record_handle = None;
                                 }
                             }
                         }
@@ -2269,6 +2700,12 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         self.tabs[i].dirty = true;
                         self.refresh_properties();
                     }
+                } else {
+                    let _ = self.tabs[i]
+                        .properties
+                        .edit_buf
+                        .remove(&crate::ui::properties::FieldKey::Geom(field));
+                    self.refresh_properties();
                 }
                 Task::none()
     }

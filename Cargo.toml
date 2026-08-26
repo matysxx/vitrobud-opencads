@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2021"
 build = "build.rs"
 
@@ -27,8 +27,8 @@ glam = { version = "0.33", features = ["bytemuck"] }
 rfd = "0.17"
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
-acadrust = { git = "https://github.com/HakanSeven12/cadcodec.git", rev = "931c4ab", features = ["serde"] }
-cadkernel = { git = "https://github.com/HakanSeven12/cadkernel.git", rev = "efc77f5", features = ["acis", "offset"] }
+acadrust = { git = "https://github.com/HakanSeven12/cadcodec.git", rev = "9f3cf8e", features = ["serde"] }
+cadkernel = { git = "https://github.com/HakanSeven12/cadkernel.git", rev = "b2b1d4b", features = ["acis", "offset"] }
 dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
@@ -59,6 +59,9 @@ ashpd = { version = "0.13.13", default-features = false, features = ["async-io",
 [patch.crates-io]
 iced_core = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 iced_widget = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
+
+[patch."https://github.com/HakanSeven12/cadcodec.git"]
+acadrust = { git = "https://git@github.com/HakanSeven12/cadcodec.git", rev = "9f3cf8e" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ocs_plugin_api = { path = "crates/ocs_plugin_api", features = ["host"] }

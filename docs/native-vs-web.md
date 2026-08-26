@@ -16,7 +16,7 @@ browser can't provide. This page lists the differences.
 | File open | Native file dialog → path | Browser picker → bytes |
 | File save | Path / Save dialog → write to disk | Save dialog → direct browser download |
 | Parallelism | Multi-threaded (rayon) | Single-threaded |
-| GPU backend | Vulkan / DX12 / Metal (wgpu) | WebGL2 (WebGPU where available) |
+| GPU backend | Vulkan / DX12 / Metal (wgpu) | WebGL2 |
 | Update check / external links | `ureq`, `open` | skipped / `window.open` |
 | External plugins | Native packages + Plugin Manager | **No** — native libraries cannot run in a browser |
 
@@ -98,7 +98,10 @@ folder and load again on the next desktop launch.
 ## Build & deploy
 
 - Native: `cargo build --release --bin OpenCADStudio`.
-- Web: `trunk build --release --public-url /OpenCADStudio/`.
+- Upstream Pages web app: `trunk build --release --public-url /app/ --dist dist/app --html-output index.html web-app.html`.
+- This maintained private container builds the same `web-app.html` target at
+  `/` to preserve its established reverse-proxy URL and user bookmarks.
+  Run `sh scripts/assemble-site.sh` afterward to add the landing page.
   `.github/workflows/pages.yml` builds and deploys to GitHub Pages on every
   release. No COOP/COEP headers are needed because the web build is
   single-threaded.

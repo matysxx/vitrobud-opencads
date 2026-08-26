@@ -9,7 +9,15 @@ RUN rustup target add wasm32-unknown-unknown \
     && cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_CLI_VERSION}" --locked
 WORKDIR /build
 COPY . .
-RUN trunk build --release --public-url /
+# Upstream Pages publishes a marketing landing page at / and the application
+# at /app/. This private runtime intentionally preserves the established
+# application URL at /, so reverse-proxy routes and user bookmarks do not
+# change during an upstream rollout.
+RUN trunk build --release \
+    --public-url / \
+    --dist dist \
+    --html-output index.html \
+    web-app.html
 
 FROM ${CADDY_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="Open CAD Studio Web" \

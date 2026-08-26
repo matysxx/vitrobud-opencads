@@ -127,6 +127,77 @@ pub(crate) fn points_to_ds(
     (high, low)
 }
 
+fn point_cloud_wires(
+    document: &CadDocument,
+    handle: Handle,
+    entity: &EntityType,
+    selected: bool,
+    color: [f32; 4],
+    line_weight_px: f32,
+) -> Option<Vec<WireModel>> {
+    let EntityType::Extended(extended) = entity else {
+        return None;
+    };
+    let frame_points = crate::entities::extended::point_cloud_frame_lines(extended)?;
+    let rendered = convert(entity, document)?;
+    let RenderObject::Lines(body_points) = rendered.object else {
+        return None;
+    };
+    let (points, points_low) = points_to_ds(body_points);
+    let mut wires = vec![WireModel {
+        point_marker: None,
+        taper_widths: Vec::new(),
+        pattern_stations: Vec::new(),
+        world_width: 0.0,
+        depth_override: None,
+        display_visible: true,
+        plot_visible: true,
+        fill_is_3d: false,
+        fill_is_2d_solid: false,
+        render_instance: None,
+        pick_tris: Vec::new(),
+        pick_tris_low: Vec::new(),
+        dash_from_start: false,
+        dash_align_end: None,
+        text_verts: Vec::new(),
+        name: handle.value().to_string(),
+        points,
+        points_low,
+        color,
+        selected,
+        pattern_length: 0.0,
+        pattern: [0.0; 8],
+        line_weight_px,
+        snap_pts: rendered.snap_pts,
+        tangent_geoms: rendered.tangent_geoms,
+        aci: 0,
+        key_vertices: rendered.key_vertices,
+        aabb: WireModel::UNBOUNDED_AABB,
+        plinegen: true,
+        fill_tris: Vec::new(),
+        fill_tris_low: Vec::new(),
+    }];
+    let mode = crate::scene::frame::mode(
+        document,
+        crate::scene::frame::FrameKind::PointCloudClip,
+    );
+    if !frame_points.is_empty() {
+        let (points, points_low) = points_to_ds(frame_points);
+        let mut frame = WireModel::solid(
+            handle.value().to_string(),
+            points,
+            color,
+            selected,
+        );
+        frame.points_low = points_low;
+        frame.line_weight_px = line_weight_px;
+        frame.display_visible = mode != 0;
+        frame.plot_visible = mode == 1;
+        wires.push(frame);
+    }
+    Some(wires)
+}
+
 /// Lift a WireModel built in a local frame (a fixed f64 origin subtracted) back
 /// to absolute world coordinates, re-splitting every position — polyline points
 /// and SDF glyph vertices — into double-single so it stays precise at UTM scale.
@@ -299,9 +370,69 @@ pub fn tessellate(
                 let dz = w[1].position.z - w[0].position.z;
                 acc += (dx * dx + dy * dy + dz * dz).sqrt();
             }
+            if m.is_closed() && m.vertices.len() > 1 {
+                let first = &m.vertices[0].position;
+                let last = &m.vertices[m.vertices.len() - 1].position;
+                let dx = first.x - last.x;
+                let dy = first.y - last.y;
+                let dz = first.z - last.z;
+                acc += (dx * dx + dy * dy + dz * dz).sqrt();
+            }
             acc as f32
         };
         let mut out: Vec<WireModel> = Vec::with_capacity(lines.len());
+        if let Some(style) = crate::entities::mline::resolved_mline_style(m, document) {
+            let triangles =
+                crate::entities::mline::mline_fill_triangles_with_style(m, style);
+            if !triangles.is_empty() {
+                let (fill_tris, fill_tris_low) = points_to_ds(triangles);
+                let fill_color = if selected {
+                    WireModel::SELECTED
+                } else {
+                    match style.fill_color {
+                        AcadColor::ByLayer | AcadColor::ByBlock => entity_color,
+                        other => {
+                            let [r, g, b, _] =
+                                crate::scene::convert::tess_util::aci_to_rgba(&other);
+                            [r, g, b, entity_color[3]]
+                        }
+                    }
+                };
+                out.push(WireModel {
+                    point_marker: None,
+                    taper_widths: Vec::new(),
+                    pattern_stations: Vec::new(),
+                    world_width: 0.0,
+                    depth_override: None,
+                    display_visible: true,
+                    plot_visible: true,
+                    fill_is_3d: false,
+                    fill_is_2d_solid: true,
+                    render_instance: None,
+                    pick_tris: Vec::new(),
+                    pick_tris_low: Vec::new(),
+                    dash_from_start: false,
+                    dash_align_end: None,
+                    text_verts: Vec::new(),
+                    name: name.clone(),
+                    points: Vec::new(),
+                    points_low: Vec::new(),
+                    color: fill_color,
+                    selected,
+                    pattern_length: 0.0,
+                    pattern: [0.0; 8],
+                    line_weight_px,
+                    snap_pts: Vec::new(),
+                    tangent_geoms: Vec::new(),
+                    aci: 0,
+                    key_vertices: Vec::new(),
+                    aabb: WireModel::UNBOUNDED_AABB,
+                    plinegen: true,
+                    fill_tris,
+                    fill_tris_low,
+                });
+            }
+        }
         let mut snap_attached = false;
         for l in lines {
             if l.points.is_empty() {
@@ -431,9 +562,13 @@ pub fn tessellate(
                     None
                 };
                 elem_wires.push(WireModel {
+                    point_marker: None,
                     taper_widths: Vec::new(),
+                    pattern_stations: Vec::new(),
                     world_width: 0.0,
                     depth_override: None,
+                    display_visible: true,
+                    plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
                     render_instance: None,
@@ -480,6 +615,17 @@ pub fn tessellate(
             return vec![];
         }
         return out;
+    }
+
+    if let Some(wires) = point_cloud_wires(
+        document,
+        handle,
+        entity,
+        selected,
+        color,
+        line_weight_px,
+    ) {
+        return wires;
     }
 
     // ── Try the kernel path first ───────────────────────────────────────────
@@ -725,9 +871,13 @@ pub fn tessellate(
                                         ftl.push(lo);
                                     }
                                     wires.push(WireModel {
+                                        point_marker: None,
                                         taper_widths: Vec::new(),
+                                        pattern_stations: Vec::new(),
                                         world_width: 0.0,
                                         depth_override: None,
+                                        display_visible: true,
+                                        plot_visible: true,
                                         fill_is_3d: false,
                                         fill_is_2d_solid: false,
                                         render_instance: None,
@@ -772,9 +922,13 @@ pub fn tessellate(
                                         fpl.push(lo);
                                     }
                                     wires.push(WireModel {
+                                        point_marker: None,
                                         taper_widths: Vec::new(),
+                                        pattern_stations: Vec::new(),
                                         world_width: 0.0,
                                         depth_override: None,
+                                        display_visible: true,
+                                        plot_visible: true,
                                         fill_is_3d: false,
                                         fill_is_2d_solid: false,
                                         render_instance: None,
@@ -821,9 +975,13 @@ pub fn tessellate(
                             low.push(ll);
                         }
                         wires.push(WireModel {
+                            point_marker: None,
                             taper_widths: Vec::new(),
+                            pattern_stations: Vec::new(),
                             world_width: 0.0,
                             depth_override: None,
+                            display_visible: true,
+                            plot_visible: true,
                             fill_is_3d: false,
                             fill_is_2d_solid: false,
                             render_instance: None,
@@ -851,9 +1009,13 @@ pub fn tessellate(
                         });
                     }
                     wires.push(WireModel {
+                        point_marker: None,
                         taper_widths: Vec::new(),
+                        pattern_stations: Vec::new(),
                         world_width: 0.0,
                         depth_override: None,
+                        display_visible: true,
+                        plot_visible: true,
                         fill_is_3d: false,
                         fill_is_2d_solid: false,
                         render_instance: None,
@@ -911,9 +1073,13 @@ pub fn tessellate(
                             (Vec::new(), Vec::new(), Vec::new())
                         };
                         out.push(WireModel {
+                            point_marker: None,
                             taper_widths: Vec::new(),
+                            pattern_stations: Vec::new(),
                             world_width: 0.0,
                             depth_override: None,
+                            display_visible: true,
+                            plot_visible: true,
                             fill_is_3d: false,
                             fill_is_2d_solid: false,
                             render_instance: None,
@@ -953,9 +1119,13 @@ pub fn tessellate(
                             (Vec::new(), Vec::new(), Vec::new())
                         };
                         out.push(WireModel {
+                            point_marker: None,
                             taper_widths: Vec::new(),
+                            pattern_stations: Vec::new(),
                             world_width: 0.0,
                             depth_override: None,
+                            display_visible: true,
+                            plot_visible: true,
                             fill_is_3d: false,
                             fill_is_2d_solid: false,
                             render_instance: None,
@@ -992,9 +1162,13 @@ pub fn tessellate(
                 // are empty → the early-return path above).
                 if !sdf_verts.is_empty() {
                     out.push(WireModel {
+                        point_marker: None,
                         taper_widths: Vec::new(),
+                        pattern_stations: Vec::new(),
                         world_width: 0.0,
                         depth_override: None,
+                        display_visible: true,
+                        plot_visible: true,
                         fill_is_3d: false,
                         fill_is_2d_solid: false,
                         render_instance: None,
@@ -1024,9 +1198,13 @@ pub fn tessellate(
 
                 if out.is_empty() {
                     out.push(WireModel {
+                        point_marker: None,
                         taper_widths: Vec::new(),
+                        pattern_stations: Vec::new(),
                         world_width: 0.0,
                         depth_override: None,
+                        display_visible: true,
+                        plot_visible: true,
                         fill_is_3d: false,
                         fill_is_2d_solid: false,
                         render_instance: None,
@@ -1090,9 +1268,13 @@ pub fn tessellate(
                             .map(|[kx, ky, kz]| [kx, ky, kz])
                             .collect();
                         return vec![WireModel {
+                            point_marker: None,
                             taper_widths: Vec::new(),
+                            pattern_stations: Vec::new(),
                             world_width: 0.0,
                             depth_override: None,
+                            display_visible: true,
+                            plot_visible: true,
                             fill_is_3d: false,
                             fill_is_2d_solid: false,
                             render_instance: None,
@@ -1156,10 +1338,11 @@ pub fn tessellate(
                 // its face fill into the 2-D buffer, so it drew in wireframe too.
                 let fill_is_3d = matches!(
                     entity,
-                    EntityType::PolyfaceMesh(_)
+                    EntityType::Face3D(_)
+                        | EntityType::PolyfaceMesh(_)
                         | EntityType::PolygonMesh(_)
                         | EntityType::Mesh(_)
-                );
+                ) || matches!(entity, EntityType::Solid(solid) if solid.thickness.abs() > 1.0e-10);
                 // Thickness walls ride on the wire that carries their edges, not
                 // on a wire of their own: they are pick geometry for that entity,
                 // and `fill_tris` below deliberately splits off into a fill-only
@@ -1184,8 +1367,7 @@ pub fn tessellate(
                 } else {
                     color
                 };
-                // Basic curve entities use the Lines path for large-coordinate precision,
-                // but they must still preserve the entity's resolved linetype pattern.
+                // Basic curves keep their resolved linetype.
                 let (edge_pattern_length, edge_pattern) =
                     if matches!(
                         entity,
@@ -1209,11 +1391,17 @@ pub fn tessellate(
                     } else {
                         (Vec::new(), Vec::new(), Vec::new())
                     };
+                    let point_marker =
+                        crate::entities::point::relative_marker_spec(entity, document);
                     out.push(WireModel {
+                        point_marker,
                         taper_widths: Vec::new(),
-                        world_width: polyline_band_width(entity),
+                        pattern_stations: Vec::new(),
+                        world_width: polyline_band_width(entity, document.header.fill_mode),
                         depth_override: None,
-                        fill_is_3d: false,
+                        display_visible: true,
+                        plot_visible: true,
+                        fill_is_3d,
                         fill_is_2d_solid: false,
                         render_instance: None,
                         pick_tris,
@@ -1251,7 +1439,9 @@ pub fn tessellate(
                         (Vec::new(), Vec::new(), Vec::new())
                     };
                     out.push(WireModel {
+                        point_marker: None,
                         taper_widths: Vec::new(),
+                        pattern_stations: Vec::new(),
                         world_width: 0.0,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
@@ -1278,14 +1468,20 @@ pub fn tessellate(
                         fill_is_2d_solid: matches!(entity, EntityType::Solid(_)),
                         render_instance: None,
                         depth_override: None,
+                        display_visible: true,
+                        plot_visible: true,
                     });
                 }
 
                 if out.is_empty() {
                     out.push(WireModel {
+                        point_marker: None,
                         taper_widths: Vec::new(),
+                        pattern_stations: Vec::new(),
                         world_width: 0.0,
                         depth_override: None,
+                        display_visible: true,
+                        plot_visible: true,
                         fill_is_3d: false,
                         fill_is_2d_solid: false,
                         render_instance: None,
@@ -1316,6 +1512,61 @@ pub fn tessellate(
                 return out;
             }
 
+            RenderObject::BoundaryLines {
+                points,
+                stations,
+                point_segments,
+                station_pieces,
+                source_length,
+                plinegen,
+            } => {
+                let (local_pts, local_pts_low) = points_to_ds(points);
+                let key_vertices = te
+                    .key_vertices
+                    .into_iter()
+                    .map(|[x, y, z]| [x, y, z])
+                    .collect();
+                let station_data = crate::scene::model::wire_model::encode_pattern_stations(
+                    stations,
+                    source_length,
+                    &point_segments,
+                    &station_pieces,
+                );
+                return vec![WireModel {
+                    point_marker: None,
+                    taper_widths: Vec::new(),
+                    pattern_stations: station_data,
+                    world_width: 0.0,
+                    depth_override: None,
+                    display_visible: true,
+                    plot_visible: true,
+                    fill_is_3d: false,
+                    fill_is_2d_solid: false,
+                    render_instance: None,
+                    pick_tris: Vec::new(),
+                    pick_tris_low: Vec::new(),
+                    dash_from_start: false,
+                    dash_align_end: None,
+                    text_verts: Vec::new(),
+                    name,
+                    points: local_pts,
+                    points_low: local_pts_low,
+                    color,
+                    selected,
+                    pattern_length,
+                    pattern,
+                    line_weight_px,
+                    snap_pts: te.snap_pts,
+                    tangent_geoms: te.tangent_geoms,
+                    aci: 0,
+                    key_vertices,
+                    plinegen,
+                    aabb: WireModel::UNBOUNDED_AABB,
+                    fill_tris: Vec::new(),
+                    fill_tris_low: Vec::new(),
+                }];
+            }
+
             RenderObject::SegmentedLines(points) => {
                 let (local_pts, local_pts_low) = points_to_ds(points);
                 let snap_pts = te.snap_pts;
@@ -1328,9 +1579,13 @@ pub fn tessellate(
                 // treatment as the Contour arm, restarting the dash per segment.
                 let (pick_tris, pick_tris_low) = points_to_ds(te.pick_tris);
                 return vec![WireModel {
+                    point_marker: None,
                     taper_widths: Vec::new(),
-                    world_width: polyline_band_width(entity),
+                    pattern_stations: Vec::new(),
+                    world_width: polyline_band_width(entity, document.header.fill_mode),
                     depth_override: None,
+                    display_visible: true,
+                    plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
                     render_instance: None,
@@ -1374,9 +1629,13 @@ pub fn tessellate(
                 let (pick_tris, pick_tris_low) = points_to_ds(te.pick_tris);
                 let world_width = widths.iter().copied().fold(0.0f32, f32::max);
                 return vec![WireModel {
+                    point_marker: None,
                     taper_widths: widths,
+                    pattern_stations: Vec::new(),
                     world_width,
                     depth_override: None,
+                    display_visible: true,
+                    plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
                     render_instance: None,
@@ -1493,9 +1752,13 @@ pub fn tessellate(
         _ => (Vec::new(), Vec::new()),
     };
     vec![WireModel {
+        point_marker: None,
         taper_widths: Vec::new(),
+        pattern_stations: Vec::new(),
         world_width: 0.0,
         depth_override: None,
+        display_visible: true,
+        plot_visible: true,
         fill_is_3d: false,
         fill_is_2d_solid: false,
         render_instance: None,
@@ -1949,14 +2212,11 @@ pub(crate) fn entity_z(entity: &EntityType) -> f32 {
     }
 }
 
-/// Band width (drawing units) of a wide polyline whose flat band is drawn by
-/// expanding its centre-line wire in the shader. `0.0` = a zero-width polyline,
-/// a non-polyline (a normal screen-pixel wire), or a thickness-extruded one — an
-/// LwPolyline thickens into a 3-D tube (`thick_wide_band`) and a Polyline2D
-/// keeps its hatch band (only its centre-line extrudes; no tube yet), so neither
-/// takes the flat shader band. A tapering polyline (per-vertex start/end widths)
-/// collapses to its widest edge — the shader carries one width per wire.
-fn polyline_band_width(entity: &EntityType) -> f32 {
+/// Shader band width, or zero while FILLMODE draws the kernel boundary.
+fn polyline_band_width(entity: &EntityType, fill_mode: bool) -> f32 {
+    if !fill_mode {
+        return 0.0;
+    }
     let w = match entity {
         EntityType::LwPolyline(p) if p.thickness.abs() <= 1e-10 => {
             let mut w = p.constant_width;

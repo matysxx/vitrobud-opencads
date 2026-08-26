@@ -5,19 +5,19 @@
 - Project: `HakanSeven12/OpenCADStudio`
 - License: GPL-3.0-only
 - Implementation: Rust with `iced` and `wgpu`
-- Browser target: WebAssembly built by Trunk from `index.html`
+- Browser target: WebAssembly built by Trunk from `web-app.html`
 - Native target: desktop binary with optional headless automation server
 - Upstream container image: none published in GitHub Packages
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The current locally integrated upstream candidate is Open CAD Studio `0.9.6` at
-post-tag revision `403247cbc3c4348987e9a61ef7aced01b7692f5e` (2026-08-17).
-This includes 29 additional commits after tag `v0.9.6`; therefore the exact Git
+The current locally integrated upstream candidate is Open CAD Studio `0.9.7` at
+post-tag revision `8c61d89b1e447925d9fab73c242194a61fe7f1ec` (2026-08-26).
+This includes 142 additional commits after tag `v0.9.7`; therefore the exact Git
 revision, not only the application version string, identifies the build. The
 application pins the CAD codec directly at `cadcodec` revision
-`931c4ab0c590b755e280bed318a35f41c57b139f` and the geometry kernel at
-`cadkernel` revision `efc77f5d18375467c3cc2c256a22759bb5f9cb54`.
+`9f3cf8e26d5a02fb4ad8ea145ca8e04dd6d6f2bc` and the geometry kernel at
+`cadkernel` revision `b2b1d4b0cd7def2d26a0d519991fc89a89f916d3`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
 builder baseline remains the official `rust:1.92.0-bookworm` image.
@@ -28,6 +28,10 @@ builder baseline remains the official `rust:1.92.0-bookworm` image.
   must be compiled from source.
 - Build a custom OCI image in two stages: pinned Rust/Trunk build stage and a
   small unprivileged static-file server stage.
+- Build the upstream `web-app.html` target directly at `/`. Upstream GitHub
+  Pages additionally publishes a marketing landing page and moves the app to
+  `/app/`; the private runtime intentionally keeps the established root URL so
+  reverse-proxy routes and bookmarks remain stable.
 - Serve the static WASM application with explicit COOP/COEP headers required
   for SharedArrayBuffer-capable browser execution.
 - Use rootless Podman and bridge networking with one explicitly published HTTP
@@ -47,6 +51,9 @@ geometry to the pure-Rust kernel, so the web build now includes kernel-backed
 solid modeling. Browser file access, printing, native plugins, external
 processes, and some platform integrations remain different from desktop; keep
 the private web runtime documentation aligned with `docs/native-vs-web.md`.
+Upstream now explicitly selects the WebGL2 renderer for the browser build,
+avoiding the unstable WebGPU path previously observed in Safari and affected
+Chromium adapters.
 
 ## Repository target structure
 
