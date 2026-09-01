@@ -35,3 +35,5 @@
   (`15-container-documentation/`)
 - `OCSSTACK-16` — Sync reviewed upstream revision `8c61d89b`
   (`16-upstream-sync-8c61d89b/`)
+- `OCSSTACK-17` — Sync reviewed upstream revision `6d6defa0`
+  (`17-upstream-sync-6d6defa0/`)

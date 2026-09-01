@@ -20,7 +20,9 @@
 Every remote operation requires the exact SSH command to be shown and approved
 before execution. Clone or fetch only from `origin`, set private `.env` values,
 set `ROLLOUT_REVISION` to the verified full SHA, then build and start through
-the repository scripts. Do not edit tracked files on the server.
+the repository scripts. Compose derives the OCI image tag from that same full
+SHA; do not maintain a second image-version variable. Do not edit tracked files
+on the server.
 
 ## 4. Infrastructure acceptance
 

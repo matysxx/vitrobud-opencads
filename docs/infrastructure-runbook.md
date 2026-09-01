@@ -80,9 +80,10 @@ Infrastructure can be marked complete when all of the following are true:
 - no unrelated stack or global Podman service was changed.
 
 Repository rollout consistency is a separate acceptance check: the server
-checkout, `ROLLOUT_REVISION`, image tag, local `main`, and GitHub `main` must all
-identify the same verified revision. Infrastructure availability alone does not
-prove that revision alignment.
+checkout, `ROLLOUT_REVISION`, derived image tag, local `main`, and GitHub `main`
+must all identify the same verified revision. `ROLLOUT_REVISION` is the only
+production version input; Compose derives the image tag from it. Infrastructure
+availability alone does not prove revision alignment.
 
 ## Migration record
 

@@ -18,7 +18,8 @@
 1. Point the external reverse proxy back to the recorded prior backend.
 2. Stop only this stack with `./dev-ops/shutdown` if necessary.
 3. Set `ROLLOUT_REVISION` to the recorded prior verified SHA.
-4. Run `./dev-ops/update` and repeat health checks.
+4. Run `./dev-ops/update`; the image tag is derived from that revision.
+5. Repeat revision, image, and health checks.
 
 No CAD files are stored by this runtime, so application rollback does not move
 or restore user drawings.

@@ -1,6 +1,6 @@
 services:
   web:
-    image: ${OPENCADS_IMAGE:?Set OPENCADS_IMAGE in .env}:${OPENCADS_TAG:?Set OPENCADS_TAG in .env}
+    image: ${OPENCADS_IMAGE:?Set OPENCADS_IMAGE in .env}:${ROLLOUT_REVISION:-dev}
     build:
       context: .
       dockerfile: Containerfile

@@ -11,13 +11,13 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The current locally integrated upstream candidate is Open CAD Studio `0.9.7` at
-post-tag revision `8c61d89b1e447925d9fab73c242194a61fe7f1ec` (2026-08-26).
-This includes 142 additional commits after tag `v0.9.7`; therefore the exact Git
+The current locally integrated upstream candidate is Open CAD Studio `0.9.8` at
+post-tag revision `6d6defa0ad6c4a8d1a18069e05a59584a26dfb96` (2026-09-01).
+This includes 124 additional commits after tag `v0.9.8`; therefore the exact Git
 revision, not only the application version string, identifies the build. The
 application pins the CAD codec directly at `cadcodec` revision
-`9f3cf8e26d5a02fb4ad8ea145ca8e04dd6d6f2bc` and the geometry kernel at
-`cadkernel` revision `b2b1d4b0cd7def2d26a0d519991fc89a89f916d3`.
+`a0f7d444f1607bc4b2c881060cbe7ea1014253cb` and the geometry kernel at
+`cadkernel` revision `48c634995fa60d3928c37bae49b12b421c56c886`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
 builder baseline remains the official `rust:1.92.0-bookworm` image.
@@ -28,6 +28,9 @@ builder baseline remains the official `rust:1.92.0-bookworm` image.
   must be compiled from source.
 - Build a custom OCI image in two stages: pinned Rust/Trunk build stage and a
   small unprivileged static-file server stage.
+- Use `ROLLOUT_REVISION` as the single immutable source for both the detached
+  Git checkout and OCI image tag. Compose uses `dev` only when no rollout
+  revision is configured; there is no separate production image-tag variable.
 - Build the upstream `web-app.html` target directly at `/`. Upstream GitHub
   Pages additionally publishes a marketing landing page and moves the app to
   `/app/`; the private runtime intentionally keeps the established root URL so
