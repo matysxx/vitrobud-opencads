@@ -261,28 +261,10 @@ impl OpenCADStudio {
                         .filter(|s| !s.is_empty())
                         .collect();
 
-                    // Which block definitions are LIVE — reachable from a real
-                    // layout container by following every block reference. A
-                    // block nothing reachable inserts is dead and purges, even a
-                    // whole mutually-referencing subgraph (e.g. the dependent
-                    // blocks a detached xref leaves behind: they insert one
-                    // another but hang off no layout, so a flat "is it named by
-                    // any INSERT" scan keeps them alive forever). Roots:
-                    //   • *Model_Space / *Paper_Space(N),
-                    //   • any block whose layout handle resolves to a real Layout
-                    //     object — a DANGLING layout handle, as orphaned xref
-                    //     blocks carry, does NOT count, so is_layout() alone can't
-                    //     shield the dead subgraph it heads,
-                    //   • dimension-style arrowhead blocks (referenced by handle).
-                    // A block's out-edges: its members' INSERT names, dimension
-                    // *D blocks, table *T / cell blocks, and MultiLeader content.
+                    // Live blocks are reachable from layouts and style roots
+                    // through the shared graph. Dangling layouts do not count.
                     let live_blocks: rustc_hash::FxHashSet<String> = {
                         let doc = &self.tabs[i].scene.document;
-                        let by_handle: rustc_hash::FxHashMap<acadrust::Handle, String> = doc
-                            .block_records
-                            .iter()
-                            .map(|br| (br.handle, br.name.clone()))
-                            .collect();
                         let is_real_layout = |br: &acadrust::BlockRecord| -> bool {
                             let up = br.name.to_ascii_uppercase();
                             up.starts_with("*MODEL_SPACE")
@@ -298,44 +280,19 @@ impl OpenCADStudio {
                                 return out;
                             };
                             for &h in &br.entity_handles {
-                                match doc.get_entity(h) {
-                                    Some(acadrust::EntityType::Insert(ins))
-                                        if !ins.block_name.is_empty() =>
-                                    {
-                                        out.push(ins.block_name.clone());
-                                    }
-                                    Some(acadrust::EntityType::Dimension(d))
-                                        if !d.base().block_name.is_empty() =>
-                                    {
-                                        out.push(d.base().block_name.clone());
-                                    }
-                                    Some(acadrust::EntityType::Table(t)) => {
-                                        if let Some(bh) = t.block_record_handle {
-                                            if let Some(n) = by_handle.get(&bh) {
-                                                out.push(n.clone());
-                                            }
-                                        }
-                                        for row in &t.rows {
-                                            for cell in &row.cells {
-                                                for c in &cell.contents {
-                                                    if let Some(bh) = c.block_handle {
-                                                        if let Some(n) = by_handle.get(&bh) {
-                                                            out.push(n.clone());
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Some(acadrust::EntityType::MultiLeader(ml)) => {
-                                        if let Some(bh) = ml.block_content_handle {
-                                            if let Some(n) = by_handle.get(&bh) {
-                                                out.push(n.clone());
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                let Some(entity) = doc.get_entity(h) else {
+                                    continue;
+                                };
+                                out.extend(
+                                    crate::scene::render_graph::entity_block_uses(
+                                        doc,
+                                        entity,
+                                        1.0,
+                                    )
+                                    .into_iter()
+                                    .filter(|block_use| !block_use.block.is_null())
+                                    .map(|block_use| block_use.insert.block_name),
+                                );
                             }
                             out
                         };
@@ -346,15 +303,11 @@ impl OpenCADStudio {
                             .filter(|&br| is_real_layout(br))
                             .map(|br| br.name.clone())
                             .collect();
-                        for ds in doc.dim_styles.iter() {
-                            for h in [ds.dimblk, ds.dimblk1, ds.dimblk2, ds.dimldrblk] {
-                                if !h.is_null() {
-                                    if let Some(n) = by_handle.get(&h) {
-                                        stack.push(n.clone());
-                                    }
-                                }
-                            }
-                        }
+                        stack.extend(
+                            crate::scene::render_graph::document_block_uses(doc)
+                                .into_iter()
+                                .map(|block_use| block_use.insert.block_name),
+                        );
                         while let Some(n) = stack.pop() {
                             if !live.insert(n.clone()) {
                                 continue;
@@ -422,9 +375,8 @@ impl OpenCADStudio {
                             .filter(|br| {
                                 let up = br.name.to_ascii_uppercase();
                                 // Never PURGE an xref *definition* — that is a
-                                // detach, not a purge. (Orphaned dependent blocks
-                                // a past detach left behind are is_xref=false and
-                                // still fall to the reachability test.)
+                                // detach, not a purge. Orphaned dependencies from
+                                // a past detach still use the reachability test.
                                 !br.flags.is_xref
                                     && !br.flags.is_xref_overlay
                                     && !up.starts_with("*MODEL_SPACE")
@@ -633,11 +585,20 @@ impl OpenCADStudio {
                                 "CHPROP: invalid value '{}' for {}.",
                                 value, prop
                             ).as_ref());
+                    } else {
+                        let known = matches!(
+                            prop.as_str(),
+                            "LAYER" | "LINETYPE" | "LT" | "LTSCALE" | "COLOR" | "TRANSPARENCY"
+                        );
+                        if !known {
+                            self.command_line.push_error(crate::tf!(
+                                "CHPROP: unknown property '{}'. Use: LAYER COLOR LINETYPE LTSCALE TRANSPARENCY", prop
+                            ).as_ref());
                         } else {
                             let mut changed = 0usize;
-                            for handle in &handles {
+                            self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
                                 if let Some(entity) =
-                                    self.tabs[i].scene.document.get_entity_mut(*handle)
+                                    app.tabs[i].scene.document.get_entity_mut(handle)
                                 {
                                     let common = entity.common_mut();
                                     match prop.as_str() {
@@ -655,35 +616,28 @@ impl OpenCADStudio {
                                         }
                                         "COLOR" => {
                                             common.color = color_val.unwrap();
+                                            common.color_name = None;
+                                            common.color_book_handle = None;
                                             changed += 1;
                                         }
                                         "TRANSPARENCY" => {
                                             common.transparency = transparency_val.unwrap();
                                             changed += 1;
                                         }
-                                        _ => {
-                                            self.command_line.push_error(crate::tf!(
-                                                "CHPROP: unknown property '{}'. Use: LAYER COLOR LINETYPE LTSCALE TRANSPARENCY", prop
-                                            ).as_ref());
-                                            break;
-                                        }
+                                        _ => unreachable!(),
                                     }
                                 }
-                            }
-                            if changed > 0 {
-                                self.push_undo_snapshot(i, "CHPROP");
-                                self.tabs[i].dirty = true;
-                                // Colour / linetype / ltscale / transparency /
-                                // layer are baked into the cached wire geometry —
-                                // re-tessellate the changed entities so they
-                                // repaint immediately (issue #231 class).
-                                self.invalidate_property_targets(i, &handles);
-                                self.command_line.push_output(crate::tf!(
-                                    "CHPROP: {} entity/entities updated.",
-                                    changed
-                                ).as_ref());
-                            }
+                            });
+                            // Colour / linetype / ltscale / transparency /
+                            // layer are baked into the cached wire geometry —
+                            // re-tessellate the changed entities so they
+                            // repaint immediately (issue #231 class).
+                            self.command_line.push_output(crate::tf!(
+                                "CHPROP: {} entity/entities updated.",
+                                changed
+                            ).as_ref());
                         }
+                    }
                     }
                 }
             }
@@ -709,6 +663,8 @@ impl OpenCADStudio {
                         if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(*handle) {
                             let common = entity.common_mut();
                             common.color = acadrust::types::Color::ByLayer;
+                            common.color_name = None;
+                            common.color_book_handle = None;
                             common.linetype = "ByLayer".to_string();
                             common.line_weight = acadrust::types::LineWeight::ByLayer;
                             changed += 1;
@@ -931,6 +887,7 @@ impl OpenCADStudio {
                     | "CENTERCROSSSIZE"
                     | "CENTERCROSSGAP"
                     | "CENTERMARKEXE"
+                    | "DIMCONTINUEMODE"
             ) =>
             {
                 return self.dispatch_styleprops(&format!("SETVAR {cmd}"), i);
@@ -953,7 +910,7 @@ impl OpenCADStudio {
                 let value = it.next().map(|s| s.trim().to_string());
                 if name.is_empty() || name == "?" {
                     self.command_line.push_info(
-                        "SETVAR: LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES ATTREQ ATTDIA DIMASSOC ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE | CLAYER CELTYPE TEXTSTYLE (read-only)",
+                        "SETVAR: LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE | CLAYER CELTYPE TEXTSTYLE (read-only)",
                     );
                 } else {
                     let frame_kind = crate::scene::frame::kind_for_name(&name);
@@ -1060,6 +1017,28 @@ impl OpenCADStudio {
                                     self.command_line.push_output(&message);
                                 }
                                 Err(error) => self.command_line.push_error(&error),
+                            }
+                        } else {
+                            self.command_line.push_output(crate::tf!(
+                                "Enter new value for {name} <{current}>:"
+                            ).as_ref());
+                            self.pending_setvar = Some(name.clone());
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
+                    if name == "DIMCONTINUEMODE" {
+                        let current = self.dimension_continue_mode;
+                        if let Some(value) = &value {
+                            match value.parse::<i16>() {
+                                Ok(mode @ 0..=1) => {
+                                    self.dimension_continue_mode = mode;
+                                    self.persist_settings_if_changed();
+                                    self.command_line
+                                        .push_output(&format!("DIMCONTINUEMODE = {mode}"));
+                                }
+                                _ => self.command_line.push_error(
+                                    "SETVAR: DIMCONTINUEMODE requires 0 or 1.",
+                                ),
                             }
                         } else {
                             self.command_line.push_output(crate::tf!(
@@ -1692,33 +1671,36 @@ impl OpenCADStudio {
                                 None => Ok((format!("SPLINESEGS = {}", h.spline_segments), false)),
                             },
                             "SURFU" => match &value {
-                                Some(v) => v
-                                    .parse::<i16>()
-                                    .map(|x| {
+                                Some(v) => match v.parse::<i16>() {
+                                    Ok(x @ 0..=200) => {
                                         h.surface_u_density = x;
-                                        (format!("SURFU = {x}"), true)
-                                    })
-                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                        Ok((format!("SURFU = {x}"), true))
+                                    }
+                                    Ok(_) => Err("SETVAR: value must be between 0 and 200.".into()),
+                                    Err(_) => Err("SETVAR: integer value required.".into()),
+                                },
                                 None => Ok((format!("SURFU = {}", h.surface_u_density), false)),
                             },
                             "SURFV" => match &value {
-                                Some(v) => v
-                                    .parse::<i16>()
-                                    .map(|x| {
+                                Some(v) => match v.parse::<i16>() {
+                                    Ok(x @ 0..=200) => {
                                         h.surface_v_density = x;
-                                        (format!("SURFV = {x}"), true)
-                                    })
-                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                        Ok((format!("SURFV = {x}"), true))
+                                    }
+                                    Ok(_) => Err("SETVAR: value must be between 0 and 200.".into()),
+                                    Err(_) => Err("SETVAR: integer value required.".into()),
+                                },
                                 None => Ok((format!("SURFV = {}", h.surface_v_density), false)),
                             },
                             "SURFTYPE" => match &value {
-                                Some(v) => v
-                                    .parse::<i16>()
-                                    .map(|x| {
+                                Some(v) => match v.parse::<i16>() {
+                                    Ok(x @ (5 | 6 | 8)) => {
                                         h.surface_type = x;
-                                        (format!("SURFTYPE = {x}"), true)
-                                    })
-                                    .map_err(|_| "SETVAR: integer value required.".into()),
+                                        Ok((format!("SURFTYPE = {x}"), true))
+                                    }
+                                    Ok(_) => Err("SETVAR: value must be 5, 6, or 8.".into()),
+                                    Err(_) => Err("SETVAR: integer value required.".into()),
+                                },
                                 None => Ok((format!("SURFTYPE = {}", h.surface_type), false)),
                             },
                             "SHADEDGE" => match &value {

@@ -432,7 +432,10 @@ impl OpenCADStudio {
                             let indexed = match tab.scene.document.get_entity(h) {
                                 Some(acadrust::EntityType::LwPolyline(_))
                                 | Some(acadrust::EntityType::Polyline2D(_))
-                                | Some(acadrust::EntityType::Spline(_)) => true,
+                                | Some(acadrust::EntityType::Polyline3D(_))
+                                | Some(acadrust::EntityType::Spline(_))
+                                | Some(acadrust::EntityType::Face3D(_))
+                                | Some(acadrust::EntityType::PolygonMesh(_)) => true,
                                 _ => false,
                             };
                             indexed.then_some(tab.properties.prop_vertex)
@@ -1432,13 +1435,23 @@ impl OpenCADStudio {
         // Selection-cycling list box: pick among overlapping objects.
         if let Some((pt, cands)) = &self.cycle_candidates {
             if !tab.is_start {
-                let items: Vec<(acadrust::Handle, String)> = cands
+                let items: Vec<crate::ui::popup::cycle_popup::CycleCandidate> = cands
                     .iter()
                     .filter_map(|&h| {
-                        tab.scene
-                            .document
-                            .get_entity(h)
-                            .map(|e| (h, crate::entities::traits::entity_type_name(e).to_string()))
+                        tab.scene.document.get_entity(h).map(|e| {
+                            let style = crate::scene::view::render::render_style_for_viewport(
+                                &tab.scene.document,
+                                e,
+                                None,
+                            );
+                            crate::ui::popup::cycle_popup::CycleCandidate {
+                                handle: h,
+                                type_name: crate::entities::traits::entity_type_name(e)
+                                    .to_string(),
+                                layer: e.common().layer.clone(),
+                                color: style.0,
+                            }
+                        })
                     })
                     .collect();
                 if !items.is_empty() {
@@ -2515,15 +2528,33 @@ fn doc_tab_context_menu(
 ) -> Element<'static, Message> {
     const MENU_W: f32 = 210.0;
 
-    let item = |label: &'static str, msg: Option<Message>| {
-        let mut item = button(text(label).size(12))
-        .style(button::subtle)
-        .padding([4, 12])
-        .width(Fill);
+    let item = |label: &'static str, msg: Option<Message>| -> Element<'static, Message> {
+        let enabled = msg.is_some();
+
+        let content = container(text(label).size(12))
+            .padding([4, 12])
+            .width(Fill)
+            .style(move |theme: &Theme| {
+                let palette = theme.palette();
+
+                container::Style {
+                    text_color: Some(if enabled {
+                        palette.background.base.text
+                    } else {
+                        palette.background.base.text.scale_alpha(0.42)
+                    }),
+                    ..Default::default()
+                }
+            });
+
         if let Some(msg) = msg {
-            item = item.on_press(msg);
+            mouse_area(content)
+                .on_press(msg)
+                .interaction(iced::mouse::Interaction::Pointer)
+                .into()
+        } else {
+            content.into()
         }
-        item
     };
 
     let mut menu = column![

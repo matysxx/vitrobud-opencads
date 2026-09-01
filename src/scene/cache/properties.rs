@@ -1,4 +1,4 @@
-use acadrust::{EntityType, Handle};
+use acadrust::{EntityType, Handle, Transparency};
 use crate::t;
 
 use crate::scene::model::object::{PropSection, PropValue, Property};
@@ -10,16 +10,25 @@ pub fn general_section(entity: &EntityType) -> PropSection {
     } else {
         common.linetype.clone()
     };
-    // Alpha 0 is ByLayer, Alpha 1 is ByBlock; show them by name and fall back
-    // to a rounded percentage for explicit values.
-    let transp_display = match common.transparency.alpha() {
-        0 => "ByLayer".to_string(),
-        1 => "ByBlock".to_string(),
-        alpha => format!(
-            "{}",
-            (alpha as f64 / 255.0 * 100.0).round() as u32
-        ),
+    let transp_display = match common.transparency {
+        Transparency::ByLayer => "ByLayer".to_string(),
+        Transparency::ByBlock => "ByBlock".to_string(),
+        Transparency::Explicit(alpha) => {
+            ((alpha as f64 / 255.0 * 100.0).round() as u32).to_string()
+        }
     };
+    let color_value = common.color_name.as_deref().map_or_else(
+        || PropValue::ColorChoice(common.color),
+        |identity| PropValue::NamedColorChoice {
+            color: common.color,
+            name: identity
+                .split_once('$')
+                .map(|(_, color_name)| color_name)
+                .filter(|color_name| !color_name.is_empty())
+                .unwrap_or(identity)
+                .to_string(),
+        },
+    );
 
     // Hyperlink is stored in XDATA under the "PE_URL" application.
     let hyperlink = common
@@ -37,14 +46,9 @@ pub fn general_section(entity: &EntityType) -> PropSection {
         title: t!("General").into_owned(),
         props: vec![
             Property {
-                label: t!("Handle").into_owned(),
-                field: "handle",
-                value: PropValue::ReadOnly(common.handle.value().to_string()),
-            },
-            Property {
                 label: t!("Color").into_owned(),
                 field: "color",
-                value: PropValue::ColorChoice(common.color),
+                value: color_value,
             },
             Property {
                 label: t!("Layer").into_owned(),
@@ -93,19 +97,6 @@ pub fn general_section(entity: &EntityType) -> PropSection {
             },
         ],
     };
-
-    if matches!(entity, EntityType::LwPolyline(polyline) if crate::entities::lwpolyline::is_rectangle(polyline)) {
-        section.props.retain(|prop| prop.field != "handle");
-    }
-
-    if matches!(entity, EntityType::Point(_)) {
-        section.props.retain(|prop| prop.field != "handle");
-        let hyperlink = section.props.iter().position(|prop| prop.field == "hyperlink");
-        let transparency = section.props.iter().position(|prop| prop.field == "transparency");
-        if let (Some(hyperlink), Some(transparency)) = (hyperlink, transparency) {
-            section.props.swap(hyperlink, transparency);
-        }
-    }
 
     // Thickness (DXF 39) is a General-group property, but only the entity
     // types that carry an extrusion thickness expose it (line, circle, arc,

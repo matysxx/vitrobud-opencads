@@ -9,7 +9,7 @@ cheaply. The runtime host surface is enabled by the `host` feature.
 ## Plugin Architecture
 
 OCS is scriptable and extensible through a versioned plugin API. The API
-supports three major protocol generations: **V2**, **V3**, and **V4**. Each
+supports four major generations: **V2**, **V3**, **V4**, and **V5**. Each
 generation keeps the previous ABI stable by appending new vtable entries and new
 enum variants at the end, so older plugins continue to load on newer hosts.
 
@@ -18,11 +18,17 @@ enum variants at the end, so older plugins continue to load on newer hosts.
 | **V2** | Out-of-process runner | Synchronous commands + interactive point collection (`HostApi::start_interactive`) | Baseline |
 | **V3** | Out-of-process runner | Local cached `document()`/`document_mut()` + shared-memory `DocumentReader`/`document_view` for large reads | New vtable entries appended; new `PluginRequest`/`PluginResponse` variants appended |
 | **V4** | Out-of-process runner over a multiplexed local socket | Full-duplex notifications + asynchronous REPL `ExecuteCode` | New `HostToPluginV4`/`PluginToHostV4` frame layer; `BuiltinPlugin::on_notification` and `start_execute_code` appended to trait |
+| **V5** | V4 multiplexed runner | One-shot initialization + tab-keyed document paths | `BuiltinPlugin::on_load` and `HostApi::document_path` appended to the traits |
 
 The host controls which generations are accepted at runtime through
-`OCS_PLUGIN_MAX_API_VERSION` (e.g. `2` for V2-only mode, `3` to disable V4). The
-current host advertises [`API_VERSION = 4`](src/manifest.rs) and supports plugins
+`OCS_PLUGIN_MAX_API_VERSION` (e.g. `2` for V2-only mode, `4` to disable V5). The
+current host advertises [`API_VERSION = 5`](src/manifest.rs) and supports plugins
 back to `API_VERSION_MIN_SUPPORTED = 2`.
+
+V5 calls `BuiltinPlugin::on_load` once after the runner connects and before the
+first user command. Plugins can cache `HostApi::plugin_request_sender()` there
+for worker-thread access. A panic in the callback fails plugin loading.
+`HostApi::document_path(tab_id)` returns the saved path for a document tab.
 
 ### High-level layout
 
@@ -120,9 +126,10 @@ The frame format supports:
 - Bi-directional, best-effort notifications (`NotificationEnvelope`)
 
 Because the socket is full-duplex, the host can push
-`HostNotification::DocumentChanged` or `InputLine` to a plugin at any time, and
-the plugin can stream `PluginNotification::Output`/`Progress`/`Log` back while a
-long command is still running.
+`HostNotification::DocumentChangedV4`, `SelectionChangedV4`, or
+`DocumentTabClosed` to a plugin at any time, and the plugin can stream
+`PluginNotification::Output`/`Progress`/`Log` back while a long command is still
+running.
 
 ```mermaid
 sequenceDiagram
@@ -262,7 +269,7 @@ static MANIFEST: PluginManifest = PluginManifest {
     name: "Hello Plugin",
     version: "0.1.0",
     description: "A minimal example plugin.",
-    api_version: ApiVersion { major: 4 },
+    api_version: ApiVersion::CURRENT,
     ribbon_order: 100,
     xdata_apps: &[],
     command_prefixes: &["HELLO"],
@@ -420,7 +427,8 @@ std::thread::spawn(move || {
 
 ### Further reading
 
+- Internal architecture & invariants: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- Host/plugin integration spec: [`../../docs/plugin-architecture.md`](../../docs/plugin-architecture.md)
 - Plugin template: [`../../docs/plugin-template`](../../docs/plugin-template)
 - Plugin marketplace registry: [`../../plugins/README.md`](../../plugins/README.md)
 - REPL design notes: [`../DESIGN_REPL.md`](../DESIGN_REPL.md)
-- Python REPL plugin: [`../ocs_python_repl/README.md`](../ocs_python_repl/README.md)

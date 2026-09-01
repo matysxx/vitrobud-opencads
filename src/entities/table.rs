@@ -963,16 +963,22 @@ pub(crate) fn block_cell_inserts(
                 insert.set_x_scale(scale);
                 insert.set_y_scale(scale);
                 insert.set_z_scale(scale);
-                let transform = insert.get_transform();
                 let local_anchor = if has_block_bounds {
                     (block_min + block_max) * 0.5
                 } else {
-                    record.base_point
+                    crate::scene::render_graph::block_base_point(document, &record.name)
                 };
-                let transformed_base = transform.apply(local_anchor);
-                let transformed_zero = transform.apply(Vector3::ZERO);
+                let transformed_anchor = crate::scene::render_graph::insert_transform(
+                    document,
+                    &insert,
+                )
+                .apply(local_anchor);
                 insert.insert_point = insert.insert_point
-                    - (transformed_base - transformed_zero);
+                    + Vector3::new(
+                        position.x as f64 - transformed_anchor.x,
+                        position.y as f64 - transformed_anchor.y,
+                        position.z as f64 - transformed_anchor.z,
+                    );
                 let attribute_definitions: Vec<_> = record
                     .entity_handles
                     .iter()
@@ -1001,7 +1007,7 @@ pub(crate) fn block_cell_inserts(
                         AttributeEntity::from_definition(definition, Some(attribute.value.clone()));
                     acadrust::Entity::apply_transform(
                         &mut entity,
-                        &insert.get_transform(),
+                        &crate::scene::render_graph::insert_transform(document, &insert),
                     );
                     entity.common.handle = table.common.handle;
                     insert.attributes.push(entity);
@@ -1187,6 +1193,7 @@ impl RenderConvertible for Table {
                     oblique_angle: style.map(|s| s.oblique_angle as f32).unwrap_or(0.0),
                     is_backward: style.map(|s| s.is_backward()).unwrap_or(false),
                     is_upside_down: style.map(|s| s.is_upside_down()).unwrap_or(false),
+                    is_vertical: style.map(|s| s.is_vertical).unwrap_or(false),
                 }
             };
 
@@ -1287,6 +1294,8 @@ impl RenderConvertible for Table {
                     attach_h_anchor,
                     v_anchor,
                     line_spacing_factor: 1.0,
+                    exact_line_spacing: false,
+                    rectangle_height: 0.0,
                     vertical_text: false,
                     want_glyph_boxes: false,
                 });
@@ -1453,6 +1462,7 @@ pub fn tessellate_table(
                 oblique_angle: style.map(|s| s.oblique_angle as f32).unwrap_or(0.0),
                 is_backward: style.map(|s| s.is_backward()).unwrap_or(false),
                 is_upside_down: style.map(|s| s.is_upside_down()).unwrap_or(false),
+                is_vertical: style.map(|s| s.is_vertical).unwrap_or(false),
             }
         };
 
@@ -1920,6 +1930,8 @@ pub fn tessellate_table(
                     attach_h_anchor,
                     v_anchor,
                     line_spacing_factor: 1.0,
+                    exact_line_spacing: false,
+                    rectangle_height: 0.0,
                     vertical_text: false,
                     want_glyph_boxes: false,
                 });

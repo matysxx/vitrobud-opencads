@@ -22,6 +22,7 @@ pub(crate) mod settings;
 mod shortcuts;
 mod style_ops;
 mod text_inline;
+mod tolerance_dialog;
 mod update;
 mod view;
 mod visibility;
@@ -199,6 +200,31 @@ pub struct QSelectState {
     pub mode: QSelectMode,
     pub append: bool,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct QSelectSettings {
+    scope: QSelectScope,
+    type_filter: Option<String>,
+    property_field: Option<String>,
+    operator: QSelectOp,
+    value: String,
+    mode: QSelectMode,
+    append: bool,
+}
+
+impl From<&QSelectState> for QSelectSettings {
+    fn from(state: &QSelectState) -> Self {
+        Self {
+            scope: state.scope,
+            type_filter: state.type_filter.clone(),
+            property_field: state.property.as_ref().map(|property| property.field.clone()),
+            operator: state.operator,
+            value: state.value.clone(),
+            mode: state.mode,
+            append: state.append,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -399,6 +425,8 @@ pub(super) struct OpenCADStudio {
     layer_translator: Option<crate::ui::window::layer_translator::State>,
     /// Working copy of the Drawing Units dialog; `None` while it is closed.
     drawing_units: Option<crate::ui::window::drawing_units::State>,
+    /// Working copy of the structured feature-control-frame editor.
+    geometric_tolerance: Option<crate::ui::window::geometric_tolerance::State>,
     /// PICKDRAG (#226): false (default) = press-drag lassoes; true =
     /// press-drag draws a rectangle marquee.
     pick_drag_rect: bool,
@@ -462,6 +490,10 @@ pub(super) struct OpenCADStudio {
     options_tab: crate::ui::window::options::OptionsTab,
     /// Controls whether the TEXTEDIT command repeats automatically (0 = Multiple, 1 = Single).
     pub texteditmode: bool,
+    /// QDIM extension-origin priority: 0 = endpoints, 1 = intersections.
+    pub quick_dimension_snap_priority: u8,
+    /// Creation-style policy used by continuing and baseline dimensions.
+    pub dimension_continue_mode: i16,
     /// When true (default), saving over an existing file first writes a `.bak`
     /// copy of it for recovery (#205). Toggle with the ISAVEBAK command.
     pub backup_on_save: bool,
@@ -551,13 +583,6 @@ pub(super) struct OpenCADStudio {
     )>,
     /// Document dirty state before the live grip mutation began.
     grip_dirty_before: Option<bool>,
-    /// Frozen wire geometry of the entities being grip-edited.
-    ///
-    /// The live entities are hidden from the resident hit-test set while their
-    /// grip preview is active. Keep their pre-drag geometry here so OSNAP,
-    /// Extension and OTRACK can still reference the entity's own vertices and
-    /// segments without snapping against the geometry being deformed.
-    grip_snap_wires: Vec<crate::scene::model::wire_model::WireModel>,
     /// Drag-start snapshot of the dragged entity's SDF glyph quads. A whole-
     /// entity text move slides these each frame (translating the already-shaped
     /// glyphs) instead of re-tessellating the run every cursor move (issue #316).
@@ -571,6 +596,7 @@ pub(super) struct OpenCADStudio {
     /// applied via `Message::QSelectApply`; the panel is dismissed on
     /// Apply / Cancel / Esc / outside-click.
     qselect: Option<QSelectState>,
+    qselect_settings: Option<QSelectSettings>,
     /// Show the UCS icon in the bottom-left corner of model space (UCSICON).
     show_ucs_icon: bool,
     /// Anchor the UCS icon to the projected UCS origin when it is on-screen,
@@ -691,6 +717,10 @@ pub(super) struct OpenCADStudio {
     /// keep their manifest listed but drop their ribbon tab and command
     /// dispatch. Persisted via [`settings::UserSettings::disabled_plugins`].
     disabled_plugins: rustc_hash::FxHashSet<String>,
+    /// `(tab id, selection fingerprint)` last broadcast to V4 plugins, so
+    /// `SelectionChangedV4` fires once per real change rather than per message.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_plugin_selection: Option<(u64, u64)>,
     /// External add-on packages found in the plugins folder, refreshed when the
     /// Plugin Manager opens.
     external_plugins: Vec<crate::plugin::external::ExternalPlugin>,
@@ -1588,6 +1618,7 @@ pub enum ModalKind {
     LayerStateManager,
     LayerTranslator,
     DrawingUnits,
+    GeometricTolerance,
     DraftingSettings,
     LayerStateEditor,
     Plot,
@@ -2318,6 +2349,14 @@ pub enum Message {
     DrawingUnitsField(crate::ui::window::drawing_units::Field),
     /// Drawing Units OK — write the working copy into the drawing.
     DrawingUnitsApply,
+    /// One structured feature-control-frame field changed.
+    ToleranceDialogField(crate::ui::window::geometric_tolerance::Field),
+    /// One structured feature-control-frame option changed.
+    ToleranceDialogToggle(crate::ui::window::geometric_tolerance::Toggle),
+    /// Apply edits without closing the structured editor.
+    ToleranceDialogApply,
+    /// Commit edits or continue to insertion-point placement.
+    ToleranceDialogOk,
     /// Toggle the Isolate pill's action menu open/closed.
     ToggleIsolatePopup,
     /// Close the Isolate action menu.
@@ -2382,6 +2421,11 @@ pub enum Message {
     PropColorChanged(AcadColor),
     /// User selected a lineweight from the Properties pick_list.
     PropLwChanged(LineWeight),
+    /// User selected an object-specific lineweight override.
+    PropFieldLwChanged {
+        field: &'static str,
+        value: LineWeight,
+    },
     /// User selected a linetype from the linetype pick_list.
     PropLinetypeChanged(String),
     /// User toggled a boolean property (e.g. Invisible).
@@ -2655,6 +2699,31 @@ pub enum Message {
     MTextWidth(String),
     /// Toolbar character-spacing field changed.
     MTextCharSpace(String),
+    /// Undo / redo editor text and inline-format operations.
+    MTextUndo,
+    MTextRedo,
+    /// Convert the selected numerator/separator/denominator to a stacked run.
+    MTextStack,
+    /// Remove inline character formatting from the selection (or all text).
+    MTextClearFormatting,
+    /// Insert a predefined symbol or field token at the caret.
+    MTextInsert(String),
+    /// Per-object annotation flag edited from the text toolbar.
+    MTextAnnotative(bool),
+    /// Column layout controls.
+    MTextColumnMode(String),
+    MTextColumnCount(String),
+    MTextColumnWidth(String),
+    MTextColumnGutter(String),
+    MTextColumnHeight(String),
+    MTextColumnFlowReversed(bool),
+    /// Paragraph indent/spacing controls.
+    MTextParagraphNumber(mtext_editor::ParaNumber, String),
+    MTextFindText(String),
+    MTextReplaceText(String),
+    MTextFindNext,
+    MTextReplaceNext,
+    MTextReplaceAll,
     /// Toolbar colour picker (same widget as Properties) — applies to the
     /// selection, or the whole text when nothing is selected.
     MTextColorChanged(AcadColor),
@@ -3152,6 +3221,7 @@ impl OpenCADStudio {
             last_layer_translation: None,
             layer_translator: None,
             drawing_units: None,
+            geometric_tolerance: None,
             pick_drag_rect: false,
             perf_hud: false,
             cycle_candidates: None,
@@ -3175,6 +3245,8 @@ impl OpenCADStudio {
             dyn_input: true,
             options_tab: crate::ui::window::options::OptionsTab::General,
             texteditmode: false,
+            quick_dimension_snap_priority: 0,
+            dimension_continue_mode: 1,
             backup_on_save: true,
             file_assoc_enabled: true,
             savetime_min: 10,
@@ -3202,10 +3274,10 @@ impl OpenCADStudio {
             grip_originals: Vec::new(),
             grip_history_originals: Vec::new(),
             grip_dirty_before: None,
-            grip_snap_wires: Vec::new(),
             grip_text_verts: Vec::new(),
             grip_text_slide: false,
             qselect: None,
+            qselect_settings: None,
             show_ucs_icon: true,
             ucs_icon_at_origin: true,
             show_viewcube: true,
@@ -3253,6 +3325,8 @@ impl OpenCADStudio {
             attr_editor_tab: crate::ui::window::attribute_editor::AttrTab::Attribute,
             attr_editor_selected: 0,
             disabled_plugins: rustc_hash::FxHashSet::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            last_plugin_selection: None,
             external_plugins: Vec::new(),
             loaded_plugin_ids: rustc_hash::FxHashSet::default(),
             plugin_load_errors: rustc_hash::FxHashMap::default(),

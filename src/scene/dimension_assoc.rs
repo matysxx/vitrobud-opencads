@@ -16,6 +16,19 @@ use crate::command::DimensionAssociationSource;
 
 use super::{ChangeKind, Scene};
 
+pub(crate) const POLYLINE_ARC_CENTER_MARKER: i32 = -4;
+const POLYLINE_ARC_POINT_MARKER_BASE: i32 = -5;
+pub(crate) const ARC_DIMENSION_POINT_MARKER: i32 = -1;
+
+pub(crate) fn polyline_arc_point_marker(segment: i32) -> i32 {
+    POLYLINE_ARC_POINT_MARKER_BASE - segment.max(0)
+}
+
+fn polyline_arc_segment_from_point_marker(marker: i32) -> Option<i32> {
+    (marker <= POLYLINE_ARC_POINT_MARKER_BASE)
+        .then_some(POLYLINE_ARC_POINT_MARKER_BASE - marker)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RadialSourceGeometry {
     pub plane: Plane,
@@ -329,7 +342,21 @@ fn source_marker(entity: &EntityType, point: Vector3) -> Option<i32> {
 fn resolve_reference(scene: &Scene, reference: &AssocDimensionReference) -> Option<Vector3> {
     let source = *reference.xrefs.first()?;
     let entity = scene.document.get_entity(source)?;
-    if reference.main_gs_marker == -4 {
+    if reference.main_gs_marker == ARC_DIMENSION_POINT_MARKER {
+        let radial = radial_source_for_marker(entity, 0)?;
+        let sweep = positive_sweep(radial.start_angle, radial.end_angle);
+        let angle = radial.start_angle + sweep * reference.osnap_distance.clamp(0.0, 1.0);
+        return Some(radial.point_at_angle(angle));
+    }
+    if let Some(segment) =
+        polyline_arc_segment_from_point_marker(reference.main_gs_marker)
+    {
+        let radial = radial_source_for_marker(entity, segment)?;
+        let sweep = positive_sweep(radial.start_angle, radial.end_angle);
+        let angle = radial.start_angle + sweep * reference.osnap_distance.clamp(0.0, 1.0);
+        return Some(radial.point_at_angle(angle));
+    }
+    if reference.main_gs_marker == POLYLINE_ARC_CENTER_MARKER {
         let segment = reference.osnap_distance.round().max(0.0) as usize;
         return polyline_arc_center(entity, segment);
     }
@@ -381,12 +408,23 @@ fn resolve_reference(scene: &Scene, reference: &AssocDimensionReference) -> Opti
         .copied()
 }
 
-fn dimension_inference_points(dimension: &Dimension) -> Option<[Option<Vector3>; 2]> {
+fn dimension_inference_points(dimension: &Dimension) -> Vec<Option<Vector3>> {
     match dimension {
-        Dimension::Linear(linear) => Some([Some(linear.first_point), Some(linear.second_point)]),
-        Dimension::Aligned(aligned) => Some([Some(aligned.first_point), Some(aligned.second_point)]),
-        Dimension::Ordinate(ordinate) => Some([Some(ordinate.feature_location), None]),
-        _ => None,
+        Dimension::Linear(linear) => vec![Some(linear.first_point), Some(linear.second_point)],
+        Dimension::Aligned(aligned) => vec![Some(aligned.first_point), Some(aligned.second_point)],
+        Dimension::Angular3Pt(angular) => vec![
+            Some(angular.angle_vertex),
+            Some(angular.first_point),
+            Some(angular.second_point),
+        ],
+        Dimension::Angular2Ln(angular) => vec![
+            Some(angular.first_point),
+            Some(angular.second_point),
+            Some(angular.angle_vertex),
+            Some(angular.definition_point),
+        ],
+        Dimension::Ordinate(ordinate) => vec![Some(ordinate.feature_location)],
+        _ => Vec::new(),
     }
 }
 
@@ -422,8 +460,80 @@ fn dimension_reference_points(dimension: &Dimension) -> Vec<Vector3> {
             angular.definition_point,
         ],
         Dimension::Ordinate(ordinate) => vec![ordinate.feature_location],
+        Dimension::Arc(arc) => vec![
+            arc.center_point,
+            arc.first_extension_point,
+            arc.second_extension_point,
+        ],
         _ => Vec::new(),
     }
+}
+
+fn positive_sweep(start: f64, end: f64) -> f64 {
+    let raw = end - start;
+    let mut sweep = raw.rem_euclid(TAU);
+    if sweep <= 1.0e-12 && raw.abs() > 1.0e-12 {
+        sweep = TAU;
+    }
+    sweep
+}
+
+fn signed_angle_delta(value: f64) -> f64 {
+    (value + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI
+}
+
+fn angle_about_plane(
+    plane: Plane,
+    center: Vector3,
+    point: Vector3,
+) -> f64 {
+    let delta = [
+        point.x - center.x,
+        point.y - center.y,
+        point.z - center.z,
+    ];
+    let dot = |axis: [f64; 3]| {
+        delta[0] * axis[0] + delta[1] * axis[1] + delta[2] * axis[2]
+    };
+    dot(plane.y_axis).atan2(dot(plane.x_axis))
+}
+
+fn point_on_radial_circle(
+    radial: RadialSourceGeometry,
+    radius: f64,
+    angle: f64,
+) -> Vector3 {
+    vector3(radial.plane.point_at([
+        radial.center[0] + radius * angle.cos(),
+        radial.center[1] + radius * angle.sin(),
+    ]))
+}
+
+fn plane_from_normal(origin: Vector3, normal: Vector3) -> Plane {
+    let (x_axis, y_axis) = crate::scene::view::transform::ocs_axes((
+        normal.x, normal.y, normal.z,
+    ));
+    Plane::from_axes(
+        [origin.x, origin.y, origin.z],
+        [x_axis.0, x_axis.1, x_axis.2],
+        [y_axis.0, y_axis.1, y_axis.2],
+    )
+}
+
+fn remap_plane_offset(
+    old_plane: Plane,
+    new_plane: Plane,
+    old_origin: Vector3,
+    old_point: Vector3,
+    new_origin: Vector3,
+) -> Vector3 {
+    let old_origin = old_plane.project(dpoint(old_origin)).unwrap_or([0.0; 2]);
+    let old_point = old_plane.project(dpoint(old_point)).unwrap_or(old_origin);
+    let new_origin_uv = new_plane.project(dpoint(new_origin)).unwrap_or([0.0; 2]);
+    vector3(new_plane.point_at([
+        new_origin_uv[0] + old_point[0] - old_origin[0],
+        new_origin_uv[1] + old_point[1] - old_origin[1],
+    ]))
 }
 
 pub(crate) fn dimension_is_associative(
@@ -460,6 +570,7 @@ pub(crate) fn radial_extension_points(
     let target_point = match dimension_entity {
         Dimension::Radius(radius) => radius.definition_point,
         Dimension::Diameter(diameter) => diameter.angle_vertex,
+        Dimension::LargeRadial(radial) => radial.chord_point,
         _ => return None,
     };
     let association = document.objects.values().find_map(|object| {
@@ -555,6 +666,11 @@ impl Scene {
                 diameter.center(),
                 diameter.measurement() * 0.5,
                 diameter.angle_vertex,
+            )),
+            Dimension::LargeRadial(radial) => Some((
+                radial.definition_point,
+                radial.measurement(),
+                radial.chord_point,
             )),
             _ => None,
         };
@@ -695,10 +811,10 @@ impl Scene {
     pub(crate) fn infer_dimension_sources(
         &self,
         dimension: Handle,
-    ) -> [Option<Handle>; 2] {
+    ) -> Vec<Option<Handle>> {
         let Some(EntityType::Dimension(entity)) = self.document.get_entity(dimension)
         else {
-            return [None, None];
+            return Vec::new();
         };
         let radial_data = match entity {
             Dimension::Radius(radius) => Some((
@@ -710,6 +826,11 @@ impl Scene {
                 diameter.center(),
                 diameter.measurement() * 0.5,
                 diameter.angle_vertex,
+            )),
+            Dimension::LargeRadial(radial) => Some((
+                radial.definition_point,
+                radial.measurement(),
+                radial.chord_point,
             )),
             _ => None,
         };
@@ -735,23 +856,25 @@ impl Scene {
                 })
                 .min_by(|first, second| first.0.total_cmp(&second.0))
                 .map(|(_, handle)| handle);
-            return [source, None];
+            return vec![source];
         }
-        let Some(points) = dimension_inference_points(entity) else {
-            return [None, None];
-        };
-        points.map(|point| {
-            point.and_then(|point| self.document
-                .entities()
-                .filter(|entity| entity.common().handle != dimension)
-                .filter_map(|entity| {
-                    source_distance_squared(entity, point)
-                        .map(|distance| (distance, entity.common().handle))
+        dimension_inference_points(entity)
+            .into_iter()
+            .map(|point| {
+                point.and_then(|point| {
+                    self.document
+                        .entities()
+                        .filter(|entity| entity.common().handle != dimension)
+                        .filter_map(|entity| {
+                            source_distance_squared(entity, point)
+                                .map(|distance| (distance, entity.common().handle))
+                        })
+                        .filter(|(distance, _)| *distance <= 1e-16)
+                        .min_by(|first, second| first.0.total_cmp(&second.0))
+                        .map(|(_, handle)| handle)
                 })
-                .filter(|(distance, _)| *distance <= 1e-16)
-                .min_by(|first, second| first.0.total_cmp(&second.0))
-                .map(|(_, handle)| handle))
-        })
+            })
+            .collect()
     }
 
     pub(crate) fn refresh_associative_dimensions(
@@ -795,6 +918,18 @@ impl Scene {
                 let entity = self.document.get_entity(source)?;
                 let radial = radial_source_for_marker(entity, reference.main_gs_marker)?;
                 Some((radial, reference.osnap_distance))
+            });
+            let arc_source = association.references[0].first().and_then(|reference| {
+                let source = *reference.xrefs.first()?;
+                let entity = self.document.get_entity(source)?;
+                let segment = match reference.main_gs_marker {
+                    -3 => 0,
+                    POLYLINE_ARC_CENTER_MARKER => {
+                        reference.osnap_distance.round().max(0.0) as i32
+                    }
+                    _ => return None,
+                };
+                radial_source_for_marker(entity, segment)
             });
             if radial_source.is_none() && resolved.iter().all(Option::is_none) {
                 continue;
@@ -848,7 +983,7 @@ impl Scene {
                     if let Some(point) = resolved[3] {
                         angular.definition_point = point;
                     }
-                    angular.base.definition_point = angular.definition_point;
+                    angular.base.definition_point = angular.dimension_arc;
                 }
                 Dimension::Radius(radius) => {
                     let Some((radial, angle)) = radial_source else {
@@ -892,17 +1027,144 @@ impl Scene {
                     }
                     diameter.base.actual_measurement = diameter.measurement();
                 }
+                Dimension::LargeRadial(radial) => {
+                    let Some((source, angle)) = radial_source else {
+                        continue;
+                    };
+                    let old_center = radial.definition_point;
+                    let new_center = source.center_world();
+                    let new_chord = source.point_at_angle(angle);
+                    let center_delta = Vector3::new(
+                        new_center.x - old_center.x,
+                        new_center.y - old_center.y,
+                        new_center.z - old_center.z,
+                    );
+                    radial.definition_point = new_center;
+                    radial.base.definition_point = new_center;
+                    radial.chord_point = new_chord;
+                    if point_distance_squared(center_delta, Vector3::default()) > 1e-18 {
+                        radial.override_center = radial.override_center + center_delta;
+                        radial.jog_point = radial.jog_point + center_delta;
+                        if radial.base.text_user_positioned {
+                            radial.base.text_middle_point =
+                                radial.base.text_middle_point + center_delta;
+                            radial.base.insertion_point =
+                                radial.base.insertion_point + center_delta;
+                        }
+                    }
+                    radial.base.actual_measurement = radial.measurement();
+                }
                 Dimension::Ordinate(ordinate) => {
                     if let Some(feature) = resolved[0] {
                         ordinate.feature_location = feature;
                     }
                     ordinate.refresh_measurement();
                 }
-                _ => continue,
+                Dimension::Arc(arc) => {
+                    let Some(radial) = arc_source else {
+                        continue;
+                    };
+                    let center = resolved[0].unwrap_or_else(|| radial.center_world());
+                    let Some(first) = resolved[1] else {
+                        continue;
+                    };
+                    let Some(second) = resolved[2] else {
+                        continue;
+                    };
+
+                    let old_center = arc.center_point;
+                    let old_definition = arc.definition_point;
+                    let old_plane = plane_from_normal(old_center, arc.base.normal);
+                    let old_source_radius = old_center.distance(&arc.first_extension_point);
+                    let old_dim_radius = old_center.distance(&old_definition);
+                    let radial_offset = old_dim_radius - old_source_radius;
+                    let old_mid = arc.arc_start_parameter
+                        + positive_sweep(
+                            arc.arc_start_parameter,
+                            arc.arc_end_parameter,
+                        ) * 0.5;
+                    let old_definition_angle =
+                        angle_about_plane(old_plane, old_center, old_definition);
+                    let definition_angle_offset =
+                        signed_angle_delta(old_definition_angle - old_mid);
+
+                    let start = radial.angle_at(dpoint(first));
+                    let end_at = radial.angle_at(dpoint(second));
+                    let sweep = positive_sweep(start, end_at);
+                    let end = start + sweep;
+                    let new_radius = center.distance(&first);
+                    if !new_radius.is_finite() || new_radius <= 1.0e-12 {
+                        continue;
+                    }
+                    let dim_radius = (new_radius + radial_offset).max(1.0e-9);
+                    let middle = start + sweep * 0.5;
+                    let definition = point_on_radial_circle(
+                        radial,
+                        dim_radius,
+                        middle + definition_angle_offset,
+                    );
+                    let text_middle = remap_plane_offset(
+                        old_plane,
+                        radial.plane,
+                        old_definition,
+                        arc.base.text_middle_point,
+                        definition,
+                    );
+                    let insertion = remap_plane_offset(
+                        old_plane,
+                        radial.plane,
+                        old_definition,
+                        arc.base.insertion_point,
+                        definition,
+                    );
+                    let second_leader = remap_plane_offset(
+                        old_plane,
+                        radial.plane,
+                        old_definition,
+                        arc.second_leader_point,
+                        definition,
+                    );
+
+                    arc.center_point = center;
+                    arc.first_extension_point = first;
+                    arc.second_extension_point = second;
+                    arc.arc_start_parameter = start;
+                    arc.arc_end_parameter = end;
+                    arc.definition_point = definition;
+                    arc.base.definition_point = definition;
+                    if let Some(normal) = radial.plane.normal() {
+                        arc.base.normal = vector3(normal);
+                    }
+                    if arc.base.text_user_positioned {
+                        arc.base.text_middle_point = text_middle;
+                        arc.base.insertion_point = insertion;
+                    } else {
+                        arc.base.text_middle_point = definition;
+                        arc.base.insertion_point = definition;
+                    }
+                    if arc.has_leader {
+                        arc.first_leader_point =
+                            point_on_radial_circle(radial, dim_radius, middle);
+                        arc.second_leader_point = second_leader;
+                    }
+                    arc.base.actual_measurement = arc.measurement();
+                }
             }
-            dimension.base_mut().actual_measurement = dimension.measurement();
+            let measurement = match &*dimension {
+                Dimension::Linear(linear) => linear_measurement(linear),
+                _ => dimension.measurement(),
+            };
+            dimension.base_mut().actual_measurement = measurement;
             refreshed.push((association.dimension, ChangeKind::Modified));
         }
         refreshed
     }
+}
+
+fn linear_measurement(linear: &acadrust::entities::DimensionLinear) -> f64 {
+    let plane = plane_from_normal(linear.first_point, linear.base.normal);
+    let first = plane.project(dpoint(linear.first_point)).unwrap_or([0.0; 2]);
+    let second = plane.project(dpoint(linear.second_point)).unwrap_or(first);
+    let axis = [linear.rotation.cos(), linear.rotation.sin()];
+    ((second[0] - first[0]) * axis[0] + (second[1] - first[1]) * axis[1]).abs()
 }

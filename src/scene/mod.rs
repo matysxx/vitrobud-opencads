@@ -1420,6 +1420,9 @@ pub struct Scene {
     pub selection: Rc<RefCell<SelectionState>>,
     /// The CAD document — single source of truth for all entities.
     pub document: CadDocument,
+    /// Last chain-compatible dimension created this session.
+    /// Never reconstructed from loaded file handles.
+    pub last_created_dimension: Option<Handle>,
     /// File-open-prepared index for non-graphical semantic object lookups.
     pub(crate) object_data_cache: crate::entities::object_data::ObjectDataCache,
     /// Native AcDbLight/Sun inputs, separated by rendered block and viewport
@@ -1486,6 +1489,9 @@ pub struct Scene {
     /// pick only refreshes the GPU xray overlay (cheap) instead of bumping
     /// `geometry_epoch` and re-tessellating the whole model.
     pub selection_generation: u64,
+    /// Cached fingerprint of `selected`, recomputed lazily after mutations.
+    selection_fingerprint_cache: u64,
+    selection_fingerprint_dirty: bool,
     /// Cached tessellation of all visible entity wires for the current layout.
     /// Keyed by `(geometry_epoch, camera_generation)` so a camera change
     /// invalidates the cull-dependent wire list as well as a geometry change.
@@ -1845,6 +1851,7 @@ impl Scene {
             model_pane_min_px: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             selection: Rc::new(RefCell::new(SelectionState::default())),
             document: CadDocument::new(),
+            last_created_dimension: None,
             object_data_cache: crate::entities::object_data::ObjectDataCache::default(),
             lighting_cache: RefCell::new(HashMap::default()),
             selected: HashSet::default(),
@@ -1865,6 +1872,8 @@ impl Scene {
             projection_bounds_epoch: std::cell::Cell::new(0),
             block_epoch: GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed),
             selection_generation: 0,
+            selection_fingerprint_cache: 0,
+            selection_fingerprint_dirty: false,
             wire_cache: RefCell::new(None),
             interaction_index_cache: RefCell::new(Vec::new()),
             interaction_index_pending_key: std::cell::Cell::new(None),
@@ -2618,6 +2627,11 @@ impl Scene {
         self.selection_generation = self.selection_generation.wrapping_add(1);
     }
 
+    pub(crate) fn bump_selection_set(&mut self) {
+        self.selection_fingerprint_dirty = true;
+        self.bump_selection();
+    }
+
     /// Milliseconds after the last camera change during which the view counts as
     /// "actively navigating" for interaction-LOD purposes.
     const NAV_SETTLE_MS: u128 = 130;
@@ -2732,6 +2746,7 @@ impl Scene {
             self.meshes.remove(&handle);
         }
         self.solid_models.insert(handle, solid);
+        self.sync_solid_reference_point(handle);
         // Only this solid's mesh changed — report just its handle so the mesh /
         // wire caches patch it in rather than rebuilding the whole drawing (and
         // so a bulk register loop stays O(n), not O(n²)).
@@ -2998,32 +3013,96 @@ impl Scene {
         crate::io::set_saved_active_layout(&mut self.document, &self.current_layout);
     }
 
-    /// Returns true if this viewport should display model-space content
-    /// (i.e. it is a user viewport, not the sheet/overall viewport).
-    ///
-    /// Rules:
-    /// - id=1  → always the sheet viewport → false
-    /// - id≥2  → always a user viewport    → true
-    /// - id=0 or id<0 (DWG reader omits the id; some DXF exporters write -1):
-    ///   use geometry: the sheet viewport is centred at the paper origin (0,0)
-    ///   with scale≈1.0 (view_height ≈ paper-space height).
-    pub fn is_content_viewport(vp: &acadrust::entities::Viewport) -> bool {
-        if vp.id == 1 {
-            return false;
+    pub(crate) fn layout_sheet_viewport_handle(
+        document: &acadrust::CadDocument,
+        layout: &acadrust::objects::Layout,
+    ) -> Handle {
+        let owned_viewport = |handle| match document.get_entity(handle) {
+            Some(EntityType::Viewport(vp)) if vp.common.owner_handle == layout.block_record => {
+                Some(vp)
+            }
+            _ => None,
+        };
+
+        let listed = layout
+            .viewports
+            .iter()
+            .copied()
+            .filter_map(|handle| owned_viewport(handle).map(|vp| (handle, vp)));
+        if let Some((handle, _)) = listed.clone().find(|(_, vp)| vp.id == 1) {
+            return handle;
         }
-        if vp.id > 1 {
+        if let Some((handle, _)) = listed.into_iter().next() {
+            return handle;
+        }
+
+        let block_handles = document
+            .block_records
+            .iter()
+            .find(|block| block.handle == layout.block_record)
+            .map(|block| block.entity_handles.as_slice())
+            .unwrap_or_default();
+        let block_viewports = block_handles
+            .iter()
+            .copied()
+            .filter_map(|handle| owned_viewport(handle).map(|vp| (handle, vp)));
+        if let Some((handle, _)) = block_viewports.clone().find(|(_, vp)| vp.id == 1) {
+            return handle;
+        }
+        if let Some((handle, _)) = block_viewports.into_iter().next() {
+            return handle;
+        }
+
+        document
+            .entities()
+            .filter_map(|entity| match entity {
+                EntityType::Viewport(vp) if vp.common.owner_handle == layout.block_record => {
+                    Some((
+                        vp.common.handle,
+                        vp.id == 1,
+                        vp.width.abs() * vp.height.abs(),
+                    ))
+                }
+                _ => None,
+            })
+            .max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.total_cmp(&b.2)))
+            .map(|(handle, _, _)| handle)
+            .unwrap_or(Handle::NULL)
+    }
+
+    pub(crate) fn is_sheet_viewport(
+        document: &acadrust::CadDocument,
+        vp: &acadrust::entities::Viewport,
+    ) -> bool {
+        if vp.id == 1 {
             return true;
         }
-        // id ≤ 0: DWG files never write group-code 69 (viewport id), so all
-        // viewports arrive with id=0.
-        //
-        // In DWG format the sheet ("overall") viewport always has its center at
-        // the paper-space origin (0, 0). Content viewports are placed at their
-        // actual position on the paper and therefore have a non-zero center.
-        // Using center position is more reliable than a scale heuristic because
-        // the sheet viewport's scale is not always exactly 1:1 (observed: 0.8965
-        // in real-world files, which the old 0.02 tolerance missed entirely).
-        vp.center.x.abs() >= 0.5 || vp.center.y.abs() >= 0.5
+        if vp.id > 1 {
+            return false;
+        }
+        document.objects.values().any(|object| {
+            matches!(
+                object,
+                ObjectType::Layout(layout)
+                    if layout.block_record == vp.common.owner_handle
+                        && Self::layout_sheet_viewport_handle(document, layout)
+                            == vp.common.handle
+            )
+        })
+    }
+
+    pub(crate) fn sheet_viewport_handles(&self) -> std::collections::HashSet<Handle> {
+        self.document
+            .objects
+            .values()
+            .filter_map(|object| match object {
+                ObjectType::Layout(layout) => {
+                    let handle = Self::layout_sheet_viewport_handle(&self.document, layout);
+                    handle.is_valid().then_some(handle)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn current_layout_sheet_viewport_handle(&self) -> Handle {
@@ -3035,7 +3114,7 @@ impl Scene {
                     return None;
                 };
                 if layout.name == self.current_layout {
-                    Some(layout.viewport)
+                    Some(Self::layout_sheet_viewport_handle(&self.document, layout))
                 } else {
                     None
                 }
@@ -3043,69 +3122,39 @@ impl Scene {
             .unwrap_or(Handle::NULL)
     }
 
-    /// Guarantee that a paper layout has its full-screen overall (`id == 1`)
-    /// sheet viewport. `add_layout` creates it; this is a safety net for layouts
-    /// that arrive without it. The sheet
-    /// viewport is the authoritative paper-space view and the canvas every
-    /// floating viewport overlays.
+    /// Ensure a paper layout has its overall (`id == 1`) viewport.
     pub fn ensure_sheet_viewport(&mut self, layout_name: &str) {
         if layout_name == "Model" {
             return;
         }
-        // Locate the layout: its object handle, block-record handle, current
-        // sheet-viewport link, and paper limits.
+        // Locate the layout and its paper limits.
         let info = self.document.objects.iter().find_map(|(h, obj)| {
             if let ObjectType::Layout(l) = obj {
                 if l.name == layout_name {
-                    return Some((*h, l.block_record, l.viewport, l.min_limits, l.max_limits));
+                    return Some((
+                        *h,
+                        l.block_record,
+                        Self::layout_sheet_viewport_handle(&self.document, l),
+                        l.min_limits,
+                        l.max_limits,
+                    ));
                 }
             }
             None
         });
-        let Some((layout_handle, block_record, cur_vp, min_lim, max_lim)) = info else {
+        let Some((layout_handle, block_record, sheet, min_lim, max_lim)) = info else {
             return;
         };
         if block_record.is_null() {
             return;
         }
 
-        // Normal files carry a valid direct Layout→Viewport link. This O(1)
-        // path is hit on every ordinary layout-tab switch.
-        if cur_vp.is_valid()
+        if sheet.is_valid()
             && matches!(
-                self.document.get_entity(cur_vp),
+                self.document.get_entity(sheet),
                 Some(EntityType::Viewport(vp)) if vp.common.owner_handle == block_record
             )
         {
-            return;
-        }
-
-        // Already present? Accept either the linked viewport handle or any
-        // `id == 1` viewport owned by the layout block.
-        let has_sheet = self.document.entities().any(|e| {
-            matches!(e, EntityType::Viewport(vp)
-                if vp.common.owner_handle == block_record
-                    && (vp.id == 1 || vp.common.handle == cur_vp))
-        });
-        if has_sheet {
-            // Keep the layout's link in sync if it was missing.
-            if !cur_vp.is_valid() {
-                let h = self.document.entities().find_map(|e| match e {
-                    EntityType::Viewport(vp)
-                        if vp.common.owner_handle == block_record && vp.id == 1 =>
-                    {
-                        Some(vp.common.handle)
-                    }
-                    _ => None,
-                });
-                if let Some(h) = h {
-                    if let Some(ObjectType::Layout(l)) =
-                        self.document.objects.get_mut(&layout_handle)
-                    {
-                        l.viewport = h;
-                    }
-                }
-            }
             return;
         }
 
@@ -3115,10 +3164,7 @@ impl Scene {
         let mut vp = acadrust::entities::Viewport::new();
         vp.id = 1;
         vp.status = acadrust::entities::ViewportStatusFlags::default_on();
-        // Paper-space center is a 2D (x, y) point with z = 0. Putting the
-        // paper-height midpoint in z
-        // (with y = 0) left the sheet view centered at y = 0, shifting the whole
-        // layout half a page down. See issue #156.
+        // Paper-space center is an (x, y) point with z = 0.
         vp.center = acadrust::types::Vector3::new(
             (min_lim.0 + max_lim.0) / 2.0,
             (min_lim.1 + max_lim.1) / 2.0,
@@ -3126,12 +3172,7 @@ impl Scene {
         );
         vp.width = pw;
         vp.height = ph;
-        // Frame the new layout on the whole sheet: look straight down at the
-        // paper centre with the visible height a touch taller than the page.
-        // Without this the viewport keeps `Viewport::new`'s default view
-        // (target 0,0 / height 210), so the first time a fresh drawing's
-        // layout is opened the camera sits on the paper's bottom-left corner
-        // instead of centring the sheet.
+        // Frame the full sheet with a small margin.
         vp.view_target = acadrust::types::Vector3::new(
             (min_lim.0 + max_lim.0) / 2.0,
             (min_lim.1 + max_lim.1) / 2.0,
@@ -3144,7 +3185,8 @@ impl Scene {
             .add_entity_to_layout(EntityType::Viewport(vp), layout_name)
         {
             if let Some(ObjectType::Layout(l)) = self.document.objects.get_mut(&layout_handle) {
-                l.viewport = handle;
+                l.viewports.retain(|candidate| *candidate != handle);
+                l.viewports.insert(0, handle);
             }
         }
     }
@@ -3161,7 +3203,7 @@ impl Scene {
         if sheet_handle.is_valid() {
             vp.common.handle != sheet_handle
         } else {
-            Self::is_content_viewport(vp)
+            !Self::is_sheet_viewport(&self.document, vp)
         }
     }
 
@@ -4555,6 +4597,7 @@ impl Scene {
             .extend(self.selected.iter().copied());
         self.selected.clear();
         self.selected_order.clear();
+        self.bump_selection_set();
         self.bump_entities(&changes);
     }
 
@@ -6040,6 +6083,7 @@ impl Scene {
             all_visible,
             depth_map.as_ref(),
         )
+        .with_annotation_scale(self.annotation_scale)
         .with_viewport(viewport);
         let mut models = Vec::new();
         let mut image_sources = rustc_hash::FxHashMap::default();
@@ -6697,6 +6741,7 @@ impl Scene {
             all_visible,
             depth_map.as_ref(),
         )
+        .with_annotation_scale(self.annotation_scale)
         .with_viewport(viewport);
         let mut out = Vec::new();
         graph.walk_root(
@@ -6985,9 +7030,7 @@ impl Scene {
         self.belongs_to_visible_block(handle, common.owner_handle, self.interaction_block_handle())
     }
 
-    /// Per-Insert hatch models in the current layout, keyed by the Insert
-    /// handle so a click on a block-internal hatch can select the parent
-    /// Insert; block-owned leaves resolve to their owning instance.
+    /// Instanced hatch models keyed by their block-backed host handle.
 
     pub fn insert_hatches_for_click(&self) -> Arc<HashMap<Handle, Vec<HatchModel>>> {
         let interaction_block = self.interaction_block_handle();
@@ -7000,10 +7043,15 @@ impl Scene {
                         epoch,
                         CACHE_CATEGORY_INSERT_HATCH,
                         |handle| {
-                            matches!(
-                                self.document.get_entity(handle),
-                                Some(EntityType::Insert(_))
-                            )
+                            self.document.get_entity(handle).is_some_and(|entity| {
+                                render_graph::entity_render_block_uses(
+                                    &self.document,
+                                    entity,
+                                    self.annotation_scale,
+                                )
+                                .into_iter()
+                                .any(|block_use| block_use.active)
+                            })
                         },
                     )
                 {
@@ -7040,22 +7088,22 @@ impl Scene {
             annotation_scale_handle,
             all_visible,
             depth_map.as_ref(),
-        );
+        )
+        .with_annotation_scale(self.annotation_scale);
         for entity in self.document.entities() {
             let contextual = crate::scene::annotative::entity_for_annotation_context(
                 &self.document,
                 entity,
                 annotation_scale_handle,
             );
-            let EntityType::Insert(ins) = contextual.as_ref() else {
-                continue;
-            };
-            if ins.common.invisible
-                || self.entity_temporarily_hidden(ins.common.handle)
-                || layer_hidden(&ins.common.layer)
+            let host = contextual.as_ref();
+            let common = host.common();
+            if common.invisible
+                || self.entity_temporarily_hidden(common.handle)
+                || layer_hidden(&common.layer)
                 || crate::scene::annotative::annotative_offscale_for(
                     &self.document,
-                    &ins.common,
+                    common,
                     annotation_scale_handle,
                     all_visible,
                 )
@@ -7063,58 +7111,67 @@ impl Scene {
                 continue;
             }
             if !self.belongs_to_visible_block(
-                ins.common.handle,
-                ins.common.owner_handle,
+                common.handle,
+                common.owner_handle,
                 interaction_block,
             ) {
                 continue;
             }
-            if !render_graph::block_contains_hatch(
+            for block_use in render_graph::entity_render_block_uses(
                 &self.document,
-                &ins.block_name,
-                &mut hatch_memo,
-            ) {
-                continue;
-            }
-            graph.walk_insert(
-                ins,
-                ins.common.handle,
-                |_, _| true,
-                |entity, context| {
-                    let EntityType::Hatch(source) = entity else {
-                        return;
-                    };
-                    let mut placed = EntityType::Hatch(source.clone());
-                    placed.apply_transform(&context.transform);
-                    let EntityType::Hatch(hatch) = placed else {
-                        return;
-                    };
-                    let color = crate::scene::view::render::adapt_to_bg(
-                        context.style_for(&self.document, entity).0,
-                        self.current_bg(),
-                    );
-                    let Some(mut model) = Self::hatch_model_from_dxf(&hatch, color)
-                    else {
-                        return;
-                    };
-                    for clip in &context.clips {
-                        let clip: Vec<[f32; 2]> = clip
-                            .iter()
-                            .map(|point| [point[0] as f32, point[1] as f32])
-                            .collect();
-                        let clipped = pick::xclip::clip_hatch_boundary(
-                            &model.boundary,
-                            model.world_origin,
-                            &clip,
-                        );
-                        if clipped.is_empty() {
+                host,
+                self.annotation_scale,
+            )
+            .into_iter()
+            .filter(|block_use| block_use.active)
+            {
+                if !render_graph::block_contains_hatch(
+                    &self.document,
+                    &block_use.insert.block_name,
+                    &mut hatch_memo,
+                ) {
+                    continue;
+                }
+                graph.walk_insert(
+                    &block_use.insert,
+                    common.handle,
+                    |_, _| true,
+                    |entity, context| {
+                        let EntityType::Hatch(source) = entity else {
                             return;
+                        };
+                        let mut placed = EntityType::Hatch(source.clone());
+                        placed.apply_transform(&context.transform);
+                        let EntityType::Hatch(hatch) = placed else {
+                            return;
+                        };
+                        let color = crate::scene::view::render::adapt_to_bg(
+                            context.style_for(&self.document, entity).0,
+                            self.current_bg(),
+                        );
+                        let Some(mut model) = Self::hatch_model_from_dxf(&hatch, color)
+                        else {
+                            return;
+                        };
+                        for clip in &context.clips {
+                            let clip: Vec<[f32; 2]> = clip
+                                .iter()
+                                .map(|point| [point[0] as f32, point[1] as f32])
+                                .collect();
+                            let clipped = pick::xclip::clip_hatch_boundary(
+                                &model.boundary,
+                                model.world_origin,
+                                &clip,
+                            );
+                            if clipped.is_empty() {
+                                return;
+                            }
+                            model.boundary = Arc::new(clipped);
                         }
-                        model.boundary = Arc::new(clipped);
-                    }
-                    out.entry(ins.common.handle).or_default().push(model);
-                },
-            );
+                        out.entry(common.handle).or_default().push(model);
+                    },
+                );
+            }
         }
         let arc = Arc::new(out);
         *self.insert_hatch_cache.borrow_mut() =
@@ -8830,11 +8887,7 @@ impl Scene {
         let mut roots: HashMap<String, HashSet<Handle>> = HashMap::default();
         let mut parents: HashMap<String, HashSet<String>> = HashMap::default();
         for entity in self.document.entities() {
-            let EntityType::Insert(insert) = entity else {
-                continue;
-            };
-            let target = normalize_name(&insert.block_name);
-            let common = &insert.common;
+            let common = entity.common();
             let owner = if common.owner_handle.is_null() {
                 membership
                     .get(&common.handle)
@@ -8843,13 +8896,19 @@ impl Scene {
             } else {
                 common.owner_handle
             };
-            if owner.is_null() || layout_blocks.contains(&owner) {
-                roots.entry(target).or_default().insert(common.handle);
-            } else if let Some(parent) = block_names.get(&owner) {
-                parents.entry(target).or_default().insert(parent.clone());
+            for block_use in render_graph::entity_block_uses(&self.document, entity, 1.0) {
+                let target = normalize_name(&block_use.insert.block_name);
+                if target.is_empty() {
+                    continue;
+                }
+                if owner.is_null() || layout_blocks.contains(&owner) {
+                    roots.entry(target).or_default().insert(common.handle);
+                } else if let Some(parent) = block_names.get(&owner) {
+                    parents.entry(target).or_default().insert(parent.clone());
+                }
             }
         }
-        // Propagate top-level INSERT users through nested block references.
+        // Propagate root users through nested block references.
         // Fixed-point form is cycle-safe and block graphs are normally shallow.
         let mut changed = true;
         while changed {

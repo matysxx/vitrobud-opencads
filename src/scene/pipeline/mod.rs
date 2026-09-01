@@ -314,6 +314,8 @@ pub struct Pipeline {
     pub cached_selection: (u64, u64),
     /// Face upload key; keeps the resident wire Arc uniquely owned by Scene.
     pub cached_face3d_key: (u64, bool, bool, u64),
+    /// Cached planar-solid visibility for `(wire_content_id, view direction)`.
+    pub cached_solid_visibility: (u64, [u32; 3], u64),
     /// Handle → indices into the resident wire set, built once per wire upload
     /// (when `cached_wire_id` changes). Lets the selection/hover xray overlay
     /// gather just the highlighted entity's wires (`O(highlighted)`) instead of
@@ -2320,6 +2322,7 @@ impl Pipeline {
             cached_wire_id: u64::MAX,
             cached_selection: (u64::MAX, u64::MAX),
             cached_face3d_key: (u64::MAX, false, false, u64::MAX),
+            cached_solid_visibility: (u64::MAX, [u32::MAX; 3], u64::MAX),
             wire_handle_index: std::sync::Arc::new(rustc_hash::FxHashMap::default()),
             render_sig: u64::MAX,
             skip_geometry: false,
@@ -3807,7 +3810,7 @@ impl Pipeline {
                     pass.set_vertex_buffer(1, c.instance_buffer.slice(..));
                     // Plain-mesh triangulation edges.
                     if c.wire_index_count != 0 {
-                        pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
+                        pass.set_vertex_buffer(0, c.wire_vertex_buffer.slice(..));
                         pass.set_index_buffer(
                             c.wire_index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
@@ -3844,7 +3847,7 @@ impl Pipeline {
                         );
                         pass.set_vertex_buffer(1, c.instance_buffer.slice(..));
                         if c.wire_index_count != 0 {
-                            pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
+                            pass.set_vertex_buffer(0, c.wire_vertex_buffer.slice(..));
                             pass.set_index_buffer(
                                 c.wire_index_buffer.slice(..),
                                 wgpu::IndexFormat::Uint32,
@@ -4000,7 +4003,7 @@ impl Pipeline {
                         );
                         pass.set_vertex_buffer(1, c.instance_buffer.slice(..));
                         if c.wire_index_count != 0 {
-                            pass.set_vertex_buffer(0, c.vertex_buffer.slice(..));
+                            pass.set_vertex_buffer(0, c.wire_vertex_buffer.slice(..));
                             pass.set_index_buffer(
                                 c.wire_index_buffer.slice(..),
                                 wgpu::IndexFormat::Uint32,

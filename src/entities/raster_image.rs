@@ -180,6 +180,7 @@ impl RenderConvertible for RasterImage {
             origin: ins,
             color: None,
             fill_tris: vec![],
+            plane: None,
             run: None,
         }];
 
@@ -218,6 +219,7 @@ impl RenderConvertible for RasterImage {
                 origin,
                 color: None,
                 fill_tris,
+                plane: None,
                 run: Some(GlyphRun {
                     text: path.to_string(),
                     font,
@@ -288,7 +290,7 @@ impl PropertyEditable for RasterImage {
             .flags
             .contains(acadrust::entities::ImageDisplayFlags::USE_CLIPPING_BOUNDARY);
         let clip_inverted = self.clip_boundary.clip_mode == acadrust::entities::ClipMode::Inside;
-        let transparency = format!("{:.0}%", self.common.transparency.as_percent() * 100.0);
+        let transparency = self.common.transparency.to_string();
         vec![
             PropSection {
                 title: t!("Geometry").into_owned(),

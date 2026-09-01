@@ -381,6 +381,8 @@ impl shader::Primitive for Primitive {
                 inner.cached_selection = (u64::MAX, u64::MAX);
                 inner.cached_mesh_content_id = u64::MAX;
                 inner.cached_face3d_key = (u64::MAX, false, false, u64::MAX);
+                inner.cached_solid_visibility =
+                    (u64::MAX, [u32::MAX; 3], u64::MAX);
                 inner.cached_hatch_source = None;
                 inner.cached_preview_hatch_source = None;
                 inner.cached_wipeout_source = None;
@@ -487,11 +489,25 @@ impl shader::Primitive for Primitive {
             // the Wireframe overlay style.
             let face3d_fill_active = fill_mode && !vp.view_wireframe;
             let solid_fill_active = fill_mode && vp.show_2d_solid_fills;
-            let solid_visibility_key =
+            let view_dir_key = [
+                vp.view_dir.x.to_bits(),
+                vp.view_dir.y.to_bits(),
+                vp.view_dir.z.to_bits(),
+            ];
+            let solid_visibility_key = if !solid_fill_active {
+                0
+            } else if inner.cached_solid_visibility.0 == vp.wire_content_id
+                && inner.cached_solid_visibility.1 == view_dir_key
+            {
+                inner.cached_solid_visibility.2
+            } else {
                 crate::scene::pipeline::face3d_gpu::planar_solid_visibility_key(
                     &vp_wires,
                     vp.view_dir,
-                );
+                )
+            };
+            inner.cached_solid_visibility =
+                (vp.wire_content_id, view_dir_key, solid_visibility_key);
             let fill_changed = inner.cached_fill_mode != fill_mode;
             let hatch_changed = inner
                 .cached_hatch_source
@@ -2802,7 +2818,7 @@ fn viewport_override(
         .find_map(|(handle, value)| (handle == viewport).then_some(value))
 }
 
-pub(in crate::scene) fn render_style_for_viewport(
+pub(crate) fn render_style_for_viewport(
     document: &CadDocument,
     e: &EntityType,
     viewport: Option<Handle>,
@@ -2847,7 +2863,7 @@ pub(in crate::scene) fn render_style_for_viewport(
             _ => 0,
         };
         let [r, g, b, _] = tess_util::aci_to_rgba(resolved);
-        let transparency = if common.transparency.alpha() == 0 {
+        let transparency = if common.transparency.is_by_layer() {
             viewport_override(
                 document,
                 layer_name,
@@ -3061,18 +3077,21 @@ pub(crate) fn render_style_for_block_sub_viewport(
     let on_l0 = is_effective_layer_zero(&common.layer);
 
     let has_book_color = has_resolved_book_color(document, e);
-    let final_color = if !has_book_color && common.color == AcadColor::ByBlock {
+    let resolved_rgb = if !has_book_color && common.color == AcadColor::ByBlock {
         insert_color
     } else if !has_book_color && on_l0 && common.color == AcadColor::ByLayer {
-        let alpha = if common.transparency.alpha() == 0 {
-            l0.color[3]
-        } else {
-            color[3]
-        };
-        [l0.color[0], l0.color[1], l0.color[2], alpha]
+        l0.color
     } else {
         color
     };
+    let alpha = if common.transparency.is_by_block() {
+        insert_color[3]
+    } else if on_l0 && common.transparency.is_by_layer() {
+        l0.color[3]
+    } else {
+        color[3]
+    };
+    let final_color = [resolved_rgb[0], resolved_rgb[1], resolved_rgb[2], alpha];
 
     let lt_bylayer =
         common.linetype.is_empty() || common.linetype.eq_ignore_ascii_case("bylayer");
@@ -3795,14 +3814,21 @@ impl Scene {
             full_bounds,
             self.document.header.lineweight_display || display_plot_lineweights,
         );
-        if self.document.header.paper_space_linetype_scaling
+
+        // Model space: scale linetypes using the current annotation scale so their
+        // appearance can match a paper-space viewport at the same drawing scale.
+        if self.current_layout == "Model" {
+            if self.annotation_scale.is_finite() && self.annotation_scale > 1e-9 {
+                uniforms.linetype_scale = self.annotation_scale;
+            }
+        } else if self.document.header.paper_space_linetype_scaling
             && !inst.paper_sheet
-            && inst.tile_idx.is_none()
             && inst.handle != Handle::NULL
         {
             if let Some(EntityType::Viewport(vp)) = self.document.get_entity(inst.handle) {
                 let viewport_scale =
                     vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
+
                 if viewport_scale.is_finite() && viewport_scale > 1e-9 {
                     uniforms.linetype_scale = (1.0 / viewport_scale) as f32;
                 }
@@ -4295,5 +4321,23 @@ mod layer0_inherit_tests {
         let c = resolve(&d, &EntityType::Line(l), walls);
         assert_eq!(&c[..3], &walls[..3], "RGB inherited from the insert layer");
         assert!((c[3] - 0.5).abs() < 0.02, "child's own 50% transparency is kept, got {}", c[3]);
+    }
+
+    #[test]
+    fn byblock_transparency_inherits_insert_alpha() {
+        let d = doc();
+        let mut entity = child("Other", Color::Index(3));
+        entity.common_mut().transparency = Transparency::BY_BLOCK;
+        let color = resolve(&d, &entity, [0.2, 0.4, 0.6, 0.25]);
+        assert_eq!(color[3], 0.25);
+    }
+
+    #[test]
+    fn explicit_opaque_does_not_inherit_alpha() {
+        let d = doc();
+        let mut entity = child("0", Color::ByLayer);
+        entity.common_mut().transparency = Transparency::OPAQUE;
+        let color = resolve(&d, &entity, [0.2, 0.4, 0.6, 0.25]);
+        assert_eq!(color[3], 1.0);
     }
 }

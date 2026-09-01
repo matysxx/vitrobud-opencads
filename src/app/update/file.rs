@@ -204,7 +204,14 @@ fn plot_scene_content(
                 || !crate::scene::Scene::handle_from_wire_name(&wire.name)
                     .and_then(|handle| scene.document.get_entity(handle))
                     .is_some_and(|entity| {
-                        matches!(entity, acadrust::EntityType::Viewport(viewport) if crate::scene::Scene::is_content_viewport(viewport))
+                        matches!(
+                            entity,
+                            acadrust::EntityType::Viewport(viewport)
+                                if !crate::scene::Scene::is_sheet_viewport(
+                                    &scene.document,
+                                    viewport,
+                                )
+                        )
                     }))
     });
     model_wires.retain(|wire| wire.plot_visible);
@@ -375,6 +382,8 @@ impl OpenCADStudio {
                 self.snapper.snap_enabled,
             ),
             texteditmode: self.texteditmode,
+            quick_dimension_snap_priority: self.quick_dimension_snap_priority,
+            dimension_continue_mode: self.dimension_continue_mode,
             textfill: crate::scene::text::sdf_atlas::textfill(),
             backup_on_save: self.backup_on_save,
             file_assoc_enabled: self.file_assoc_enabled,
@@ -433,6 +442,8 @@ impl OpenCADStudio {
         self.snapper.enabled = modes.into_iter().collect();
         self.snapper.snap_enabled = snap_enabled;
         self.texteditmode = s.texteditmode;
+        self.quick_dimension_snap_priority = s.quick_dimension_snap_priority.min(1);
+        self.dimension_continue_mode = s.dimension_continue_mode.clamp(0, 1);
         crate::scene::text::sdf_atlas::set_textfill(s.textfill);
         self.backup_on_save = s.backup_on_save;
         self.file_assoc_enabled = s.file_assoc_enabled;

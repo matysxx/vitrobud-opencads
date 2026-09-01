@@ -1248,6 +1248,28 @@ pub enum CmdResult {
     CommitDimension {
         entity: EntityType,
         association: DimensionAssociationInput,
+        /// Retain the source dimension's layer and style instead of replacing
+        /// them with the current creation defaults (DIMCONTINUEMODE=1).
+        preserve_base_style: bool,
+        /// Keep collecting points after the dimension is committed.
+        continue_command: bool,
+    },
+    /// Commit several dimensions with independent association sources in one
+    /// undo step, then end the command.
+    CommitDimensionsAndExit(Vec<(EntityType, DimensionAssociationInput)>),
+    /// Persist the quick-dimension extension-origin priority while keeping the
+    /// active command at its current prompt (0 = endpoints, 1 = intersections).
+    SetQuickDimensionSnapPriority(u8),
+    /// Align multileader content points along a picked infinite line.
+    AlignMLeaders {
+        handles: Vec<Handle>,
+        from: DVec3,
+        to: DVec3,
+    },
+    /// Merge compatible block multileaders at a picked content point.
+    CollectMLeaders {
+        handles: Vec<Handle>,
+        point: DVec3,
     },
     /// Commit a Model-tab 3D solid: the acadrust entity (for selection /
     /// persistence) plus its B-rep (cached for boolean ops + shaded
@@ -1277,6 +1299,8 @@ pub enum CmdResult {
     TransformSelected(Vec<Handle>, EntityTransform),
     /// Copy selected entities with a transform; command stays active for more copies.
     CopySelected(Vec<Handle>, EntityTransform),
+    /// Store selected entities in the shared clipboard; command stays active.
+    CopyToClipboard { handles: Vec<Handle>, base: DVec3 },
     /// Commit a hatch fill (stored in Scene::hatches, not the DXF document).
     CommitHatch(HatchModel),
     /// Commit a hatch with the selected hatch's entity colour and transparency.
@@ -1427,6 +1451,11 @@ pub enum CmdResult {
         handle: Option<Handle>,
         initial: String,
         height: f64,
+        /// Optional entity defaults collected by the interactive MTEXT
+        /// command (boundary, rotation, attachment, spacing and columns).
+        /// Existing-entity edits leave this as `None` and load the document
+        /// entity instead.
+        template: Option<Box<acadrust::MText>>,
     },
     /// Collect rich text without creating an MText entity.
     SuspendForMTextInput {
@@ -1442,6 +1471,14 @@ pub enum CmdResult {
         handle: Option<Handle>,
         initial: String,
         height: f64,
+    },
+    /// Suspend the active TEXT command while the in-place editor collects one
+    /// independent line. The prepared entity carries the chosen style,
+    /// justification, rotation and two-point geometry. When the editor closes,
+    /// the command resumes so another line can be placed directly below it.
+    SuspendForTextInput {
+        pos: DVec3,
+        entity: acadrust::entities::Text,
     },
     /// Apply new pattern/scale/angle to an existing hatch entity.
     HatcheditApply {
@@ -1861,6 +1898,8 @@ pub trait CadCommand: Send {
     /// Resume the command with collected rich text.
     fn on_editor_text(&mut self, _value: String) {}
 
+    fn on_editor_display_height(&mut self, _height: f64) {}
+
     /// Called when the user clicks and `needs_entity_pick()` is true.
     /// `handle` is the nearest wire's entity handle (Handle::NULL if nothing found).
     fn on_entity_pick(&mut self, _handle: Handle, _pt: DVec3) -> CmdResult {
@@ -1914,6 +1953,9 @@ pub trait CadCommand: Send {
     /// `old` is the erased handle; `new_handles` are the handles assigned to the replacement entities.
     /// Commands that stay active across replaces should update their internal snapshots here.
     fn on_entity_replaced(&mut self, _old: Handle, _new_handles: &[Handle]) {}
+
+    /// Called after a PEDIT operation changed its target.
+    fn on_pedit_applied(&mut self) {}
 
     /// Consume a lasso or drag-box gesture while the command is active.
     /// `fence` is the gesture boundary in drawing coordinates; `window` is

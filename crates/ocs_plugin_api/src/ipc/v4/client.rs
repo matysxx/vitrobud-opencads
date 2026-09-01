@@ -715,6 +715,21 @@ impl HostApi for V4PluginHostApi {
             view.take();
         }
     }
+
+    fn document_path(&self, tab_id: u64) -> Option<std::path::PathBuf> {
+        match self.request(PluginRequest::DocumentPath { tab_id }) {
+            Ok(PluginResponse::DocumentPath(Some(path))) => Some(std::path::PathBuf::from(path)),
+            Ok(PluginResponse::DocumentPath(None)) => None,
+            Ok(other) => {
+                eprintln!("[plugin] unexpected DocumentPath response: {other:?}");
+                None
+            }
+            Err(e) => {
+                eprintln!("[plugin] DocumentPath request failed: {e}");
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -761,7 +776,6 @@ impl DocumentReader for EmptyDocumentReader {
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Mutex as StdMutex;
     use std::thread;
 
     use interprocess::local_socket::{
@@ -772,9 +786,8 @@ mod tests {
     use super::*;
     use crate::ipc::transport::recv;
     use crate::ipc::v4::protocol::{HostToPluginV4, PluginToHostV4};
+    use crate::test_lock::ENV_LOCK;
     use acadrust::entities::Point;
-
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
 
     fn unique_socket_name() -> String {
         static COUNTER: AtomicU64 = AtomicU64::new(0);

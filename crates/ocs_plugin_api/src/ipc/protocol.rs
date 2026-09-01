@@ -4,6 +4,16 @@
 //! (expecting a response) or a response (to a previous request). This lets the
 //! host handle plugin RPCs inline while it waits for the result of a host→plugin
 //! request such as `Dispatch`, avoiding the need for two sockets or threads.
+//!
+//! Compatibility rule: new variants are appended at the end of every public enum
+//! (`HostRequest`, `HostResponse`, `PluginRequest`, `PluginResponse`,
+//! `RunnerHandshake`) so older plugins keep their bincode discriminant indices.
+//! The V4 additions are a separate frame layer in [`crate::ipc::v4`] and do not
+//! alter these enums.
+//!
+//! The pre-shared runner token is delivered through [`PLUGIN_TOKEN_ENV`]
+//! (`OCS_PLUGIN_TOKEN`). The runner must present the same token immediately
+//! after connecting or the host closes the connection.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +21,7 @@ use crate::host::{CommandSource, CommandStep};
 use crate::manifest::ApiVersion;
 use crate::ribbon::owned::{OwnedPluginManifest, OwnedRibbonGroup};
 
-pub use acadrust::xdata::ExtendedDataRecord;
+pub use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 pub use acadrust::{CadDocument, EntityType, Handle};
 
 /// Events the host forwards to an active plugin `InteractiveCommand`.
@@ -126,6 +136,8 @@ pub enum PluginRequest {
     CloseDocumentViewV4 { tab_id: u64 },
     /// V4: ask the host for the stable tab identifier of the active tab.
     GetTabId,
+    /// V5: ask the host for the filesystem path of the document in `tab_id`.
+    DocumentPath { tab_id: u64 },
 }
 
 /// Responses the host sends back for `PluginRequest`.
@@ -150,6 +162,8 @@ pub enum PluginResponse {
     },
     /// V4: stable tab identifier of the active tab.
     TabId(u64),
+    /// V5: filesystem path of the document in the requested tab, if any.
+    DocumentPath(Option<std::ffi::OsString>),
 }
 
 /// Messages sent from the host to the plugin runner.

@@ -517,6 +517,7 @@ common =
     .jis = JIS
     .join-count-in-object-s-joined-into-count-out = JOIN: __ocs_fmt_0__ nesne birleştirilerek __ocs_fmt_1__ nesne oluşturuldu.
     .jog-angle-dimjogang = Kırılma açısı ° (DIMJOGANG)
+    .jogged-radius = Kırıklı Yarıçap
     .join = Birleştir
     .keep-0-ft-drop-0-in = 0 ft'yi koru, 0 in'i gizle
     .keep-recent-files = Son kullanılan dosyaları sakla
@@ -1844,6 +1845,12 @@ annotate =
     .dimjogged-created-a-jogged-radius-dimension = DIMJOGGED: kırıklı yarıçap ölçüsü oluşturuldu.
     .dimjogged-invalid-radius = DIMJOGGED: yarıçap geçersiz.
     .dimjogged-select-an-arc-or-circle-first = DIMJOGGED: önce bir yay veya daire seçin.
+    .dimjogged-enter-dimension-text-blank-measured = DIMJOGGED  Ölçü metnini girin (boş = ölçülen değer):
+    .dimjogged-select-arc-circle-or-polyline-arc = DIMJOGGED  Yay, daire veya çoklu çizgi yayı seçin:
+    .dimjogged-specify-center-location-override = DIMJOGGED  Geçersiz kılınmış merkez konumunu belirtin:
+    .dimjogged-specify-dimension-line-location-text = DIMJOGGED  Ölçü çizgisinin konumunu belirtin  [Çok satırlı metin/Metin/Açı]:
+    .dimjogged-specify-jog-location = DIMJOGGED  Kırılma konumunu belirtin:
+    .dimjogged-specify-text-angle-degrees = DIMJOGGED  Metin açısını belirtin (derece):
     .dimjogline-select-linear-or-aligned-dimension = DIMJOGLINE  Doğrusal veya hizalı ölçüyü seçin:
     .dimjogline-specify-jog-location = DIMJOGLINE  Kırılma konumunu belirtin:
     .dimlinear-enter-dimension-text-blank-measured = DIMLINEAR  Ölçü metnini girin (boş = ölçülen değer):
@@ -2346,6 +2353,7 @@ view =
     .viewport-s-in-layout = "__ocs_fmt_1__" yerleşiminde __ocs_fmt_0__ görünüm alanı:
 
 properties =
+    .extended-data = Genişletilmiş Veri
     .count-objects-selected = __ocs_arg_count__ nesne seçildi
     .scope-visual-style = __ocs_arg_scope__ Görsel Stil
     .value-3d-face = 3B Yüz
@@ -2381,6 +2389,8 @@ properties =
     .associative = İlişkisel
     .at-least = En az
     .attachment-type = Bağlantı türü
+    .attachment = Bağlantı
+    .arrowhead-size = Ok Ucu Boyutu
     .attenuation = Zayıflama
     .attribute-definition = Öznitelik Tanımı
     .attributedefinition = Öznitelik Tanımı

@@ -826,7 +826,8 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 }
                 // Cancel layout rename first, then fall through.
                 let i_e = self.active_tab;
-                if self.qselect.take().is_some() {
+                if let Some(state) = self.qselect.take() {
+                    self.qselect_settings = Some((&state).into());
                     self.reset_modal_geometry();
                     return Task::none();
                 }
@@ -1162,6 +1163,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 if matches!(
                     item.action,
                     GripMenuAction::Stretch
+                        | GripMenuAction::MoveWithText
                         | GripMenuAction::MoveWithDimLine
                         | GripMenuAction::MoveWithLeader
                         | GripMenuAction::MoveIndependent
@@ -1212,7 +1214,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             {
                                 (crate::entities::multileader::MOVE_ALL_GRIP, true)
                             } else {
-                                (popup.grip_id, if is_dimension { false } else { g.is_midpoint })
+                                (
+                                    popup.grip_id,
+                                    matches!(item.action, GripMenuAction::MoveWithText)
+                                        || (!is_dimension && g.is_midpoint),
+                                )
                             };
                         self.tabs[i].active_grip = Some(GripEdit::single(
                             popup.handle,
@@ -1541,35 +1547,74 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     pub(super) fn on_qselect_open(&mut self) -> Task<Message> {
                 let i = self.active_tab;
                 self.tabs[i].scene.selection.borrow_mut().context_menu = None;
-                // Seed the type filter from the first selected entity so a
-                // right-click → Quick Select on a known object opens the
-                // panel pre-tuned to that entity's type. Property defaults
-                // to "(Any property)" so the user immediately picks what
-                // they want to compare.
-                let mut type_filter: Option<String> = None;
-                if let Some(&h) = self.tabs[i].scene.selected.iter().next() {
-                    if let Some(e) = self.tabs[i].scene.document.get_entity(h) {
-                        use crate::entities::traits::entity_type_name;
-                        type_filter = Some(entity_type_name(e).to_string());
-                    }
-                }
-                let scope = crate::app::QSelectScope::CurrentSpace;
+                let remembered = self.qselect_settings.clone();
+                let scope = remembered.as_ref().map_or(
+                    crate::app::QSelectScope::CurrentSpace,
+                    |settings| settings.scope,
+                );
                 let available_types = self.tabs[i].scene.qselect_entity_type_names(scope);
+                let type_filter = if let Some(settings) = remembered.as_ref() {
+                    settings
+                        .type_filter
+                        .as_ref()
+                        .filter(|selected| available_types.iter().any(|item| item == *selected))
+                        .cloned()
+                } else {
+                    self.tabs[i]
+                        .scene
+                        .selected
+                        .iter()
+                        .next()
+                        .and_then(|handle| self.tabs[i].scene.document.get_entity(*handle))
+                        .map(crate::entities::traits::entity_type_name)
+                        .map(str::to_string)
+                };
                 let available_properties = self.tabs[i]
                     .scene
                     .qselect_properties(type_filter.as_deref(), scope);
                 let candidate_count = self.tabs[i].scene.qselect_candidate_count(scope);
+                let property = remembered
+                    .as_ref()
+                    .and_then(|settings| settings.property_field.as_ref())
+                    .and_then(|field| {
+                        available_properties
+                            .iter()
+                            .find(|property| property.field == *field)
+                            .cloned()
+                    });
+                let mut operator = remembered
+                    .as_ref()
+                    .map_or(crate::app::QSelectOp::Eq, |settings| settings.operator);
+                if matches!(operator, crate::app::QSelectOp::Gt | crate::app::QSelectOp::Lt)
+                    && !property.as_ref().is_some_and(|property| {
+                        matches!(property.editor, crate::app::QSelectValueEditor::Number)
+                    })
+                {
+                    operator = crate::app::QSelectOp::Eq;
+                }
+                let value = remembered.as_ref().map_or_else(String::new, |settings| {
+                    if settings.property_field.is_none() || property.is_some() {
+                        settings.value.clone()
+                    } else {
+                        String::new()
+                    }
+                });
+                let mode = remembered
+                    .as_ref()
+                    .map_or(crate::app::QSelectMode::Include, |settings| settings.mode);
+                let append = matches!(scope, crate::app::QSelectScope::CurrentSpace)
+                    && remembered.as_ref().is_some_and(|settings| settings.append);
                 self.qselect = Some(crate::app::QSelectState {
                     scope,
                     available_types,
                     available_properties,
                     candidate_count,
                     type_filter,
-                    property: None,
-                    operator: crate::app::QSelectOp::Eq,
-                    value: String::new(),
-                    mode: crate::app::QSelectMode::Include,
-                    append: false,
+                    property,
+                    operator,
+                    value,
+                    mode,
+                    append,
                     error: None,
                 });
                 self.reset_modal_geometry();
@@ -1603,19 +1648,17 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 } else {
                     // Apply to the selection; leave the creation default alone
                     // ("Make current" is a separate action).
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_common_prop(entity, "layer", &layer);
-                        }
-                    }
                     // Layer drives by-layer colour/linetype/lineweight, which are
                     // baked into the cached wire geometry — re-tessellate so the
                     // change shows immediately (issue #231 class).
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].dirty = true;
+                    self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                        if let Some(entity) =
+                            app.tabs[i].scene.document.get_entity_mut(handle)
+                        {
+                            crate::scene::view::dispatch::apply_common_prop(entity, "layer", &layer);
+                        }
+                    });
                     self.ribbon.active_layer = layer;
-                    self.refresh_properties();
                 }
                 Task::none()
     }
@@ -1636,16 +1679,14 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     self.tabs[i].dirty = true;
                     self.ribbon.active_color = color;
                 } else {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                    self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                        if let Some(entity) =
+                            app.tabs[i].scene.document.get_entity_mut(handle)
+                        {
                             crate::scene::view::dispatch::apply_color(entity, color);
                         }
-                    }
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].dirty = true;
+                    });
                     self.ribbon.active_color = color;
-                    self.refresh_properties();
                 }
                 Task::none()
     }
@@ -1674,19 +1715,17 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     self.tabs[i].dirty = true;
                     self.ribbon.active_linetype = lt;
                 } else {
-                    self.push_undo_snapshot(i, "CHPROP");
-                    for &handle in &handles {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                            crate::scene::view::dispatch::apply_common_prop(entity, "linetype", &lt);
-                        }
-                    }
                     // Linetype is baked into the cached wire geometry —
                     // re-tessellate so the dashed/solid look updates immediately
                     // (issue #231 class).
-                    self.invalidate_property_targets(i, &handles);
-                    self.tabs[i].dirty = true;
+                    self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
+                        if let Some(entity) =
+                            app.tabs[i].scene.document.get_entity_mut(handle)
+                        {
+                            crate::scene::view::dispatch::apply_common_prop(entity, "linetype", &lt);
+                        }
+                    });
                     self.ribbon.active_linetype = lt;
-                    self.refresh_properties();
                 }
                 Task::none()
     }
@@ -1901,7 +1940,82 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
             }
             self.push_undo_snapshot(i, "CHPROP");
 
-            if field.starts_with("dim_") {
+            if crate::scene::model::solid_history::is_history_choice(field) {
+                for &handle in &handles {
+                    if self.tabs[i].scene.is_layer_locked(handle) {
+                        continue;
+                    }
+                    self.tabs[i]
+                        .scene
+                        .apply_solid_history_choice(handle, field, &value);
+                }
+            } else if field == "tol_text_style" {
+                use crate::entities::dim_override as dov;
+                use acadrust::xdata::XDataValue;
+                let style_handle = self.tabs[i]
+                    .scene
+                    .document
+                    .text_styles
+                    .iter()
+                    .find(|entry| entry.name.eq_ignore_ascii_case(&value))
+                    .map(|entry| entry.handle);
+                if let Some(style_handle) = style_handle {
+                    for &handle in &handles {
+                        if self.tabs[i].scene.is_layer_locked(handle)
+                            || !matches!(
+                                self.tabs[i].scene.document.get_entity(handle),
+                                Some(acadrust::EntityType::Tolerance(_))
+                            )
+                        {
+                            continue;
+                        }
+                        dov::set(
+                            &mut self.tabs[i].scene.document,
+                            handle,
+                            dov::DIMTXSTY,
+                            Some(XDataValue::Handle(style_handle)),
+                        );
+                    }
+                }
+            } else if field == "tol_dim_style" {
+                let style = self.tabs[i]
+                    .scene
+                    .document
+                    .dim_styles
+                    .iter()
+                    .find(|entry| entry.name.eq_ignore_ascii_case(&value))
+                    .map(|entry| (entry.handle, entry.name.clone(), entry.annotative));
+                if let Some((style_handle, style_name, annotative)) = style {
+                    let scale = self.tabs[i].scene.creation_annotation_scale_handle();
+                    for &handle in &handles {
+                        if self.tabs[i].scene.is_layer_locked(handle) {
+                            continue;
+                        }
+                        if let Some(acadrust::EntityType::Tolerance(tolerance)) =
+                            self.tabs[i].scene.document.get_entity_mut(handle)
+                        {
+                            tolerance.dimension_style_handle = Some(style_handle);
+                            tolerance.dimension_style_name = style_name.clone();
+                        } else {
+                            continue;
+                        }
+                        crate::scene::annotative::set_entity_annotative(
+                            &mut self.tabs[i].scene.document,
+                            handle,
+                            annotative,
+                        );
+                        if annotative {
+                            if let Some(scale) = scale {
+                                crate::scene::annotative::create_annotation_context(
+                                    &mut self.tabs[i].scene.document,
+                                    handle,
+                                    scale,
+                                );
+                            }
+                        }
+                    }
+                }
+            } else if field.starts_with("dim_") {
                 for &handle in &handles {
                     if self.tabs[i].scene.is_layer_locked(handle) {
                         continue;
@@ -1910,12 +2024,20 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         self.tabs[i].scene.document.get_entity(handle),
                         Some(acadrust::EntityType::Dimension(_))
                     ) {
-                        crate::entities::dim_override::set_property(
+                        let applied = crate::entities::dim_override::set_property(
                             &mut self.tabs[i].scene.document,
                             handle,
                             field,
                             &value,
                         );
+                        if applied && field == "dim_text_inside" {
+                            if let Some(acadrust::EntityType::Dimension(
+                                acadrust::entities::Dimension::LargeRadial(dimension),
+                            )) = self.tabs[i].scene.document.get_entity_mut(handle)
+                            {
+                                dimension.base.text_user_positioned = false;
+                            }
+                        }
                     }
                 }
             } else if field == "vscale_std" {
@@ -1980,6 +2102,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             | "text_style_handle"
                             | "arrowhead_handle"
                             | "line_type_handle"
+                            | "block_content_handle"
                     ) {
                         // Resolve a picked name back to the handle the MLEADER
                         // stores. The style/text-style rows keep their existing
@@ -2025,6 +2148,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                         .map(|l| l.handle)
                                 }
                             }
+                            "block_content_handle" => doc
+                                .block_records
+                                .iter()
+                                .find(|block| block.name == value)
+                                .map(|block| block.handle),
                             _ => None,
                         };
                         for &handle in &handles {
@@ -2048,10 +2176,52 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     "text_style_handle" => {
                                         if let Some(h) = resolved {
                                             ml.text_style_handle = Some(h);
+                                            ml.context.text_style_handle = Some(h);
+                                            ml.property_override_flags.insert(
+                                                acadrust::entities::MultiLeaderPropertyOverrideFlags::TEXT_STYLE,
+                                            );
                                         }
                                     }
-                                    "arrowhead_handle" => ml.arrowhead_handle = resolved,
-                                    "line_type_handle" => ml.line_type_handle = resolved,
+                                    "arrowhead_handle" => {
+                                        ml.arrowhead_handle = resolved;
+                                        for root in &mut ml.context.leader_roots {
+                                            for line in &mut root.lines {
+                                                line.arrowhead_handle = resolved;
+                                                line.override_flags.insert(
+                                                    acadrust::entities::LeaderLinePropertyOverrideFlags::ARROWHEAD,
+                                                );
+                                            }
+                                        }
+                                        ml.property_override_flags.insert(
+                                            acadrust::entities::MultiLeaderPropertyOverrideFlags::ARROWHEAD,
+                                        );
+                                    }
+                                    "line_type_handle" => {
+                                        ml.line_type_handle = resolved;
+                                        for root in &mut ml.context.leader_roots {
+                                            for line in &mut root.lines {
+                                                line.line_type_handle = resolved;
+                                                line.override_flags.insert(
+                                                    acadrust::entities::LeaderLinePropertyOverrideFlags::LINE_TYPE,
+                                                );
+                                            }
+                                        }
+                                        ml.property_override_flags.insert(
+                                            acadrust::entities::MultiLeaderPropertyOverrideFlags::LEADER_LINE_TYPE,
+                                        );
+                                    }
+                                    "block_content_handle" => {
+                                        if let Some(block_handle) = resolved {
+                                            ml.block_content_handle = Some(block_handle);
+                                            ml.context.block_content_handle = Some(block_handle);
+                                            ml.context.has_block_contents = true;
+                                            ml.context.block_content_location =
+                                                ml.context.content_base_point;
+                                            ml.property_override_flags.insert(
+                                                acadrust::entities::MultiLeaderPropertyOverrideFlags::BLOCK_CONTENT,
+                                            );
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -2332,6 +2502,13 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     }
                                     _ => None,
                                 });
+                            if matches!(field, "text_x" | "text_y") {
+                                crate::entities::dimension::materialize_large_radial_text_position(
+                                    &mut self.tabs[i].scene.document,
+                                    handle,
+                                    &value,
+                                );
+                            }
                             if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle)
                             {
                                 crate::scene::view::dispatch::apply_geom_prop_in_working_plane(
@@ -2451,7 +2628,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         } else {
                             raw_val
                         };
-                        if matches!(field, "current_fit_point" | "current_control_point") {
+                        if matches!(
+                            field,
+                            "current_fit_point" | "current_control_point" | "pm_current_vertex"
+                        ) {
                             let count = handles
                                 .iter()
                                 .filter_map(|handle| {
@@ -2467,6 +2647,10 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                         ) => Some(
                                             crate::entities::spline::control_vertex_count(spline),
                                         ),
+                                        (
+                                            "pm_current_vertex",
+                                            acadrust::EntityType::PolygonMesh(mesh),
+                                        ) => Some(mesh.vertices.len()),
                                         _ => None,
                                     }
                                 })
@@ -2552,17 +2736,51 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     continue;
                                 }
                                 match field {
+                                    "tol_text_height" => {
+                                        use crate::entities::dim_override as dov;
+                                        let trimmed = val.trim();
+                                        if trimmed.is_empty() {
+                                            dov::set(
+                                                &mut self.tabs[i].scene.document,
+                                                handle,
+                                                dov::DIMTXT,
+                                                None,
+                                            );
+                                        } else if let Ok(height) = trimmed.parse::<f64>() {
+                                            if height > 0.0 {
+                                                dov::set(
+                                                    &mut self.tabs[i].scene.document,
+                                                    handle,
+                                                    dov::DIMTXT,
+                                                    Some(acadrust::xdata::XDataValue::Real(height)),
+                                                );
+                                            }
+                                        }
+                                    }
                                     _ if field.starts_with("dim_") => {
                                         if matches!(
                                             self.tabs[i].scene.document.get_entity(handle),
                                             Some(acadrust::EntityType::Dimension(_))
                                         ) {
-                                            crate::entities::dim_override::set_property(
+                                            let applied = crate::entities::dim_override::set_property(
                                                 &mut self.tabs[i].scene.document,
                                                 handle,
                                                 field,
                                                 &val,
                                             );
+                                            if applied && field == "dim_text_inside" {
+                                                if let Some(acadrust::EntityType::Dimension(
+                                                    acadrust::entities::Dimension::LargeRadial(
+                                                        dimension,
+                                                    ),
+                                                )) = self.tabs[i]
+                                                    .scene
+                                                    .document
+                                                    .get_entity_mut(handle)
+                                                {
+                                                    dimension.base.text_user_positioned = false;
+                                                }
+                                            }
                                         }
                                     }
                                     "hyperlink" => {
@@ -2659,6 +2877,13 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                                     }
                                                     _ => None,
                                                 });
+                                            if matches!(field, "text_x" | "text_y") {
+                                                crate::entities::dimension::materialize_large_radial_text_position(
+                                                    &mut self.tabs[i].scene.document,
+                                                    handle,
+                                                    &val,
+                                                );
+                                            }
                                             if let Some(entity) = self.tabs[i]
                                                 .scene
                                                 .document
@@ -3001,6 +3226,8 @@ fn apply_attr_row(a: &mut acadrust::entities::AttributeEntity, row: &AttrRow) ->
     }
     if a.common.color != row.color {
         a.common.color = row.color;
+        a.common.color_name = None;
+        a.common.color_book_handle = None;
         ch = true;
     }
     if a.common.linetype != row.linetype {

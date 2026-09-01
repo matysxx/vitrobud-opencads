@@ -1,12 +1,25 @@
-//! Plugin identity and capability declaration.
+//! Plugin identity, API version constants, and compatibility rules.
+//!
+//! This module defines the host ABI major version (`API_VERSION`), the oldest
+//! major the host still loads (`API_VERSION_MIN_SUPPORTED`), and the runtime
+//! `OCS_PLUGIN_MAX_API_VERSION` gate that lets operators disable newer API
+//! majors without rebuilding.
+//!
+//! Compatibility rule: a plugin compiled against major `N` runs on any host
+//! whose major is `>= N`, because new vtable entries and enum variants are
+//! appended at the end. `host_accepts_plugin_version` enforces the supported
+//! range after applying the runtime cap.
+//!
+//! See `ARCHITECTURE.md` in the crate root for the full versioning policy.
 
 /// Host plugin API version. Bump when the host runtime surface breaks
 /// compatibility. v2 added `HostApi::start_interactive`. v3 changes
 /// `document()` / `document_mut()` to local cached copies for out-of-process
 /// plugins and appends `document_reader` / `document_view` at the end of the
 /// vtable so API v2 plugins keep working. v4 adds full-duplex notifications on
-/// a multiplexed socket while leaving the V2/V3 ABI and protocol untouched.
-pub const API_VERSION: u32 = 4;
+/// a multiplexed socket while leaving the V2/V3 ABI and protocol untouched. v5
+/// adds the `BuiltinPlugin::on_load` lifecycle callback.
+pub const API_VERSION: u32 = 5;
 
 /// Oldest plugin API major the current host still loads. This keeps previously
 /// compiled cdylibs usable as long as their vtable layout is a prefix of the
@@ -14,9 +27,8 @@ pub const API_VERSION: u32 = 4;
 pub const API_VERSION_MIN_SUPPORTED: u32 = 2;
 
 /// Environment variable that caps the API major accepted by the host at
-/// runtime. Set to `3` to disable V4 plugins while keeping V2/V3 plugins
-/// working; set to `2` for V2-only mode. The same mechanism will apply to
-/// future API majors.
+/// runtime. Set to `4` to disable V5 plugins, `3` to disable V4, or `2` for
+/// V2-only mode.
 pub const MAX_API_VERSION_ENV: &str = "OCS_PLUGIN_MAX_API_VERSION";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,11 +68,9 @@ pub fn host_accepts_plugin_version(plugin_major: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use crate::test_lock::ENV_LOCK;
 
     use super::*;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn current_matches_const() {

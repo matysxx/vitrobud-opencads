@@ -232,7 +232,6 @@ impl OpenCADStudio {
             self.tabs[i].dirty = dirty_before;
         }
 
-        self.grip_snap_wires.clear();
         self.grip_text_verts.clear();
         self.grip_text_slide = false;
         self.tabs[i].scene.clear_preview_wire();
@@ -856,7 +855,7 @@ impl OpenCADStudio {
                             .infer_dimension_sources(handle);
                         self.tabs[i]
                             .scene
-                            .attach_dimension_association(handle, sources.to_vec());
+                            .attach_dimension_association(handle, sources);
                     }
                 }
                 self.tabs[i].dirty = true;
@@ -1216,6 +1215,36 @@ impl OpenCADStudio {
                     self.commit_undo_delta(i, pd);
                 }
             }
+            CmdResult::CopyToClipboard { handles, base } => {
+                let count = self.copy_entities_to_clipboard(i, &handles, base);
+                self.command_line.push_info(crate::tf!(
+                    "{} object(s) copied to clipboard.",
+                    count
+                ).as_ref());
+                let prompt = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|command| command.prompt());
+                if let Some(prompt) = prompt {
+                    self.command_line.push_info(&prompt);
+                }
+                self.command_line.set_step_options(
+                    self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|command| command.options())
+                        .unwrap_or_default(),
+                );
+                if !self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .is_some_and(|command| command.entity_pick_highlights_hover())
+                {
+                    self.tabs[i].scene.set_hover_highlight(None);
+                }
+                self.sync_dyn_fields();
+                self.refresh_area_preview(i);
+            }
             CmdResult::CommitAndExit(entity) => {
                 // For XATTACH: ensure the xref block definition exists before
                 // committing the INSERT entity that references it.
@@ -1269,7 +1298,7 @@ impl OpenCADStudio {
                             .infer_dimension_sources(handle);
                         self.tabs[i]
                             .scene
-                            .attach_dimension_association(handle, sources.to_vec());
+                            .attach_dimension_association(handle, sources);
                     }
                 }
                 self.tabs[i].dirty = true;
@@ -1287,6 +1316,8 @@ impl OpenCADStudio {
             CmdResult::CommitDimension {
                 mut entity,
                 association,
+                preserve_base_style,
+                continue_command,
             } => {
                 let label = self.history_label_from_active_cmd(i, "DIMENSION");
                 let association_mode = self.tabs[i]
@@ -1300,6 +1331,17 @@ impl OpenCADStudio {
                         acadrust::entities::Dimension::Ordinate(_)
                     )
                 );
+                let inherited_dimension = if preserve_base_style {
+                    match &entity {
+                        acadrust::EntityType::Dimension(dimension) => Some((
+                            dimension.base().common.layer.clone(),
+                            dimension.base().style_name.clone(),
+                        )),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let pending = if association_mode == 0 {
                     let layer = self.tabs[i].active_layer.clone();
                     if layer != "0" || entity.as_entity().layer().is_empty() {
@@ -1330,6 +1372,12 @@ impl OpenCADStudio {
                         &self.tabs[i].scene.document,
                         &mut entity,
                     );
+                    if let (Some((layer, style_name)), acadrust::EntityType::Dimension(dimension)) =
+                        (inherited_dimension, &mut entity)
+                    {
+                        dimension.base_mut().common.layer = layer;
+                        dimension.base_mut().style_name = style_name;
+                    }
                     let pieces = crate::modules::draw::modify::explode::explode_entity(
                         &entity,
                         &self.tabs[i].scene.document,
@@ -1345,7 +1393,10 @@ impl OpenCADStudio {
                 } else {
                     let delta_safe = self.delta_add_safe(i, &entity);
                     let pending = self.begin_undo(i, label, 1, delta_safe);
-                    if let Some(handle) = self.commit_entity_handle(entity) {
+                    if let Some(handle) = self.commit_entity_handle_with_dimension_policy(
+                        entity,
+                        preserve_base_style,
+                    ) {
                         if association_mode == 2 {
                             let mut changes = vec![
                                 (handle, crate::scene::ChangeKind::Modified),
@@ -1357,8 +1408,6 @@ impl OpenCADStudio {
                                             self.tabs[i]
                                                 .scene
                                                 .infer_dimension_sources(handle)
-                                                .into_iter()
-                                                .collect()
                                         },
                                         |source| {
                                             if single_source_dimension {
@@ -1393,12 +1442,195 @@ impl OpenCADStudio {
                 };
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.clear_preview_wire();
-                self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
-                self.restore_pre_cmd_tangent();
                 if let Some(pd) = pending {
                     self.commit_undo_delta(i, pd);
                 }
+                if continue_command {
+                    if let Some(prompt) = self.tabs[i]
+                        .active_cmd
+                        .as_ref()
+                        .map(|cmd| cmd.prompt())
+                    {
+                        self.command_line.push_info(&prompt);
+                    }
+                } else {
+                    self.tabs[i].active_cmd = None;
+                    self.restore_pre_cmd_tangent();
+                }
+            }
+            CmdResult::CommitDimensionsAndExit(dimensions) => {
+                let association_mode = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .dimension_associativity;
+                let mut made = 0;
+                let pending = if association_mode == 0 {
+                    let mut pieces = Vec::new();
+                    for (mut entity, _) in dimensions {
+                        let layer = self.tabs[i].active_layer.clone();
+                        if layer != "0" || entity.as_entity().layer().is_empty() {
+                            entity.as_entity_mut().set_layer(layer);
+                        }
+                        crate::scene::view::dispatch::apply_color(
+                            &mut entity,
+                            self.ribbon.active_color,
+                        );
+                        crate::scene::view::dispatch::apply_common_prop(
+                            &mut entity,
+                            "linetype",
+                            &self.ribbon.active_linetype.clone(),
+                        );
+                        crate::scene::view::dispatch::apply_line_weight(
+                            &mut entity,
+                            self.ribbon.active_lineweight,
+                        );
+                        let celtscale = self.tabs[i]
+                            .scene
+                            .document
+                            .header
+                            .current_entity_linetype_scale;
+                        if (celtscale - 1.0).abs() > 1e-9 && celtscale.abs() > 1e-9 {
+                            entity.common_mut().linetype_scale = celtscale;
+                        }
+                        crate::scene::creation_style::apply_current_creation_styles(
+                            &self.tabs[i].scene.document,
+                            &mut entity,
+                        );
+                        let exploded = crate::modules::draw::modify::explode::explode_entity(
+                            &entity,
+                            &self.tabs[i].scene.document,
+                        );
+                        if !exploded.is_empty() {
+                            made += 1;
+                        }
+                        pieces.extend(exploded);
+                    }
+                    let delta_safe = pieces
+                        .iter()
+                        .all(|piece| self.delta_add_safe(i, piece));
+                    let pending = self.begin_undo(i, "QDIM", pieces.len(), delta_safe);
+                    for piece in pieces {
+                        self.tabs[i].scene.add_entity(piece);
+                    }
+                    pending
+                } else {
+                    let delta_safe = dimensions
+                        .iter()
+                        .all(|(entity, _)| self.delta_add_safe(i, entity));
+                    let pending = self.begin_undo(i, "QDIM", dimensions.len(), delta_safe);
+                    for (entity, association) in dimensions {
+                        let Some(handle) = self.commit_entity_handle(entity) else {
+                            continue;
+                        };
+                        made += 1;
+                        if association_mode != 2 {
+                            continue;
+                        }
+                        let sources = match association {
+                            crate::command::DimensionAssociationInput::Infer(source) => {
+                                source.map_or_else(
+                                    || {
+                                        self.tabs[i]
+                                            .scene
+                                            .infer_dimension_sources(handle)
+                                            .into_iter()
+                                            .map(|source| {
+                                                source.map(
+                                                    crate::command::DimensionAssociationSource::inferred,
+                                                )
+                                            })
+                                            .collect()
+                                    },
+                                    |source| {
+                                        vec![Some(
+                                            crate::command::DimensionAssociationSource::inferred(
+                                                source,
+                                            ),
+                                        )]
+                                    },
+                                )
+                            }
+                            crate::command::DimensionAssociationInput::Explicit(sources) => {
+                                sources
+                            }
+                        };
+                        self.tabs[i]
+                            .scene
+                            .attach_dimension_association_sources(handle, sources.clone());
+                        let mut changes = vec![(handle, crate::scene::ChangeKind::Modified)];
+                        changes.extend(sources.into_iter().flatten().map(|source| {
+                            (source.handle, crate::scene::ChangeKind::Modified)
+                        }));
+                        changes.sort_by_key(|(handle, _)| handle.value());
+                        changes.dedup_by_key(|(handle, _)| handle.value());
+                        self.tabs[i].scene.bump_entities(&changes);
+                    }
+                    pending
+                };
+                if made > 0 {
+                    self.tabs[i].dirty = true;
+                }
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
+                self.command_line
+                    .push_output(crate::tf!("QDIM  {made} dimensions created.").as_ref());
+                if let Some(pd) = pending {
+                    self.commit_undo_delta(i, pd);
+                }
+            }
+            CmdResult::SetQuickDimensionSnapPriority(priority) => {
+                self.quick_dimension_snap_priority = priority.min(1);
+                self.persist_settings_if_changed();
+                let prompt = self.tabs[i].active_cmd.as_ref().map(|command| command.prompt());
+                if let Some(prompt) = prompt {
+                    self.command_line.push_info(&prompt);
+                }
+            }
+            CmdResult::AlignMLeaders {
+                mut handles,
+                from,
+                to,
+            } => {
+                handles.retain(|handle| {
+                    !self.tabs[i].scene.is_layer_locked(*handle)
+                        && matches!(
+                            self.tabs[i].scene.document.get_entity(*handle),
+                            Some(acadrust::EntityType::MultiLeader(_))
+                        )
+                });
+                if !handles.is_empty() {
+                    self.push_undo_snapshot(i, "MLEADERALIGN");
+                    if apply_mleader_align(&mut self.tabs[i].scene, &handles, from, to) {
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(
+                            crate::t!("MLEADERALIGN  Leaders aligned.").as_ref(),
+                        );
+                    }
+                }
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
+            }
+            CmdResult::CollectMLeaders { handles, point } => {
+                let compatible = compatible_mleader_collect_handles(&self.tabs[i].scene, &handles);
+                if compatible.len() >= 2 {
+                    self.push_undo_snapshot(i, "MLEADERCOLLECT");
+                    if apply_mleader_collect(&mut self.tabs[i].scene, &compatible, point) {
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(
+                            crate::t!("MLEADERCOLLECT  Leaders collected.").as_ref(),
+                        );
+                    }
+                }
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
             }
             CmdResult::CommitSolid {
                 entity,
@@ -1859,30 +2091,6 @@ impl OpenCADStudio {
                             self.tabs[i].snap_result = None;
                             return Task::none();
                         }
-                        if layer.starts_with("__MLEADERALIGN__") {
-                            if let Some(encoded) = layer.strip_prefix("__MLEADERALIGN__") {
-                                apply_mleader_align(&mut self.tabs[i].scene, encoded);
-                            }
-                            self.push_undo_snapshot(i, "MLEADERALIGN");
-                            self.command_line
-                                .push_output(crate::t!("MLEADERALIGN  Leaders aligned.").as_ref());
-                            self.tabs[i].dirty = true;
-                            self.tabs[i].active_cmd = None;
-                            self.tabs[i].snap_result = None;
-                            return Task::none();
-                        }
-                        if layer.starts_with("__MLEADERCOLLECT__") {
-                            if let Some(encoded) = layer.strip_prefix("__MLEADERCOLLECT__") {
-                                apply_mleader_collect(&mut self.tabs[i].scene, encoded);
-                            }
-                            self.push_undo_snapshot(i, "MLEADERCOLLECT");
-                            self.command_line
-                                .push_output(crate::t!("MLEADERCOLLECT  Leaders collected.").as_ref());
-                            self.tabs[i].dirty = true;
-                            self.tabs[i].active_cmd = None;
-                            self.tabs[i].snap_result = None;
-                            return Task::none();
-                        }
                     }
                 }
 
@@ -2245,11 +2453,10 @@ impl OpenCADStudio {
                     .map(|e| crate::entities::dim_override::pairs(&e.common().extended_data));
 
                 if let Some(common) = src_common {
-                    self.push_undo_snapshot(i, "MATCHPROP");
-                    for h in &dest {
+                    self.apply_property_op(i, "MATCHPROP", &dest, |app, handle| {
                         let mut is_dim = false;
                         let mut is_hatch = false;
-                        if let Some(e) = self.tabs[i].scene.document.get_entity_mut(*h) {
+                        if let Some(e) = app.tabs[i].scene.document.get_entity_mut(handle) {
                             e.as_entity_mut().set_layer(common.layer.clone());
                             crate::scene::view::dispatch::apply_color(e, common.color);
                             crate::scene::view::dispatch::apply_line_weight(e, common.line_weight);
@@ -2259,6 +2466,7 @@ impl OpenCADStudio {
                                 dst_common.linetype_handle = common.linetype_handle;
                                 dst_common.linetype_scale = common.linetype_scale;
                                 dst_common.transparency = common.transparency.clone();
+                                dst_common.color_name = common.color_name.clone();
                                 dst_common.color_book_handle = common.color_book_handle;
                                 dst_common.full_visual_style_handle =
                                     common.full_visual_style_handle;
@@ -2284,8 +2492,8 @@ impl OpenCADStudio {
                         if is_hatch {
                             if let Some(values) = &hatch_background_xdata {
                                 crate::scene::view::dispatch::set_entity_xdata(
-                                    &mut self.tabs[i].scene.document,
-                                    *h,
+                                    &mut app.tabs[i].scene.document,
+                                    handle,
                                     "HATCHBACKGROUNDCOLOR",
                                     values.clone(),
                                 );
@@ -2296,7 +2504,7 @@ impl OpenCADStudio {
                         // stale raw record survives.
                         if dstyle_xdata.is_some()
                             || matches!(
-                                self.tabs[i].scene.document.get_entity(*h),
+                                app.tabs[i].scene.document.get_entity(handle),
                                 Some(
                                     acadrust::EntityType::Dimension(_)
                                         | acadrust::EntityType::Leader(_)
@@ -2304,7 +2512,7 @@ impl OpenCADStudio {
                             )
                         {
                             if matches!(
-                                self.tabs[i].scene.document.get_entity(*h),
+                                app.tabs[i].scene.document.get_entity(handle),
                                 Some(
                                     acadrust::EntityType::Dimension(_)
                                         | acadrust::EntityType::Leader(_)
@@ -2317,8 +2525,8 @@ impl OpenCADStudio {
                                 )
                             ) {
                                 crate::entities::dim_override::replace(
-                                    &mut self.tabs[i].scene.document,
-                                    *h,
+                                    &mut app.tabs[i].scene.document,
+                                    handle,
                                     dstyle_xdata.clone().unwrap_or_default(),
                                 );
                             }
@@ -2326,12 +2534,11 @@ impl OpenCADStudio {
                         // A restyled dimension renders from its baked *D block —
                         // drop the stale block so the new style shows (#398).
                         if is_dim {
-                            self.tabs[i].scene.invalidate_dim_block_recorded(*h);
+                            app.tabs[i].scene.invalidate_dim_block_recorded(handle);
                         }
                         // Hatch fills render from a prebuilt model (#415).
-                        self.tabs[i].scene.refresh_fill_model(*h);
-                    }
-                    self.tabs[i].dirty = true;
+                        app.tabs[i].scene.refresh_fill_model(handle);
+                    });
                     // Color / linetype / lineweight are baked into the cached
                     // wires at tessellation time; re-tessellate only the matched
                     // objects instead of rebuilding a large drawing.
@@ -2341,7 +2548,6 @@ impl OpenCADStudio {
                         .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                         .collect();
                     self.tabs[i].scene.bump_entities(&changes);
-                    self.refresh_properties();
                     self.command_line
                         .push_info(crate::tf!("Properties matched to {} object(s).", dest.len()).as_ref());
                     // Clear the consumed target selection and keep prompting.
@@ -2755,6 +2961,9 @@ impl OpenCADStudio {
                             .map(|e| apply_pedit(e, &op))
                             .unwrap_or(false);
                         if changed {
+                            if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+                                command.on_pedit_applied();
+                            }
                             self.tabs[i].dirty = true;
                             // Repaint immediately (wide-band fill included).
                             self.tabs[i].scene.refresh_fill_model(handle);
@@ -3716,10 +3925,11 @@ impl OpenCADStudio {
                 handle,
                 initial,
                 height,
+                template,
             } => {
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
-                self.open_mtext_editor(pos, handle, &initial, height);
+                self.open_mtext_editor(pos, handle, &initial, height, template.map(|m| *m));
             }
             CmdResult::SuspendForMTextInput {
                 pos,
@@ -3732,7 +3942,7 @@ impl OpenCADStudio {
                 self.restore_pre_cmd_tangent();
                 self.command_mtext_input = true;
                 self.pending_command_editor_text = None;
-                self.open_mtext_editor(pos, None, &initial, height);
+                self.open_mtext_editor(pos, None, &initial, height, None);
             }
             CmdResult::OpenTextEditor {
                 pos,
@@ -3748,6 +3958,22 @@ impl OpenCADStudio {
                     &initial,
                     height,
                     super::text_inline::TextEntityField::Text,
+                    None,
+                );
+            }
+            CmdResult::SuspendForTextInput { pos, entity } => {
+                self.tabs[i].suspended_cmd = self.tabs[i].active_cmd.take();
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.clear_preview_wire();
+                self.restore_pre_cmd_tangent();
+                let height = entity.height;
+                self.open_text_inline(
+                    pos,
+                    None,
+                    "",
+                    height,
+                    super::text_inline::TextEntityField::Text,
+                    Some(entity),
                 );
             }
             CmdResult::EditTextEntity { handle } => {
@@ -4423,92 +4649,154 @@ fn apply_dimspace(scene: &mut crate::scene::Scene, encoded: &str) {
     }
 }
 
-// ── MLEADERALIGN helper ───────────────────────────────────────────────────────
+fn apply_mleader_align(
+    scene: &mut crate::scene::Scene,
+    handles: &[acadrust::Handle],
+    from: glam::DVec3,
+    to: glam::DVec3,
+) -> bool {
+    use cadkernel::geom2d::{closest_point, Curve, Vec2, XLine};
 
-/// Parse `h1,h2,...;fx,fz;tx,tz` and align multileader content points along the direction.
-fn apply_mleader_align(scene: &mut crate::scene::Scene, encoded: &str) {
-    // Format: "<h1>,<h2>,...;<fx>,<fz>;<tx>,<tz>"
-    let parts: Vec<&str> = encoded.splitn(3, ';').collect();
-    if parts.len() < 3 {
-        return;
-    }
-    let handles: Vec<acadrust::Handle> = parts[0]
-        .split(',')
-        .filter_map(|s| s.parse::<u64>().ok().map(acadrust::Handle::from))
-        .collect();
-    let from_parts: Vec<f64> = parts[1].split(',').filter_map(|s| s.parse().ok()).collect();
-    let to_parts: Vec<f64> = parts[2].split(',').filter_map(|s| s.parse().ok()).collect();
-    if from_parts.len() < 2 || to_parts.len() < 2 || handles.is_empty() {
-        return;
-    }
-
-    let fx = from_parts[0];
-    let fz = from_parts[1];
-    let tx = to_parts[0];
-    let tz = to_parts[1];
-    let dx = tx - fx;
-    let dz = tz - fz;
-    let len = (dx * dx + dz * dz).sqrt();
-    if len < 1e-9 {
-        return;
-    }
-
-    // Project each multileader's content point onto the alignment line, then
-    // snap it to the line (preserve perpendicular offset from line is discarded;
-    // align along direction through `from`).
-    for h in handles {
-        if let Some(acadrust::EntityType::MultiLeader(ml)) = scene.document.get_entity_mut(h) {
-            let cp = &mut ml.context.content_base_point;
-            // Project onto line from_pt + t * dir: keep t component, set perpendicular = 0
-            let rel_x = cp.x - fx;
-            let rel_z = cp.z - fz;
-            let t = (rel_x * (dx / len) + rel_z * (dz / len)) / len;
-            let t = t.clamp(0.0, 1.0);
-            cp.x = fx + t * dx;
-            cp.z = fz + t * dz;
+    let Some(direction) = Vec2::new(to.x - from.x, to.y - from.y).normalize() else {
+        return false;
+    };
+    let line = Curve::XLine(XLine {
+        base: [from.x, from.y],
+        direction: direction.into(),
+    });
+    let mut changed = Vec::new();
+    for &handle in handles {
+        if let Some(acadrust::EntityType::MultiLeader(ml)) =
+            scene.document.get_entity_mut(handle)
+        {
+            let old = ml.context.content_base_point;
+            let projected = closest_point(&line, [old.x, old.y]).point;
+            let new_x = projected[0];
+            let new_y = projected[1];
+            let shift_x = new_x - old.x;
+            let shift_y = new_y - old.y;
+            if shift_x.abs() <= 1.0e-12 && shift_y.abs() <= 1.0e-12 {
+                continue;
+            }
+            ml.context.content_base_point.x = new_x;
+            ml.context.content_base_point.y = new_y;
+            ml.context.text_location.x += shift_x;
+            ml.context.text_location.y += shift_y;
+            ml.context.block_content_location.x += shift_x;
+            ml.context.block_content_location.y += shift_y;
+            for root in &mut ml.context.leader_roots {
+                root.connection_point.x += shift_x;
+                root.connection_point.y += shift_y;
+            }
+            changed.push((handle, crate::scene::ChangeKind::Modified));
         }
     }
+    if !changed.is_empty() {
+        scene.bump_entities(&changed);
+    }
+    !changed.is_empty()
 }
 
-// ── MLEADERCOLLECT helper ─────────────────────────────────────────────────────
-
-/// Parse `h1,h2,...;px,pz` — merge all selected multileaders into the first one at position.
-fn apply_mleader_collect(scene: &mut crate::scene::Scene, encoded: &str) {
-    let parts: Vec<&str> = encoded.splitn(2, ';').collect();
-    if parts.len() < 2 {
-        return;
-    }
-    let handles: Vec<acadrust::Handle> = parts[0]
-        .split(',')
-        .filter_map(|s| s.parse::<u64>().ok().map(acadrust::Handle::from))
-        .collect();
-    let pos_parts: Vec<f64> = parts[1].split(',').filter_map(|s| s.parse().ok()).collect();
-    if handles.len() < 2 || pos_parts.len() < 2 {
-        return;
-    }
-
-    let px = pos_parts[0];
-    let pz = pos_parts[1];
-
-    // Collect all leader roots from the secondary multileaders.
-    let mut extra_roots: Vec<acadrust::entities::LeaderRoot> = Vec::new();
-    for &h in &handles[1..] {
-        if let Some(acadrust::EntityType::MultiLeader(ml)) = scene.document.get_entity(h) {
-            extra_roots.extend(ml.context.leader_roots.iter().cloned());
+fn compatible_mleader_collect_handles(
+    scene: &crate::scene::Scene,
+    handles: &[acadrust::Handle],
+) -> Vec<acadrust::Handle> {
+    let Some((base_block, base_style)) = handles.iter().find_map(|handle| {
+        if scene.is_layer_locked(*handle) {
+            return None;
+        }
+        let acadrust::EntityType::MultiLeader(leader) =
+            scene.document.get_entity(*handle)?
+        else {
+            return None;
+        };
+        (leader.content_type == acadrust::entities::LeaderContentType::Block)
+            .then_some((leader.block_content_handle, leader.style_handle))
+    }) else {
+        return Vec::new();
+    };
+    let mut compatible = Vec::new();
+    for handle in handles.iter().copied() {
+        if compatible.contains(&handle) {
+            continue;
+        }
+        if !scene.is_layer_locked(handle)
+            && matches!(
+                scene.document.get_entity(handle),
+                Some(acadrust::EntityType::MultiLeader(leader))
+                    if leader.content_type == acadrust::entities::LeaderContentType::Block
+                        && leader.block_content_handle == base_block
+                        && leader.style_handle == base_style
+            )
+        {
+            compatible.push(handle);
         }
     }
+    compatible
+}
 
-    // Add collected roots to the first multileader and move its content point.
+fn apply_mleader_collect(
+    scene: &mut crate::scene::Scene,
+    handles: &[acadrust::Handle],
+    point: glam::DVec3,
+) -> bool {
+    if handles.len() < 2 {
+        return false;
+    }
+    let px = point.x;
+    let py = point.y;
+    let Some(acadrust::EntityType::MultiLeader(base)) =
+        scene.document.get_entity(handles[0])
+    else {
+        return false;
+    };
+    let base_block = base.block_content_handle;
+    let base_style = base.style_handle;
+
+    let mut extra_roots: Vec<acadrust::entities::LeaderRoot> = Vec::new();
+    let mut merged_handles = Vec::new();
+    for &h in &handles[1..] {
+        if let Some(acadrust::EntityType::MultiLeader(ml)) = scene.document.get_entity(h) {
+            if ml.content_type == acadrust::entities::LeaderContentType::Block
+                && ml.block_content_handle == base_block
+                && ml.style_handle == base_style
+            {
+                let shift_x = px - ml.context.content_base_point.x;
+                let shift_y = py - ml.context.content_base_point.y;
+                extra_roots.extend(ml.context.leader_roots.iter().cloned().map(|mut root| {
+                    root.connection_point.x += shift_x;
+                    root.connection_point.y += shift_y;
+                    root
+                }));
+                merged_handles.push(h);
+            }
+        }
+    }
+    if merged_handles.is_empty() {
+        return false;
+    }
+
     if let Some(acadrust::EntityType::MultiLeader(ml)) = scene.document.get_entity_mut(handles[0]) {
+        let shift_x = px - ml.context.content_base_point.x;
+        let shift_y = py - ml.context.content_base_point.y;
+        for root in &mut ml.context.leader_roots {
+            root.connection_point.x += shift_x;
+            root.connection_point.y += shift_y;
+        }
         ml.context.content_base_point.x = px;
-        ml.context.content_base_point.z = pz;
+        ml.context.content_base_point.y = py;
+        ml.context.block_content_location.x = px;
+        ml.context.block_content_location.y = py;
+        ml.context.text_location.x = px;
+        ml.context.text_location.y = py;
         for root in extra_roots {
             ml.context.leader_roots.push(root);
         }
     }
 
-    // Erase the secondary multileaders.
-    scene.erase_entities(&handles[1..]);
+    scene.erase_entities(&merged_handles);
+    scene.bump_entities(&[(handles[0], crate::scene::ChangeKind::Modified)]);
+    true
 }
 
 /// MATCHPROP special properties (#281): copy every STYLE-affecting field from
