@@ -11,13 +11,14 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The current locally integrated upstream candidate is Open CAD Studio `0.9.8` at
-post-tag revision `6d6defa0ad6c4a8d1a18069e05a59584a26dfb96` (2026-09-01).
-This includes 124 additional commits after tag `v0.9.8`; therefore the exact Git
+The current locally integrated upstream candidate is Open CAD Studio `2026.36.0`
+at post-tag revision `0425f979f9ed93433a3f23234d4bff970358e148`
+(2026-09-07). This includes 38 additional commits after tag `v2026.36`;
+therefore the exact Git
 revision, not only the application version string, identifies the build. The
 application pins the CAD codec directly at `cadcodec` revision
-`a0f7d444f1607bc4b2c881060cbe7ea1014253cb` and the geometry kernel at
-`cadkernel` revision `48c634995fa60d3928c37bae49b12b421c56c886`.
+`5b56571a190e7a17c8f12d36390d2938b0fb72f7` and the geometry kernel at
+`cadkernel` revision `6a5e6fc2822f6af6b2611cd605b44437b35158f0`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
 builder baseline remains the official `rust:1.92.0-bookworm` image.
