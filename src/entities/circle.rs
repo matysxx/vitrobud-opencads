@@ -41,7 +41,6 @@ pub fn circle_segments(radius: f64, wpp: Option<f32>) -> usize {
     let n = (std::f64::consts::TAU / step).ceil() as usize;
     n.clamp(MIN_SEGMENTS, MAX_SEGMENTS)
 }
-
 pub fn to_render_with_wpp(circle: &Circle, wpp: Option<f32>) -> RenderEntity {
     let cx = circle.center.x;
     let cy = circle.center.y;
@@ -361,4 +360,3 @@ mod tests {
         assert!(close_count > far_count, "{close_count} <= {far_count}");
     }
 }
-

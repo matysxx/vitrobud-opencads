@@ -1309,8 +1309,6 @@ impl OpenCADStudio {
                     &self.grip_reference_wires,
                 );
 
-                
-
                 self.grip_text_verts = snap
                     .iter()
                     .flat_map(|w| w.text_verts.iter().copied())

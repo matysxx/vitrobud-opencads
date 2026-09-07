@@ -34,7 +34,6 @@ pub(crate) fn crosshair_arm_px(bounds: iced::Rectangle, value: i32) -> f32 {
     let scale = (value - DEFAULT_CURSOR_SIZE) as f32 / (100 - DEFAULT_CURSOR_SIZE) as f32;
     CROSSHAIR_ARM + (full - CROSSHAIR_ARM) * scale
 }
-
 /// Convert PICKBOX to the visible half-size while retaining the original
 /// 15 x 15 px center box at the default value.
 pub(crate) fn pick_box_half_px(value: i32) -> f32 {
@@ -3797,4 +3796,3 @@ mod selection_visual_color_tests {
         assert!((selection_fill_alpha(100.0, true) - 0.45).abs() < 1e-5);
     }
 }
-
