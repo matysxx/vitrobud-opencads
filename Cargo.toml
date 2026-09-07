@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "0.9.8"
+version = "2026.36.0"
 edition = "2021"
 build = "build.rs"
 
@@ -10,6 +10,7 @@ members = [
     "crates/ocs_web_worker",
     "crates/dwg-thumbnailer",
     "crates/dwg-thumbnailer-win",
+    "crates/ocs_doc_api",
 ]
 
 [target.'cfg(windows)'.build-dependencies]
@@ -18,17 +19,19 @@ winresource = "0.1"
 [dependencies]
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
 semver = "1"
 iced = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39", features = ["image", "svg", "advanced", "canvas", "smol", "markdown"] }
+iced_runtime = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 iced_core = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 iced_aw = { git = "https://github.com/HakanSeven12/iced_aw.git", branch = "agent/fix-iced-fonts", features = ["menu", "context_menu", "color_picker", "drop_down"] }
 bytemuck = { version = "1.25", features = ["derive"] }
 glam = { version = "0.33", features = ["bytemuck"] }
 rfd = "0.17"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "string"] }
 env_logger = "0.11"
-acadrust = { git = "https://github.com/HakanSeven12/cadcodec.git", rev = "a0f7d444f1607bc4b2c881060cbe7ea1014253cb", features = ["serde"] }
-cadkernel = { git = "https://github.com/HakanSeven12/cadkernel.git", rev = "48c634995fa60d3928c37bae49b12b421c56c886", features = ["acis", "offset"] }
+acadrust = { git = "https://github.com/HakanSeven12/cadcodec.git", rev = "5b56571a190e7a17c8f12d36390d2938b0fb72f7", features = ["serde"] }
+cadkernel = { git = "https://github.com/HakanSeven12/cadkernel.git", rev = "6a5e6fc2822f6af6b2611cd605b44437b35158f0", features = ["acis", "offset"] }
 dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
@@ -48,6 +51,7 @@ cosmic-text = "0.15"
 lyon_tessellation = "1.0.20"
 
 [dev-dependencies]
+fluent-syntax = "0.12"
 naga = { version = "27", features = ["wgsl-in"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -61,11 +65,14 @@ iced_core = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aa
 iced_widget = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 
 [patch."https://github.com/HakanSeven12/cadcodec.git"]
-acadrust = { git = "https://git@github.com/HakanSeven12/cadcodec.git", rev = "a0f7d444f1607bc4b2c881060cbe7ea1014253cb" }
+acadrust = { git = "https://git@github.com/HakanSeven12/cadcodec.git", rev = "5b56571a190e7a17c8f12d36390d2938b0fb72f7" }
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom = "0.3"
 ocs_plugin_api = { path = "crates/ocs_plugin_api", features = ["host"] }
+ocs_doc_api = { path = "crates/ocs_doc_api", features = ["host", "ipc"] }
+bincode = "1.3"
 meshopt = "0.6.2"
 i18n-embed = { version = "0.16", features = ["desktop-requester"] }
 rayon = "1"
@@ -116,6 +123,9 @@ web-sys = { version = "=0.3.85", features = [
     "console",
     "Node",
     "HtmlElement",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
 ] }
 iced = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39", features = ["webgl", "fira-sans"] }
 

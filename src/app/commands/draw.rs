@@ -526,7 +526,7 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                 }
                 self.command_line
-                    .push_output(&format!("CENTERRESET: {count} center object(s) updated."));
+                    .push_output(&crate::tf!("CENTERRESET: {count} center object(s) updated."));
             }
 
             "CENTERREASSOCIATE" => {
@@ -549,7 +549,7 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                 }
                 self.command_line
-                    .push_output(&format!("CENTERREASSOCIATE: {count} center object(s) associated."));
+                    .push_output(&crate::tf!("CENTERREASSOCIATE: {count} center object(s) associated."));
             }
 
             "CENTERDISASSOCIATE" => {
@@ -561,7 +561,7 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                 }
                 self.command_line
-                    .push_output(&format!("CENTERDISASSOCIATE: {count} center object(s) detached."));
+                    .push_output(&crate::tf!("CENTERDISASSOCIATE: {count} center object(s) detached."));
             }
 
             "DIMCENTER" => {
@@ -1038,31 +1038,27 @@ impl OpenCADStudio {
                 return Some(self.solid_convtosurface());
             }
 
-            // POLYSOLID <width> <height> — extrude a selected polyline into a
-            // wall-like solid.
             "POLYSOLID" => {
-                use crate::command::SelectThenTwoValueCommand;
-                let has_sel = !self.tabs[i].scene.selected_entities().is_empty();
-                let c = SelectThenTwoValueCommand::new(
-                    "POLYSOLID",
-                    "POLYSOLID  wall width:",
-                    "POLYSOLID  wall height:",
-                    has_sel,
-                );
+                use crate::modules::model::polysolid_cmd::PolysolidCommand;
+                let preselected = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .find(|(_, entity)| {
+                        matches!(
+                            entity,
+                            acadrust::EntityType::Line(_)
+                                | acadrust::EntityType::Arc(_)
+                                | acadrust::EntityType::Circle(_)
+                                | acadrust::EntityType::Ellipse(_)
+                                | acadrust::EntityType::LwPolyline(_)
+                                | acadrust::EntityType::Spline(_)
+                        )
+                    })
+                    .map(|(handle, entity)| (handle, entity.clone()));
+                let c = PolysolidCommand::new(preselected);
                 self.command_line.push_info(&c.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(c));
-            }
-            cmd if cmd.starts_with("POLYSOLID ") => {
-                let nums: Vec<f64> = cmd
-                    .split_whitespace()
-                    .skip(1)
-                    .filter_map(|s| s.parse::<f64>().ok())
-                    .collect();
-                if nums.len() >= 2 && nums[0] > 0.0 && nums[1] > 0.0 {
-                    return Some(self.solid_polysolid(nums[0], nums[1]));
-                }
-                self.command_line
-                    .push_info(crate::t!("Usage: POLYSOLID <width> <height>   (select a polyline first)").as_ref());
             }
 
             // SPLINEFIT — fit a smooth spline through the selected polyline's points.
@@ -1163,7 +1159,7 @@ impl OpenCADStudio {
                 match parts.get(val_idx).and_then(|s| s.parse::<f64>().ok()) {
                     Some(v) => return Some(self.solid_section(axis, v)),
                     None => self.command_line.push_info(
-                        "Usage: SECTION [X|Y|Z] <value>   (cross-sections the selected solid)",
+                        crate::t!("Usage: SECTION [X|Y|Z] <value>   (cross-sections the selected solid)").as_ref(),
                     ),
                 }
             }
@@ -1189,7 +1185,7 @@ impl OpenCADStudio {
                     return Some(self.solid_align3d(src, dst));
                 }
                 self.command_line.push_info(
-                    "Usage: 3DALIGN <sx1 sy1 sz1 … sx3 sy3 sz3  dx1 dy1 dz1 … dx3 dy3 dz3>  (18 numbers: 3 source then 3 destination points)",
+                    crate::t!("Usage: 3DALIGN <sx1 sy1 sz1 … sx3 sy3 sz3  dx1 dy1 dz1 … dx3 dy3 dz3>  (18 numbers: 3 source then 3 destination points)").as_ref(),
                 );
             }
 
@@ -1218,7 +1214,7 @@ impl OpenCADStudio {
                     Some("Z") => 2,
                     _ => {
                         self.command_line.push_info(
-                            "Usage: 3DMIRROR [X|Y|Z]   (mirrors the selected solid across that plane)",
+                            crate::t!("Usage: 3DMIRROR [X|Y|Z]   (mirrors the selected solid across that plane)").as_ref(),
                         );
                         return None;
                     }
@@ -1258,7 +1254,7 @@ impl OpenCADStudio {
                 match angle {
                     Some(a) => return Some(self.solid_rotate3d(axis, a)),
                     None => self.command_line.push_info(
-                        "Usage: 3DROTATE [X|Y|Z] <angle>   (rotates the selected solid)",
+                        crate::t!("Usage: 3DROTATE [X|Y|Z] <angle>   (rotates the selected solid)").as_ref(),
                     ),
                 }
             }
@@ -1298,7 +1294,7 @@ impl OpenCADStudio {
                 match value {
                     Some(v) => return Some(self.solid_slice(axis, v, keep_low)),
                     None => self.command_line.push_info(
-                        "Usage: SLICE [X|Y|Z] <value> [TOP|BOTTOM]   (cuts the selected solid)",
+                        crate::t!("Usage: SLICE [X|Y|Z] <value> [TOP|BOTTOM]   (cuts the selected solid)").as_ref(),
                     ),
                 }
             }

@@ -39,6 +39,7 @@ pub(crate) struct ExpandedBlockObject {
 pub(crate) struct BlockObjectOptions {
     pub(crate) suppress_root_points: bool,
     pub(crate) apply_xclip: bool,
+    pub(crate) scale_policy: crate::scene::BlockScalePolicy,
 }
 
 fn block_object_style(
@@ -141,16 +142,18 @@ pub(crate) fn expand_block_object(
         is_xref,
         bg_color,
         anno_scale,
+        options.scale_policy,
         options.suppress_root_points,
     )
     .unwrap_or_default();
 
     if options.apply_xclip {
         if let Some(filter) = pick::xclip::insert_spatial_filter(document, insert) {
-            let transform = crate::scene::render_graph::insert_transform_at_scale(
+            let transform = crate::scene::render_graph::insert_transform_with_policy(
                 document,
                 insert,
                 anno_scale,
+                options.scale_policy,
             );
             let polygon = pick::xclip::world_clip_polygon_for_transform(filter, &transform);
             pick::xclip::clip_wires(&mut wires, &polygon);
@@ -568,7 +571,7 @@ fn tessellate_entity_inner(
     // True only when tessellating content shown inside a paper-space viewport.
     // Retained through recursive INSERT expansion; PSLTSCALE itself is applied
     // by the viewport's GPU uniform so it never changes resident wire content.
-    paper_space: bool,
+    _paper_space: bool,
 ) -> Vec<WireModel> {
     let contextual = crate::scene::annotative::entity_for_annotation_context(
         document,
@@ -920,6 +923,7 @@ fn tessellate_entity_inner(
             Vec::new()
         };
         return vec![WireModel {
+            bg_adapt: None,
             point_marker: None,
             taper_widths: Vec::new(),
             pattern_stations: Vec::new(),
@@ -980,6 +984,7 @@ fn tessellate_entity_inner(
                 pslt_factor,
                 BlockObjectOptions {
                     suppress_root_points: block_use.suppress_root_points,
+                    scale_policy: block_use.scale_policy,
                     ..BlockObjectOptions::default()
                 },
             )
@@ -1087,7 +1092,10 @@ fn tessellate_entity_inner(
                 view_aabb,
                 world_per_pixel,
                 pslt_factor,
-                BlockObjectOptions::default(),
+                BlockObjectOptions {
+                    scale_policy: block_use.scale_policy,
+                    ..BlockObjectOptions::default()
+                },
             )
             .wires;
             if !wires.is_empty() {
@@ -1119,19 +1127,27 @@ fn tessellate_entity_inner(
         .filter(|block_use| {
             block_use.role == crate::scene::render_graph::BlockRole::TableCell
         }) {
-            wires.extend(tessellate_entity(
-                document,
-                selected,
-                active_viewport,
-                bg_color,
-                1.0,
-                None,
-                &EntityType::Insert(block_use.insert),
-                block_cache,
-                view_aabb,
-                world_per_pixel,
-                paper_space,
-            ));
+            wires.extend(
+                expand_block_object(
+                    document,
+                    &block_use.insert,
+                    h,
+                    sel,
+                    active_viewport,
+                    bg_color,
+                    table_anno,
+                    None,
+                    block_cache,
+                    view_aabb,
+                    world_per_pixel,
+                    pslt_factor,
+                    BlockObjectOptions {
+                        scale_policy: block_use.scale_policy,
+                        ..BlockObjectOptions::default()
+                    },
+                )
+                .wires,
+            );
         }
         if !wires.is_empty() {
             let aabb = entity_aabb(e);
@@ -1152,6 +1168,7 @@ fn tessellate_entity_inner(
             (ins.insert_point.z) as f32,
         );
         let marker = WireModel {
+            bg_adapt: None,
             point_marker: None,
             taper_widths: Vec::new(),
             pattern_stations: Vec::new(),
@@ -1495,6 +1512,7 @@ fn lod_stub_wire(
     // LOD boundary. #19.
     let stored_color = if selected { WireModel::SELECTED } else { color };
     WireModel {
+        bg_adapt: None,
         point_marker: None,
         taper_widths: Vec::new(),
         pattern_stations: Vec::new(),
@@ -1590,6 +1608,7 @@ fn lod_stub_wire_3d(
     }
     let stored_color = if selected { WireModel::SELECTED } else { color };
     WireModel {
+        bg_adapt: None,
         point_marker: None,
         taper_widths: Vec::new(),
         pattern_stations: Vec::new(),

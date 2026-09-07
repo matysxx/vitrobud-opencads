@@ -602,6 +602,9 @@ impl Scene {
                     Some(EntityType::Solid3D(solid)) => {
                         crate::scene::convert::solid3d_tess::kernel_body(solid)
                     }
+                    Some(EntityType::Surface(surface)) => {
+                        crate::scene::convert::solid3d_tess::kernel_surface_body(surface)
+                    }
                     _ => None,
                 })?;
                 Some((handle, body))
@@ -1183,7 +1186,7 @@ impl Scene {
     fn layer_plottable_in_context(
         &self,
         entity: &EntityType,
-        context: &crate::scene::render_graph::RenderContext,
+        context: &crate::scene::render_graph::InstanceContext,
     ) -> bool {
         let common = entity.common();
         let layer = if crate::scene::view::render::is_effective_layer_zero(&common.layer) {

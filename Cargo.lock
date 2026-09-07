@@ -4,10 +4,11 @@ version = 4
 
 [[package]]
 name = "OpenCADStudio"
-version = "0.9.8"
+version = "2026.36.0"
 dependencies = [
  "acadrust",
  "ashpd",
+ "base64",
  "bincode",
  "bytemuck",
  "cadkernel",
@@ -17,6 +18,7 @@ dependencies = [
  "dwg-thumbnailer",
  "env_logger",
  "flate2",
+ "fluent-syntax",
  "fontdb",
  "getrandom 0.3.4",
  "glam",
@@ -25,6 +27,7 @@ dependencies = [
  "iced",
  "iced_aw",
  "iced_core",
+ "iced_runtime",
  "image",
  "inventory",
  "js-sys",
@@ -32,6 +35,7 @@ dependencies = [
  "lyon_tessellation",
  "meshopt",
  "naga 27.0.3",
+ "ocs_doc_api",
  "ocs_plugin_api",
  "open",
  "printpdf",
@@ -71,8 +75,8 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "acadrust"
-version = "0.4.1"
-source = "git+https://git@github.com/HakanSeven12/cadcodec.git?rev=a0f7d444f1607bc4b2c881060cbe7ea1014253cb#a0f7d444f1607bc4b2c881060cbe7ea1014253cb"
+version = "0.5.4"
+source = "git+https://git@github.com/HakanSeven12/cadcodec.git?rev=5b56571a190e7a17c8f12d36390d2938b0fb72f7#5b56571a190e7a17c8f12d36390d2938b0fb72f7"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -878,7 +882,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "cadkernel"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/cadkernel.git?rev=48c634995fa60d3928c37bae49b12b421c56c886#48c634995fa60d3928c37bae49b12b421c56c886"
+source = "git+https://github.com/HakanSeven12/cadkernel.git?rev=6a5e6fc2822f6af6b2611cd605b44437b35158f0#6a5e6fc2822f6af6b2611cd605b44437b35158f0"
 dependencies = [
  "acadrust",
  "cavalier_contours",
@@ -3885,6 +3889,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ocs_doc_api"
+version = "0.1.0"
+dependencies = [
+ "acadrust",
+ "bincode",
+ "cadkernel",
+ "ocs_plugin_api",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "toml 1.1.3+spec-1.1.0",
+]
+
+[[package]]
 name = "ocs_plugin_api"
 version = "0.2.1"
 dependencies = [
@@ -3898,6 +3916,7 @@ dependencies = [
  "rkyv",
  "serde",
  "serde-reflection",
+ "serde_bytes",
  "serde_json",
  "thiserror 1.0.69",
 ]
@@ -5103,6 +5122,16 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "typeid",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

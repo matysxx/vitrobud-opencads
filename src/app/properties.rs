@@ -42,7 +42,6 @@ impl OpenCADStudio {
         // Note: the color-picker dropdown is intentionally NOT carried over — a
         // rebuild means the selection (or a property) changed, so the dropdown
         // closes, matching the deselect / reselect / click-away expectation.
-        let color_palette_open = self.tabs[i].properties.color_palette_open;
         let edit_buf = std::mem::take(&mut self.tabs[i].properties.edit_buf);
         let active_field = std::mem::take(&mut self.tabs[i].properties.active_field);
         // Expanded coordinate groups persist across rebuilds AND selection
@@ -449,12 +448,7 @@ impl OpenCADStudio {
                     let mut sections =
                         dispatch::properties_sectioned(handle, entity, &text_style_names);
                     if specialized_primitive {
-                        sections.retain(|section| {
-                            !section.props.iter().any(|property| {
-                                property.field.starts_with("acis_")
-                                    || property.field.starts_with("s3d_")
-                            })
-                        });
+                        retain_specialized_primitive_sections(&mut sections);
                     }
                     sections.extend(
                         crate::scene::model::solid_history::primitive_properties(
@@ -2074,6 +2068,9 @@ impl OpenCADStudio {
                             });
                         }
                     }
+                    if specialized_primitive {
+                        retain_specialized_primitive_sections(&mut sections);
+                    }
                     let title = match entity {
                         acadrust::EntityType::Insert(ins) => {
                             let is_xref = self.tabs[i]
@@ -2221,7 +2218,6 @@ impl OpenCADStudio {
             // Precompute the focused-id → field-key map for O(1) lookups on
             // `PropSyncActive`; derived from `sections`, so rebuild it here.
             panel.field_key_by_id = crate::ui::properties::build_field_key_map(&panel.sections);
-            panel.color_palette_open = color_palette_open;
             let new_handles: Vec<acadrust::Handle> = selected.iter().map(|(h, _)| *h).collect();
             // Carry the in-progress edits only when the selection is unchanged
             // (a commit-triggered rebuild); a genuine selection change starts
@@ -2262,7 +2258,6 @@ impl OpenCADStudio {
                 panel.edit_buf.clear();
                 panel.active_field = None;
                 panel.color_picker_open = false;
-                panel.color_palette_open = false;
                 panel.bg_color_picker_open = false;
                 panel.open_color_field = None;
                 panel.hatch_pattern_picker_open = false;
@@ -2596,14 +2591,33 @@ impl OpenCADStudio {
         &mut self,
         entity: acadrust::EntityType,
     ) -> Option<Handle> {
-        self.commit_entity_handle_with_dimension_policy(entity, false)
+        self.commit_entity_handle_with_policies(entity, false, false)
     }
 
-    /// Commit an entity, optionally preserving its source dimension style.
     pub(super) fn commit_entity_handle_with_dimension_policy(
+        &mut self,
+        entity: acadrust::EntityType,
+        preserve_dimension_layer_and_style: bool,
+    ) -> Option<Handle> {
+        self.commit_entity_handle_with_policies(
+            entity,
+            preserve_dimension_layer_and_style,
+            false,
+        )
+    }
+
+    pub(super) fn commit_entity_handle_preserve_layer(
+        &mut self,
+        entity: acadrust::EntityType,
+    ) -> Option<Handle> {
+        self.commit_entity_handle_with_policies(entity, false, true)
+    }
+
+    fn commit_entity_handle_with_policies(
         &mut self,
         mut entity: acadrust::EntityType,
         preserve_dimension_layer_and_style: bool,
+        preserve_entity_layer: bool,
     ) -> Option<Handle> {
         let i = self.active_tab;
         let tracks_dimension_chain = matches!(
@@ -2692,7 +2706,7 @@ impl OpenCADStudio {
         };
         if let Some(layer) = explicit_mleader_layer {
             entity.as_entity_mut().set_layer(layer);
-        } else {
+        } else if !preserve_entity_layer {
             let layer = &self.tabs[i].active_layer;
             if layer != "0" || entity.as_entity().layer().is_empty() {
                 entity.as_entity_mut().set_layer(layer.clone());
@@ -3045,6 +3059,28 @@ fn aggregate_solid_history_sections(
         merged = merge_sections(&merged, &next);
     }
     merged
+}
+
+fn retain_specialized_primitive_sections(
+    sections: &mut Vec<crate::scene::model::object::PropSection>,
+) {
+    sections.iter_mut().for_each(|section| {
+        section.props.retain(|property| {
+            matches!(
+                property.field,
+                "color"
+                    | "layer"
+                    | "linetype"
+                    | "linetype_scale"
+                    | "plot_style"
+                    | "lineweight"
+                    | "transparency"
+                    | "hyperlink"
+                    | "material"
+            ) || crate::scene::model::solid_history::is_specialized_property(property.field)
+        });
+    });
+    sections.retain(|section| !section.props.is_empty());
 }
 
 fn merge_sections(
@@ -3659,7 +3695,6 @@ mod apply_property_op_tests {
     use acadrust::types::{Color, Vector3};
 
     fn line_handle(app: &mut OpenCADStudio) -> acadrust::Handle {
-        let i = app.active_tab;
         let mut line = Line::new();
         line.start = Vector3::ZERO;
         line.end = Vector3::new(1.0, 0.0, 0.0);
@@ -3762,7 +3797,6 @@ mod chprop_integration_tests {
     use acadrust::types::{Color, LineWeight, Vector3};
 
     fn line_handle(app: &mut OpenCADStudio) -> acadrust::Handle {
-        let i = app.active_tab;
         let mut line = Line::new();
         line.start = Vector3::ZERO;
         line.end = Vector3::new(1.0, 0.0, 0.0);
@@ -3921,7 +3955,6 @@ mod chprop_integration_tests {
     #[test]
     fn ribbon_lineweight_updates_after_change() {
         let mut app = OpenCADStudio::new_for_test();
-        let i = app.active_tab;
         let _h = line_handle(&mut app);
         let _ = app.automation_op(r#"{"op":"select","type":"Line"}"#);
 

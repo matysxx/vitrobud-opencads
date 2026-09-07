@@ -515,11 +515,13 @@ impl OpenCADStudio {
                 self.open_attedit_dialog();
             }
 
+            "PDFATTACH" => {
+                return Some(Task::done(Message::PdfAttachPick));
+            }
             "XATTACH" => {
                 // Launch the file picker; XAttachPickResult will start the command.
                 return Some(Task::done(Message::XAttachPick));
             }
-
             cmd if cmd == "WBLOCK" || cmd == "WB" || cmd.starts_with("WBLOCK ") => {
                 let arg = cmd.splitn(2, ' ').nth(1).unwrap_or("").trim();
                 if arg.is_empty() {
@@ -527,7 +529,7 @@ impl OpenCADStudio {
                     let sel: Vec<_> = self.tabs[i].scene.selected.iter().copied().collect();
                     if sel.is_empty() {
                         self.command_line.push_error(
-                            "WBLOCK  Select entities first, or: WBLOCK <block name>  or  WBLOCK *",
+                            crate::t!("WBLOCK  Select entities first, or: WBLOCK <block name>  or  WBLOCK *").as_ref(),
                         );
                     } else {
                         return Some(Task::done(Message::WblockSave("*".to_string())));

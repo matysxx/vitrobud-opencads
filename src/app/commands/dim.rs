@@ -130,7 +130,7 @@ impl OpenCADStudio {
                 }
                 if opt.is_empty() {
                     self.command_line.push_info(
-                        "Usage: JUSTIFYTEXT <Left|Center|Right|Middle|TL|TC|TR|ML|MC|MR|BL|BC|BR>",
+                        crate::t!("Usage: JUSTIFYTEXT <Left|Center|Right|Middle|TL|TC|TR|ML|MC|MR|BL|BC|BR>").as_ref(),
                     );
                     return Some(Task::none());
                 }
@@ -401,7 +401,7 @@ impl OpenCADStudio {
                     Some(v) if v > 0.0 => v,
                     _ => {
                         self.command_line.push_info(
-                            "Usage: TEXTFIT <target width>   (fits selected text to that width)",
+                            crate::t!("Usage: TEXTFIT <target width>   (fits selected text to that width)").as_ref(),
                         );
                         return Some(Task::none());
                     }
@@ -662,6 +662,13 @@ impl OpenCADStudio {
                 let cmd = style.as_ref().map_or_else(TableCommand::new, |(handle, style)| {
                     TableCommand::with_style(*handle, style, multiplier)
                 });
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+
+            "TABLEDIT" => {
+                use crate::modules::annotate::table_cmd::TableditCommand;
+                let cmd = TableditCommand::new();
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -1231,8 +1238,18 @@ impl OpenCADStudio {
                             .map(|e| (h, e))
                     })
                     .collect();
+                let initial_edges: Vec<acadrust::Handle> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .filter_map(|(handle, entity)| {
+                        crate::modules::draw::modify::trim::is_trim_boundary_entity(&entity)
+                            .then_some(handle)
+                    })
+                    .collect();
                 let all_entities: Vec<_> = entities.into_iter().map(|(_, e)| e).collect();
-                let new_cmd = TrimCommand::new(all_entities);
+                let new_cmd =
+                    TrimCommand::with_cutting_edges(all_entities, initial_edges);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -1294,7 +1311,7 @@ impl OpenCADStudio {
                 let text = cmd.strip_prefix("ARCTEXT").unwrap_or("").trim().to_string();
                 if text.is_empty() {
                     self.command_line.push_info(
-                        "Usage: ARCTEXT <text>   (select an arc first; the text follows it)",
+                        crate::t!("Usage: ARCTEXT <text>   (select an arc first; the text follows it)").as_ref(),
                     );
                     return None;
                 }

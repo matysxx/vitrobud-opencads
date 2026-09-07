@@ -2068,6 +2068,7 @@ impl MultiLeaderTess for MultiLeader {
         // WireModels so the renderer respects per-piece coloring.
         let mut wires: Vec<WireModel> = Vec::new();
         wires.push(WireModel {
+            bg_adapt: None,
             point_marker: None,
             taper_widths: Vec::new(),
             pattern_stations: Vec::new(),
@@ -2129,7 +2130,10 @@ impl MultiLeaderTess for MultiLeader {
                     view_aabb,
                     world_per_pixel,
                     1.0,
-                    crate::scene::convert::tess::BlockObjectOptions::default(),
+                    crate::scene::convert::tess::BlockObjectOptions {
+                        scale_policy: block_use.scale_policy,
+                        ..crate::scene::convert::tess::BlockObjectOptions::default()
+                    },
                 )
                 .wires,
             );
@@ -2364,6 +2368,7 @@ impl MultiLeaderTess for MultiLeader {
                         xy = xy.max(p[1] as f64);
                     }
                     wires.push(WireModel {
+                        bg_adapt: None,
                         point_marker: None,
                         taper_widths: Vec::new(),
                         pattern_stations: Vec::new(),
@@ -2438,6 +2443,7 @@ impl MultiLeaderTess for MultiLeader {
                         pts.push([bx, by, z]);
                     }
                     wires.push(WireModel {
+                        bg_adapt: None,
                         point_marker: None,
                         taper_widths: Vec::new(),
                         pattern_stations: Vec::new(),
@@ -2527,6 +2533,7 @@ impl MultiLeaderTess for MultiLeader {
                         wcs_corners[3],
                     ];
                     wires.push(WireModel {
+                        bg_adapt: None,
                         point_marker: None,
                         taper_widths: Vec::new(),
                         pattern_stations: Vec::new(),
@@ -2571,6 +2578,7 @@ impl MultiLeaderTess for MultiLeader {
                         wcs_corners[0],
                     ];
                     wires.push(WireModel {
+                        bg_adapt: None,
                         point_marker: None,
                         taper_widths: Vec::new(),
                         pattern_stations: Vec::new(),
