@@ -23,7 +23,9 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.ref == 'refs/heads/main'
+    # This publisher belongs to the canonical upstream repository. Forks keep
+    # the workflow for clean synchronization but must never publish releases.
+    if: github.repository == 'HakanSeven12/OpenCADStudio' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     outputs:
       ready: ${{ steps.release.outputs.ready }}
