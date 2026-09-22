@@ -60,7 +60,6 @@ pub struct SelectionState {
     pub middle_last_pos: Option<Point>,
     pub middle_last_press_time: Option<Instant>,
 }
-
 /// Transient state of the open right-click context menu.
 #[derive(Clone, Default)]
 pub struct ContextMenuUi {
@@ -105,4 +104,3 @@ impl SelectionState {
         self.poly_crossing = false;
     }
 }
-

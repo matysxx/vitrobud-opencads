@@ -25,7 +25,6 @@ fn composite_over(fg: Color, bg: Color) -> Color {
         a: 1.0,
     }
 }
-
 #[test]
 fn test_theme_core_surfaces_contrast() {
     for theme in Theme::ALL {
@@ -634,4 +633,3 @@ fn test_block_palette_contrast() {
         }
     }
 }
-

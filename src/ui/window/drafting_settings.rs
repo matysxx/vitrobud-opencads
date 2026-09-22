@@ -20,7 +20,6 @@ pub enum DraftingSettingsTab {
     QuickProperties,
     SelectionCycling,
 }
-
 /// Working buffer of drafting settings edited in the dialog.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DraftingSettingsState {
@@ -723,4 +722,3 @@ pub fn view_window<'a>(
         Message::DraftingSettingsCloseKeep,
     )
 }
-

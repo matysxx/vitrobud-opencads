@@ -153,7 +153,7 @@ impl CadCommand for MoveCommand {
             false,
         ));
         out
-    } 
+    }
 }
 
 #[cfg(test)]

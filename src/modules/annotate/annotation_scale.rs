@@ -11,7 +11,6 @@ pub struct AnnotationScaleSelectionCommand {
     name: &'static str,
     action: &'static str,
 }
-
 impl AnnotationScaleSelectionCommand {
     pub fn new(name: &'static str, action: &'static str) -> Self {
         Self { name, action }
@@ -47,4 +46,3 @@ impl CadCommand for AnnotationScaleSelectionCommand {
         CmdResult::Cancel
     }
 }
-

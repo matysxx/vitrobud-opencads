@@ -377,7 +377,7 @@ pub(crate) fn exact_hatch_paths(
         .iter()
         .enumerate()
         .filter_map(|(ring_index, ring)| {
-            let (points, curves) = refined_boundary_ring(ring, sources, tolerance); 
+            let (points, curves) = refined_boundary_ring(ring, sources, tolerance);
             let count = points.len();
             if count < 3 {
                 return None;
