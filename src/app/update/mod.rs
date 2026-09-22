@@ -284,6 +284,85 @@ impl OpenCADStudio {
         crate::plugin::v4_support::publish_selection_changed_v4(tab_id, handles);
     }
 
+    // Keep the fork-only R12 export out of the already very large `update`
+    // stack frame. In debug test builds, adding these async/file-dialog locals
+    // directly to the central match is enough to overflow the default test
+    // thread stack in upstream's PLINE automation test.
+    #[inline(never)]
+    fn update_dxf_r12_export(&mut self) -> Task<Message> {
+        let i = self.active_tab;
+        let filename = crate::io::export_dxf_r12::suggested_filename(
+            self.tabs[i].current_path.as_deref(),
+        );
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            match crate::io::export_dxf_r12::export_to_bytes(&self.tabs[i].scene.document) {
+                Ok((bytes, report)) => {
+                    crate::sys::download_bytes(&filename, &bytes);
+                    self.command_line.push_output(
+                        crate::tf!(
+                            "EXPORTDXFR12: downloaded \"{filename}\" ({summary}).",
+                            summary = report.summary()
+                        )
+                        .as_ref(),
+                    );
+                }
+                Err(error) => self
+                    .command_line
+                    .push_error(crate::tf!("EXPORTDXFR12: {error}").as_ref()),
+            }
+            Task::none()
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        Task::perform(
+            async move {
+                crate::sys::file_dialog()
+                    .set_title("Export DXF R12 ASCII — Machine compatibility")
+                    .set_file_name(filename)
+                    .add_filter("DXF R12 ASCII", &["dxf"])
+                    .add_filter("All Files", &["*"])
+                    .save_file()
+                    .await
+                    .map(|handle| crate::sys::handle_path(&handle))
+            },
+            Message::DxfR12ExportPath,
+        )
+    }
+
+    #[inline(never)]
+    fn update_dxf_r12_export_path(&mut self, path: std::path::PathBuf) -> Task<Message> {
+        let snapshot = self.tabs[self.active_tab].scene.document.clone();
+        let result_path = path.clone();
+        Task::perform(
+            async move { crate::io::export_dxf_r12::export_to_file(&snapshot, &result_path) },
+            move |result| Message::DxfR12ExportFinished(path, Box::new(result)),
+        )
+    }
+
+    #[inline(never)]
+    fn update_dxf_r12_export_finished(
+        &mut self,
+        path: std::path::PathBuf,
+        result: Box<Result<crate::io::export_dxf_r12::ExportReport, String>>,
+    ) -> Task<Message> {
+        match *result {
+            Ok(report) => self.command_line.push_output(
+                crate::tf!(
+                    "EXPORTDXFR12: exported to \"{}\" ({}).",
+                    path.display(),
+                    report.summary()
+                )
+                .as_ref(),
+            ),
+            Err(error) => self
+                .command_line
+                .push_error(crate::tf!("EXPORTDXFR12: {error}").as_ref()),
+        }
+        Task::none()
+    }
+
     pub fn update(&mut self, msg: Message) -> Task<Message> {
         if let Some(tab) = self.tabs.get(self.active_tab) {
             crate::entities::common::set_unit_context(
@@ -1461,78 +1540,14 @@ impl OpenCADStudio {
             }
 
             // ── ASCII DXF R12 machine export ─────────────────────────────
-            Message::DxfR12Export => {
-                let i = self.active_tab;
-                let filename = crate::io::export_dxf_r12::suggested_filename(
-                    self.tabs[i].current_path.as_deref(),
-                );
+            Message::DxfR12Export => self.update_dxf_r12_export(),
 
-                #[cfg(target_arch = "wasm32")]
-                {
-                    match crate::io::export_dxf_r12::export_to_bytes(
-                        &self.tabs[i].scene.document,
-                    ) {
-                        Ok((bytes, report)) => {
-                            crate::sys::download_bytes(&filename, &bytes);
-                            self.command_line.push_output(
-                                crate::tf!(
-                                    "EXPORTDXFR12: downloaded \"{filename}\" ({summary}).",
-                                    summary = report.summary()
-                                )
-                                .as_ref(),
-                            );
-                        }
-                        Err(error) => self.command_line.push_error(
-                            crate::tf!("EXPORTDXFR12: {error}").as_ref(),
-                        ),
-                    }
-                    Task::none()
-                }
-
-                #[cfg(not(target_arch = "wasm32"))]
-                Task::perform(
-                    async move {
-                        crate::sys::file_dialog()
-                            .set_title("Export DXF R12 ASCII — Machine compatibility")
-                            .set_file_name(filename)
-                            .add_filter("DXF R12 ASCII", &["dxf"])
-                            .add_filter("All Files", &["*"])
-                            .save_file()
-                            .await
-                            .map(|handle| crate::sys::handle_path(&handle))
-                    },
-                    Message::DxfR12ExportPath,
-                )
-            }
-
-            Message::DxfR12ExportPath(Some(path)) => {
-                let snapshot = self.tabs[self.active_tab].scene.document.clone();
-                let result_path = path.clone();
-                Task::perform(
-                    async move {
-                        crate::io::export_dxf_r12::export_to_file(&snapshot, &result_path)
-                    },
-                    move |result| Message::DxfR12ExportFinished(path, Box::new(result)),
-                )
-            }
+            Message::DxfR12ExportPath(Some(path)) => self.update_dxf_r12_export_path(path),
 
             Message::DxfR12ExportPath(None) => Task::none(),
 
             Message::DxfR12ExportFinished(path, result) => {
-                match *result {
-                    Ok(report) => self.command_line.push_output(
-                        crate::tf!(
-                            "EXPORTDXFR12: exported to \"{}\" ({}).",
-                            path.display(),
-                            report.summary()
-                        )
-                        .as_ref(),
-                    ),
-                    Err(error) => self
-                        .command_line
-                        .push_error(crate::tf!("EXPORTDXFR12: {error}").as_ref()),
-                }
-                Task::none()
+                self.update_dxf_r12_export_finished(path, result)
             }
 
             // ── OBJ import ────────────────────────────────────────────────
