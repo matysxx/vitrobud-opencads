@@ -41,3 +41,5 @@
   (`18-upstream-sync-0425f979/`)
 - `OCSSTACK-20` — Prevent inherited weekly release publication in forks
   (`20-fork-release-guard/`)
+- `OCSSTACK-21` — Sync reviewed upstream revision `652f4d6b`
+  (`21-upstream-sync-652f4d6b/`)

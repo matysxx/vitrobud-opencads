@@ -16,8 +16,6 @@ pub(crate) struct HostSession<'a> {
     app: &'a mut OpenCADStudio,
     tab: usize,
     doc_store: Option<DocumentSnapshotStore<DocumentViewData>>,
-    /// In-flight DocApi v2 undo delta (between `push_undo` and `finalize_op`).
-    doc_api_pending: Option<super::history::PendingDelta>,
 }
 
 impl<'a> HostSession<'a> {
@@ -26,7 +24,6 @@ impl<'a> HostSession<'a> {
             app,
             tab,
             doc_store: None,
-            doc_api_pending: None,
         }
     }
 
@@ -245,39 +242,6 @@ impl<'a> HostSession<'a> {
         self.app.push_undo_snapshot(self.tab, label);
     }
 
-    // ── DocApi v2 accessors (used by `app::doc_api` backend) ───────────────
-
-    pub(crate) fn scene(&self) -> &crate::scene::Scene {
-        &self.app.tabs[self.tab].scene
-    }
-
-    pub(crate) fn scene_mut(&mut self) -> &mut crate::scene::Scene {
-        &mut self.app.tabs[self.tab].scene
-    }
-
-    /// DocApi `push_undo`: capture entity and document-structure changes for one op.
-    pub(crate) fn begin_doc_api_undo(&mut self, label: &str) {
-        self.doc_api_pending = self.app.begin_undo(self.tab, label, 1, false);
-    }
-
-    pub(crate) fn cancel_doc_api_undo(&mut self) {
-        if self.doc_api_pending.take().is_some() {
-            self.scene_mut().take_undo_recording();
-        }
-    }
-
-    /// DocApi `finalize_op`: close the delta + republish the document view.
-    /// The underlying entity op (add/update/remove/register_solid_model) already
-    /// bumped `geometry_epoch`, so we do NOT bump again here — exactly one undo
-    /// step is recorded, and the epoch has advanced for this op.
-    pub(crate) fn commit_doc_api_undo(&mut self) {
-        self.set_dirty();
-        if let Some(pending) = self.doc_api_pending.take() {
-            self.app.commit_undo_delta(self.tab, pending);
-        }
-        self.publish_document_view();
-    }
-
     pub fn set_dirty(&mut self) {
         self.app.tabs[self.tab].dirty = true;
     }
@@ -293,6 +257,207 @@ impl<'a> HostSession<'a> {
     pub fn push_error(&mut self, msg: &str) {
         self.app.command_line.push_error(msg);
     }
+
+    pub fn add_layer(&mut self, config: ocs_plugin_api::host::LayerConfig) -> Option<Handle> {
+        let trimmed = config.name.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let doc = self.document_mut();
+        if doc.layers.contains(trimmed) {
+            return None;
+        }
+
+        let resolved_lt = match config.linetype {
+            // A name the drawing does not carry would leave the LAYER record
+            // pointing at no LTYPE, so it is refused rather than written.
+            Some(ref lt_name) => match resolve_linetype(doc, lt_name) {
+                Some(name) => name,
+                None => return None,
+            },
+            None => "Continuous".to_string(),
+        };
+
+        let mut layer = acadrust::tables::Layer::new(trimmed);
+        let handle = doc.allocate_handle();
+        layer.handle = handle;
+        layer.color = config.color.unwrap_or(acadrust::types::Color::Index(7));
+        layer.line_type = resolved_lt;
+        layer.line_weight = config.lineweight.unwrap_or(acadrust::types::LineWeight::ByLayer);
+        layer.flags.off = config.off.unwrap_or(false);
+        if let Some(frz) = config.frozen {
+            if frz {
+                layer.freeze();
+            } else {
+                layer.thaw();
+            }
+        }
+        layer.flags.locked = config.locked.unwrap_or(false);
+        layer.is_plottable = config.plottable.unwrap_or(true);
+        layer.transparency = config.transparency.unwrap_or(acadrust::types::Transparency::ByLayer);
+        layer.description = config.description.unwrap_or_default();
+
+        let _ = doc.layers.add(layer);
+
+        self.app.tabs[self.tab].dirty = true;
+        self.app.tabs[self.tab]
+            .scene
+            .invalidate_layer_dependencies(&[trimmed.to_string()]);
+        self.app.refresh_layer_panel();
+        self.publish_document_view();
+        Some(handle)
+    }
+
+    pub fn modify_layer(&mut self, config: ocs_plugin_api::host::LayerConfig) -> bool {
+        let trimmed = config.name.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        let resolved_lt = match config.linetype {
+            Some(ref lt_name) => match resolve_linetype(self.document_mut(), lt_name) {
+                Some(name) => Some(name),
+                None => return false,
+            },
+            None => None,
+        };
+
+        let doc = self.document_mut();
+        let Some(existing) = doc.layers.get_mut(trimmed) else {
+            return false;
+        };
+
+        if let Some(c) = config.color {
+            existing.color = c;
+            existing.color_name = None;
+            existing.book_name = None;
+        }
+        if let Some(lt) = resolved_lt {
+            existing.line_type = lt;
+        }
+        if let Some(lw) = config.lineweight {
+            existing.line_weight = lw;
+        }
+        if let Some(off) = config.off {
+            existing.flags.off = off;
+        }
+        if let Some(frz) = config.frozen {
+            if frz {
+                existing.freeze();
+            } else {
+                existing.thaw();
+            }
+        }
+        if let Some(lck) = config.locked {
+            existing.flags.locked = lck;
+        }
+        if let Some(plt) = config.plottable {
+            existing.is_plottable = plt;
+        }
+        if let Some(tr) = config.transparency {
+            existing.transparency = tr;
+        }
+        if let Some(desc) = config.description {
+            existing.description = desc;
+        }
+
+        self.app.tabs[self.tab].dirty = true;
+        self.app.tabs[self.tab]
+            .scene
+            .invalidate_layer_dependencies(&[trimmed.to_string()]);
+        self.app.refresh_layer_panel();
+        self.publish_document_view();
+        true
+    }
+
+    /// Run a command string on the active tab's command line (AutoLISP style).
+    /// Supports AutoCAD-style `PAUSE` (and `\`) input queuing, explicit `ENTER` /
+    /// `RETURN` tokens, and `\n` trailing newline execution.
+    pub fn execute_command(&mut self, cmd: &str) -> bool {
+        let has_newline = cmd.ends_with('\n') || cmd.ends_with('\r');
+        let trimmed = cmd.trim();
+
+        // 1. ESC / CANCEL handling
+        if trimmed.eq_ignore_ascii_case("ESC")
+            || trimmed.eq_ignore_ascii_case("ESCAPE")
+            || trimmed.eq_ignore_ascii_case("CANCEL")
+        {
+            self.app.tabs[self.tab].pending_pause_tokens = None;
+            let _ = self.app.feed_command(crate::command::StepInput::Escape);
+            self.publish_document_view();
+            return true;
+        }
+
+        // 2. If a PAUSE is already pending for this tab:
+        if let Some(ref mut queue) = self.app.tabs[self.tab].pending_pause_tokens {
+            if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("ENTER")
+                || trimmed.eq_ignore_ascii_case("RETURN")
+            {
+                queue.push("ENTER".to_string());
+            } else {
+                for part in trimmed.split_whitespace() {
+                    queue.push(part.to_string());
+                }
+                if has_newline {
+                    queue.push("ENTER".to_string());
+                }
+            }
+            return true;
+        }
+
+        // 3. ENTER / RETURN / empty string handling when no pause is pending
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("ENTER")
+            || trimmed.eq_ignore_ascii_case("RETURN")
+        {
+            if self.app.tabs[self.tab].active_cmd.is_some() {
+                let _ = self.app.feed_command(crate::command::StepInput::Enter);
+                self.publish_document_view();
+                return true;
+            }
+            return false;
+        }
+
+        // 4. Command execution. The command line's own driver owns this: it
+        //    resolves the alias, tears down whatever was running, dispatches an
+        //    inline-argument line as a whole (`CLAYER TEST`, `UCS ORIGIN 0,0`),
+        //    and otherwise starts the tool and feeds it the rest of the tokens,
+        //    PAUSE included. Leaving that here rather than repeating it keeps a
+        //    scripted line and a typed one on the same path.
+        let tab = self.tab;
+        self.app.suppress_plugin_dispatch = true;
+        let task = if self.app.tabs[tab].active_cmd.is_some() {
+            // A running command owns these tokens: they answer its prompts.
+            let mut queue: Vec<String> =
+                trimmed.split_whitespace().map(str::to_string).collect();
+            if has_newline {
+                queue.push("ENTER".to_string());
+            }
+            self.app.tabs[tab].pending_pause_tokens = Some(queue);
+            self.app.drain_pending_pause_tokens(tab)
+        } else {
+            self.app.run_command_line_streaming(trimmed, has_newline)
+        };
+        let _ = self.app.drive_headless_task(task);
+        self.app.suppress_plugin_dispatch = false;
+
+        self.app.refresh_layer_panel();
+        self.publish_document_view();
+        true
+    }
+}
+
+/// The stored spelling of `name` in the drawing's linetype table, loading the
+/// standard linetypes first when it is not there yet. `None` when the drawing
+/// cannot supply it: a layer must not reference a linetype that does not exist.
+fn resolve_linetype(doc: &mut acadrust::CadDocument, name: &str) -> Option<String> {
+    let stored = |doc: &acadrust::CadDocument| doc.line_types.get(name).map(|lt| lt.name.clone());
+    stored(doc).or_else(|| {
+        crate::io::linetypes::populate_document(doc);
+        stored(doc)
+    })
 }
 
 /// The stable contract a plugin's `dispatch` sees. Each method forwards to the
@@ -396,9 +561,14 @@ impl HostApi for HostSession<'_> {
     fn close_document_view_v4(&mut self, tab_id: u64) {
         self.close_document_view_v4(tab_id)
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn doc_api_dispatch(&mut self, tab_id: u64, bytes: &[u8]) -> Result<Vec<u8>, String> {
-        super::doc_api::execute_doc_api(self, tab_id, bytes)
+    fn add_layer(&mut self, config: ocs_plugin_api::host::LayerConfig) -> Option<Handle> {
+        self.add_layer(config)
+    }
+    fn modify_layer(&mut self, config: ocs_plugin_api::host::LayerConfig) -> bool {
+        self.modify_layer(config)
+    }
+    fn execute_command(&mut self, cmd: &str) -> bool {
+        self.execute_command(cmd)
     }
 }
 
@@ -457,6 +627,7 @@ pub(crate) struct PluginProcessInteractiveAdapter {
     pub command_id: u64,
     prompt: Option<String>,
     needs_entity_pick: Option<bool>,
+    is_done: bool,
 }
 
 impl PluginProcessInteractiveAdapter {
@@ -471,12 +642,27 @@ impl PluginProcessInteractiveAdapter {
             command_id,
             prompt,
             needs_entity_pick,
+            is_done: false,
         }
     }
 
     fn refresh(&mut self) {
         self.prompt = self.process.get_prompt(self.command_id).ok();
         self.needs_entity_pick = self.process.needs_entity_pick(self.command_id).ok();
+    }
+
+    fn cancel(&mut self) {
+        if !self.is_done {
+            self.is_done = true;
+            use ocs_plugin_api::ipc::protocol::InteractiveEvent;
+            let _ = self.process.interactive_event(self.command_id, InteractiveEvent::Cancel);
+        }
+    }
+}
+
+impl Drop for PluginProcessInteractiveAdapter {
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -497,6 +683,9 @@ impl crate::command::CadCommand for PluginProcessInteractiveAdapter {
             )
             .map(plugin_step_to_result)
             .unwrap_or(crate::command::CmdResult::Cancel);
+        if matches!(result, crate::command::CmdResult::CommitAndExit(_) | crate::command::CmdResult::Cancel) {
+            self.is_done = true;
+        }
         self.refresh();
         result
     }
@@ -507,8 +696,15 @@ impl crate::command::CadCommand for PluginProcessInteractiveAdapter {
             .interactive_event(self.command_id, InteractiveEvent::Enter)
             .map(plugin_step_to_result)
             .unwrap_or(crate::command::CmdResult::Cancel);
+        if matches!(result, crate::command::CmdResult::CommitAndExit(_) | crate::command::CmdResult::Cancel) {
+            self.is_done = true;
+        }
         self.refresh();
         result
+    }
+    fn on_escape(&mut self) -> crate::command::CmdResult {
+        self.cancel();
+        crate::command::CmdResult::Cancel
     }
     fn needs_entity_pick(&self) -> bool {
         self.needs_entity_pick.unwrap_or(false)
@@ -526,6 +722,9 @@ impl crate::command::CadCommand for PluginProcessInteractiveAdapter {
             )
             .map(plugin_step_to_result)
             .unwrap_or(crate::command::CmdResult::Cancel);
+        if matches!(result, crate::command::CmdResult::CommitAndExit(_) | crate::command::CmdResult::Cancel) {
+            self.is_done = true;
+        }
         self.refresh();
         result
     }
@@ -899,5 +1098,160 @@ mod tests {
             .expect("record missing");
         assert_eq!(got.values.len(), 1);
         assert!(matches!(got.values[0], XDataValue::Integer32(123)));
+    }
+
+    #[test]
+    fn test_plugin_add_layer_with_defaults_and_modify() {
+        use ocs_plugin_api::host::LayerConfig;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let mut host = HostSession::new(&mut app, 0);
+
+        // 1. Add layer with minimal config (only name specified)
+        let config = LayerConfig {
+            name: "ELECTRICAL".to_string(),
+            ..Default::default()
+        };
+        let handle = host.add_layer(config).expect("should create layer");
+        assert_ne!(handle, acadrust::Handle::NULL);
+
+        // Verify defaults were applied
+        let layer = host.document().layers.get("ELECTRICAL").expect("layer should exist");
+        assert_eq!(layer.color, acadrust::types::Color::Index(7));
+        assert_eq!(layer.line_type, "Continuous");
+        assert_eq!(layer.line_weight, acadrust::types::LineWeight::ByLayer);
+        assert!(!layer.flags.off);
+        assert!(!layer.flags.frozen);
+        assert!(!layer.flags.locked);
+        assert!(layer.is_plottable);
+
+        // 2. Duplicate add_layer should be rejected (return None)
+        let dup_config = LayerConfig {
+            name: "ELECTRICAL".to_string(),
+            color: Some(acadrust::types::Color::Index(1)),
+            ..Default::default()
+        };
+        assert!(host.add_layer(dup_config).is_none(), "duplicate layer should return None");
+
+        // 3. Modify only color and locked; other properties should remain untouched
+        let mod_config = LayerConfig {
+            name: "ELECTRICAL".to_string(),
+            color: Some(acadrust::types::Color::Index(1)),
+            locked: Some(true),
+            ..Default::default()
+        };
+        assert!(host.modify_layer(mod_config));
+
+        let updated = host.document().layers.get("ELECTRICAL").expect("layer should exist");
+        assert_eq!(updated.color, acadrust::types::Color::Index(1)); // Modified to red
+        assert!(updated.flags.locked);                               // Modified to locked
+        assert_eq!(updated.line_type, "Continuous");                 // Kept as-is
+        assert_eq!(updated.line_weight, acadrust::types::LineWeight::ByLayer); // Kept as-is
+        assert!(!updated.flags.off);                                 // Kept as-is
+
+        // 4. Modify nonexistent layer returns false
+        let non_existent = LayerConfig {
+            name: "DOES_NOT_EXIST".to_string(),
+            color: Some(acadrust::types::Color::Index(2)),
+            ..Default::default()
+        };
+        assert!(!host.modify_layer(non_existent));
+    }
+
+    #[test]
+    fn test_plugin_execute_command() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let mut host = HostSession::new(&mut app, 0);
+
+        // 1. Single-line command with newline finishes command
+        assert!(host.execute_command("LINE 0,0 10,10\n"));
+        assert!(host.app.tabs[0].active_cmd.is_none());
+        assert_eq!(host.document().entities().count(), 1);
+
+        // 2. Streamed command without newline leaves tool active
+        assert!(host.execute_command("LINE 10,10"));
+        assert!(host.app.tabs[0].active_cmd.is_some());
+        // Feed next point without newline
+        assert!(host.execute_command("20,20"));
+        assert!(host.app.tabs[0].active_cmd.is_some());
+        // Send explicit ENTER
+        assert!(host.execute_command("ENTER"));
+        assert!(host.app.tabs[0].active_cmd.is_none());
+        assert_eq!(host.document().entities().count(), 2);
+
+        // 3. Command with PAUSE buffers remaining tokens until point is provided
+        assert!(host.execute_command("LINE 20,20 PAUSE ENTER"));
+        assert!(host.app.tabs[0].active_cmd.is_some());
+        assert_eq!(
+            host.app.tabs[0].pending_pause_tokens,
+            Some(vec!["ENTER".to_string()])
+        );
+        // User clicks second point in viewport (which calls on_point + apply_cmd_result)
+        let r = host.app.tabs[0]
+            .active_cmd
+            .as_mut()
+            .unwrap()
+            .on_point(glam::DVec3::new(30.0, 30.0, 0.0));
+        let _ = host.app.apply_cmd_result(r);
+        // Draining in apply_cmd_result should have executed ENTER and completed LINE
+        assert!(host.app.tabs[0].active_cmd.is_none());
+        assert_eq!(host.document().entities().count(), 3);
+
+        // 4. Command with PAUSE and trailing \n
+        assert!(host.execute_command("LINE 30,30 PAUSE\n"));
+        assert!(host.app.tabs[0].active_cmd.is_some());
+        assert_eq!(
+            host.app.tabs[0].pending_pause_tokens,
+            Some(vec!["ENTER".to_string()])
+        );
+        // Escape cancels paused command cleanly
+        assert!(host.execute_command("ESC"));
+        assert!(host.app.tabs[0].active_cmd.is_none());
+        assert_eq!(host.app.tabs[0].pending_pause_tokens, None);
+
+        // 5. CLAYER command
+        host.add_layer(ocs_plugin_api::host::LayerConfig {
+            name: "TEST".to_string(),
+            ..Default::default()
+        });
+        assert!(host.execute_command("CLAYER TEST\n"));
+        assert_eq!(host.document().header.current_layer_name, "TEST");
+
+        // 6. Non-typical command: POINT
+        assert!(host.execute_command("POINT 50,50\n"));
+        assert!(host.app.tabs[0].active_cmd.is_none());
+        assert_eq!(host.document().entities().count(), 4);
+
+        // 7. Non-typical command: DONUT
+        assert!(host.execute_command("DONUT 10 30 100,100 \n"));
+        assert!(host.app.tabs[0].active_cmd.is_none());
+        assert!(host.document().entities().count() >= 5);
+
+        // 8. Non-typical command: ELLIPSE
+        assert!(host.execute_command("ELLIPSE 0,0 80,0 30\n"));
+        assert!(host.app.tabs[0].active_cmd.is_none());
+
+        // 9. Non-typical inline commands: UCS
+        assert!(host.execute_command("UCS ORIGIN 50,50,0\n"));
+        assert!(host.app.tabs[0].active_ucs.is_some());
+        assert!(host.execute_command("UCS W\n"));
+        assert!(host.app.tabs[0].active_ucs.is_none());
+
+        // 10. Non-typical inline commands: SETVAR
+        assert!(host.execute_command("SETVAR PDMODE 35\n"));
+
+        // 11. Viewport visual style via drive_headless_task
+        assert!(host.execute_command("VSCURRENT FLATSHADED\n"));
+        assert_eq!(
+            host.app.tabs[0].render_mode,
+            ocs_plugin_api::host::acadrust::entities::ViewportRenderMode::FlatShaded
+        );
+
+        // 12. Drafting aids toggle via drive_headless_task
+        let initial_grid = host.app.show_grid;
+        assert!(host.execute_command("GRID\n"));
+        assert_eq!(host.app.show_grid, !initial_grid);
     }
 }

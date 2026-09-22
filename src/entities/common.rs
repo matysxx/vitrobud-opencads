@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use crate::scene::model::object::{GripDef, GripShape, PropValue, Property};
 use crate::scene::model::wire_model::PatternStationPiece;
 
+pub const VARIES_LABEL: &str = "*VARIES*";
+
 /// Linear / angular unit format pulled from the document header so the
 /// per-thread properties pipeline can format values consistently without
 /// passing the document through every callsite.
@@ -101,6 +103,24 @@ pub fn unit_context() -> UnitContext {
 /// produce "n'-d/D"" style strings (1 unit = 1 inch); decimal / scientific /
 /// engineering / Windows-desktop fall back to plain decimal at LUPREC places.
 pub fn format_length(value: f64) -> String {
+    without_negative_zero(format_signed_length(value))
+}
+
+/// Drop the sign from a formatted number whose digits all rounded to zero. A
+/// rotation leaves coordinates like -1e-15 behind, which read as `-0.0000`.
+pub fn without_negative_zero(text: String) -> String {
+    match text.strip_prefix('-') {
+        Some(rest)
+            if rest.chars().any(|c| c.is_ascii_digit())
+                && !rest.chars().any(|c| matches!(c, '1'..='9')) =>
+        {
+            rest.to_string()
+        }
+        _ => text,
+    }
+}
+
+fn format_signed_length(value: f64) -> String {
     let ctx = unit_context();
     let prec = ctx.luprec.max(0) as usize;
     match ctx.lunits {
@@ -114,7 +134,11 @@ pub fn format_length(value: f64) -> String {
             let per_foot = 12.0 * scale;
             let feet = (total / per_foot).trunc();
             let rem = (total - feet * per_foot) / scale;
-            format!("{}{:.0}'-{:.*}\"", sign, feet, prec, rem)
+            if feet == 0.0 {
+                format!("{}{:.*}\"", sign, prec, rem)
+            } else {
+                format!("{}{:.0}'-{:.*}\"", sign, feet, prec, rem)
+            }
         }
         4 | 5 => {
             // Architectural and fractional formats use 1/64-inch resolution.
@@ -142,6 +166,9 @@ pub fn format_length(value: f64) -> String {
             };
             let unit_suffix = if ctx.lunits == 4 { "\"" } else { "" };
             match feet {
+                Some(f) if f == 0.0 => {
+                    format!("{}{:.0}{}{}", sign, whole, frac_str, unit_suffix)
+                }
                 Some(f) => format!("{}{:.0}'-{:.0}{}{}", sign, f, whole, frac_str, unit_suffix),
                 None => format!("{}{:.0}{}", sign, whole, frac_str),
             }
@@ -164,6 +191,10 @@ pub fn format_area(value: f64) -> String {
 
 /// Format an angle (input in radians) using AUNITS / AUPREC.
 pub fn format_angle(value_rad: f64) -> String {
+    without_negative_zero(format_signed_angle(value_rad))
+}
+
+fn format_signed_angle(value_rad: f64) -> String {
     let ctx = unit_context();
     let prec = ctx.auprec.max(0) as usize;
     match ctx.aunits {
@@ -252,6 +283,20 @@ fn surveyor(value_rad: f64, prec: usize) -> String {
 /// A leading `-` is a sign, but the `-` inside `5'-9"` is a separator — after
 /// feet there is nothing left to subtract from.
 pub fn parse_length(text: &str) -> Option<f64> {
+    parse_length_unbounded(text).filter(|value| typed_value_in_range(*value))
+}
+
+/// Largest magnitude a typed length or angle may have. Rust's float parser
+/// accepts `inf`, `nan` and overflowing exponents; geometry built from those,
+/// or from values whose differences overflow, breaks downstream tolerance and
+/// intersection math.
+pub const MAX_TYPED_MAGNITUDE: f64 = 1e15;
+
+pub fn typed_value_in_range(value: f64) -> bool {
+    value.is_finite() && value.abs() <= MAX_TYPED_MAGNITUDE
+}
+
+fn parse_length_unbounded(text: &str) -> Option<f64> {
     let text = text.trim();
     let (sign, rest) = match text.strip_prefix('-') {
         Some(rest) => (-1.0, rest.trim_start()),
@@ -308,6 +353,10 @@ fn parse_inches(text: &str) -> Option<f64> {
 /// number is read in whatever convention the drawing is set to, so what the
 /// readout shows can be typed straight back.
 pub fn parse_angle(text: &str) -> Option<f64> {
+    parse_angle_unbounded(text).filter(|value| typed_value_in_range(*value))
+}
+
+fn parse_angle_unbounded(text: &str) -> Option<f64> {
     let text = text.trim();
     if text.is_empty() {
         return None;
@@ -648,11 +697,16 @@ pub fn parse_f64(value: &str) -> Option<f64> {
         .ok()
         .or_else(|| parse_length(t))
         .or_else(|| parse_angle_deg(t))
+        .filter(|value| typed_value_in_range(*value))
 }
 
 /// Parse an angle string the panel displayed via AUNITS back to DEGREES:
 /// "30", "30°"/"30d", DMS "30°15'20.5\"", grads "33.33g", radians "0.52r".
 pub fn parse_angle_deg(value: &str) -> Option<f64> {
+    parse_angle_deg_unbounded(value).filter(|value| typed_value_in_range(*value))
+}
+
+fn parse_angle_deg_unbounded(value: &str) -> Option<f64> {
     let s = value.trim();
     if s.is_empty() {
         return None;
@@ -702,6 +756,30 @@ pub fn parse_angle_deg(value: &str) -> Option<f64> {
 /// there is one obvious place to see that the maths moved out.
 pub use cadkernel::geom2d::BulgeArc;
 
+/// Convert a 2D BulgeArc into a 3D TangentGeom::Arc with its world center,
+/// plane axes, radius, and counter-clockwise start/end sweep angles.
+pub fn bulge_arc_to_tangent(
+    arc: &BulgeArc,
+    to_wcs: &dyn Fn(f64, f64) -> (f64, f64, f64),
+    normal: (f64, f64, f64),
+) -> crate::scene::model::wire_model::TangentGeom {
+    let (cwx, cwy, cwz) = to_wcs(arc.center[0], arc.center[1]);
+    let (ax, ay) = crate::scene::view::transform::ocs_axes(normal);
+    let (sa, ea) = if arc.sweep >= 0.0 {
+        (arc.start_angle, arc.end_angle)
+    } else {
+        (arc.end_angle, arc.start_angle)
+    };
+    crate::scene::model::wire_model::TangentGeom::Arc {
+        center: [cwx, cwy, cwz],
+        axis_x: [ax.0, ax.1, ax.2],
+        axis_y: [ay.0, ay.1, ay.2],
+        radius: arc.radius,
+        start_angle: sa,
+        end_angle: ea,
+    }
+}
+
 /// Triangulate the solid bands a `wide_fills` returns into the flat WCS f64
 /// triangle list `RenderEntity::pick_tris` carries, so a wide polyline is
 /// selectable across the band it draws and not just along its centreline.
@@ -713,14 +791,70 @@ pub use cadkernel::geom2d::BulgeArc;
 ///
 /// An arc band is an annular sector — concave on its inner edge — so this ear
 /// clips rather than fans.
+/// Directly triangulates a band polygon (either a 4-vertex straight trapezoid or
+/// a 2m-vertex annular sector quad strip) into non-overlapping triangles.
+/// Falls back to `triangulate_planar` if the vertex count is odd or less than 4.
+pub(crate) fn triangulate_band_ring(ring: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    let n = ring.len();
+    if n >= 4 && n % 2 == 0 {
+        let m = n / 2;
+        let mut tris = Vec::with_capacity((m - 1) * 6);
+        for j in 0..m - 1 {
+            let p0 = ring[j];
+            let p1 = ring[j + 1];
+            let p2 = ring[2 * m - 2 - j];
+            let p3 = ring[2 * m - 1 - j];
+            tris.push(p0);
+            tris.push(p1);
+            tris.push(p2);
+            tris.push(p0);
+            tris.push(p2);
+            tris.push(p3);
+        }
+        tris
+    } else {
+        crate::entities::mesh::triangulate_planar(ring)
+    }
+}
+
 pub(crate) fn wide_band_tris(origin: [f64; 2], fills: &[Vec<[f32; 2]>]) -> Vec<[f64; 3]> {
-    let mut out = Vec::new();
+    let mut total_verts = 0;
     for poly in fills {
-        let ring: Vec<[f64; 3]> = poly
-            .iter()
-            .map(|&[x, y]| [origin[0] + x as f64, origin[1] + y as f64, 0.0])
-            .collect();
-        out.extend(crate::entities::mesh::triangulate_planar(&ring));
+        let n = poly.len();
+        if n >= 4 && n % 2 == 0 {
+            total_verts += (n / 2 - 1) * 6;
+        }
+    }
+    let mut out = Vec::with_capacity(total_verts);
+    let ox = origin[0];
+    let oy = origin[1];
+    for poly in fills {
+        let n = poly.len();
+        if n >= 4 && n % 2 == 0 {
+            let m = n / 2;
+            for j in 0..m - 1 {
+                let v0 = poly[j];
+                let v1 = poly[j + 1];
+                let v2 = poly[2 * m - 2 - j];
+                let v3 = poly[2 * m - 1 - j];
+                let p0 = [ox + v0[0] as f64, oy + v0[1] as f64, 0.0];
+                let p1 = [ox + v1[0] as f64, oy + v1[1] as f64, 0.0];
+                let p2 = [ox + v2[0] as f64, oy + v2[1] as f64, 0.0];
+                let p3 = [ox + v3[0] as f64, oy + v3[1] as f64, 0.0];
+                out.push(p0);
+                out.push(p1);
+                out.push(p2);
+                out.push(p0);
+                out.push(p2);
+                out.push(p3);
+            }
+        } else {
+            let ring: Vec<[f64; 3]> = poly
+                .iter()
+                .map(|&[x, y]| [ox + x as f64, oy + y as f64, 0.0])
+                .collect();
+            out.extend(crate::entities::mesh::triangulate_planar(&ring));
+        }
     }
     out
 }
@@ -777,8 +911,8 @@ pub(crate) fn thick_band_tube(
             push_seg(&mut lines, top[k], top[kn]);
             fill_tris.extend_from_slice(&[bot[k], bot[kn], top[kn], bot[k], top[kn], top[k]]);
         }
-        fill_tris.extend(crate::entities::mesh::triangulate_planar(&bot));
-        fill_tris.extend(crate::entities::mesh::triangulate_planar(&top));
+        fill_tris.extend(triangulate_band_ring(&bot));
+        fill_tris.extend(triangulate_band_ring(&top));
     }
     (fill_tris, lines)
 }
@@ -1034,21 +1168,37 @@ pub(crate) fn polyline_segment_fill(
         let r = r as f32;
         let r_outer = |t: f32| r + (hw0 + (hw1 - hw0) * t);
         let r_inner = |t: f32| (r - (hw0 + (hw1 - hw0) * t)).max(0.0);
-        let mut boundary = Vec::with_capacity((segs as usize + 1) * 2);
+        let segs_u = segs as usize;
+        let mut boundary = vec![[0.0_f32; 2]; (segs_u + 1) * 2];
         let inv = 1.0 / segs as f32;
-        for j in 0..=segs {
+        for j in 0..=segs_u {
             let t = j as f32 * inv;
             let ang = sa + span * t;
+            let (sin, cos) = ang.sin_cos();
             let ro = r_outer(t);
-            boundary.push([cx + ro * ang.cos(), cy + ro * ang.sin()]);
-        }
-        for j in (0..=segs).rev() {
-            let t = j as f32 * inv;
-            let ang = sa + span * t;
             let ri = r_inner(t);
-            boundary.push([cx + ri * ang.cos(), cy + ri * ang.sin()]);
+            boundary[j] = [cx + ro * cos, cy + ro * sin];
+            boundary[2 * segs_u + 1 - j] = [cx + ri * cos, cy + ri * sin];
         }
         Some(boundary)
+    }
+}
+
+#[cfg(test)]
+mod typed_range_tests {
+    use super::*;
+
+    #[test]
+    fn non_finite_and_huge_typed_values_are_rejected() {
+        for text in ["inf", "-inf", "nan", "1e400", "1e308"] {
+            assert_eq!(parse_length(text), None, "length {text}");
+            assert_eq!(parse_angle(text), None, "angle {text}");
+            assert_eq!(parse_f64(text), None, "property {text}");
+            assert_eq!(parse_angle_deg(text), None, "angle degrees {text}");
+        }
+        assert_eq!(parse_length("1e16"), None);
+        assert_eq!(parse_length("1e15"), Some(1e15));
+        assert_eq!(parse_length("-5'-6\""), Some(-66.0));
     }
 }
 
@@ -1078,7 +1228,9 @@ mod length_format_tests {
 
     #[test]
     fn architectural_carries_into_feet() {
-        assert_eq!(with_units(4, 4, 11.99), "0'-11 63/64\"");
+        assert_eq!(with_units(4, 4, 11.99), "11 63/64\"");
+        assert_eq!(with_units(4, 4, 0.5), "0 1/2\"");
+        assert_eq!(with_units(4, 4, -9.25), "-9 1/4\"");
         assert_eq!(with_units(4, 4, 11.999), "1'-0\"");
         assert_eq!(with_units(4, 4, 23.999), "2'-0\"");
         assert_eq!(with_units(4, 4, 66.5), "5'-6 1/2\"");
@@ -1087,7 +1239,9 @@ mod length_format_tests {
 
     #[test]
     fn engineering_carries_into_feet() {
-        assert_eq!(with_units(3, 1, 11.94), "0'-11.9\"");
+        assert_eq!(with_units(3, 1, 11.94), "11.9\"");
+        assert_eq!(with_units(3, 1, 0.5), "0.5\"");
+        assert_eq!(with_units(3, 1, -9.25), "-9.3\"");
         assert_eq!(with_units(3, 1, 11.99), "1'-0.0\"");
         assert_eq!(with_units(3, 1, 23.99), "2'-0.0\"");
         assert_eq!(with_units(3, 2, 11.999), "1'-0.00\"");
@@ -1170,5 +1324,62 @@ mod angle_format_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod negative_zero_format_tests {
+    use super::*;
+
+    /// What ROTATE leaves in X when it turns the point (0, 10) by 180°.
+    const ROTATION_NOISE: f64 = -1.2246467991473533e-15;
+
+    fn length(lunits: i16, luprec: i16, value: f64) -> String {
+        let mut ctx = unit_context();
+        ctx.lunits = lunits;
+        ctx.luprec = luprec;
+        set_unit_context(ctx);
+        format_length(value)
+    }
+
+    fn angle(aunits: i16, auprec: i16, value_rad: f64) -> String {
+        let mut ctx = unit_context();
+        ctx.aunits = aunits;
+        ctx.auprec = auprec;
+        set_unit_context(ctx);
+        format_angle(value_rad)
+    }
+
+    /// A length that rounds to zero reads as zero in every format, instead of
+    /// `-0.0000` in Properties after a rotation leaves float noise behind.
+    #[test]
+    fn a_length_that_rounds_to_zero_has_no_sign() {
+        assert_eq!(length(2, 4, ROTATION_NOISE), "0.0000");
+        assert_eq!(length(3, 4, ROTATION_NOISE), "0.0000\"");
+        assert_eq!(length(4, 4, ROTATION_NOISE), "0\"");
+        assert_eq!(length(5, 4, ROTATION_NOISE), "0");
+    }
+
+    #[test]
+    fn an_angle_that_rounds_to_zero_has_no_sign() {
+        assert_eq!(angle(0, 0, ROTATION_NOISE), "0°");
+        assert_eq!(angle(1, 0, ROTATION_NOISE), "0d0'0\"");
+        assert_eq!(angle(2, 0, ROTATION_NOISE), "0g");
+        assert_eq!(angle(3, 2, ROTATION_NOISE), "0.00r");
+    }
+
+    /// Values that still show a digit keep their sign.
+    #[test]
+    fn a_visible_negative_keeps_its_sign() {
+        assert_eq!(length(2, 4, -2.5), "-2.5000");
+        assert_eq!(length(2, 0, -0.6), "-1");
+        assert_eq!(angle(0, 0, -45f64.to_radians()), "-45°");
+        assert_eq!(angle(1, 1, -0.0001f64.to_radians()), "-0d0'0.4\"");
+    }
+
+    #[test]
+    fn a_negative_infinite_value_keeps_its_sign() {
+        assert_eq!(length(2, 4, f64::NEG_INFINITY), "-inf");
+        assert_eq!(angle(0, 0, f64::NEG_INFINITY), "-inf°");
     }
 }

@@ -3,7 +3,7 @@ use crate::t;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    center_grip, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+    center_grip, edit_prop as edit, parse_f64, square_grip,
 };
 use crate::entities::traits::RenderConvertible;
 use crate::scene::convert::acad_to_render::{extrusion_wall_tris, RenderEntity, RenderObject};
@@ -168,9 +168,9 @@ fn properties(circle: &Circle) -> Vec<PropSection> {
             edit(t!("Diameter").as_ref(), "diameter", r * 2.0),
             edit(t!("Circumference").as_ref(), "circumference", 2.0 * PI * r),
             edit(t!("Area").as_ref(), "area", PI * r * r),
-            ro(t!("Normal X").as_ref(), "normal_x", format!("{:.4}", circle.normal.x)),
-            ro(t!("Normal Y").as_ref(), "normal_y", format!("{:.4}", circle.normal.y)),
-            ro(t!("Normal Z").as_ref(), "normal_z", format!("{:.4}", circle.normal.z)),
+            edit(t!("Normal X").as_ref(), "normal_x", circle.normal.x),
+            edit(t!("Normal Y").as_ref(), "normal_y", circle.normal.y),
+            edit(t!("Normal Z").as_ref(), "normal_z", circle.normal.z),
         ],
     }]
 }
@@ -201,6 +201,28 @@ fn apply_geom_prop(circle: &mut Circle, field: &str, value: &str) {
         "diameter" if v > 0.0 => circle.radius = v / 2.0,
         "circumference" if v > 0.0 => circle.radius = v / (2.0 * PI),
         "area" if v > 0.0 => circle.radius = (v / PI).sqrt(),
+        "normal_x" | "normal_y" | "normal_z" => {
+            let center = circle.center_wcs();
+            let mut normal = cadkernel::space::Vec3::new(
+                circle.normal.x,
+                circle.normal.y,
+                circle.normal.z,
+            );
+            match field {
+                "normal_x" => normal.x = v,
+                "normal_y" => normal.y = v,
+                "normal_z" => normal.z = v,
+                _ => {}
+            }
+            if let Some(normal) = normal.normalize() {
+                circle.normal = acadrust::types::Vector3::new(normal.x, normal.y, normal.z);
+                let (x, y, z) = crate::scene::view::transform::wcs_point_to_ocs(
+                    (center.x, center.y, center.z),
+                    (normal.x, normal.y, normal.z),
+                );
+                circle.center = acadrust::types::Vector3::new(x, y, z);
+            }
+        }
         _ => {}
     }
 }
@@ -255,7 +277,89 @@ impl RenderConvertible for Circle {
     }
 }
 
-crate::impl_entity_basics!(Circle);
+impl crate::entities::traits::Grippable for Circle {
+    fn grips(&self) -> Vec<GripDef> {
+        grips(self)
+    }
+
+    fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
+        apply_grip(self, grip_id, apply);
+    }
+
+    fn grip_menu(
+        &self,
+        grip_id: usize,
+    ) -> Vec<crate::scene::model::object::GripMenuItem> {
+        use crate::scene::model::object::{GripMenuAction, GripMenuItem};
+        let mut items = vec![GripMenuItem {
+            label: "Stretch",
+            action: GripMenuAction::Stretch,
+        }];
+        if (1..=4).contains(&grip_id) {
+            items.push(GripMenuItem {
+                label: "Radius",
+                action: GripMenuAction::Radius,
+            });
+        }
+        items
+    }
+
+    fn grip_menu_value_prompt(
+        &self,
+        _grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+    ) -> Option<&'static str> {
+        matches!(action, crate::scene::model::object::GripMenuAction::Radius)
+            .then_some("New radius")
+    }
+
+    fn grip_menu_point_value(
+        &self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+        point: glam::DVec3,
+    ) -> Option<f64> {
+        if !matches!(action, crate::scene::model::object::GripMenuAction::Radius)
+            || !(1..=4).contains(&grip_id)
+        {
+            return None;
+        }
+        let plane = crate::entities::curve::circle_curve(self).plane;
+        let point = plane.project(point.to_array())?;
+        let radius = (point[0] - self.center.x).hypot(point[1] - self.center.y);
+        (radius > 1.0e-9).then_some(radius)
+    }
+
+    fn apply_grip_menu_value(
+        &mut self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+        value: f64,
+    ) {
+        if matches!(action, crate::scene::model::object::GripMenuAction::Radius)
+            && (1..=4).contains(&grip_id)
+            && value > 1.0e-9
+        {
+            self.radius = value;
+        }
+    }
+}
+
+impl crate::entities::traits::PropertyEditable for Circle {
+    fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
+        properties(self)
+    }
+
+    fn apply_geom_prop(&mut self, field: &str, value: &str) {
+        apply_geom_prop(self, field, value);
+    }
+}
+
+impl crate::entities::traits::Transformable for Circle {
+    fn apply_transform(&mut self, transform: &EntityTransform) {
+        apply_transform(self, transform);
+    }
+}
 
 impl crate::entities::traits::MassPropsCalc for Circle {
     fn mass_props(&self) -> crate::entities::traits::MassProps {
@@ -274,6 +378,41 @@ impl crate::entities::traits::MassPropsCalc for Circle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_normal_preserves_world_center() {
+        let mut circle = Circle::from_coords(2.0, 3.0, 4.0, 5.0);
+        let center = circle.center_wcs();
+
+        apply_geom_prop(&mut circle, "normal_x", "1");
+
+        assert!((circle.center_wcs() - center).length() < 1.0e-9);
+        let normal_length =
+            (circle.normal.x.powi(2) + circle.normal.y.powi(2) + circle.normal.z.powi(2)).sqrt();
+        assert!((normal_length - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn quadrant_grips_offer_interactive_radius() {
+        use crate::entities::traits::Grippable;
+        use crate::scene::model::object::GripMenuAction;
+
+        let mut circle = Circle::default();
+        circle.radius = 2.0;
+
+        assert_eq!(circle.grip_menu(0).len(), 1);
+        assert!(circle
+            .grip_menu(1)
+            .iter()
+            .any(|item| item.action == GripMenuAction::Radius));
+        assert_eq!(
+            circle.grip_menu_value_prompt(1, GripMenuAction::Radius),
+            Some("New radius")
+        );
+
+        circle.apply_grip_menu_value(1, GripMenuAction::Radius, 5.0);
+        assert_eq!(circle.radius, 5.0);
+    }
 
     #[test]
     fn test_circle_segments_scales_with_zoom() {

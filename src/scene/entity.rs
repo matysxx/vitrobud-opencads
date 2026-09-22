@@ -1,5 +1,23 @@
-// Auto-split from scene/mod.rs. Pure text-move; behaviour unchanged.
 use super::*;
+
+#[derive(Debug, Clone)]
+pub struct CreateBlockOptions {
+    pub name: String,
+    pub handles: Vec<Handle>,
+    pub base_point: glam::DVec3,
+    pub world_to_block: acadrust::types::Transform,
+    pub block_to_world: acadrust::types::Transform,
+    pub mode: crate::ui::window::block_definition::BlockObjectMode,
+    pub annotative: bool,
+    pub match_orientation: bool,
+    pub scale_uniformly: bool,
+    pub allow_exploding: bool,
+    pub unit: i16,
+    pub description: String,
+    pub hyperlink_url: String,
+    pub hyperlink_desc: String,
+    pub redefine: bool,
+}
 
 /// Order sampled boundary edges into one tip-to-tail loop.
 pub(super) fn chain_path_edges(polys: Vec<Vec<[f64; 2]>>) -> Vec<[f64; 2]> {
@@ -134,13 +152,111 @@ impl Scene {
         let _ = self.document.layers.add(layer);
     }
 
-    fn ensure_app_id(&mut self, name: &str) {
+    pub(super) fn ensure_app_id(&mut self, name: &str) {
         if name.trim().is_empty() || self.document.app_ids.contains(name) {
             return;
         }
         let mut app_id = acadrust::tables::AppId::new(name);
         app_id.handle = self.document.allocate_handle();
         let _ = self.document.app_ids.add(app_id);
+    }
+
+    fn prepare_section_objects(&mut self, entity: &mut EntityType) -> bool {
+        use acadrust::entities::ExtendedEntityData;
+        use acadrust::objects::{
+            ClassObject, ClassObjectData, SectionManager, SectionSettings, SectionTypeSettings,
+        };
+
+        let EntityType::Extended(extended) = entity else {
+            return false;
+        };
+        let ExtendedEntityData::SectionObject(data) = &mut extended.data else {
+            return false;
+        };
+
+        if extended.common.handle.is_null() {
+            extended.common.handle = self.document.allocate_handle();
+        }
+        let entity_handle = extended.common.handle;
+
+        let valid_settings = matches!(
+            self.document.objects.get(&data.settings_handle),
+            Some(ObjectType::ClassObject(object))
+                if matches!(&object.data, ClassObjectData::SectionSettings(_))
+        );
+        if !valid_settings {
+            let settings_handle = self.document.allocate_handle();
+            let mut settings =
+                ClassObject::new(ClassObjectData::SectionSettings(SectionSettings {
+                    current_type: 4,
+                    types: vec![SectionTypeSettings {
+                        section_type: 4,
+                        generation: 17,
+                        ..SectionTypeSettings::default()
+                    }],
+                }));
+            settings.handle = settings_handle;
+            settings.owner = entity_handle;
+            self.document
+                .objects
+                .insert(settings_handle, ObjectType::ClassObject(settings));
+            data.settings_handle = settings_handle;
+        } else if let Some(ObjectType::ClassObject(settings)) =
+            self.document.objects.get_mut(&data.settings_handle)
+        {
+            settings.owner = entity_handle;
+        }
+
+        let root = crate::scene::annotative::root_named_dict_handle(&mut self.document);
+        let manager_handle = self
+            .document
+            .objects
+            .get(&root)
+            .and_then(|object| match object {
+                ObjectType::Dictionary(dictionary) => dictionary
+                    .entries
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("ACAD_SECTION_MANAGER"))
+                    .map(|(_, handle)| *handle),
+                _ => None,
+            })
+            .filter(|handle| {
+                matches!(
+                    self.document.objects.get(handle),
+                    Some(ObjectType::ClassObject(object))
+                        if matches!(&object.data, ClassObjectData::SectionManager(_))
+                )
+            })
+            .unwrap_or_else(|| {
+                let handle = self.document.allocate_handle();
+                let mut manager =
+                    ClassObject::new(ClassObjectData::SectionManager(SectionManager::default()));
+                manager.handle = handle;
+                manager.owner = root;
+                self.document
+                    .objects
+                    .insert(handle, ObjectType::ClassObject(manager));
+                if let Some(ObjectType::Dictionary(dictionary)) =
+                    self.document.objects.get_mut(&root)
+                {
+                    dictionary
+                        .entries
+                        .retain(|(name, _)| !name.eq_ignore_ascii_case("ACAD_SECTION_MANAGER"));
+                    dictionary.add_entry("ACAD_SECTION_MANAGER", handle);
+                }
+                handle
+            });
+        if let Some(ObjectType::ClassObject(manager)) =
+            self.document.objects.get_mut(&manager_handle)
+        {
+            manager.owner = root;
+            if let ClassObjectData::SectionManager(manager) = &mut manager.data {
+                if !manager.sections.contains(&entity_handle) {
+                    manager.sections.push(entity_handle);
+                }
+            }
+        }
+        true
     }
 
     pub fn add_entity(&mut self, entity: EntityType) -> Handle {
@@ -156,10 +272,7 @@ impl Scene {
         let mut needs_geometry_bump = false;
 
         for entity in entities {
-            let affects_blocks = matches!(
-                &entity,
-                EntityType::Block(_) | EntityType::BlockEnd(_)
-            );
+            let affects_blocks = matches!(&entity, EntityType::Block(_) | EntityType::BlockEnd(_));
             let handle = self.add_entity_internal(entity, false);
             handles.push(handle);
             if handle.is_null() {
@@ -185,16 +298,14 @@ impl Scene {
         // Only block sentinels mutate a block definition and require rebuilding
         // the block cache. A top-level INSERT merely references an existing
         // definition, so adding it can patch just that new render handle.
-        let affects_blocks = matches!(
-            &entity,
-            EntityType::Block(_) | EntityType::BlockEnd(_)
-        );
+        let affects_blocks = matches!(&entity, EntityType::Block(_) | EntityType::BlockEnd(_));
         // INSERT invalidates rendered block instances, but it does not mutate
         // the referenced block definition. Only block sentinels require a
         // structure image for undo; ordinary owner membership is intrinsic add
         // bookkeeping and remains in place while an entity delta is undone.
         let mutates_block_structure =
             matches!(&entity, EntityType::Block(_) | EntityType::BlockEnd(_));
+        let creates_section_structure = self.prepare_section_objects(&mut entity);
         let hatch_seed = if let EntityType::Hatch(dxf) = &entity {
             let color = self.render_style(&entity).0;
             Self::hatch_model_from_dxf(dxf, color)
@@ -262,8 +373,9 @@ impl Scene {
         // Delta-undo poison inputs (captured before the mutations below): an
         // add that also creates a new layer, adds a block, or inserts an image
         // definition mutates non-entity state a pure-entity delta can't undo.
-        let creates_layer =
-            self.is_recording_undo() && !layer.trim().is_empty() && !self.document.layers.contains(&layer);
+        let creates_layer = self.is_recording_undo()
+            && !layer.trim().is_empty()
+            && !self.document.layers.contains(&layer);
         self.ensure_layer(&layer);
         let app_ids: Vec<String> = entity
             .common()
@@ -273,9 +385,9 @@ impl Scene {
             .map(|record| record.application_name.clone())
             .collect();
         let creates_app_id = self.is_recording_undo()
-            && app_ids.iter().any(|name| {
-                !name.trim().is_empty() && !self.document.app_ids.contains(name)
-            });
+            && app_ids
+                .iter()
+                .any(|name| !name.trim().is_empty() && !self.document.app_ids.contains(name));
         for name in &app_ids {
             self.ensure_app_id(name);
         }
@@ -298,6 +410,9 @@ impl Scene {
         };
 
         if !handle.is_null() {
+            if let Some(keep) = self.refedit_keep.as_mut() {
+                keep.insert(handle);
+            }
             self.invalidate_dependency_index();
             if let Some(model) = hatch_seed {
                 self.hatches.insert(handle, model);
@@ -308,14 +423,13 @@ impl Scene {
             if let Some(mut model) = mesh_seed {
                 if let Some(entity) = self.document.get_entity(handle) {
                     let color = self.render_style(entity).0;
-                    let material =
-                        crate::scene::model::material_model::resolve_material_with_base(
-                            &self.document,
-                            entity,
-                            color,
-                            None,
-                            self.material_base_dir.as_deref(),
-                        );
+                    let material = crate::scene::model::material_model::resolve_material_with_base(
+                        &self.document,
+                        entity,
+                        color,
+                        None,
+                        self.material_base_dir.as_deref(),
+                    );
                     material.apply_to_with_face_overrides(
                         &mut model,
                         &self.document,
@@ -334,7 +448,11 @@ impl Scene {
             // state (a new layer, application ID, or block).
             if self.is_recording_undo() {
                 self.record_undo_before(handle, None);
-                if creates_layer || creates_app_id || mutates_block_structure {
+                if creates_layer
+                    || creates_app_id
+                    || mutates_block_structure
+                    || creates_section_structure
+                {
                     self.poison_undo_recording();
                 }
             }
@@ -431,13 +549,8 @@ impl Scene {
         // Replacing (or becoming) a block sentinel forces a full block-cache
         // rebuild. INSERT edits (including retargeting to another existing
         // definition) only change that top-level render handle.
-        let affects_blocks = matches!(
-            existing,
-            EntityType::Block(_) | EntityType::BlockEnd(_)
-        ) || matches!(
-            &entity,
-            EntityType::Block(_) | EntityType::BlockEnd(_)
-        );
+        let affects_blocks = matches!(existing, EntityType::Block(_) | EntityType::BlockEnd(_))
+            || matches!(&entity, EntityType::Block(_) | EntityType::BlockEnd(_));
 
         // A plugin edit may retarget the entity to a novel layer; register it
         // so the edited entity keeps that layer on save instead of collapsing
@@ -519,14 +632,13 @@ impl Scene {
         if let Some(mut model) = mesh_seed {
             if let Some(entity) = self.document.get_entity(handle) {
                 let color = self.render_style(entity).0;
-                let material =
-                    crate::scene::model::material_model::resolve_material_with_base(
-                        &self.document,
-                        entity,
-                        color,
-                        None,
-                        self.material_base_dir.as_deref(),
-                    );
+                let material = crate::scene::model::material_model::resolve_material_with_base(
+                    &self.document,
+                    entity,
+                    color,
+                    None,
+                    self.material_base_dir.as_deref(),
+                );
                 material.apply_to_with_face_overrides(
                     &mut model,
                     &self.document,
@@ -596,11 +708,14 @@ impl Scene {
             .filter_map(|&handle| {
                 let from_history = self
                     .document
-                    .solid_history_operation(handle)
-                    .and_then(|operation| cadkernel::acis::rebuild_body(operation).ok());
+                    .solid_history_operations(handle)
+                    .and_then(|operations| cadkernel::acis::rebuild_history(&operations).ok());
                 let body = from_history.or_else(|| match self.document.get_entity(handle) {
                     Some(EntityType::Solid3D(solid)) => {
                         crate::scene::convert::solid3d_tess::kernel_body(solid)
+                    }
+                    Some(EntityType::Region(region)) => {
+                        crate::scene::convert::solid3d_tess::kernel_region_body(region)
                     }
                     Some(EntityType::Surface(surface)) => {
                         crate::scene::convert::solid3d_tess::kernel_surface_body(surface)
@@ -659,15 +774,14 @@ impl Scene {
                 _ => None,
             })
             .collect();
-        let entries: Vec<(Handle, std::sync::Arc<EntityType>, [f32; 4], bool)> =
-            mesh_entities
-                .into_iter()
-                .map(|(handle, entity)| {
-                    let color = self.render_style(entity.as_ref()).0;
-                    let top_level = layout_blocks.contains(&entity.common().owner_handle);
-                    (handle, entity, color, top_level)
-                })
-                .collect();
+        let entries: Vec<(Handle, std::sync::Arc<EntityType>, [f32; 4], bool)> = mesh_entities
+            .into_iter()
+            .map(|(handle, entity)| {
+                let color = self.render_style(entity.as_ref()).0;
+                let top_level = layout_blocks.contains(&entity.common().owner_handle);
+                (handle, entity, color, top_level)
+            })
+            .collect();
         let facet_res = self.document.header.facet_resolution;
         let chordal_deflection =
             crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
@@ -749,18 +863,151 @@ impl Scene {
         world_to_block: &acadrust::types::Transform,
         block_to_world: &acadrust::types::Transform,
     ) -> Result<Handle, String> {
-        let name = name.trim();
+        self.create_block_with_options(CreateBlockOptions {
+            name: name.to_string(),
+            handles: handles.to_vec(),
+            base_point: glam::DVec3::ZERO,
+            world_to_block: *world_to_block,
+            block_to_world: *block_to_world,
+            mode: crate::ui::window::block_definition::BlockObjectMode::Convert,
+            annotative: false,
+            match_orientation: false,
+            scale_uniformly: false,
+            allow_exploding: true,
+            unit: 0,
+            description: String::new(),
+            hyperlink_url: String::new(),
+            hyperlink_desc: String::new(),
+            redefine: false,
+        })
+    }
+
+    pub fn create_block_with_options(
+        &mut self,
+        options: CreateBlockOptions,
+    ) -> Result<Handle, String> {
+        let name = options.name.trim();
         if name.is_empty() {
             return Err("Block name cannot be empty.".into());
         }
         if name.starts_with('*') {
             return Err("Block name cannot start with '*'.".into());
         }
-        if self.document.block_records.get(name).is_some() {
-            return Err(format!("Block \"{name}\" already exists."));
-        }
 
-        let source_entities: Vec<_> = handles
+        let existing = self
+            .document
+            .block_records
+            .get(name)
+            .map(|br| (br.handle, br.block_entity_handle));
+
+        let (br_handle, _block_handle) = if let Some((existing_br_h, existing_blk_h)) = existing {
+            if !options.redefine {
+                return Err(format!("Block \"{name}\" already exists."));
+            }
+            // Redefining: remove all existing entities owned by this block record (except Block/BlockEnd)
+            let owned: Vec<Handle> = self
+                .document
+                .entities()
+                .filter(|e| {
+                    e.common().owner_handle == existing_br_h
+                        && !matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_))
+                })
+                .map(|e| e.common().handle)
+                .collect();
+            for h in owned {
+                self.document.remove_entity(h);
+            }
+            // Update existing BlockRecord fields
+            if let Some(br) = self.document.block_records.get_mut(name) {
+                br.units = options.unit;
+                br.description = options.description.clone();
+                br.explodable = options.allow_exploding;
+                br.scale_uniformly = options.scale_uniformly;
+            }
+            // Update existing Block entity fields
+            if let Some(EntityType::Block(b)) = self.document.get_entity_mut(existing_blk_h) {
+                b.description = options.description.clone();
+            }
+            if options.annotative {
+                let annotative_vals = vec![acadrust::xdata::XDataValue::Integer16(1)];
+                view::dispatch::set_entity_xdata(
+                    &mut self.document,
+                    existing_blk_h,
+                    "AcadAnnotative",
+                    Some(annotative_vals),
+                );
+            }
+            if !options.hyperlink_url.is_empty() {
+                let link_vals = vec![acadrust::xdata::XDataValue::String(
+                    options.hyperlink_url.clone(),
+                )];
+                view::dispatch::set_entity_xdata(
+                    &mut self.document,
+                    existing_blk_h,
+                    "PE_URL",
+                    Some(link_vals),
+                );
+            }
+            (existing_br_h, existing_blk_h)
+        } else {
+            let next = self.document.next_handle();
+            let br_handle = Handle::new(next);
+            let block_handle = Handle::new(next + 1);
+            let end_handle = Handle::new(next + 2);
+
+            let mut block_record = acadrust::tables::BlockRecord::new(name);
+            block_record.handle = br_handle;
+            block_record.block_entity_handle = block_handle;
+            block_record.block_end_handle = end_handle;
+            block_record.units = options.unit;
+            block_record.description = options.description.clone();
+            block_record.explodable = options.allow_exploding;
+            block_record.scale_uniformly = options.scale_uniformly;
+            self.document
+                .block_records
+                .add(block_record)
+                .map_err(|e| e.to_string())?;
+
+            let mut block = Block::new(name, acadrust::types::Vector3::ZERO);
+            block.common.handle = block_handle;
+            block.common.owner_handle = br_handle;
+            block.description = options.description.clone();
+            self.document
+                .add_entity(EntityType::Block(block))
+                .map_err(|e| e.to_string())?;
+
+            let mut block_end = BlockEnd::new();
+            block_end.common.handle = end_handle;
+            block_end.common.owner_handle = br_handle;
+            self.document
+                .add_entity(EntityType::BlockEnd(block_end))
+                .map_err(|e| e.to_string())?;
+
+            if options.annotative {
+                let annotative_vals = vec![acadrust::xdata::XDataValue::Integer16(1)];
+                view::dispatch::set_entity_xdata(
+                    &mut self.document,
+                    block_handle,
+                    "AcadAnnotative",
+                    Some(annotative_vals),
+                );
+            }
+            if !options.hyperlink_url.is_empty() {
+                let link_vals = vec![acadrust::xdata::XDataValue::String(
+                    options.hyperlink_url.clone(),
+                )];
+                view::dispatch::set_entity_xdata(
+                    &mut self.document,
+                    block_handle,
+                    "PE_URL",
+                    Some(link_vals),
+                );
+            }
+            (br_handle, block_handle)
+        };
+
+        let source_entities: Vec<_> = options
+            .handles
             .iter()
             .filter_map(|&h| self.document.get_entity(h).cloned().map(|e| (h, e)))
             .collect();
@@ -768,35 +1015,7 @@ impl Scene {
             return Err("No valid entities selected for block creation.".into());
         }
 
-        let next = self.document.next_handle();
-        let br_handle = Handle::new(next);
-        let block_handle = Handle::new(next + 1);
-        let end_handle = Handle::new(next + 2);
-
-        let mut block_record = acadrust::tables::BlockRecord::new(name);
-        block_record.handle = br_handle;
-        block_record.block_entity_handle = block_handle;
-        block_record.block_end_handle = end_handle;
-        self.document
-            .block_records
-            .add(block_record)
-            .map_err(|e| e.to_string())?;
-
-        let mut block = Block::new(name, acadrust::types::Vector3::ZERO);
-        block.common.handle = block_handle;
-        block.common.owner_handle = br_handle;
-        self.document
-            .add_entity(EntityType::Block(block))
-            .map_err(|e| e.to_string())?;
-
-        let mut block_end = BlockEnd::new();
-        block_end.common.handle = end_handle;
-        block_end.common.owner_handle = br_handle;
-        self.document
-            .add_entity(EntityType::BlockEnd(block_end))
-            .map_err(|e| e.to_string())?;
-
-        let local = EntityTransform::Affine(*world_to_block);
+        let local = EntityTransform::Affine(options.world_to_block);
         for (old_handle, mut entity) in source_entities {
             view::dispatch::apply_transform(&mut entity, &local);
             entity = crate::modules::draw::modify::explode::normalize_entity_for_block(entity);
@@ -805,15 +1024,19 @@ impl Scene {
             self.document
                 .add_entity(entity)
                 .map_err(|e| e.to_string())?;
-            self.erase_entities(&[old_handle]);
+            if options.mode != crate::ui::window::block_definition::BlockObjectMode::Retain {
+                self.erase_entities(&[old_handle]);
+            }
         }
 
-        let mut insert = DxfInsert::new(name, acadrust::types::Vector3::ZERO);
-        acadrust::Entity::apply_transform(&mut insert, block_to_world);
-        let insert_handle = self.add_entity(EntityType::Insert(insert));
-        // A new block definition landed in the document; advance the block
-        // epoch so consumers (the block palette stale check) notice it even
-        // when the panel stays open. Mirrors `define_block_from_owned_entities`.
+        let mut insert_handle = Handle::NULL;
+        if options.mode == crate::ui::window::block_definition::BlockObjectMode::Convert {
+            let mut insert = DxfInsert::new(name, acadrust::types::Vector3::ZERO);
+            acadrust::Entity::apply_transform(&mut insert, &options.block_to_world);
+            insert_handle = self.add_entity(EntityType::Insert(insert));
+        }
+
+        // Advance the block epoch so all consumers and viewport renderers re-tessellate
         self.bump_geometry();
         Ok(insert_handle)
     }
@@ -1008,16 +1231,13 @@ impl Scene {
                 self.belongs_to_visible_block(handle, c.owner_handle, target_block)
             })
             .flat_map(|(&handle, model)| {
-                let contextual = self
-                    .document
-                    .get_entity(handle)
-                    .map(|entity| {
-                        crate::scene::annotative::entity_for_annotation_context(
-                            &self.document,
-                            entity,
-                            annotation_scale_handle,
-                        )
-                    });
+                let contextual = self.document.get_entity(handle).map(|entity| {
+                    crate::scene::annotative::entity_for_annotation_context(
+                        &self.document,
+                        entity,
+                        annotation_scale_handle,
+                    )
+                });
                 let entity = contextual.as_deref();
                 let mut m = match entity {
                     Some(EntityType::Hatch(dxf))
@@ -1085,10 +1305,7 @@ impl Scene {
                                     ),
                                     index,
                                 ),
-                                other => (
-                                    crate::scene::convert::tess_util::aci_to_rgba(&other),
-                                    0,
-                                ),
+                                other => (crate::scene::convert::tess_util::aci_to_rgba(&other), 0),
                             };
                             b.color = bg_color;
                             b.aci = bg_aci;
@@ -1107,9 +1324,7 @@ impl Scene {
                                 m.scale = dxf.pattern_scale as f32;
                             }
                             model::hatch_model::HatchPattern::Gradient {
-                                angle_deg,
-                                shift,
-                                ..
+                                angle_deg, shift, ..
                             } => {
                                 *angle_deg = dxf.gradient_color.angle.to_degrees() as f32;
                                 *shift = dxf.gradient_color.shift as f32;
@@ -1240,7 +1455,10 @@ impl Scene {
             .iter()
             .copied()
             .filter(|&handle| {
-                matches!(self.document.get_entity(handle), Some(EntityType::Insert(_)))
+                matches!(
+                    self.document.get_entity(handle),
+                    Some(EntityType::Insert(_))
+                )
             })
             .collect();
         if targets.is_empty() {
@@ -1310,8 +1528,10 @@ impl Scene {
                     return true;
                 }
                 if self.object_isolation.hides(common.handle)
-                    || (!include_preview_hidden
-                        && self.preview_hidden.contains(&common.handle))
+                    || (!include_preview_hidden && self.preview_hidden.contains(&common.handle))
+                    || self.hidden_dynamic_dimensions.contains(&common.handle)
+                    // A dynamic dimension never plots.
+                    || (plot_only && self.is_dynamic_dimension(common.handle))
                 {
                     return false;
                 }
@@ -1351,10 +1571,7 @@ impl Scene {
                 }
                 let style = context.style_for(&self.document, entity);
                 let preserve_white_mask = source_hatch.is_solid
-                    && matches!(
-                        source_hatch.common.color,
-                        acadrust::types::Color::Index(7)
-                    );
+                    && matches!(source_hatch.common.color, acadrust::types::Color::Index(7));
                 let color = if preserve_white_mask {
                     style.0
                 } else {
@@ -1393,9 +1610,15 @@ impl Scene {
                 }
                 let matrix = &context.transform.matrix.m;
                 let linear = [
-                    matrix[0][0].to_bits(), matrix[0][1].to_bits(), matrix[0][2].to_bits(),
-                    matrix[1][0].to_bits(), matrix[1][1].to_bits(), matrix[1][2].to_bits(),
-                    matrix[2][0].to_bits(), matrix[2][1].to_bits(), matrix[2][2].to_bits(),
+                    matrix[0][0].to_bits(),
+                    matrix[0][1].to_bits(),
+                    matrix[0][2].to_bits(),
+                    matrix[1][0].to_bits(),
+                    matrix[1][1].to_bits(),
+                    matrix[1][2].to_bits(),
+                    matrix[2][0].to_bits(),
+                    matrix[2][1].to_bits(),
+                    matrix[2][2].to_bits(),
                 ];
                 let key = (
                     source_hatch.common.handle.value(),
@@ -1414,12 +1637,10 @@ impl Scene {
                 let source_id = *hatch_sources
                     .entry(key)
                     .or_insert_with(crate::scene::model::instance_model::next_source_id);
-                model.render_instance = Some(
-                    crate::scene::model::instance_model::RenderInstance {
-                        source_id,
-                        translation: [matrix[0][3], matrix[1][3], matrix[2][3]],
-                    },
-                );
+                model.render_instance = Some(crate::scene::model::instance_model::RenderInstance {
+                    source_id,
+                    translation: [matrix[0][3], matrix[1][3], matrix[2][3]],
+                });
                 models.push(model);
             },
         );
@@ -1487,48 +1708,37 @@ impl Scene {
                 };
                 let mut wipeout = source.clone();
                 if context.is_instanced() {
-                    wipeout.insertion_point =
-                        context.transform.apply(source.insertion_point);
-                    wipeout.u_vector =
-                        context.transform.apply_rotation(source.u_vector);
-                    wipeout.v_vector =
-                        context.transform.apply_rotation(source.v_vector);
+                    wipeout.insertion_point = context.transform.apply(source.insertion_point);
+                    wipeout.u_vector = context.transform.apply_rotation(source.u_vector);
+                    wipeout.v_vector = context.transform.apply_rotation(source.v_vector);
                 }
                 let Some(mut fill_plane) = Self::wipeout_fill_plane(&wipeout) else {
                     return;
                 };
-                let (world_origin, mut boundary) =
-                    Self::wipeout_boundary_2d(&wipeout);
+                let (world_origin, mut boundary) = Self::wipeout_boundary_2d(&wipeout);
                 for clip in &context.clips {
                     let clip: Vec<[f32; 2]> = clip
                         .iter()
                         .map(|point| [point[0] as f32, point[1] as f32])
                         .collect();
-                    boundary = pick::xclip::clip_hatch_boundary(
-                        &boundary,
-                        world_origin,
-                        &clip,
-                    );
+                    boundary = pick::xclip::clip_hatch_boundary(&boundary, world_origin, &clip);
                 }
                 if boundary.len() < 3 {
                     return;
                 }
                 if !context.clips.is_empty() {
-                    let Some(local) = Self::wipeout_boundary_at_xy(
-                        fill_plane.0,
-                        world_origin,
-                        &boundary,
-                    ) else {
+                    let Some(local) =
+                        Self::wipeout_boundary_at_xy(fill_plane.0, world_origin, &boundary)
+                    else {
                         return;
                     };
                     fill_plane.1 = local;
                 }
-                let selection_handle =
-                    if tint_insert_selection && context.is_instanced() {
-                        context.root_handle
-                    } else {
-                        source.common.handle
-                    };
+                let selection_handle = if tint_insert_selection && context.is_instanced() {
+                    context.root_handle
+                } else {
+                    source.common.handle
+                };
                 let color = if self.selected.contains(&selection_handle) {
                     [0.15, 0.55, 1.00, 0.35]
                 } else {
@@ -1537,9 +1747,15 @@ impl Scene {
                 let render_instance = if context.is_instanced() {
                     let matrix = &context.transform.matrix.m;
                     let linear = [
-                        matrix[0][0].to_bits(), matrix[0][1].to_bits(), matrix[0][2].to_bits(),
-                        matrix[1][0].to_bits(), matrix[1][1].to_bits(), matrix[1][2].to_bits(),
-                        matrix[2][0].to_bits(), matrix[2][1].to_bits(), matrix[2][2].to_bits(),
+                        matrix[0][0].to_bits(),
+                        matrix[0][1].to_bits(),
+                        matrix[0][2].to_bits(),
+                        matrix[1][0].to_bits(),
+                        matrix[1][1].to_bits(),
+                        matrix[1][2].to_bits(),
+                        matrix[2][0].to_bits(),
+                        matrix[2][1].to_bits(),
+                        matrix[2][2].to_bits(),
                     ];
                     let key = (
                         source.common.handle.value(),
@@ -1550,9 +1766,9 @@ impl Scene {
                             .collect::<Vec<_>>(),
                         color.map(f32::to_bits),
                     );
-                    let source_id = *wipeout_sources.entry(key).or_insert_with(
-                        crate::scene::model::instance_model::next_source_id,
-                    );
+                    let source_id = *wipeout_sources
+                        .entry(key)
+                        .or_insert_with(crate::scene::model::instance_model::next_source_id);
                     Some(crate::scene::model::instance_model::RenderInstance {
                         source_id,
                         translation: [matrix[0][3], matrix[1][3], matrix[2][3]],
@@ -1563,6 +1779,7 @@ impl Scene {
                 let fill_plane_boundary = Some(Arc::new(fill_plane.1));
                 let fill_plane = Some(fill_plane.0);
                 models.push(HatchModel {
+                    pattern_origin: None,
                     render_instance,
                     boundary: Arc::new(boundary),
                     boundary_wcs: None,
@@ -1580,8 +1797,7 @@ impl Scene {
                     angle_offset: 0.0,
                     scale: 1.0,
                     world_origin,
-                    draw_depth: context
-                        .draw_depth(source.common.handle, depth_map.as_ref()),
+                    draw_depth: context.draw_depth(source.common.handle, depth_map.as_ref()),
                 });
             },
         );
@@ -1596,7 +1812,11 @@ impl Scene {
     ) -> ([f64; 2], Vec<[f32; 2]>) {
         let origin = [wo.insertion_point.x, wo.insertion_point.y];
         let plane = cadkernel::space::Plane::from_axes(
-            [wo.insertion_point.x, wo.insertion_point.y, wo.insertion_point.z],
+            [
+                wo.insertion_point.x,
+                wo.insertion_point.y,
+                wo.insertion_point.z,
+            ],
             [wo.u_vector.x, wo.u_vector.y, wo.u_vector.z],
             [wo.v_vector.x, wo.v_vector.y, wo.v_vector.z],
         );
@@ -1632,12 +1852,7 @@ impl Scene {
         let mut clip: Vec<[f64; 2]> = wo
             .clip_boundary_vertices
             .iter()
-            .map(|point| {
-                [
-                    point.x + wo.size.x * 0.5,
-                    wo.size.y * 0.5 - point.y,
-                ]
-            })
+            .map(|point| [point.x + wo.size.x * 0.5, wo.size.y * 0.5 - point.y])
             .collect();
         if clip.last() != clip.first() {
             clip.push(clip[0]);
@@ -1681,11 +1896,7 @@ impl Scene {
         world_origin: [f64; 2],
         boundary: &[[f32; 2]],
     ) -> Option<Vec<[f32; 2]>> {
-        let plane = cadkernel::space::Plane::from_axes(
-            plane.origin,
-            plane.x_axis,
-            plane.y_axis,
-        );
+        let plane = cadkernel::space::Plane::from_axes(plane.origin, plane.x_axis, plane.y_axis);
         boundary
             .iter()
             .map(|point| {
@@ -1703,10 +1914,7 @@ impl Scene {
             .collect()
     }
 
-    pub(crate) fn hatch_model_from_dxf(
-        dxf: &DxfHatch,
-        color: [f32; 4],
-    ) -> Option<HatchModel> {
+    pub(crate) fn hatch_model_from_dxf(dxf: &DxfHatch, color: [f32; 4]) -> Option<HatchModel> {
         let normal = (dxf.normal.x, dxf.normal.y, dxf.normal.z);
         // Build the boundary in f64 first so the precision-preserving
         // origin computation below sees full WCS precision. We only cast
@@ -1737,9 +1945,7 @@ impl Scene {
             let mut edge_polys: Vec<Vec<[f64; 2]>> = Vec::new();
             for edge in &path.edges {
                 if let Some(curve) = crate::entities::hatch::edge_curve(edge) {
-                    edge_polys.push(
-                        curve.tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE),
-                    );
+                    edge_polys.push(curve.tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE));
                 }
             }
             let mut local_ring = chain_path_edges(edge_polys);
@@ -1758,7 +1964,7 @@ impl Scene {
                 .map(|point| to_xy(point[0], point[1]))
                 .collect();
             rings.push(ring);
-            local_rings.push(local_ring);
+            local_rings.push((local_ring, path));
             ring_sources.push(path.boundary_handles.clone());
         }
 
@@ -1771,7 +1977,8 @@ impl Scene {
         let mut local_boundary = Vec::new();
         let mut boundary_exterior = Vec::new();
         let mut boundary_sources = Vec::new();
-        for (((ring, local_ring), sources), depth) in rings
+        let mut spline_paths = Vec::new();
+        for (((ring, (local_ring, path)), sources), depth) in rings
             .into_iter()
             .zip(local_rings)
             .zip(ring_sources)
@@ -1789,12 +1996,14 @@ impl Scene {
                 boundary.push([f64::NAN, f64::NAN]);
                 local_boundary.push([f32::NAN, f32::NAN]);
             }
+            let range = boundary.len()..boundary.len() + ring.len();
             boundary.extend(ring);
-            local_boundary.extend(
-                local_ring
-                    .into_iter()
-                    .map(|[x, y]| [x as f32, y as f32]),
-            );
+            local_boundary.extend(local_ring.iter().map(|&[x, y]| [x as f32, y as f32]));
+            if path.edges.iter().any(|edge| {
+                matches!(edge, acadrust::entities::BoundaryEdge::Spline(_))
+            }) {
+                spline_paths.push((path, local_ring, range));
+            }
             boundary_exterior.push(depth == 0);
             boundary_sources.push(sources);
         }
@@ -1829,18 +2038,19 @@ impl Scene {
         // lines. The stored offset is the authoritative world-unit spacing, so
         // the resulting families are already final: no pattern_scale / angle
         // is re-applied (see `prebaked` below and the HatchModel fields).
-        let prebaked = !dxf.is_solid
-            && !dxf.gradient_color.is_enabled()
-            && !dxf.pattern.lines.is_empty();
+        let prebaked =
+            !dxf.is_solid && !dxf.gradient_color.is_enabled() && !dxf.pattern.lines.is_empty();
 
         // The gradient's first stop is the fill's start colour (not the
         // entity colour); capture it so the HatchModel draws stop-0 → stop-1.
         let mut gradient_color1: Option<[f32; 4]> = None;
         let mut pattern = if dxf.gradient_color.is_enabled() {
             let stop = |i: usize| {
-                dxf.gradient_color.colors.get(i).and_then(|e| e.color.rgb()).map(
-                    |(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
-                )
+                dxf.gradient_color
+                    .colors
+                    .get(i)
+                    .and_then(|e| e.color.rgb())
+                    .map(|(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
             };
             gradient_color1 = stop(0);
             let color1 = gradient_color1.unwrap_or(color);
@@ -1863,7 +2073,11 @@ impl Scene {
             model::hatch_model::HatchPattern::Solid
         } else if prebaked {
             model::hatch_model::HatchPattern::Pattern(
-                dxf.pattern.lines.iter().map(family_from_stored_line).collect(),
+                dxf.pattern
+                    .lines
+                    .iter()
+                    .map(family_from_stored_line)
+                    .collect(),
             )
         } else {
             let pat_name = &dxf.pattern.name;
@@ -1926,10 +2140,18 @@ impl Scene {
         let mut max_y = f64::NEG_INFINITY;
         for &[x, y] in &boundary {
             if x.is_finite() && y.is_finite() {
-                if x < min_x { min_x = x; }
-                if y < min_y { min_y = y; }
-                if x > max_x { max_x = x; }
-                if y > max_y { max_y = y; }
+                if x < min_x {
+                    min_x = x;
+                }
+                if y < min_y {
+                    min_y = y;
+                }
+                if x > max_x {
+                    max_x = x;
+                }
+                if y > max_y {
+                    max_y = y;
+                }
             }
         }
         let world_origin = if min_x.is_finite() && min_y.is_finite() {
@@ -1983,6 +2205,26 @@ impl Scene {
                 }
             }
         }
+        let project = |point: [f64; 2]| {
+            let [x, y] = to_xy(point[0], point[1]);
+            [(x - world_origin[0]) as f32 as f64, (y - world_origin[1]) as f32 as f64]
+        };
+        for (path, ring, range) in spline_paths.into_iter().rev() {
+            if range.end > boundary.len() {
+                continue;
+            }
+            let curves = || path.edges.iter().filter_map(crate::entities::hatch::edge_curve).collect();
+            if let Some(refined) =
+                cadkernel::geom2d::refine_spline_boundary(&ring, curves, &project)
+            {
+                if boundary.len() - range.len() + refined.len() > MAX_HATCH_MODEL_VERTS {
+                    continue;
+                }
+                boundary.splice(range.clone(), refined.iter().map(|p| to_xy(p[0], p[1])));
+                local_boundary.splice(range, refined.into_iter().map(|[x, y]| [x as f32, y as f32]));
+            }
+        }
+
         let boundary_f32: Vec<[f32; 2]> = boundary
             .iter()
             .map(|&[x, y]| {
@@ -1996,6 +2238,7 @@ impl Scene {
 
         let storage = crate::entities::curve::ocs_plane(dxf.normal, dxf.elevation);
         Some(HatchModel {
+            pattern_origin: Some([dxf.pattern_origin().x, dxf.pattern_origin().y]),
             render_instance: None,
             boundary: std::sync::Arc::new(boundary_f32),
             boundary_wcs: None,
@@ -2016,8 +2259,16 @@ impl Scene {
             color: gradient_color1.unwrap_or(color),
             aci: 0,
             line_weight_px: 1.0,
-            angle_offset: if prebaked { 0.0 } else { dxf.pattern_angle as f32 },
-            scale: if prebaked { 1.0 } else { dxf.pattern_scale as f32 },
+            angle_offset: if prebaked {
+                0.0
+            } else {
+                dxf.pattern_angle as f32
+            },
+            scale: if prebaked {
+                1.0
+            } else {
+                dxf.pattern_scale as f32
+            },
             world_origin,
             draw_depth: 0.0,
         })
@@ -2032,19 +2283,19 @@ impl Scene {
 
     fn populate_images_from_document_unbumped(&mut self) {
         self.images.clear();
-        let entries: Vec<(Handle, acadrust::entities::RasterImage)> = self
+        let entries: Vec<(Handle, acadrust::entities::EntityType)> = self
             .document
             .entities()
-            .filter_map(|e| {
-                if let EntityType::RasterImage(img) = e {
-                    Some((img.common.handle, img.clone()))
-                } else {
-                    None
-                }
+            .filter(|e| {
+                matches!(
+                    e,
+                    EntityType::RasterImage(_) | EntityType::Ole2Frame(_) | EntityType::Underlay(_)
+                )
             })
+            .map(|e| (e.common().handle, e.clone()))
             .collect();
-        for (handle, img) in entries {
-            if let Some(model) = ImageModel::from_raster_image(&img) {
+        for (handle, entity) in entries {
+            if let Some(model) = self.image_seed_for(&entity) {
                 self.images.insert(handle, model);
             }
         }
@@ -2055,16 +2306,13 @@ impl Scene {
     /// at load, so a pattern-scale / background / boundary edit stays
     /// invisible until the cached model is refreshed (#415).
     pub fn refresh_fill_model(&mut self, handle: Handle) {
-        let contextual = self
-            .document
-            .get_entity(handle)
-            .map(|entity| {
-                crate::scene::annotative::entity_for_annotation_context(
-                    &self.document,
-                    entity,
-                    self.displayed_annotation_scale_handle(),
-                )
-            });
+        let contextual = self.document.get_entity(handle).map(|entity| {
+            crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                entity,
+                self.displayed_annotation_scale_handle(),
+            )
+        });
         let new_model = match contextual.as_deref() {
             Some(EntityType::Hatch(dxf)) => {
                 let color = convert::tess_util::aci_to_rgba(&dxf.common.color);
@@ -2100,7 +2348,7 @@ impl Scene {
                         e,
                         self.displayed_annotation_scale_handle(),
                     )
-                        .into_owned(),
+                    .into_owned(),
                 )),
                 EntityType::Solid(s) => Some((s.common.handle, e.clone())),
                 _ => None,
@@ -2202,7 +2450,8 @@ impl Scene {
                     // Incremental (post-xref) pass: leave already-tessellated
                     // host solids untouched, only build the newly merged ones.
                     if incremental
-                        && (self.meshes.contains_key(&handle) || self.block_meshes.contains_key(&handle))
+                        && (self.meshes.contains_key(&handle)
+                            || self.block_meshes.contains_key(&handle))
                     {
                         return None;
                     }
@@ -2250,7 +2499,11 @@ impl Scene {
                         &self.document,
                         &entity,
                     );
-                    let mesh = if top_level { offset_mesh_lod_set(mesh) } else { mesh };
+                    let mesh = if top_level {
+                        offset_mesh_lod_set(mesh)
+                    } else {
+                        mesh
+                    };
                     (handle, mesh, top_level)
                 })
             })
@@ -2318,6 +2571,7 @@ impl Scene {
             })
             .collect();
         HatchModel {
+            pattern_origin: None,
             render_instance: None,
             boundary: std::sync::Arc::new(boundary),
             boundary_wcs: None,
@@ -2364,18 +2618,18 @@ impl Scene {
         } else {
             // Otherwise reconstruct every ring from render offsets.
             let reconstructed_wcs: Vec<[f64; 2]> = if model.boundary_wcs.is_none() {
-            let [wx, wy] = model.world_origin;
-            model
-                .boundary
-                .iter()
-                .map(|&[x, y]| {
-                    if x.is_finite() && y.is_finite() {
-                        [x as f64 + wx, y as f64 + wy]
-                    } else {
-                        [f64::NAN, f64::NAN]
-                    }
-                })
-                .collect()
+                let [wx, wy] = model.world_origin;
+                model
+                    .boundary
+                    .iter()
+                    .map(|&[x, y]| {
+                        if x.is_finite() && y.is_finite() {
+                            [x as f64 + wx, y as f64 + wy]
+                        } else {
+                            [f64::NAN, f64::NAN]
+                        }
+                    })
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -2388,31 +2642,31 @@ impl Scene {
             let mut first = true;
             let mut ring_index = 0usize;
             let mut push_ring = |r: &mut Vec<Vector2>, is_outer: bool, index: usize| {
-            if !r.is_empty() {
-                let edge = PolylineEdge::new(std::mem::take(r), true);
-                let handles: Vec<_> = model
-                    .boundary_sources
-                    .as_deref()
-                    .and_then(|sources| sources.get(index))
-                    .into_iter()
-                    .flatten()
-                    .copied()
-                    .filter(|handle| handle.is_valid())
-                    .collect();
-                let mut bits = 0;
-                if is_outer {
-                    bits |= acadrust::entities::hatch::BoundaryPathFlags::OUTERMOST.bits();
-                    bits |= acadrust::entities::hatch::BoundaryPathFlags::EXTERNAL.bits();
+                if !r.is_empty() {
+                    let edge = PolylineEdge::new(std::mem::take(r), true);
+                    let handles: Vec<_> = model
+                        .boundary_sources
+                        .as_deref()
+                        .and_then(|sources| sources.get(index))
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|handle| handle.is_valid())
+                        .collect();
+                    let mut bits = 0;
+                    if is_outer {
+                        bits |= acadrust::entities::hatch::BoundaryPathFlags::OUTERMOST.bits();
+                        bits |= acadrust::entities::hatch::BoundaryPathFlags::EXTERNAL.bits();
+                    }
+                    let mut path = BoundaryPath::with_flags(
+                        acadrust::entities::hatch::BoundaryPathFlags::from_bits(bits),
+                    );
+                    path.add_edge(BoundaryEdge::Polyline(edge));
+                    for handle in handles {
+                        path.add_boundary_handle(handle);
+                    }
+                    dxf.paths.push(path);
                 }
-                let mut path = BoundaryPath::with_flags(
-                    acadrust::entities::hatch::BoundaryPathFlags::from_bits(bits),
-                );
-                path.add_edge(BoundaryEdge::Polyline(edge));
-                for handle in handles {
-                    path.add_boundary_handle(handle);
-                }
-                dxf.paths.push(path);
-            }
             };
             for &[x, y] in wcs {
                 if x.is_finite() && y.is_finite() {
@@ -2466,28 +2720,20 @@ impl Scene {
                 let family_angle = (family.angle_deg as f64).to_radians();
                 let angle = family_angle + rotation;
                 let (family_sin, family_cos) = family_angle.sin_cos();
-                let local_offset_x = family.dx as f64 * family_cos
-                    - family.dy as f64 * family_sin;
-                let local_offset_y = family.dx as f64 * family_sin
-                    + family.dy as f64 * family_cos;
+                let local_offset_x = family.dx as f64 * family_cos - family.dy as f64 * family_sin;
+                let local_offset_y = family.dx as f64 * family_sin + family.dy as f64 * family_cos;
                 let base_x = family.x0 as f64 * pattern_scale;
                 let base_y = family.y0 as f64 * pattern_scale;
                 pattern.lines.push(acadrust::entities::HatchPatternLine {
                     angle,
                     base_point: Vector2::new(
-                        pattern_origin[0]
-                            + base_x * rotation_cos
-                            - base_y * rotation_sin,
-                        pattern_origin[1]
-                            + base_x * rotation_sin
-                            + base_y * rotation_cos,
+                        pattern_origin[0] + base_x * rotation_cos - base_y * rotation_sin,
+                        pattern_origin[1] + base_x * rotation_sin + base_y * rotation_cos,
                     ),
                     offset: Vector2::new(
-                        (local_offset_x * rotation_cos
-                            - local_offset_y * rotation_sin)
+                        (local_offset_x * rotation_cos - local_offset_y * rotation_sin)
                             * pattern_scale,
-                        (local_offset_x * rotation_sin
-                            + local_offset_y * rotation_cos)
+                        (local_offset_x * rotation_sin + local_offset_y * rotation_cos)
                             * pattern_scale,
                     ),
                     dash_lengths: family
@@ -2528,13 +2774,13 @@ impl Scene {
             dxf.gradient_color.is_single_color = false;
             // Linear has no INV name in the standard set: persist an inverted
             // linear by swapping the colour stops instead.
-            let (c0, c1) =
-                if *invert && matches!(kind, crate::scene::model::hatch_model::GradientKind::Linear)
-                {
-                    (*color2, model.color)
-                } else {
-                    (model.color, *color2)
-                };
+            let (c0, c1) = if *invert
+                && matches!(kind, crate::scene::model::hatch_model::GradientKind::Linear)
+            {
+                (*color2, model.color)
+            } else {
+                (model.color, *color2)
+            };
             dxf.gradient_color.colors = vec![
                 acadrust::entities::hatch::GradientColorEntry {
                     value: 0.0,
@@ -2552,6 +2798,9 @@ impl Scene {
         // carries `world_origin: [0, 0]`, which after the world_offset removal
         // leaves the fill mis-placed and effectively invisible until a later
         // edit rebuilds it from the DXF — so keep the seed, don't overwrite it.
+        if let Some(origin) = model.pattern_origin {
+            dxf.record_pattern_origin(Vector2::new(origin[0], origin[1]));
+        }
         let mut entity = EntityType::Hatch(dxf);
 
         if let Some(layer) = layer {
@@ -2560,6 +2809,8 @@ impl Scene {
         if let Some((color, transparency)) = entity_style {
             entity.common_mut().color = color;
             entity.common_mut().transparency = transparency;
+        } else {
+            entity.common_mut().transparency = self.document.current_entity_transparency();
         }
 
         self.add_entity(entity)
@@ -2580,6 +2831,46 @@ impl Scene {
         self.solid_models = HashMap::default();
         *self.camera.borrow_mut() = Camera::default();
         self.camera_generation += 1;
+        // A brand-new/replaced document has none of these yet — without
+        // resetting them, a "new"/"open" (e.g. via automation, which reuses
+        // this same reset) would leak the previous document's constraints
+        // and named parameters into the fresh one.
+        self.parametric_constraints.clear();
+        self.named_parameters = crate::scene::named_parameters::ParameterTable::new();
+        self.bump_constraints_epoch();
         self.bump_geometry();
+        self.bump_layout_epoch();
+        self.bump_scale_epoch();
+    }
+
+    /// Reset to the drawing File → New produces. Every path that starts a
+    /// fresh drawing (the New tab, CLEAR, the automation `new` op) goes
+    /// through here so they all agree on what a blank drawing contains.
+    pub fn reset_to_new_drawing(&mut self) {
+        self.clear();
+        self.populate_new_drawing_defaults();
+    }
+
+    /// What a blank document gets on top of the codec's defaults: the
+    /// standard linetypes and a compatible page setup on every paper layout.
+    pub fn populate_new_drawing_defaults(&mut self) {
+        crate::io::linetypes::populate_document(&mut self.document);
+        // A new drawing is metric, as the reference's ISO template: millimetre
+        // insertion units, metric measurement, and the ISO-25 dimension style
+        // current. Standard stays available for imperial work.
+        self.document.header.measurement = 1;
+        self.document.header.insertion_units = 4;
+        let iso = crate::scene::creation_style::ensure_iso_dim_style(&mut self.document);
+        self.document.header.current_dimstyle_name = "ISO-25".to_string();
+        // The name alone leaves the header pointing at the previous style, and
+        // a DWG writes the current style by handle only.
+        self.document.header.current_dimstyle_handle = iso;
+        for obj in self.document.objects.values_mut() {
+            if let acadrust::objects::ObjectType::Layout(l) = obj {
+                if l.name != "Model" {
+                    crate::scene::apply_default_page_setup(l, "");
+                }
+            }
+        }
     }
 }

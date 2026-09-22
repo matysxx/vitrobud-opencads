@@ -84,6 +84,38 @@ fn entity_curves_on_plane(
     }
 }
 
+fn entity_boundary_source_on_plane(
+    entity: &EntityType,
+    plane: WorkingPlane,
+    tolerance: f64,
+) -> Option<BoundarySource> {
+    let curves = entity_curves_on_plane(entity, plane, tolerance);
+
+    if curves.is_empty() {
+        return None;
+    }
+
+    let segments: Vec<Line> = curves
+        .iter()
+        .flat_map(|curve| {
+            curve
+                .tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE)
+                .windows(2)
+                .filter_map(|pair| {
+                    let start = pair[0];
+                    let end = pair[1];
+
+                    (start.iter().chain(&end).all(|value| value.is_finite())
+                        && start != end)
+                        .then_some(Line { start, end })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    (!segments.is_empty()).then_some(BoundarySource { segments, curves })
+}
+
 fn hatch_path_seed(path: &acadrust::entities::BoundaryPath) -> Option<[f64; 2]> {
     let mut ring = Vec::new();
     for edge in &path.edges {
@@ -171,17 +203,44 @@ pub(crate) fn ring_source_handles(
 }
 
 fn curve_forward(curve: &Curve, start: [f64; 2], next: [f64; 2]) -> bool {
-    let a = curve.parameter_at(start);
-    let b = curve.parameter_at(next);
-    let mut delta = b - a;
-    if curve.is_closed() {
-        if delta > 0.5 {
-            delta -= 1.0;
-        } else if delta < -0.5 {
-            delta += 1.0;
+    // For circular geometry, determine direction directly from the
+    // geometric traversal of the detected boundary. This avoids parameter
+    // wrap-around choosing the major arc instead of the minor arc.
+    match curve {
+        Curve::Circle(circle) => {
+            let ax = start[0] - circle.centre[0];
+            let ay = start[1] - circle.centre[1];
+            let bx = next[0] - circle.centre[0];
+            let by = next[1] - circle.centre[1];
+
+            ax * by - ay * bx >= 0.0
+        }
+
+        Curve::Arc(arc) => {
+            let ax = start[0] - arc.centre[0];
+            let ay = start[1] - arc.centre[1];
+            let bx = next[0] - arc.centre[0];
+            let by = next[1] - arc.centre[1];
+
+            ax * by - ay * bx >= 0.0
+        }
+
+        _ => {
+            let a = curve.parameter_at(start);
+            let b = curve.parameter_at(next);
+            let mut delta = b - a;
+
+            if curve.is_closed() {
+                if delta > 0.5 {
+                    delta -= 1.0;
+                } else if delta < -0.5 {
+                    delta += 1.0;
+                }
+            }
+
+            delta >= 0.0
         }
     }
-    delta >= 0.0
 }
 
 fn stored_arc_angles(start: f64, end: f64, counter_clockwise: bool, whole: bool) -> (f64, f64) {
@@ -318,7 +377,7 @@ pub(crate) fn exact_hatch_paths(
         .iter()
         .enumerate()
         .filter_map(|(ring_index, ring)| {
-            let (points, curves) = refined_boundary_ring(ring, sources, tolerance);
+            let (points, curves) = refined_boundary_ring(ring, sources, tolerance); 
             let count = points.len();
             if count < 3 {
                 return None;
@@ -596,6 +655,14 @@ pub(crate) fn boundary_entities_from_sources(
 }
 
 impl Scene {
+    pub(crate) fn replace_hatch_association(&mut self,handle:Handle,paths:Vec<acadrust::entities::BoundaryPath>) {
+        let Some(EntityType::Hatch(hatch))=self.document.get_entity_mut(handle) else{return;};
+        hatch.paths=paths;
+        hatch.is_associative=true;
+        self.associative_hatch_source_cache.borrow_mut().take();
+        self.refresh_fill_model(handle);
+    }
+
     pub(crate) fn edit_hatch_boundary_handles(
         &mut self,
         hatch_handle: Handle,
@@ -731,10 +798,22 @@ impl Scene {
                     .boundary_handles
                     .iter()
                     .filter_map(|source| {
-                        all_sources
-                            .get(source)
-                            .cloned()
-                            .map(|geometry| (*source, geometry))
+                        // Associative boundaries are explicit document references.
+                        // During a grip drag their display wire can be preview-hidden,
+                        // so prefer the live entity geometry over the resident wire cache.
+                        let geometry = self
+                            .document
+                            .get_entity(*source)
+                            .and_then(|entity| {
+                                entity_boundary_source_on_plane(
+                                    entity,
+                                    plane,
+                                    WELD_TOLERANCE,
+                                )
+                            })
+                            .or_else(|| all_sources.get(source).cloned());
+
+                        geometry.map(|geometry| (*source, geometry))
                     })
                     .collect();
                 let segments: Vec<_> = sources
@@ -816,21 +895,155 @@ impl Scene {
                 .segments
                 .extend(segments);
         }
+        // Finite extents of the wire geometry. Rays and infinite
+        // construction lines are clipped to this box below: tessellating
+        // them raw yields a single unit stub at the base point, which can
+        // never close a face (and would overwrite the wire segments with
+        // it). Expanded by the weld tolerance so clipped endpoints meet
+        // the segments that produced the box.
+        let mut bounds: Option<([f64; 2], [f64; 2])> = None;
+        for source in sources.values() {
+            for segment in &source.segments {
+                for point in [segment.start, segment.end] {
+                    bounds = Some(match bounds {
+                        None => ([point[0], point[1]], [point[0], point[1]]),
+                        Some((min, max)) => (
+                            [min[0].min(point[0]), min[1].min(point[1])],
+                            [max[0].max(point[0]), max[1].max(point[1])],
+                        ),
+                    });
+                }
+            }
+        }
+        let bounds = bounds.map(|(min, max)| {
+            (
+                [min[0] - tolerance, min[1] - tolerance],
+                [max[0] + tolerance, max[1] + tolerance],
+            )
+        });
         for (&handle, source) in &mut sources {
-            source.curves = self
+            let curves = self
                 .document
                 .get_entity(handle)
                 .map(|entity| entity_curves_on_plane(entity, plane, tolerance))
                 .unwrap_or_default();
-            source.curves.retain(|curve| {
-                source.segments.iter().any(|segment| {
-                    distance_to(curve, segment.start).max(distance_to(curve, segment.end))
-                        <= tolerance * 4.0
+
+            // Associative hatch regeneration must use the entity's live geometry,
+            // not a potentially one-frame-old display wire. Grip edits and STRETCH
+            // mutate the document before the resident wire cache catches up.
+            let live_segments: Vec<Line> = curves
+                .iter()
+                .flat_map(|curve| {
+                    match curve {
+                        Curve::Ray(ray) => bounds
+                            .and_then(|(min, max)| {
+                                clip_unbounded_to_bounds(
+                                    ray.origin,
+                                    ray.direction,
+                                    true,
+                                    min,
+                                    max,
+                                    tolerance,
+                                )
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>(),
+                        Curve::XLine(line) => bounds
+                            .and_then(|(min, max)| {
+                                clip_unbounded_to_bounds(
+                                    line.base,
+                                    line.direction,
+                                    false,
+                                    min,
+                                    max,
+                                    tolerance,
+                                )
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>(),
+                        _ => curve
+                            .tessellate_angle(cadkernel::tessellation::DEFAULT_ANGLE)
+                            .windows(2)
+                            .filter_map(|pair| {
+                                let start = pair[0];
+                                let end = pair[1];
+
+                                (start.iter().chain(&end).all(|value| value.is_finite())
+                                    && start != end)
+                                    .then_some(Line { start, end })
+                            })
+                            .collect::<Vec<_>>(),
+                    }
                 })
-            });
+                .collect();
+
+            if !live_segments.is_empty() {
+                source.segments = live_segments;
+                source.curves = curves;
+            } else {
+                // Fallback for entity types that do not expose usable native curves:
+                // retain the existing display-wire geometry.
+                source.curves = curves;
+                source.curves.retain(|curve| {
+                    source.segments.iter().any(|segment| {
+                        distance_to(curve, segment.start).max(distance_to(curve, segment.end))
+                            <= tolerance * 4.0
+                    })
+                });
+            }
         }
         sources
     }
+}
+
+/// Clip an unbounded curve (ray when `forward_only`, infinite line
+/// otherwise) to a finite bounding box, so it can participate in face
+/// detection. Returns `None` when the direction is degenerate, when the
+/// curve misses the box, or when the clipped piece is shorter than
+/// `tolerance` and could never close a face on its own.
+fn clip_unbounded_to_bounds(
+    base: [f64; 2],
+    direction: [f64; 2],
+    forward_only: bool,
+    min: [f64; 2],
+    max: [f64; 2],
+    tolerance: f64,
+) -> Option<Line> {
+    let (dx, dy) = (direction[0], direction[1]);
+    if dx == 0.0 && dy == 0.0 {
+        return None;
+    }
+    // Liang-Barsky: narrow the parameter interval per axis.
+    let mut entered = f64::NEG_INFINITY;
+    let mut exited = f64::INFINITY;
+    for axis in 0..2 {
+        let (base, delta, low, high) = (base[axis], direction[axis], min[axis], max[axis]);
+        if delta.abs() <= f64::EPSILON {
+            if base < low || base > high {
+                return None;
+            }
+        } else {
+            let (mut near, mut far) = ((low - base) / delta, (high - base) / delta);
+            if near > far {
+                std::mem::swap(&mut near, &mut far);
+            }
+            entered = entered.max(near);
+            exited = exited.min(far);
+            if entered > exited {
+                return None;
+            }
+        }
+    }
+    if forward_only {
+        entered = entered.max(0.0);
+    }
+    if !(entered <= exited) || !entered.is_finite() || !exited.is_finite() {
+        return None;
+    }
+    let start = [base[0] + entered * dx, base[1] + entered * dy];
+    let end = [base[0] + exited * dx, base[1] + exited * dy];
+    let length = (end[0] - start[0]).hypot(end[1] - start[1]);
+    (length > tolerance).then_some(Line { start, end })
 }
 
 fn hatch_path_geometry(
@@ -918,4 +1131,91 @@ pub(crate) fn boundary_faces(
         .flat_map(|source| source.segments.iter().copied())
         .collect();
     bounded_faces(&segments, Tolerance::new(tolerance))
+}
+
+#[cfg(test)]
+mod boundary_xline_tests {
+    use super::*;
+
+    fn rect_edge(
+        scene: &mut Scene,
+        start: [f64; 3],
+        end: [f64; 3],
+    ) -> acadrust::Handle {
+        scene.add_entity(EntityType::Line(
+            acadrust::entities::Line::from_points(
+                acadrust::types::Vector3::new(start[0], start[1], start[2]),
+                acadrust::types::Vector3::new(end[0], end[1], end[2]),
+            ),
+        ))
+    }
+
+    #[test]
+    fn xline_splits_rectangle_into_two_faces() {
+        let mut scene = Scene::new();
+        rect_edge(&mut scene, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
+        rect_edge(&mut scene, [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]);
+        rect_edge(&mut scene, [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]);
+        rect_edge(&mut scene, [0.0, 10.0, 0.0], [0.0, 0.0, 0.0]);
+        // Infinite vertical construction line through x=5.
+        scene.add_entity(EntityType::XLine(acadrust::entities::XLine::new(
+            acadrust::types::Vector3::new(5.0, 0.0, 0.0),
+            acadrust::types::Vector3::new(0.0, 1.0, 0.0),
+        )));
+
+        let sources =
+            scene.boundary_sources_on_plane(crate::command::WorkingPlane::default(), 1.0e-6);
+        let faces = boundary_faces(&sources, 1.0e-6);
+        assert_eq!(
+            faces.len(),
+            2,
+            "vertical xline must split the 10x10 rectangle into two faces"
+        );
+    }
+
+    #[test]
+    fn ray_splits_rectangle_into_two_faces() {
+        let mut scene = Scene::new();
+        rect_edge(&mut scene, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
+        rect_edge(&mut scene, [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]);
+        rect_edge(&mut scene, [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]);
+        rect_edge(&mut scene, [0.0, 10.0, 0.0], [0.0, 0.0, 0.0]);
+        // Ray starting below the rectangle, pointing up through x=5.
+        scene.add_entity(EntityType::Ray(acadrust::entities::Ray::new(
+            acadrust::types::Vector3::new(5.0, -5.0, 0.0),
+            acadrust::types::Vector3::new(0.0, 1.0, 0.0),
+        )));
+
+        let sources =
+            scene.boundary_sources_on_plane(crate::command::WorkingPlane::default(), 1.0e-6);
+        let faces = boundary_faces(&sources, 1.0e-6);
+        assert_eq!(
+            faces.len(),
+            2,
+            "upward ray must split the 10x10 rectangle into two faces"
+        );
+    }
+
+    #[test]
+    fn xline_missing_the_geometry_contributes_no_face() {
+        let mut scene = Scene::new();
+        rect_edge(&mut scene, [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
+        rect_edge(&mut scene, [10.0, 0.0, 0.0], [10.0, 10.0, 0.0]);
+        rect_edge(&mut scene, [10.0, 10.0, 0.0], [0.0, 10.0, 0.0]);
+        rect_edge(&mut scene, [0.0, 10.0, 0.0], [0.0, 0.0, 0.0]);
+        // Far-away vertical construction line: never touches the rectangle.
+        scene.add_entity(EntityType::XLine(acadrust::entities::XLine::new(
+            acadrust::types::Vector3::new(50.0, 0.0, 0.0),
+            acadrust::types::Vector3::new(0.0, 1.0, 0.0),
+        )));
+
+        let sources =
+            scene.boundary_sources_on_plane(crate::command::WorkingPlane::default(), 1.0e-6);
+        let faces = boundary_faces(&sources, 1.0e-6);
+        assert_eq!(
+            faces.len(),
+            1,
+            "a distant xline must leave the single rectangle face alone"
+        );
+    }
 }

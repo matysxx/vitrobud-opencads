@@ -17,68 +17,14 @@ use crate::ipc::v4::server::{
     default_notify_rate_limit, run_host_reader_thread, HostIncoming, RateLimiter, V4HostShared,
 };
 use crate::process::PluginError;
+use crate::process::{request_kind, request_timeout};
 
-/// Default maximum time to wait for a plugin call to respond.
-const CALL_TIMEOUT_DEFAULT: Duration = Duration::from_secs(30);
-
-fn call_timeout() -> Duration {
-    std::env::var("OCS_PLUGIN_CALL_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(CALL_TIMEOUT_DEFAULT)
-}
-
-/// Per-request-kind timeout floors.
-fn request_timeout(kind: &'static str) -> Duration {
-    base_max_floor(call_timeout(), kind)
-}
-
-fn execute_code_timeout() -> Duration {
-    const DEFAULT: Duration = Duration::from_secs(60);
-    std::env::var("OCS_PLUGIN_EXECUTE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT)
-        .max(DEFAULT)
-}
-
-fn base_max_floor(base: Duration, kind: &'static str) -> Duration {
-    #[cfg(test)]
-    if let Some(secs) = std::env::var("OCS_PLUGIN_TEST_FLOOR_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-    {
-        return base.max(Duration::from_secs(secs));
-    }
-    let floor = match kind {
-        "GetManifest" | "GetRibbon" => Duration::from_secs(5),
-        "Dispatch" => Duration::from_secs(10),
-        "InteractiveEvent" | "GetPrompt" | "NeedsEntityPick" => Duration::from_secs(2),
-        "ExecuteCode" => execute_code_timeout(),
-        _ => Duration::from_secs(1),
-    };
-    base.max(floor)
-}
-
-fn request_kind(req: &HostRequest) -> &'static str {
-    match req {
-        HostRequest::GetManifest => "GetManifest",
-        HostRequest::GetRibbon => "GetRibbon",
-        HostRequest::Dispatch { .. } => "Dispatch",
-        HostRequest::InteractiveEvent { .. } => "InteractiveEvent",
-        HostRequest::GetPrompt { .. } => "GetPrompt",
-        HostRequest::NeedsEntityPick { .. } => "NeedsEntityPick",
-        HostRequest::ExecuteCode { .. } => "ExecuteCode",
-        HostRequest::Shutdown => "Shutdown",
-    }
-}
+type DeferredRequest = (u64, Option<u64>, Box<PluginRequest>);
 
 pub(crate) struct V4Connection {
     shared: Arc<V4HostShared>,
     incoming: Mutex<mpsc::Receiver<HostIncoming>>,
-    deferred: Mutex<VecDeque<(u64, Option<u64>, Box<PluginRequest>)>>,
+    deferred: Mutex<VecDeque<DeferredRequest>>,
     call_lock: Mutex<()>,
     next_id: AtomicU64,
     reader_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -199,7 +145,7 @@ impl V4Connection {
                     tab_id,
                     payload,
                 }) => {
-                    if tab_id.map_or(true, |request_tab| request_tab == host.tab_id()) {
+                    if tab_id.is_none_or(|request_tab| request_tab == host.tab_id()) {
                         self.respond_to_plugin_request(
                             host,
                             rid,
@@ -251,7 +197,7 @@ impl V4Connection {
             let mut deferred = self.deferred.lock().unwrap_or_else(|e| e.into_inner());
             let mut waiting = VecDeque::new();
             while let Some((id, tab_id, payload)) = deferred.pop_front() {
-                if tab_id.map_or(true, |request_tab| request_tab == current_tab_id) {
+                if tab_id.is_none_or(|request_tab| request_tab == current_tab_id) {
                     ready.push_back((id, payload));
                 } else {
                     waiting.push_back((id, tab_id, payload));
@@ -271,7 +217,7 @@ impl V4Connection {
                     tab_id,
                     payload,
                 }) => {
-                    if tab_id.map_or(true, |request_tab| request_tab == current_tab_id) {
+                    if tab_id.is_none_or(|request_tab| request_tab == current_tab_id) {
                         self.respond_to_plugin_request(
                             host,
                             id,

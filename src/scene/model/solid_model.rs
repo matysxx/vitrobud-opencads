@@ -22,7 +22,8 @@ fn display_tessellation(
     body: &Body,
     facet_resolution: f64,
     chordal_deflection: Option<f64>,
-    isolines: usize,
+    isolines: [usize; 2],
+    planar_isolines: bool,
 ) -> brep::mesh::BodyMesh {
     let resolution = if facet_resolution.is_finite() && facet_resolution > 0.0 {
         facet_resolution.clamp(0.01, 10.0)
@@ -34,7 +35,8 @@ fn display_tessellation(
         |_| cadkernel::tessellation::display_angle_for_resolution(resolution),
     );
     let mut tolerance = brep::mesh::TessellationTolerance::new(max_angle, TOL)
-        .with_isolines(isolines);
+        .with_uv_isolines(isolines[0], isolines[1])
+        .with_planar_isolines(planar_isolines);
     if let Some(deflection) = chordal_deflection {
         tolerance = tolerance.with_chordal_deflection(deflection);
     }
@@ -267,20 +269,42 @@ pub fn edge_wires(body: &Body) -> Vec<acadrust::entities::Wire> {
         .collect()
 }
 
-/// White wireframe used while a solid-history grip is hot.
+/// White wireframe used while a solid-history grip is hot. Surface previews
+/// include the requested construction isolines so their cage follows the edit.
 ///
 /// This deliberately does not touch the resident solid mesh or its entity
 /// wires: the selected source stays visible in blue while the candidate body
 /// is presented as a separate, non-pickable outline until placement.
-pub fn grip_preview_wires(body: &Body, handle: acadrust::Handle) -> Vec<WireModel> {
-    tessellation(body)
+pub fn grip_preview_wires(
+    body: &Body,
+    handle: acadrust::Handle,
+    isolines: [usize; 2],
+    planar_isolines: bool,
+) -> Vec<WireModel> {
+    let tessellation = brep::mesh::tessellate(
+        body,
+        brep::mesh::TessellationTolerance::new(
+            cadkernel::tessellation::DEFAULT_ANGLE,
+            TOL,
+        )
+        .with_uv_isolines(isolines[0], isolines[1])
+        .with_planar_isolines(planar_isolines),
+    );
+    tessellation
         .edges
         .into_iter()
-        .filter(|edge| edge.positions.len() >= 2)
-        .map(|edge| {
+        .map(|edge| edge.positions)
+        .chain(
+            tessellation
+                .isolines
+                .into_iter()
+                .map(|isoline| isoline.positions),
+        )
+        .filter(|positions| positions.len() >= 2)
+        .map(|positions| {
             WireModel::solid_f64(
                 format!("{}-GRIP-PREVIEW", handle.value()),
-                edge.positions,
+                positions,
                 WireModel::WHITE,
                 false,
             )
@@ -347,6 +371,45 @@ pub fn planar_face_normal(body: &Body, face: FaceKey) -> Option<[f64; 3]> {
     Some(if face.forward { normal } else { -normal }.to_array())
 }
 
+/// Centre of every B-rep face: the average of its boundary-loop vertices.
+/// Exact for planar faces; for curved faces the loop average floats slightly
+/// inside the surface — a documented approximation the snap path must not pay
+/// a surface evaluation for on every wire build. Capped like the edge snaps.
+pub fn face_centers(body: &Body) -> Vec<[f64; 3]> {
+    const MAX_FACE_CENTERS: usize = 2048;
+    let mut out = Vec::new();
+    for face in body.face_keys() {
+        let mut sum = [0.0; 3];
+        let mut count = 0usize;
+        for coedge in body.face_coedges(face) {
+            let Some((va, vb)) = body.coedge_vertices(coedge) else {
+                continue;
+            };
+            for vk in [va, vb] {
+                let Some(v) = body.vertices.get(vk) else {
+                    continue;
+                };
+                if !v.point.iter().all(|c| c.is_finite()) {
+                    continue;
+                }
+                sum[0] += v.point[0];
+                sum[1] += v.point[1];
+                sum[2] += v.point[2];
+                count += 1;
+            }
+        }
+        if count >= 3 {
+            let n = count as f64;
+            out.push([sum[0] / n, sum[1] / n, sum[2] / n]);
+        }
+    }
+    if out.len() > MAX_FACE_CENTERS {
+        let step = out.len().div_ceil(MAX_FACE_CENTERS);
+        out = out.into_iter().step_by(step).collect();
+    }
+    out
+}
+
 // ── Boolean operations ──────────────────────────────────────────────────────
 
 /// Which CSG to apply. Mirrors `model::boolean_cmd::BoolOp` but kept local so
@@ -365,13 +428,18 @@ pub enum Bool {
 /// missing, and passing that on unchanged is the point: a half-done boolean
 /// looks finished.
 pub fn boolean(op: Bool, a: &Body, b: &Body) -> Option<Body> {
+    boolean_result(op, a, b).ok()
+}
+
+/// Combine two solids while retaining the kernel's exact refusal reason.
+pub fn boolean_result(op: Bool, a: &Body, b: &Body) -> Result<Body, brep::Snag> {
     let how = match op {
         Bool::Union => brep::Operation::Union,
         Bool::Subtract => brep::Operation::Difference,
         Bool::Intersect => brep::Operation::Intersection,
     };
     let tolerance = brep::operation_tolerance(&[a, b]);
-    brep::combine(a.clone(), b.clone(), how, tolerance).ok()
+    brep::combine(a.clone(), b.clone(), how, tolerance)
 }
 
 // ── Tessellation ────────────────────────────────────────────────────────────
@@ -448,7 +516,8 @@ pub fn display_from_solid(
     color: [f32; 4],
     facet_resolution: f64,
     chordal_deflection: Option<f64>,
-    isolines: usize,
+    isolines: [usize; 2],
+    planar_isolines: bool,
 ) -> Option<(MeshLodSet, Vec<acadrust::entities::Wire>, [f64; 3])> {
     use acadrust::types::Vector3;
     let tessellation = display_tessellation(
@@ -456,6 +525,7 @@ pub fn display_from_solid(
         facet_resolution,
         chordal_deflection,
         isolines,
+        planar_isolines,
     );
     let center = mesh_center(&tessellation.mesh)?;
     let wires = tessellation
@@ -470,7 +540,11 @@ pub fn display_from_solid(
             )
         })
         .collect();
-    Some((mesh_from_tessellation(tessellation, color)?, wires, center))
+    let mut mesh = mesh_from_tessellation(tessellation, color)?;
+    if let Some(properties) = cadkernel::brep::analytic_mass_properties(body) {
+        mesh.apply_mass_properties(properties);
+    }
+    Some((mesh, wires, center))
 }
 
 /// The middle of a body, for a caller needing a point to turn or scale about.
@@ -532,7 +606,7 @@ mod tests {
     use super::*;
 
     fn tri_count(body: &Body) -> usize {
-        display_from_solid(body, [0.7, 0.7, 0.7, 1.0], 1.0, None, 0)
+        display_from_solid(body, [0.7, 0.7, 0.7, 1.0], 1.0, None, [0; 2], false)
             .map(|(m, _, _)| m.lods[0].indices.len() / 3)
             .unwrap_or(0)
     }
@@ -547,6 +621,47 @@ mod tests {
         assert!(tri_count(&sphere_solid(c, 5.0).unwrap()) > 50, "sphere");
         assert!(tri_count(&torus_solid(c, 8.0, 2.0).unwrap()) > 50, "torus");
         assert!(tri_count(&pyramid_solid(c, 5.0, 9.0, 6).unwrap()) >= 8, "pyramid");
+    }
+
+    #[test]
+    fn planar_display_uses_independent_isoline_counts() {
+        let body = box_solid([0.0; 3], 10.0, 10.0, 10.0).unwrap();
+        let display = |counts, planar| {
+            display_from_solid(&body, [0.7, 0.7, 0.7, 1.0], 1.0, None, counts, planar)
+                .unwrap()
+                .0
+                .edge_verts
+                .len()
+        };
+        let boundaries = display([0, 0], false);
+
+        assert_eq!(display([1, 0], true) - boundaries, 12);
+        assert_eq!(display([0, 2], true) - boundaries, 24);
+        assert_eq!(display([2, 2], false), boundaries);
+    }
+
+    #[test]
+    fn box_face_centers_are_six() {
+        let body = box_solid([0.0, 0.0, 0.0], 10.0, 10.0, 10.0).unwrap();
+        let centers = face_centers(&body);
+        assert_eq!(centers.len(), 6, "a box has six faces: {centers:?}");
+        for expected in [
+            [5.0, 0.0, 0.0],
+            [-5.0, 0.0, 0.0],
+            [0.0, 5.0, 0.0],
+            [0.0, -5.0, 0.0],
+            [0.0, 0.0, 5.0],
+            [0.0, 0.0, -5.0],
+        ] {
+            assert!(
+                centers.iter().any(|c| {
+                    (c[0] - expected[0]).abs() < 1e-9
+                        && (c[1] - expected[1]).abs() < 1e-9
+                        && (c[2] - expected[2]).abs() < 1e-9
+                }),
+                "missing face center {expected:?} in {centers:?}"
+            );
+        }
     }
 
     #[test]

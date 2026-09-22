@@ -35,6 +35,60 @@ fn named_text_style(doc: &CadDocument, name: &str) -> Option<TextStyle> {
         .cloned()
 }
 
+/// Adds the reference's ISO-25 dimension style (the current style of its
+/// metric template) when the drawing has none of that name, and hands back its
+/// handle: the header records the current dimension style by handle as well as
+/// by name, and a DWG carries only the handle.
+pub fn ensure_iso_dim_style(doc: &mut CadDocument) -> Handle {
+    if let Some(style) = doc
+        .dim_styles
+        .iter()
+        .find(|style| style.name.eq_ignore_ascii_case("ISO-25"))
+    {
+        return style.handle;
+    }
+    let mut style = DimStyle::new("ISO-25");
+    style.handle = doc.allocate_handle();
+    style.dimtxt = 2.5;
+    style.dimasz = 2.5;
+    style.dimcen = 2.5;
+    style.dimexe = 1.25;
+    style.dimexo = 0.625;
+    style.dimgap = 0.625;
+    style.dimdli = 3.75;
+    style.dimtad = 1;
+    style.dimtih = false;
+    style.dimtoh = false;
+    style.dimtofl = true;
+    style.dimtix = false;
+    style.dimsoxd = false;
+    style.dimdsep = i16::from(b',');
+    style.dimlunit = 2;
+    style.dimdec = 2;
+    style.dimtdec = 2;
+    style.dimaunit = 0;
+    style.dimadec = 0;
+    style.dimazin = 0;
+    style.dimzin = 8;
+    style.dimtzin = 8;
+    style.dimatfit = 3;
+    style.dimtmove = 0;
+    style.dimscale = 1.0;
+    style.dimlfac = 1.0;
+    style.dimtfac = 1.0;
+    style.dimaltf = 0.03937007874016;
+    style.dimaltd = 3;
+    style.dimalttd = 3;
+    style.dimaltu = 2;
+    style.dimfxl = 1.0;
+    style.dimjogang = std::f64::consts::FRAC_PI_2;
+    style.dimmzf = 100.0;
+    style.dimaltmzf = 100.0;
+    let handle = style.handle;
+    let _ = doc.dim_styles.add(style);
+    handle
+}
+
 fn named_dim_style(doc: &CadDocument, name: &str) -> Option<DimStyle> {
     doc.dim_styles
         .iter()
@@ -252,7 +306,52 @@ fn apply_object_defaults(doc: &CadDocument, entity: &mut EntityType) {
 }
 
 pub fn apply_current_creation_styles(doc: &CadDocument, entity: &mut EntityType) {
+    entity.common_mut().transparency = doc.current_entity_transparency();
     apply_text_defaults(doc, entity);
     apply_dimension_defaults(doc, entity);
     apply_object_defaults(doc, entity);
+}
+
+pub(crate) fn parse_current_transparency(value: &str) -> Option<acadrust::types::Transparency> {
+    use acadrust::types::Transparency;
+    match value.trim().to_ascii_uppercase().as_str() {
+        "BYLAYER" | "-1" => Some(Transparency::ByLayer),
+        "BYBLOCK" | "-2" => Some(Transparency::ByBlock),
+        value => value.parse::<u8>().ok().filter(|value| *value <= 90)
+            .map(|value| Transparency::from_percent(value as f64 / 100.0)),
+    }
+}
+
+pub(crate) fn current_transparency_label(value: acadrust::types::Transparency) -> String {
+    use acadrust::types::Transparency;
+    match value {
+        Transparency::ByLayer => "ByLayer".into(),
+        Transparency::ByBlock => "ByBlock".into(),
+        Transparency::Explicit(_) => format!("{:.0}", value.as_percent() * 100.0),
+    }
+}
+
+#[cfg(test)]
+mod transparency_tests {
+    use super::*;
+    use acadrust::types::Transparency;
+
+    #[test]
+    fn parses_supported_current_transparency_values() {
+        assert_eq!(parse_current_transparency("ByLayer"), Some(Transparency::ByLayer));
+        assert_eq!(parse_current_transparency("-1"), Some(Transparency::ByLayer));
+        assert_eq!(parse_current_transparency("ByBlock"), Some(Transparency::ByBlock));
+        assert_eq!(parse_current_transparency("-2"), Some(Transparency::ByBlock));
+        assert_eq!(parse_current_transparency("25"), Some(Transparency::Explicit(64)));
+        assert!(parse_current_transparency("91").is_none());
+        assert!(parse_current_transparency("25.5").is_none());
+        assert!(parse_current_transparency("invalid").is_none());
+    }
+
+    #[test]
+    fn labels_transparency_for_command_and_properties_inputs() {
+        assert_eq!(current_transparency_label(Transparency::ByLayer), "ByLayer");
+        assert_eq!(current_transparency_label(Transparency::ByBlock), "ByBlock");
+        assert_eq!(current_transparency_label(Transparency::Explicit(64)), "25");
+    }
 }

@@ -6,7 +6,8 @@ use cadkernel::geom2d::{
 };
 
 use crate::command::{
-    CadCommand, CmdResult, DimensionAssociationInput, InputKind, WorkingPlane,
+    CadCommand, CmdOption, CmdResult, DimensionAssociationInput, DimensionPreview, InputKind,
+    WorkingPlane,
 };
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
@@ -14,7 +15,7 @@ use glam::DVec3;
 use crate::t;
 
 /// Select the measured axis from where the dimension line clears the points.
-fn measure_axis(first: DVec3, second: DVec3, def: DVec3) -> DVec3 {
+pub(crate) fn measure_axis(first: DVec3, second: DVec3, def: DVec3) -> DVec3 {
     let outside = |value: f64, a: f64, b: f64| {
         let (low, high) = if a <= b { (a, b) } else { (b, a) };
         (low - value).max(value - high).max(0.0)
@@ -107,6 +108,41 @@ impl LinearDimensionCommand {
             mtext_override: false,
         }
     }
+
+    fn build_dimension(&self, first: DVec3, second: DVec3, point: DVec3) -> EntityType {
+        let first = self.plane.to_local(first);
+        let second = self.plane.to_local(second);
+        let point = self.plane.to_local(point);
+        let axis = self.axis_mode.axis(first, second, point);
+        let mut entity =
+            linear_dimension_entity(first, second, point, axis, self.text_override.clone());
+        // An explicit text angle overrides the UCS-derived rotation.
+        if let (Some(angle), EntityType::Dimension(dimension)) = (self.text_angle, &mut entity) {
+            dimension.base_mut().text_rotation = angle;
+        }
+        self.plane.place_entity(entity)
+    }
+}
+
+/// A linear dimension between two points of the working plane, its
+/// dimension line through `point` along `axis` — what DIMLINEAR places and
+/// what a dynamic dimensional constraint draws.
+pub(crate) fn linear_dimension_entity(
+    first: DVec3,
+    second: DVec3,
+    point: DVec3,
+    axis: DVec3,
+    text_override: Option<String>,
+) -> EntityType {
+    let mut dim = DimensionLinear::new(v3(first), v3(second));
+    dim.rotation = axis.y.atan2(axis.x);
+    dim.set_offset(dimension_line_offset(second, point, axis));
+    dim.base.definition_point = dim.definition_point;
+    dim.base.text_middle_point = v3(linear_text_pos(first, second, point, axis));
+    dim.base.insertion_point = dim.base.text_middle_point;
+    dim.base.actual_measurement = dim.measurement();
+    crate::entities::dimension::set_dimension_text_override(&mut dim.base, text_override);
+    EntityType::Dimension(Dimension::Linear(dim))
 }
 
 impl CadCommand for LinearDimensionCommand {
@@ -164,28 +200,7 @@ impl CadCommand for LinearDimensionCommand {
                 CmdResult::NeedPoint
             }
             Step::DimensionLine { first, second } => {
-                let first = self.plane.to_local(first);
-                let second = self.plane.to_local(second);
-                let pt = self.plane.to_local(pt);
-                let mut dim = DimensionLinear::new(v3(first), v3(second));
-                let axis = self.axis_mode.axis(first, second, pt);
-                dim.rotation = axis.y.atan2(axis.x);
-                dim.set_offset(dimension_line_offset(second, pt, axis));
-                dim.base.definition_point = dim.definition_point;
-                dim.base.text_middle_point = v3(linear_text_pos(first, second, pt, axis));
-                dim.base.insertion_point = dim.base.text_middle_point;
-                dim.base.actual_measurement = dim.measurement();
-                crate::entities::dimension::set_dimension_text_override(
-                    &mut dim.base,
-                    self.text_override.clone(),
-                );
-                // An explicit text angle overrides the UCS-derived rotation.
-                if let Some(a) = self.text_angle {
-                    dim.base.text_rotation = a;
-                }
-                let entity = self.plane.place_entity(EntityType::Dimension(
-                    Dimension::Linear(dim),
-                ));
+                let entity = self.build_dimension(first, second, pt);
                 CmdResult::CommitDimension {
                     entity,
                     association: DimensionAssociationInput::Infer(self.source_handle),
@@ -217,6 +232,24 @@ impl CadCommand for LinearDimensionCommand {
         CmdResult::Cancel
     }
 
+    /// Points and object picks may come through a paper-space viewport;
+    /// the committed dimension then reports the model measurement.
+    fn measures_through_viewports(&self) -> bool {
+        true
+    }
+
+    fn dimension_acquired_points(&self) -> Vec<DVec3> {
+        match self.step {
+            Step::FirstPoint => vec![],
+            Step::SecondPoint(p) => vec![p],
+            Step::DimensionLine { first, second } => vec![first, second],
+        }
+    }
+
+    fn dimension_placement_pending(&self) -> bool {
+        matches!(self.step, Step::DimensionLine { .. })
+    }
+
     fn on_escape(&mut self) -> CmdResult {
         CmdResult::Cancel
     }
@@ -224,9 +257,29 @@ impl CadCommand for LinearDimensionCommand {
     fn input_kind(&self) -> InputKind {
         if self.awaiting_text {
             InputKind::FreeText
-        } else {
+        } else if self.awaiting_angle || self.awaiting_rotation {
             InputKind::SingleToken
+        } else {
+            InputKind::Point
         }
+    }
+
+    fn options(&self) -> Vec<CmdOption> {
+        if !matches!(self.step, Step::DimensionLine { .. })
+            || self.awaiting_text
+            || self.awaiting_angle
+            || self.awaiting_rotation
+        {
+            return Vec::new();
+        }
+        vec![
+            CmdOption::new("MText", "MTEXT"),
+            CmdOption::new("Text", "TEXT"),
+            CmdOption::new("Angle", "ANGLE"),
+            CmdOption::new("Horizontal", "HORIZONTAL"),
+            CmdOption::new("Vertical", "VERTICAL"),
+            CmdOption::new("Rotated", "ROTATED"),
+        ]
     }
 
     fn point_step_accepts_keywords(&self) -> bool {
@@ -347,6 +400,39 @@ impl CadCommand for LinearDimensionCommand {
                 Some(preview_wire(points))
             }
         }
+    }
+
+    fn dyn_spec(&self) -> Option<crate::command::DynSpec> {
+        if !matches!(self.step, Step::DimensionLine { .. })
+            || self.awaiting_text
+            || self.awaiting_angle
+            || self.awaiting_rotation
+        {
+            return None;
+        }
+        Some(crate::command::DynSpec {
+            anchor: crate::command::DynAnchor::LastPoint,
+            fields: Vec::new(),
+            guide: crate::command::DynGuide::None,
+            ref_point: None,
+        })
+    }
+
+    fn dimension_preview(&self, cursor: DVec3) -> Option<Vec<DimensionPreview>> {
+        if self.selecting_object {
+            return None;
+        }
+        let (first, second) = match self.step {
+            Step::FirstPoint => return None,
+            Step::SecondPoint(first) => (first, cursor),
+            Step::DimensionLine { first, second } => (first, second),
+        };
+        if first.distance_squared(second) <= 1e-24 {
+            return Some(Vec::new());
+        }
+        Some(vec![DimensionPreview::current_style(
+            self.build_dimension(first, second, cursor),
+        )])
     }
 }
 

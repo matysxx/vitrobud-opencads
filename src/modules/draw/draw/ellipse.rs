@@ -11,7 +11,7 @@ use crate::t;
 
 use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::IconKind;
-use crate::scene::model::wire_model::WireModel;
+use crate::scene::model::wire_model::{TangentGeom, WireModel};
 use glam::DVec3;
 
 fn parse_num(text: &str) -> Option<f64> {
@@ -75,7 +75,16 @@ fn ellipse_wire(
             [p.x, p.y, p.z]
         })
         .collect();
-    WireModel::solid_f64("rubber_band".into(), pts, WireModel::CYAN, false)
+    let mut wire = WireModel::solid_f64("rubber_band".into(), pts, WireModel::CYAN, false);
+    wire.tangent_geoms.push(TangentGeom::PlanarEllipse {
+        center: [center.x, center.y, center.z],
+        major_axis: [major.x, major.y, major.z],
+        normal: plane.z.to_array(),
+        minor_axis_ratio: ratio,
+        start_param: t_start,
+        end_param: t_e,
+    });
+    wire
 }
 
 /// Convert a world point to the parametric angle on the ellipse.
@@ -518,7 +527,15 @@ impl CadCommand for EllipseArcCommand {
     }
 
     fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
-        let val = parse_num(text)?;
+        let angle_step = matches!(
+            &self.step,
+            ArcStep::StartAngle { .. } | ArcStep::EndAngle { .. }
+        );
+        let val = if angle_step {
+            crate::entities::common::parse_typed_angle(text)?
+        } else {
+            parse_num(text)?
+        };
         match &self.step {
             ArcStep::MinorRatio { center, major } => {
                 if val > 0.0 {
@@ -537,7 +554,7 @@ impl CadCommand for EllipseArcCommand {
                 major,
                 ratio,
             } => {
-                let t_start = val.to_radians();
+                let t_start = val;
                 let (c, m, r) = (*center, *major, *ratio);
                 self.prev_pt = None;
                 self.step = ArcStep::EndAngle {
@@ -554,8 +571,8 @@ impl CadCommand for EllipseArcCommand {
                 ratio,
                 t_start,
             } => {
-                // Typed degrees: positive = CCW, negative = CW.
-                let t_end = val.to_radians();
+                // Positive is CCW; negative is CW.
+                let t_end = val;
                 return Some(CmdResult::CommitAndExit(EntityType::Ellipse(make_ellipse(
                     *center, *major, *ratio, *t_start, t_end, self.plane,
                 ))));

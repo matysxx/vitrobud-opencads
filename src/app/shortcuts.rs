@@ -17,6 +17,7 @@ pub(super) fn default_bindings() -> BTreeMap<String, String> {
         ("F1".to_string(), "HELP"),
         ("F2".to_string(), "COMMANDHISTORY"),
         ("F3".to_string(), "TOGGLEOSNAP"),
+        ("F4".to_string(), "TOGGLE3DOSNAP"),
         ("F5".to_string(), "ISOPLANE"),
         ("F7".to_string(), "GRID"),
         ("F8".to_string(), "ORTHO"),
@@ -145,6 +146,8 @@ fn is_named_key(key: &str) -> bool {
 /// the command dispatcher — valid shortcut commands that never appear in the
 /// command registry. Used to validate the shortcut editor's command column.
 pub(super) const INPUT_ACTIONS: &[&str] = &[
+    "SPACEMOUSEFIT",
+    "SPACEMOUSETOP",
     "FINALIZE",
     "COMMANDSPACE",
     "CANCEL",
@@ -157,6 +160,7 @@ pub(super) const INPUT_ACTIONS: &[&str] = &[
     "CARETRIGHT",
     "COMMANDHISTORY",
     "TOGGLEOSNAP",
+    "TOGGLE3DOSNAP",
     "OTRACK",
     "DYNINPUT",
     "SELECTALL",
@@ -270,7 +274,36 @@ impl OpenCADStudio {
         let Some(action) = action.cloned() else {
             return Task::none();
         };
-        let message = match action.as_str() {
+        self.run_action(&action)
+    }
+
+    /// Shared by keyboard bindings and exported device actions. In particular,
+    /// Undo retains its command-local behavior during PLINE and SPLINE.
+    pub(super) fn run_action(&mut self, action: &str) -> Task<Message> {
+        let message = match action {
+            "SPACEMOUSEFIT" => {
+                let i = self.active_tab;
+                self.clear_navigation_hover(i);
+                self.tabs[i].scene.remember_current_view();
+                self.tabs[i].scene.fit_all();
+                self.arm_hover_after_navigation(i);
+                return Task::none();
+            }
+            "SPACEMOUSETOP" => Message::ViewCubeHome,
+            "SPACEMOUSE" => Message::SpaceMousePreferences,
+            "SPACEMOUSEPAUSE" => Message::SpaceMousePause,
+            "SPACEMOUSEPAN" => {
+                Message::SpaceMouseMode(crate::input::spacemouse::NavigationMode::PanOnly)
+            }
+            "SPACEMOUSEPANZOOM" => {
+                Message::SpaceMouseMode(crate::input::spacemouse::NavigationMode::PanZoom)
+            }
+            "SPACEMOUSEAUTO" => {
+                Message::SpaceMouseMode(crate::input::spacemouse::NavigationMode::Auto)
+            }
+            "SPACEMOUSE3D" => {
+                Message::SpaceMouseMode(crate::input::spacemouse::NavigationMode::Full3D)
+            }
             "FINALIZE" => Message::CommandFinalize,
             "COMMANDSPACE" => Message::CommandSpace,
             "CANCEL" => Message::CommandEscape,
@@ -283,12 +316,35 @@ impl OpenCADStudio {
             "CARETRIGHT" => Message::MTextCaretMove(1),
             "COMMANDHISTORY" => Message::CommandHistoryToggle,
             "TOGGLEOSNAP" => Message::ToggleSnapEnabled,
+            "TOGGLE3DOSNAP" => Message::ToggleSnap3dEnabled,
             "OTRACK" => Message::ToggleOTrack,
             "DYNINPUT" => Message::ToggleDynInput,
             "SELECTALL" => Message::SelectAllShortcut,
             "PASTECLIP" => Message::PasteShortcut,
+
+            "UNDO" => {
+                let i = self.active_tab;
+
+                // Multi-step drawing commands may consume Ctrl+Z themselves.
+                // For example PLINE/SPLINE should remove only the last entered
+                // point instead of cancelling the whole in-progress command.
+                let command_result = self.tabs[i]
+                    .active_cmd
+                    .as_mut()
+                    .and_then(|cmd| cmd.on_undo_step());
+
+                if let Some(result) = command_result {
+                    return self.apply_cmd_result(result);
+                }
+
+                Message::Undo
+            }
+
+            "REDO" => Message::Redo,
+
             other => Message::Command(other.to_string()),
-        };
-        self.update(message)
+            };
+
+            self.update(message)
     }
 }

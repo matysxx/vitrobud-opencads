@@ -51,3 +51,9 @@ container-*.service
 
 # AI task context wiki — local operational memory only
 .ai/wiki/tasks/
+
+# Worktrees created for isolated runs
+.claude/worktrees/
+
+# Single-instance lock files the app writes next to an open drawing
+*.ocs.lock

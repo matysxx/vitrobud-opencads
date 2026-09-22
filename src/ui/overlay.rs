@@ -21,6 +21,159 @@ pub const CROSSHAIR_ARM: f32 = 60.0;
 const DEFAULT_CURSOR_SIZE: i32 = 5;
 const DEFAULT_PICK_BOX: i32 = 3;
 const DEFAULT_PICK_APERTURE: f32 = 8.0;
+const CONSTRAINT_HOVER_MARKER_RADIUS: f32 = 7.0;
+
+use crate::scene::parametric_constraints::{
+    glyph_hit_test_entries, glyph_is_compact, glyph_is_fixed, glyph_is_vertical,
+    GlyphEntry, GLYPH_SIZE,
+};
+
+/// The lock mark a dynamic dimension carries (`DYNAMIC_DIMENSION_GLYPH`).
+fn is_dynamic_dimension_glyph(label: &str) -> bool {
+    label == crate::scene::parametric_constraints::DYNAMIC_DIMENSION_GLYPH
+}
+
+fn draw_smooth_constraint_glyph(frame: &mut canvas::Frame, center: Point, color: Color) {
+    let curve = canvas::Path::new(|builder| {
+        for step in 0..=16 {
+            let x = -7.0 + step as f32 * 0.875;
+            let y = 0.012 * x * x * x;
+            let point = Point::new(center.x + x, center.y - y);
+            if step == 0 {
+                builder.move_to(point);
+            } else {
+                builder.line_to(point);
+            }
+        }
+    });
+    frame.stroke(
+        &curve,
+        canvas::Stroke::default().with_color(color).with_width(1.45),
+    );
+    frame.fill(&canvas::Path::circle(center, 1.35), color);
+}
+
+fn draw_tangent_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    color: Color,
+) {
+    let radius = 4.5;
+    let circle_center = Point::new(center.x - 0.3, center.y + 2.75);
+    let diagonal = radius * std::f32::consts::FRAC_1_SQRT_2;
+    let contact = Point::new(circle_center.x - diagonal, circle_center.y - diagonal);
+    let tangent_end = Point::new(contact.x + 8.0, contact.y - 8.0);
+    let stroke = canvas::Stroke::default().with_color(color).with_width(1.35);
+
+    frame.stroke(&canvas::Path::circle(circle_center, radius), stroke.clone());
+    frame.stroke(&canvas::Path::line(contact, tangent_end), stroke);
+}
+
+fn draw_concentric_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    color: Color,
+) {
+    let stroke = canvas::Stroke::default().with_color(color).with_width(1.25);
+    frame.stroke(&canvas::Path::circle(center, 4.7), stroke.clone());
+    frame.stroke(&canvas::Path::circle(center, 2.15), stroke);
+}
+
+/// The reference bar's padlock: white with a small orange point marker
+/// when one point is held, red when a whole curve or segment is.
+fn draw_fixed_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    lock: Color,
+    badge: Color,
+    point_marker: bool,
+) {
+    let shackle = canvas::Path::new(|builder| {
+        let shackle_center = Point::new(center.x, center.y - 1.6);
+        for step in 0..=12 {
+            let angle = std::f32::consts::PI * (1.0 - step as f32 / 12.0);
+            let point = Point::new(
+                shackle_center.x + angle.cos() * 3.1,
+                shackle_center.y - angle.sin() * 3.1,
+            );
+            if step == 0 {
+                builder.move_to(Point::new(point.x, center.y - 0.6));
+                builder.line_to(point);
+            } else {
+                builder.line_to(point);
+            }
+        }
+        builder.line_to(Point::new(center.x + 3.1, center.y - 0.6));
+    });
+    frame.stroke(
+        &shackle,
+        canvas::Stroke::default().with_color(lock).with_width(1.5),
+    );
+    let body = canvas::Path::rounded_rectangle(
+        Point::new(center.x - 5.0, center.y - 0.8),
+        Size::new(10.0, 7.6),
+        1.4.into(),
+    );
+    frame.fill(&body, lock);
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(center.x, center.y + 1.4),
+            Point::new(center.x, center.y + 4.6),
+        ),
+        canvas::Stroke::default().with_color(badge).with_width(1.3),
+    );
+    if point_marker {
+        frame.stroke(
+            &canvas::Path::rectangle(Point::new(center.x + 4.0, center.y + 3.6), Size::new(4.6, 4.6)),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgb8(224, 130, 62))
+                .with_width(1.2),
+        );
+    }
+}
+
+/// The reference bar's Vertical mark: a red datum line hatched on its left,
+/// the constrained direction beside it, plus the orange point marker for a
+/// two-point relation.
+fn draw_vertical_constraint_glyph(
+    frame: &mut canvas::Frame,
+    center: Point,
+    text: Color,
+    point_marker: bool,
+) {
+    let datum = Color::from_rgb8(214, 76, 76);
+    let datum_x = center.x - 2.5;
+    let stroke = canvas::Stroke::default().with_color(datum).with_width(1.5);
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(datum_x, center.y - 6.5),
+            Point::new(datum_x, center.y + 6.5),
+        ),
+        stroke.clone(),
+    );
+    for step in 0..3 {
+        let y = center.y - 4.5 + step as f32 * 4.0;
+        frame.stroke(
+            &canvas::Path::line(Point::new(datum_x, y), Point::new(datum_x - 4.0, y + 3.5)),
+            stroke.clone(),
+        );
+    }
+    frame.stroke(
+        &canvas::Path::line(
+            Point::new(center.x + 2.5, center.y - 6.0),
+            Point::new(center.x + 2.5, center.y + 6.0),
+        ),
+        canvas::Stroke::default().with_color(text).with_width(1.4),
+    );
+    if point_marker {
+        frame.stroke(
+            &canvas::Path::rectangle(Point::new(center.x + 4.5, center.y - 2.3), Size::new(4.6, 4.6)),
+            canvas::Stroke::default()
+                .with_color(Color::from_rgb8(224, 130, 62))
+                .with_width(1.2),
+        );
+    }
+}
 
 /// Convert CURSORSIZE to a screen-space arm length while keeping the original
 /// 60 px cursor at the default value and the full-viewport result at 100.
@@ -361,9 +514,13 @@ pub struct GridParams {
     /// Camera eye in absolute world f64 — subtracted from each grid point.
     pub eye: glam::DVec3,
     pub bounds: iced::Rectangle,
-    /// Adaptive world-space spacing derived from camera zoom at its pivot.
+    /// World-space X spacing (GRIDUNIT X, after adaptive scaling).
     /// Rotation does not affect this value, so orbiting cannot rescale the grid.
-    pub step: f32,
+    pub step_x: f32,
+    /// World-space Y spacing (GRIDUNIT Y, after adaptive scaling).
+    pub step_y: f32,
+    /// Draw every Nth line as a brighter major line. < 2 disables majors.
+    pub major_every: u32,
     /// Grid origin in absolute world f64 and the active UCS axis directions.
     /// The grid always lies on the active UCS XY plane. Plain WCS passes
     /// `(ZERO, X, Y, Z)`.
@@ -379,8 +536,11 @@ pub struct GridParams {
 /// uses to size the coloured UCS axes overlay. Returned from `grid_segments` so
 /// the renderer-free geometry construction can be unit-tested and benchmarked
 /// without an iced `Renderer` (Mission #1, 2026-08-26 bench-first plan).
-pub(crate) struct GridGeometry {
+#[doc(hidden)]
+pub struct GridGeometry {
     pub segments: Vec<(Point, Point)>,
+    /// Brighter every-Nth lines (major grid). Stroked separately in `draw_grid`.
+    pub major_segments: Vec<(Point, Point)>,
     pub axis_extent: f32,
 }
 
@@ -389,8 +549,9 @@ impl GridGeometry {
     /// early-exit branches of `grid_segments` (zero-sized bounds, no visible
     /// samples, non-finite step) so the caller never needs to special-case
     /// the `None` path.
-    fn empty() -> Self {
-        Self { segments: Vec::new(), axis_extent: 0.0 }
+    #[doc(hidden)]
+    pub fn empty() -> Self {
+        Self { segments: Vec::new(), major_segments: Vec::new(), axis_extent: 0.0 }
     }
 }
 
@@ -404,8 +565,9 @@ impl GridGeometry {
 /// `GridParams` set is required for correctness.
 ///
 /// Added 2026-08-26 by Mission #1 (grid overlay cache, Tier 1 #1).
+#[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct GridKey {
+pub struct GridKey {
     pub grids: Vec<GridParams>,
     pub bounds: iced::Rectangle,
     pub style: GridStyle,
@@ -413,7 +575,8 @@ pub(crate) struct GridKey {
 
 impl GridKey {
     /// Build a key from the per-pane `GridParams`, overlay bounds, and grid style.
-    pub(crate) fn from_grids(grids: &[GridParams], bounds: iced::Rectangle, style: GridStyle) -> Self {
+    #[doc(hidden)]
+    pub fn from_grids(grids: &[GridParams], bounds: iced::Rectangle, style: GridStyle) -> Self {
         Self { grids: grids.to_vec(), bounds, style }
     }
 }
@@ -422,7 +585,8 @@ impl GridKey {
 /// `new`. Reference-based to avoid moving the (potentially large) `Vec` of
 /// per-pane params; the caller borrows from `RefCell<Option<GridKey>>` on
 /// both sides.
-pub(crate) fn should_reuse(cached: Option<&GridKey>, new: &GridKey) -> bool {
+#[doc(hidden)]
+pub fn should_reuse(cached: Option<&GridKey>, new: &GridKey) -> bool {
     match cached {
         Some(old) => old == new,
         None => false,
@@ -439,8 +603,9 @@ pub(crate) fn should_reuse(cached: Option<&GridKey>, new: &GridKey) -> bool {
 /// bounds happen to be unchanged (e.g. a pan within the same canvas size).
 ///
 /// Added 2026-08-26 by Mission #1 (grid overlay cache, Tier 1 #1).
+#[doc(hidden)]
 #[derive(Default)]
-pub(crate) struct GridCanvasState {
+pub struct GridCanvasState {
     pub key: RefCell<Option<GridKey>>,
     pub cache: canvas::Cache<iced::Renderer>,
 }
@@ -498,19 +663,61 @@ fn clip_seg(p0: Point, p1: Point, bounds: iced::Rectangle) -> Option<(Point, Poi
 }
 
 pub fn compute_grid_step(distance: f32, fov_y: f32, bounds: iced::Rectangle) -> f32 {
+    compute_grid_steps(1.0, 1.0, distance, fov_y, bounds, true).0
+}
+
+/// Adaptive world-space grid spacing for non-uniform GRIDUNIT X/Y.
+///
+/// BUG FIX: the old `compute_grid_step` hardcoded a 1.0 base, so the
+/// Drafting Settings grid spacing had no effect on the display. The base now
+/// comes from the user's GRIDUNIT setting. With `adaptive == true`, each axis
+/// is scaled up by powers of 5 until neighbouring lines are at least
+/// `MIN_GRID_PX` apart; with `adaptive == false` the raw base is returned so
+/// the grid resizes exactly as typed.
+pub fn compute_grid_steps(
+    base_x: f32,
+    base_y: f32,
+    distance: f32,
+    fov_y: f32,
+    bounds: iced::Rectangle,
+    adaptive: bool,
+) -> (f32, f32) {
+    let sanitize = |b: f32| {
+        if b.is_finite() && b > 0.0 && b <= 1e9 {
+            b
+        } else {
+            1.0
+        }
+    };
+    let bx = sanitize(base_x);
+    let by = sanitize(base_y);
+    if !adaptive {
+        return (bx, by);
+    }
     let half_height = distance * (fov_y * 0.5).tan();
     if !half_height.is_finite() || half_height <= 1e-9 || bounds.height <= 0.0 {
-        return 1.0;
+        return (bx, by);
     }
     let px_per_unit = bounds.height / (2.0 * half_height);
-    let mut s = 1.0_f32;
-    while s * px_per_unit < MIN_GRID_PX {
-        s *= 5.0;
-        if s > 1e9 {
-            return 1.0;
-        }
+    if !px_per_unit.is_finite() || px_per_unit <= 0.0 {
+        return (bx, by);
     }
-    s
+    let adapt = |mut s: f32, base: f32| {
+        // Grow-only: shrinking below the user's base would silently change the
+        // requested GRIDUNIT when zoomed in. Guard the loop so a degenerate
+        // px_per_unit can never spin forever. The overflow fallback returns
+        // this axis's own base (returning the other axis's base mixed X/Y).
+        let mut guard = 0;
+        while s * px_per_unit < MIN_GRID_PX && guard < 32 {
+            s *= 5.0;
+            guard += 1;
+            if !s.is_finite() || s > 1e9 {
+                return base;
+            }
+        }
+        s
+    };
+    (adapt(bx, bx), adapt(by, by))
 }
 
 /// Parameters for the screen-space UCS icon drawn in the viewport corner.
@@ -604,7 +811,9 @@ impl canvas::Program<Message> for GridCanvas {
                             g.view_rot,
                             g.eye,
                             gb,
-                            g.step,
+                            g.step_x,
+                            g.step_y,
+                            g.major_every,
                             g.origin,
                             g.axes,
                             g.limits,
@@ -632,7 +841,7 @@ pub fn selection_overlay<'a>(
     grip_clip: Option<iced::Rectangle>,
     ucs_icons: Vec<UcsIconParams>,
     ost_points: Vec<OstTrackPoint>,
-    otrack_line: Option<(Point, Point)>,
+    otrack_lines: Vec<(Point, Point)>,
     parallel_ref_marker: Option<Point>,
     show_viewcube: bool,
     dividers: Vec<iced::Rectangle>,
@@ -644,6 +853,13 @@ pub fn selection_overlay<'a>(
     crosshair_bg: [f32; 4],
     crosshair: CrosshairOptions,
     selection_visual: SelectionVisualOptions,
+    constraint_glyphs: Arc<[GlyphEntry]>,
+    // Per-glyph selection flags, parallel to `constraint_glyphs`, applied
+    // post-hoc by the view layer — deliberately outside the memoised entries
+    // so selection changes never invalidate the placement cache.
+    constraint_glyph_selected: Arc<[bool]>,
+    constraint_glyph_tooltip: Option<String>,
+    constraint_cursor_badge: Option<String>,
 ) -> Element<'a, Message> {
     canvas(SelectionCanvas {
         selection,
@@ -655,7 +871,7 @@ pub fn selection_overlay<'a>(
         grip_clip,
         ucs_icons,
         ost_points,
-        otrack_line,
+        otrack_lines,
         parallel_ref_marker,
         show_viewcube,
         dividers,
@@ -667,6 +883,10 @@ pub fn selection_overlay<'a>(
         crosshair_bg,
         crosshair,
         selection_visual,
+        constraint_glyphs,
+        constraint_glyph_selected,
+        constraint_glyph_tooltip,
+        constraint_cursor_badge,
     })
     .width(Length::Fill)
     .height(Length::Fill)
@@ -693,11 +913,12 @@ struct SelectionCanvas {
     /// entry carries hover/selected (grips).
     ucs_icons: Vec<UcsIconParams>,
     ost_points: Vec<OstTrackPoint>,
-    /// Active OTRACK alignment: (acquired tracking point, locked cursor), both
-    /// in screen space. Drawn as a dashed guide extended a little past the
-    /// cursor so the extension / tracking line the user snapped to is visible.
-    /// (#219)
-    otrack_line: Option<(Point, Point)>,
+    /// Active OTRACK alignments, each (acquired tracking point, locked cursor)
+    /// in screen space. Drawn as dashed guides extended a little past the
+    /// cursor so the extension / tracking line the user snapped to is visible
+    /// (#219). An intersection lock contributes both of its crossing vectors,
+    /// so the point reads as their meeting rather than a lone guide (#1313).
+    otrack_lines: Vec<(Point, Point)>,
     /// The acquired Parallel-snap reference point (screen), marked with a small
     /// ∥ glyph so the user sees which line is the parallel reference. (#277)
     parallel_ref_marker: Option<Point>,
@@ -725,6 +946,19 @@ struct SelectionCanvas {
     crosshair_bg: [f32; 4],
     crosshair: CrosshairOptions,
     selection_visual: SelectionVisualOptions,
+    /// Memoised constraint-glyph entries (precomputed anchor/outward/label +
+    /// layout) shared with the hit-test and tooltip paths — draw reads
+    /// `top_left`/`size` directly and never recomputes offsets or clones
+    /// labels.
+    constraint_glyphs: Arc<[GlyphEntry]>,
+    /// Per-glyph selection flags, parallel to `constraint_glyphs`, applied
+    /// post-hoc by the view layer (outside the cache).
+    constraint_glyph_selected: Arc<[bool]>,
+    /// Localized kind name made visible after the app-level hover dwell.
+    constraint_glyph_tooltip: Option<String>,
+    /// Symbol shown beside the cursor while it targets an entity that already
+    /// participates in an enabled geometric constraint.
+    constraint_cursor_badge: Option<String>,
 }
 
 fn draw_grip_marker(
@@ -780,7 +1014,7 @@ fn draw_grip_marker(
             b.close();
         }),
         GripShape::Circle => canvas::Path::circle(Point::new(sp.x, sp.y), h),
-        GripShape::Dropdown => canvas::Path::new(|b| {
+        GripShape::Dropdown | GripShape::DropdownAdjacent => canvas::Path::new(|b| {
             b.move_to(Point::new(sp.x - h, sp.y - h * 0.5));
             b.line_to(Point::new(sp.x + h, sp.y - h * 0.5));
             b.line_to(Point::new(sp.x, sp.y + h));
@@ -830,7 +1064,10 @@ fn draw_grip_marker(
         } else {
             palette.primary.base.color
         };
-        let fill = if grip.shape == GripShape::Dropdown {
+        let fill = if matches!(
+            grip.shape,
+            GripShape::Dropdown | GripShape::DropdownAdjacent
+        ) {
             color
         } else {
             palette.background.base.color.scale_alpha(0.7)
@@ -901,6 +1138,11 @@ impl canvas::Program<Message> for SelectionCanvas {
                 {
                     return mouse::Interaction::None;
                 }
+            }
+        }
+        if let Some(pos) = cursor.position_in(bounds) {
+            if glyph_hit_test_entries(&self.constraint_glyphs, pos).is_some() {
+                return mouse::Interaction::Pointer;
             }
         }
         // The resize cursor over a divider is supplied by the input pane_grid
@@ -1420,6 +1662,68 @@ impl canvas::Program<Message> for SelectionCanvas {
                     frame.stroke(&h, stroke.clone());
                     frame.stroke(&v, stroke);
                 }
+                SnapType::Vertex => {
+                    // Filled square: the solid rhyme of Endpoint's hollow box.
+                    let h = 5.0_f32;
+                    frame.fill(
+                        &canvas::Path::rectangle(
+                            Point::new(sp.x - h, sp.y - h),
+                            Size::new(h * 2.0, h * 2.0),
+                        ),
+                        marker,
+                    );
+                }
+                SnapType::EdgeMidpoint => {
+                    // Filled triangle: the solid rhyme of Midpoint's outline.
+                    let r = 6.0_f32;
+                    let path = canvas::Path::new(|b| {
+                        b.move_to(Point::new(sp.x, sp.y - r));
+                        b.line_to(Point::new(sp.x + r * 0.866, sp.y + r * 0.5));
+                        b.line_to(Point::new(sp.x - r * 0.866, sp.y + r * 0.5));
+                        b.close();
+                    });
+                    frame.fill(&path, marker);
+                }
+                SnapType::FaceCenter => {
+                    // Filled disc: the solid rhyme of Center's outline.
+                    frame.fill(&canvas::Path::circle(sp, 5.5_f32), marker);
+                }
+                SnapType::Knot => {
+                    // Filled diamond: distinct from Quadrant's outline.
+                    let r = 5.5_f32;
+                    let path = canvas::Path::new(|b| {
+                        b.move_to(Point::new(sp.x, sp.y - r));
+                        b.line_to(Point::new(sp.x + r, sp.y));
+                        b.line_to(Point::new(sp.x, sp.y + r));
+                        b.line_to(Point::new(sp.x - r, sp.y));
+                        b.close();
+                    });
+                    frame.fill(&path, marker);
+                }
+                SnapType::FacePerpendicular => {
+                    // Right-angle hook like the 2D marker, plus a filled foot
+                    // dot marking the face contact.
+                    let r = 6.0_f32;
+                    let p = canvas::Path::new(|b| {
+                        b.move_to(Point::new(sp.x - r, sp.y - r));
+                        b.line_to(Point::new(sp.x - r, sp.y + r));
+                        b.line_to(Point::new(sp.x + r, sp.y + r));
+                    });
+                    frame.stroke(&p, stroke.clone());
+                    frame.fill(&canvas::Path::circle(sp, 2.0_f32), marker);
+                }
+                SnapType::NearestFace => {
+                    // Filled bowtie: the solid rhyme of Nearest's outline.
+                    let r = 5.5_f32;
+                    let path = canvas::Path::new(|b| {
+                        b.move_to(Point::new(sp.x - r, sp.y - r));
+                        b.line_to(Point::new(sp.x + r, sp.y - r));
+                        b.line_to(Point::new(sp.x - r, sp.y + r));
+                        b.line_to(Point::new(sp.x + r, sp.y + r));
+                        b.close();
+                    });
+                    frame.fill(&path, marker);
+                }
             }
         }
 
@@ -1546,6 +1850,28 @@ impl canvas::Program<Message> for SelectionCanvas {
                     let hole = canvas::Path::circle(Point::new(bx + 6.0, by + 10.5), 1.4);
                     frame.fill(&hole, dark);
                 }
+                if let Some(label) = &self.constraint_cursor_badge {
+                    let center = Point::new(cp.x + sq + if self.hover_locked { 30.0 } else { 12.0 }, cp.y - sq - 7.0);
+                    let blue = Color::from_rgb8(35, 145, 230);
+                    let badge = canvas::Path::circle(center, 8.5);
+                    frame.fill(&badge, blue);
+                    if label == "◎" {
+                        draw_concentric_constraint_glyph(&mut frame, center, Color::WHITE);
+                    } else if label == "T" {
+                        draw_tangent_constraint_glyph(&mut frame, center, Color::WHITE);
+                    } else {
+                        frame.fill_text(canvas::Text {
+                            content: label.clone(),
+                            position: center,
+                            color: Color::WHITE,
+                            size: iced::Pixels(11.0),
+                            align_x: iced::alignment::Horizontal::Center.into(),
+                            align_y: iced::alignment::Vertical::Center,
+                            shaping: iced::advanced::text::Shaping::Advanced,
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         } // end !over_viewcube
 
@@ -1569,7 +1895,7 @@ impl canvas::Program<Message> for SelectionCanvas {
         // real angle from the acquired point through the lock and a little
         // beyond, dashed so it reads as a construction guide. This covers the
         // ortho (0°/90°), polar, and edge-extension cases uniformly (#219).
-        if let Some((base, tip)) = self.otrack_line {
+        for &(base, tip) in &self.otrack_lines {
             let dx = tip.x - base.x;
             let dy = tip.y - base.y;
             let len = (dx * dx + dy * dy).sqrt();
@@ -1616,6 +1942,173 @@ impl canvas::Program<Message> for SelectionCanvas {
             });
             frame.stroke(&b1, stroke.clone());
             frame.stroke(&b2, stroke);
+        }
+        // Draw + hover + tooltip all read the memoised entries' precomputed
+        // `top_left`/`size` (one shared `hovered` lookup below) — no offset
+        // recompute, no label clones on this path.
+        if !self.constraint_glyphs.is_empty() {
+            let hovered = cursor
+                .position_in(bounds)
+                .and_then(|point| glyph_hit_test_entries(&self.constraint_glyphs, point));
+            let normal_bg = Color::from_rgb8(103, 109, 118);
+            let normal_fg = Color::WHITE;
+            // A redundant or conflicting constraint gets the danger palette
+            // instead of the
+            // ordinary primary one — same information a resolver panel
+            // would show, surfaced right on the geometry.
+            let conflict_bg = theme.palette().danger.base.color;
+            let conflict_fg = theme.palette().danger.base.text;
+            let selected_ring = theme.palette().primary.strong.color;
+            let coincident_bg = Color::from_rgb8(35, 145, 230);
+            for (entry, is_selected) in self
+                .constraint_glyphs
+                .iter()
+                .zip(self.constraint_glyph_selected.iter())
+            {
+                let label: &str = &entry.label;
+                if !entry.anchor.x.is_finite() || !entry.anchor.y.is_finite() {
+                    continue;
+                }
+                let compact_coincident = glyph_is_compact(label);
+                let (bg, fg) = if entry.conflicting {
+                    (conflict_bg, conflict_fg)
+                } else if compact_coincident {
+                    (coincident_bg, normal_fg)
+                } else {
+                    (normal_bg, normal_fg)
+                };
+                let (top_left, size) = (entry.top_left, entry.size);
+                let pill = canvas::Path::rounded_rectangle(
+                    top_left,
+                    size,
+                    (if compact_coincident {
+                        1.0
+                    } else {
+                        size.height * 0.5
+                    })
+                    .into(),
+                );
+                // A dynamic dimension's lock sits bare on the drawing.
+                if !is_dynamic_dimension_glyph(label) {
+                    frame.fill(&pill, bg);
+                }
+                if *is_selected {
+                    frame.stroke(
+                        &pill,
+                        canvas::Stroke::default().with_color(selected_ring).with_width(2.0),
+                    );
+                }
+                if !compact_coincident {
+                    let glyph_center = Point::new(
+                        top_left.x + size.width * 0.5,
+                        top_left.y + size.height * 0.5,
+                    );
+                    if label == "T" {
+                        draw_tangent_constraint_glyph(&mut frame, glyph_center, fg);
+                    } else if label == "G²" {
+                        draw_smooth_constraint_glyph(&mut frame, glyph_center, fg);
+                    } else if label == "◎" {
+                        draw_concentric_constraint_glyph(&mut frame, glyph_center, fg);
+                    } else if is_dynamic_dimension_glyph(label) {
+                        draw_fixed_constraint_glyph(&mut frame, glyph_center, fg, bg, false);
+                    } else if glyph_is_fixed(label) {
+                        let point =
+                            label == crate::scene::parametric_constraints::FIXED_POINT_GLYPH;
+                        // The object-mode lock reads red, the point-mode one white.
+                        let lock = if point {
+                            fg
+                        } else {
+                            Color::from_rgb8(214, 76, 76)
+                        };
+                        draw_fixed_constraint_glyph(&mut frame, glyph_center, lock, bg, point);
+                    } else if glyph_is_vertical(label) {
+                        draw_vertical_constraint_glyph(
+                            &mut frame,
+                            glyph_center,
+                            fg,
+                            label == crate::scene::parametric_constraints::VERTICAL_POINTS_GLYPH,
+                        );
+                    } else {
+                        // The Equal symbol reads green on its badge, as asked.
+                        let color = if label == "=" {
+                            Color::from_rgb8(72, 199, 116)
+                        } else {
+                            fg
+                        };
+                        frame.fill_text(canvas::Text {
+                            content: label.to_string(),
+                            position: glyph_center,
+                            color,
+                            size: iced::Pixels(GLYPH_SIZE),
+                            align_x: iced::alignment::Horizontal::Center.into(),
+                            align_y: iced::alignment::Vertical::Center,
+                            shaping: iced::advanced::text::Shaping::Advanced,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            if let Some(index) = hovered {
+                let red = Color::from_rgb(1.0, 0.0, 0.0);
+                let stroke = canvas::Stroke::default().with_color(red).with_width(1.5);
+                for point in self.constraint_glyphs[index].hover.iter() {
+                    let first = canvas::Path::line(
+                        Point::new(
+                            point.x - CONSTRAINT_HOVER_MARKER_RADIUS,
+                            point.y - CONSTRAINT_HOVER_MARKER_RADIUS,
+                        ),
+                        Point::new(
+                            point.x + CONSTRAINT_HOVER_MARKER_RADIUS,
+                            point.y + CONSTRAINT_HOVER_MARKER_RADIUS,
+                        ),
+                    );
+                    let second = canvas::Path::line(
+                        Point::new(
+                            point.x - CONSTRAINT_HOVER_MARKER_RADIUS,
+                            point.y + CONSTRAINT_HOVER_MARKER_RADIUS,
+                        ),
+                        Point::new(
+                            point.x + CONSTRAINT_HOVER_MARKER_RADIUS,
+                            point.y - CONSTRAINT_HOVER_MARKER_RADIUS,
+                        ),
+                    );
+                    frame.stroke(&first, stroke.clone());
+                    frame.stroke(&second, stroke.clone());
+                }
+                if let Some(label) = &self.constraint_glyph_tooltip {
+                    let (glyph_top_left, glyph_size) = (
+                        self.constraint_glyphs[index].top_left,
+                        self.constraint_glyphs[index].size,
+                    );
+                    let width = (label.chars().count() as f32 * 7.0 + 14.0).max(54.0);
+                    let height = 24.0;
+                    let left = glyph_top_left.x.clamp(2.0, (bounds.width - width - 2.0).max(2.0));
+                    let top = (glyph_top_left.y + glyph_size.height + 4.0)
+                        .clamp(2.0, (bounds.height - height - 2.0).max(2.0));
+                    let tooltip = canvas::Path::rounded_rectangle(
+                        Point::new(left, top),
+                        Size::new(width, height),
+                        4.0.into(),
+                    );
+                    frame.fill(&tooltip, theme.palette().background.strong.color);
+                    frame.stroke(
+                        &tooltip,
+                        canvas::Stroke::default()
+                            .with_color(theme.palette().background.strong.text)
+                            .with_width(1.0),
+                    );
+                        frame.fill_text(canvas::Text {
+                            content: label.to_string(),
+                        position: Point::new(left + width * 0.5, top + height * 0.5),
+                        color: theme.palette().background.strong.text,
+                        size: iced::Pixels(12.0),
+                        align_x: iced::alignment::Horizontal::Center.into(),
+                        align_y: iced::alignment::Vertical::Center,
+                        shaping: iced::advanced::text::Shaping::Advanced,
+                        ..Default::default()
+                    });
+                }
+            }
         }
         // Small cross at each acquired tracking point.
         for ost in &self.ost_points {
@@ -1665,36 +2158,35 @@ fn draw_grid(
     view_rot: Mat4,
     eye: glam::DVec3,
     bounds: iced::Rectangle,
-    step: f32,
+    step_x: f32,
+    step_y: f32,
+    major_every: u32,
     grid_origin: glam::DVec3,
     grid_axes: (Vec3, Vec3, Vec3),
     limits: Option<(glam::DVec2, glam::DVec2)>,
     style: GridStyle,
 ) {
     let alpha = (style.opacity as f32 / 100.0).clamp(0.02, 1.0);
-    let gc = if style.bg_luminance > 0.5 {
-        // Light background: subtle dark grid lines
-        Color {
-            r: 0.10,
-            g: 0.10,
-            b: 0.10,
-            a: alpha,
-        }
+    // Major lines stay subtle: ~1.5x the minor alpha with a slightly heavier
+    // stroke, matching the reference hierarchy without glaring.
+    let major_alpha = (alpha * 1.5).clamp(0.03, 1.0);
+    let (r, g, b) = if style.bg_luminance > 0.5 {
+        (0.10, 0.10, 0.10)
     } else {
-        // Dark background: subtle light grid lines
-        Color {
-            r: 0.80,
-            g: 0.80,
-            b: 0.80,
-            a: alpha,
-        }
+        (0.80, 0.80, 0.80)
     };
-    let st = canvas::Stroke {
+    let minor_stroke = canvas::Stroke {
         width: 0.5,
-        style: canvas::Style::Solid(gc),
+        style: canvas::Style::Solid(Color { r, g, b, a: alpha }),
         ..Default::default()
     };
-    let geometry = grid_segments(view_rot, eye, bounds, step, grid_origin, grid_axes, limits);
+    let major_stroke = canvas::Stroke {
+        width: 0.75,
+        style: canvas::Style::Solid(Color { r, g, b, a: major_alpha }),
+        ..Default::default()
+    };
+    let geometry =
+        grid_segments(view_rot, eye, bounds, step_x, step_y, major_every, grid_origin, grid_axes, limits);
     if !geometry.segments.is_empty() {
         let path = canvas::Path::new(|builder| {
             for (p0, p1) in &geometry.segments {
@@ -1702,11 +2194,20 @@ fn draw_grid(
                 builder.line_to(*p1);
             }
         });
-        frame.stroke(&path, st);
+        frame.stroke(&path, minor_stroke);
+    }
+    if !geometry.major_segments.is_empty() {
+        let path = canvas::Path::new(|builder| {
+            for (p0, p1) in &geometry.major_segments {
+                builder.move_to(*p0);
+                builder.line_to(*p1);
+            }
+        });
+        frame.stroke(&path, major_stroke);
     }
     if geometry.axis_extent > 0.0 {
         let (gx, gy, gz) = grid_axes;
-        let extent = (geometry.axis_extent + step) * 1.5;
+        let extent = (geometry.axis_extent + step_x.max(step_y)) * 1.5;
         draw_axes(frame, view_rot, eye, bounds, extent.max(10.0), grid_origin, (gx, gy, gz), style.bg_luminance);
     }
 }
@@ -1718,12 +2219,15 @@ fn draw_grid(
 /// Extracted from `draw_grid` (2026-08-26, Mission #1 step 1) so the geometry
 /// construction can be unit-tested and benchmarked without an iced
 /// `Renderer`. Behaviour is identical to the inlined version that preceded it.
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn grid_segments(
+pub fn grid_segments(
     view_rot: Mat4,
     eye: glam::DVec3,
     bounds: iced::Rectangle,
-    step: f32,
+    step_x: f32,
+    step_y: f32,
+    major_every: u32,
     grid_origin: glam::DVec3,
     grid_axes: (Vec3, Vec3, Vec3),
     limits: Option<(glam::DVec2, glam::DVec2)>,
@@ -1795,7 +2299,7 @@ pub(crate) fn grid_segments(
     // family at a point on the grid. Measuring the perpendicular component,
     // rather than point-to-point distance, remains correct for a skewed
     // perspective grid.
-    let grid_gaps = |world: glam::DVec3, step: f32| -> Option<(f32, f32)> {
+    let grid_gaps = |world: glam::DVec3, sx: f32, sy: f32| -> Option<(f32, f32)> {
         let p = project(world)?;
         let projected_deltas = |axis: Vec3, amount: f32| {
             [amount, -amount].map(|signed_step| {
@@ -1803,14 +2307,16 @@ pub(crate) fn grid_segments(
                     .map(|next| glam::Vec2::new(next.x - p.x, next.y - p.y))
             })
         };
-        let neighbours1 = projected_deltas(axis1, step);
-        let neighbours2 = projected_deltas(axis2, step);
+        let neighbours1 = projected_deltas(axis1, sx);
+        let neighbours2 = projected_deltas(axis2, sy);
         // A full grid step is needed to measure adjacent-line distance, but it
         // is too large for the line's local tangent near the eye. A small
         // derivative keeps the tangent measurable without crossing the eye.
-        let tangent_step = (step * 0.01).max(1e-4);
-        let tangents1 = projected_deltas(axis1, tangent_step);
-        let tangents2 = projected_deltas(axis2, tangent_step);
+        // BUG FIX: the tangent used a single shared step for both families, so
+        // a non-square GRIDUNIT (sx != sy) measured the wrong local direction.
+        // Each family now uses its own derivative.
+        let tangents1 = projected_deltas(axis1, (sx * 0.01).max(1e-4));
+        let tangents2 = projected_deltas(axis2, (sy * 0.01).max(1e-4));
 
         // At the near side of a perspective plane a large +step neighbour may
         // cross behind the eye while the -step neighbour remains perfectly
@@ -1860,10 +2366,15 @@ pub(crate) fn grid_segments(
 
     // Step follows camera zoom only. The previous visible-sample calculation
     // changed depth while orbiting and made the grid jump 1 → 5 → 25.
-    if !step.is_finite() || step <= 0.0 {
+    // BUG FIX: a single shared step forced square grids; X and Y are now
+    // validated independently so GRIDUNIT X/Y resize each family.
+    if !step_x.is_finite() || step_x <= 0.0 || !step_y.is_finite() || step_y <= 0.0 {
         return GridGeometry::empty();
     }
-    let s = step;
+    let (sx, sy) = (step_x, step_y);
+    let is_major = |index: i32| {
+        major_every >= 2 && (index.rem_euclid(major_every as i32) == 0)
+    };
 
     // Trace a family-specific visible region around the viewport perimeter.
     // When a boundary ray points through the horizon, binary-search back toward
@@ -1875,7 +2386,7 @@ pub(crate) fn grid_segments(
     | -> Vec<glam::DVec3> {
         let visible_at = |screen: glam::Vec2| -> Option<glam::DVec3> {
             let world = unproject(screen.x, screen.y)?;
-            let gaps = grid_gaps(world, s)?;
+            let gaps = grid_gaps(world, sx, sy)?;
             let gap = if family == 0 { gaps.0 } else { gaps.1 };
             (gap >= MIN_HORIZON_GRID_PX).then_some(world)
         };
@@ -1917,7 +2428,7 @@ pub(crate) fn grid_segments(
     let best_anchor = |family: usize| -> Option<(glam::Vec2, glam::DVec3, f32)> {
         let mut best = None;
         for (screen, world) in &samples {
-            let Some(gaps) = grid_gaps(*world, s) else {
+            let Some(gaps) = grid_gaps(*world, sx, sy) else {
                 continue;
             };
             let gap = if family == 0 { gaps.0 } else { gaps.1 };
@@ -1939,13 +2450,13 @@ pub(crate) fn grid_segments(
         }
         (min <= max).then_some((min, max))
     };
-    let line_range = |min: f32, max: f32, anchor: f32| -> (i32, i32) {
-        let mut start = (min / s).floor() as i32;
-        let mut end = (max / s).ceil() as i32;
+    let line_range = |min: f32, max: f32, anchor: f32, step: f32| -> (i32, i32) {
+        let mut start = (min / step).floor() as i32;
+        let mut end = (max / step).ceil() as i32;
         // The pixel-gap cut-off naturally bounds this by viewport resolution. Keep
         // malformed projection data from creating an unbounded CPU loop.
         let limit = ((bounds.width + bounds.height).ceil() as i32 + 64).max(128);
-        let center = (anchor / s).round() as i32;
+        let center = (anchor / step).round() as i32;
         start = start.max(center.saturating_sub(limit));
         end = end.min(center.saturating_add(limit));
         (start, end)
@@ -2046,7 +2557,7 @@ pub(crate) fn grid_segments(
             let Some(world) = unproject(screen.x, screen.y) else {
                 return false;
             };
-            let Some(gaps) = grid_gaps(world, s) else {
+            let Some(gaps) = grid_gaps(world, sx, sy) else {
                 return false;
             };
             let gap = if family == 0 { gaps.0 } else { gaps.1 };
@@ -2162,14 +2673,15 @@ pub(crate) fn grid_segments(
 
         let (min1, max1) = coordinate_range(axis1);
         let (min2, max2) = coordinate_range(axis2);
-        let mut segments = Vec::new();
+        let mut minor = Vec::new();
+        let mut major = Vec::new();
         if let Some((_, anchor_world, gap)) = best_anchor(0) {
             if gap >= MIN_HORIZON_GRID_PX {
                 let anchor = (anchor_world - grid_origin).as_vec3().dot(axis1);
-                let (start, end) = line_range(min1, max1, anchor);
+                let (start, end) = line_range(min1, max1, anchor, sx);
                 for index in start..=end {
-                    if let Some(segment) = clip_world_line(0, index as f32 * s) {
-                        segments.push(segment);
+                    if let Some(segment) = clip_world_line(0, index as f32 * sx) {
+                        if is_major(index) { major.push(segment); } else { minor.push(segment); }
                     }
                 }
             }
@@ -2177,15 +2689,16 @@ pub(crate) fn grid_segments(
         if let Some((_, anchor_world, gap)) = best_anchor(1) {
             if gap >= MIN_HORIZON_GRID_PX {
                 let anchor = (anchor_world - grid_origin).as_vec3().dot(axis2);
-                let (start, end) = line_range(min2, max2, anchor);
+                let (start, end) = line_range(min2, max2, anchor, sy);
                 for index in start..=end {
-                    if let Some(segment) = clip_world_line(1, index as f32 * s) {
-                        segments.push(segment);
+                    if let Some(segment) = clip_world_line(1, index as f32 * sy) {
+                        if is_major(index) { major.push(segment); } else { minor.push(segment); }
                     }
                 }
             }
         }
-        all_segments.extend(segments);
+        all_segments.extend(minor);
+        let all_major: Vec<(Point, Point)> = major;
 
         // LIMITS bounds the grid, not the UCS axes. Size the axes from the
         // visible grid plane so X/Y/Z still span the viewport even when the
@@ -2199,9 +2712,10 @@ pub(crate) fn grid_segments(
         if limits_extent > 0.0 {
             axis_extent = limits_extent;
         }
-        return GridGeometry { segments: all_segments, axis_extent };
+        return GridGeometry { segments: all_segments, major_segments: all_major, axis_extent };
     }
 
+    let mut all_major: Vec<(Point, Point)> = Vec::new();
     // Lines parallel to axis2 (varying axis1 position).
     if let Some((anchor_screen, anchor_world, gap)) = best_anchor(0) {
         if gap >= MIN_HORIZON_GRID_PX {
@@ -2210,15 +2724,14 @@ pub(crate) fn grid_segments(
                 (axis_range(&hits, axis1), axis_range(&hits, axis2))
             {
                 let anchor1 = (anchor_world - grid_origin).as_vec3().dot(axis1);
-                let (start, end) = line_range(min1, max1, anchor1);
-                let mut segments = Vec::with_capacity((end - start + 1).max(0) as usize);
+                let (start, end) = line_range(min1, max1, anchor1, sx);
                 for i in start..=end {
-                    let value = i as f32 * s;
+                    let value = i as f32 * sx;
                     if let Some((p0, p1)) = project_line(0, value) {
-                        segments.extend(trim_line(0, p0, p1));
+                        let segs = trim_line(0, p0, p1);
+                        if is_major(i) { all_major.extend(segs); } else { all_segments.extend(segs); }
                     }
                 }
-                all_segments.extend(segments);
                 axis_extent =
                     axis_extent.max(min1.abs().max(max1.abs()).max(min2.abs()).max(max2.abs()));
             }
@@ -2233,15 +2746,14 @@ pub(crate) fn grid_segments(
                 (axis_range(&hits, axis1), axis_range(&hits, axis2))
             {
                 let anchor2 = (anchor_world - grid_origin).as_vec3().dot(axis2);
-                let (start, end) = line_range(min2, max2, anchor2);
-                let mut segments = Vec::with_capacity((end - start + 1).max(0) as usize);
+                let (start, end) = line_range(min2, max2, anchor2, sy);
                 for i in start..=end {
-                    let value = i as f32 * s;
+                    let value = i as f32 * sy;
                     if let Some((p0, p1)) = project_line(1, value) {
-                        segments.extend(trim_line(1, p0, p1));
+                        let segs = trim_line(1, p0, p1);
+                        if is_major(i) { all_major.extend(segs); } else { all_segments.extend(segs); }
                     }
                 }
-                all_segments.extend(segments);
                 axis_extent =
                     axis_extent.max(min1.abs().max(max1.abs()).max(min2.abs()).max(max2.abs()));
             }
@@ -2249,7 +2761,7 @@ pub(crate) fn grid_segments(
     }
 
     let _ = gz; // gz unused after move; retained for symmetry with `draw_axes` call sites.
-    GridGeometry { segments: all_segments, axis_extent }
+    GridGeometry { segments: all_segments, major_segments: all_major, axis_extent }
 }
 
 // ── Coloured UCS axes ──────────────────────────────────────────────────────
@@ -2642,6 +3154,8 @@ pub struct DynBox {
     /// User has typed a value (the box no longer tracks the cursor).
     pub locked: bool,
     pub role: DynRole,
+    /// Optional exact viewport position, used by rotated rectangle dimensions.
+    pub center: Option<Point>,
 }
 
 pub fn dynamic_input_overlay<'a>(
@@ -2700,7 +3214,9 @@ impl DynInputCanvas {
 
     fn box_content(b: &DynBox) -> String {
         match b.role {
-            DynRole::Angle => format!("{}\u{00B0}", b.value),
+            // Formatted live values already carry their unit marker; typed
+            // buffers stay unadorned while they are being edited.
+            DynRole::Angle => b.value.clone(),
             _ if b.label.is_empty() => b.value.clone(),
             _ => format!("{}{}", b.label, b.value),
         }
@@ -2995,7 +3511,7 @@ impl DynInputCanvas {
 
         // ── Box placement by role ──
         for b in &self.boxes {
-            let center = match b.role {
+            let center = b.center.unwrap_or_else(|| match b.role {
                 DynRole::Angle => self.label_screen.unwrap_or_else(|| {
                     let a_mid = a_ref + sweep * 0.5;
                     let r = (len - DYN_BOX_H * 2.0).max(len * 0.5);
@@ -3006,10 +3522,18 @@ impl DynInputCanvas {
                 }),
                 DynRole::X | DynRole::Width => Point {
                     x: (base.x + cursor.x) * 0.5,
-                    y: base.y + 14.0,
+                    y: if self.guide == DynGuide::RectSides {
+                        base.y - (cursor.y - base.y).signum() * 14.0
+                    } else {
+                        base.y + 14.0
+                    },
                 },
                 DynRole::Y | DynRole::Height => Point {
-                    x: corner.x + 18.0,
+                    x: if self.guide == DynGuide::RectSides {
+                        corner.x + (cursor.x - base.x).signum() * 18.0
+                    } else {
+                        corner.x + 18.0
+                    },
                     y: (base.y + cursor.y) * 0.5,
                 },
                 // Perpendicular measure: on the measured segment / dim line.
@@ -3028,7 +3552,7 @@ impl DynInputCanvas {
                     x: base.x + dx * len * 0.5 + nx * 16.0,
                     y: base.y + dy * len * 0.5 + ny * 16.0,
                 },
-            };
+            });
             Self::draw_box(frame, b, center, bounds, theme);
         }
         // Keep the tracking hint near the crosshair in guided layouts.
@@ -3254,167 +3778,72 @@ mod clip_tests {
 }
 
 #[cfg(test)]
-mod bench_grid_geometry_tests {
+mod constraint_glyph_tests {
     use super::*;
-    use std::hint::black_box;
-    use std::time::Instant;
+    use crate::scene::parametric_constraints::{
+        constraint_glyph_box, constraint_glyph_offsets,
+    };
+    use std::sync::Arc;
 
-    /// Benchmarks the pure grid geometry construction (uncached).
-    /// Represents a 2-pane tiled Model layout: pane 1 at x=0..1280, pane 2 at
-    /// x=1280..1920. Slight tilt, typical eye, step 80 (pane 1) / 160 (pane 2).
-    /// RED: requires `grid_segments(...)` which does not exist yet — compilation
-    /// must fail with E0425 "cannot find function `grid_segments`". The bench
-    /// becomes meaningful at Step 1 once the helper is extracted.
-    #[test]
-    #[ignore]
-    fn bench_grid_geometry_uncached() {
-        let view_rot1 = Mat4::from_rotation_x(0.15) * Mat4::from_rotation_y(0.05);
-        let eye1 = glam::DVec3::new(4.0, 3.5, 9.0);
-        let bounds1 = iced::Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: 1280.0,
-            height: 720.0,
-        };
-        let step1 = 80.0_f32;
-        let grid_origin1 = glam::DVec3::new(0.0, 0.0, 0.0);
-        let grid_axes1 = (Vec3::X, Vec3::Y, Vec3::Z);
-        let limits1: Option<(glam::DVec2, glam::DVec2)> = None;
-
-        let view_rot2 = Mat4::from_rotation_x(0.15) * Mat4::from_rotation_y(0.05);
-        let eye2 = glam::DVec3::new(4.0, 3.5, 9.0);
-        let bounds2 = iced::Rectangle {
-            x: 1280.0,
-            y: 0.0,
-            width: 640.0,
-            height: 720.0,
-        };
-        let step2 = 160.0_f32;
-        let grid_origin2 = glam::DVec3::new(0.0, 0.0, 0.0);
-        let grid_axes2 = (Vec3::X, Vec3::Y, Vec3::Z);
-        let limits2: Option<(glam::DVec2, glam::DVec2)> = None;
-
-        for _ in 0..20 {
-            let _ = black_box(grid_segments(
-                black_box(view_rot1),
-                black_box(eye1),
-                black_box(bounds1),
-                black_box(step1),
-                black_box(grid_origin1),
-                black_box(grid_axes1),
-                black_box(limits1),
-            ));
-            let _ = black_box(grid_segments(
-                black_box(view_rot2),
-                black_box(eye2),
-                black_box(bounds2),
-                black_box(step2),
-                black_box(grid_origin2),
-                black_box(grid_axes2),
-                black_box(limits2),
-            ));
-        }
-
-        let n = 200u32;
-        let start = Instant::now();
-        for _ in 0..n {
-            let _ = black_box(grid_segments(
-                black_box(view_rot1),
-                black_box(eye1),
-                black_box(bounds1),
-                black_box(step1),
-                black_box(grid_origin1),
-                black_box(grid_axes1),
-                black_box(limits1),
-            ));
-            let _ = black_box(grid_segments(
-                black_box(view_rot2),
-                black_box(eye2),
-                black_box(bounds2),
-                black_box(step2),
-                black_box(grid_origin2),
-                black_box(grid_axes2),
-                black_box(limits2),
-            ));
-        }
-        let elapsed = start.elapsed();
-        let per_frame = elapsed / n;
-        println!(
-            "grid_segments uncached: {:?} per frame (n = {}, total {:?})",
-            per_frame, n, elapsed
-        );
-        assert!(per_frame.as_secs_f64() > 0.0, "per-frame time must be positive");
+    /// Build cache-shaped entries the same way
+    /// `Scene::cached_glyph_placements` does: one offsets pass, then size +
+    /// box per glyph. Keeps this test on the single source of truth instead
+    /// of a local layout copy.
+    fn entries_for(glyphs: &[(Point, [f32; 2], &str)]) -> Arc<[GlyphEntry]> {
+        let offsets = constraint_glyph_offsets(glyphs);
+        Arc::from(
+            glyphs
+                .iter()
+                .zip(offsets)
+                .enumerate()
+                .map(|(i, ((anchor, outward, label), tangent_dx))| {
+                    let size =
+                        crate::scene::parametric_constraints::constraint_glyph_size(label);
+                    let (top_left, _) =
+                        constraint_glyph_box(*anchor, *outward, label, tangent_dx);
+                    GlyphEntry {
+                        id: i as u32,
+                        anchor: *anchor,
+                        outward: *outward,
+                        label: Arc::from(*label),
+                        conflicting: false,
+                        hover: Arc::from([]),
+                        size,
+                        tangent_dx,
+                        top_left,
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
     }
 
-    /// A/B partner of `bench_grid_geometry_uncached` (Mission #1, step 6).
-    /// Times the hit-path decision only: build `GridKey` from the current
-    /// pane params + canvas bounds, borrow the stored key, call
-    /// `should_reuse`. Mirrors the body of the hit branch in
-    /// `GridCanvas::draw`. Excludes the iced `canvas::Cache` internals
-    /// (Arc-clone + draw_with_bounds fast path) because they live in the
-    /// fork and are not what we added; measures only the cost we own.
     #[test]
-    #[ignore]
-    fn bench_grid_geometry_cached() {
-        let view_rot1 = Mat4::from_rotation_x(0.15) * Mat4::from_rotation_y(0.05);
-        let eye1 = glam::DVec3::new(4.0, 3.5, 9.0);
-        let bounds1 = iced::Rectangle { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
-        let step1 = 80.0_f32;
-        let origin1 = glam::DVec3::new(0.0, 0.0, 0.0);
-        let axes1 = (Vec3::X, Vec3::Y, Vec3::Z);
-        let limits1: Option<(glam::DVec2, glam::DVec2)> = None;
+    fn enlarged_glyph_box_stays_clear_of_its_geometry_anchor() {
+        let anchor = Point::new(100.0, 80.0);
+        let (right, size) = constraint_glyph_box(anchor, [1.0, 0.0], "⊥", 0.0);
+        assert_eq!(size.height, 22.0);
+        assert!((right.x - anchor.x - 6.0).abs() < 1e-6);
 
-        let view_rot2 = Mat4::from_rotation_x(0.15) * Mat4::from_rotation_y(0.05);
-        let eye2 = glam::DVec3::new(4.0, 3.5, 9.0);
-        let bounds2 = iced::Rectangle { x: 1280.0, y: 0.0, width: 640.0, height: 720.0 };
-        let step2 = 160.0_f32;
-        let origin2 = glam::DVec3::new(0.0, 0.0, 0.0);
-        let axes2 = (Vec3::X, Vec3::Y, Vec3::Z);
-        let limits2: Option<(glam::DVec2, glam::DVec2)> = None;
+        let (above, size) = constraint_glyph_box(anchor, [0.0, -1.0], "↔ 25.00", 0.0);
+        assert!((anchor.y - (above.y + size.height) - 6.0).abs() < 1e-6);
+    }
 
-        let params1 = GridParams {
-            view_rot: view_rot1, eye: eye1, bounds: bounds1, step: step1,
-            origin: origin1, axes: axes1, limits: limits1,
-        };
-        let params2 = GridParams {
-            view_rot: view_rot2, eye: eye2, bounds: bounds2, step: step2,
-            origin: origin2, axes: axes2, limits: limits2,
-        };
-        let grids = vec![params1, params2];
-        // Overall canvas bounds — what `GridCanvas::draw` receives and
-        // passes to `GridKey::from_grids`. The 1920×720 covers the two
-        // tiled panes (1280 + 640).
-        let canvas_bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1920.0, height: 720.0 };
+    #[test]
+    fn coincident_glyphs_are_arranged_side_by_side() {
+        let anchor = Point::new(100.0, 80.0);
+        let entries = entries_for(&[
+            (anchor, [0.0, -1.0], "—"),
+            (anchor, [0.0, -1.0], "∥"),
+        ]);
+        let (left, left_size) = (entries[0].top_left, entries[0].size);
+        let (right, right_size) = (entries[1].top_left, entries[1].size);
 
-        // Pre-seed a `GridCanvasState` with the same key the bench will
-        // build each iteration — guaranteed hit path.
-        let state = GridCanvasState::default();
-        let stored_key = GridKey::from_grids(&grids, canvas_bounds, GridStyle::default());
-        *state.key.borrow_mut() = Some(stored_key);
+        assert!((left.y - right.y).abs() < 1e-6);
+        assert!((right.x - (left.x + left_size.width) - 4.0).abs() < 1e-4);
+        assert!((anchor.y - (left.y + right_size.height) - 6.0).abs() < 1e-6);
 
-        for _ in 0..20 {
-            let key = GridKey::from_grids(black_box(&grids), black_box(canvas_bounds), GridStyle::default());
-            let hit = should_reuse(state.key.borrow().as_ref(), &key);
-            black_box(hit);
-        }
-
-        let n = 200u32;
-        let start = Instant::now();
-        let mut hit_count = 0u32;
-        for _ in 0..n {
-            let key = GridKey::from_grids(black_box(&grids), black_box(canvas_bounds), GridStyle::default());
-            if should_reuse(state.key.borrow().as_ref(), &key) {
-                hit_count += 1;
-            }
-        }
-        let elapsed = start.elapsed();
-        let per_frame = elapsed / n;
-        assert_eq!(hit_count, n, "bench should always hit (sanity)");
-        println!(
-            "grid key + should_reuse (hit path): {:?} per frame (n = {}, total {:?})",
-            per_frame, n, elapsed
-        );
-        assert!(per_frame.as_secs_f64() > 0.0, "per-frame time must be positive");
+        let click = Point::new(left.x + left_size.width * 0.5, left.y + left_size.height * 0.5);
+        assert_eq!(glyph_hit_test_entries(&entries, click), Some(0));
     }
 }
 
@@ -3437,7 +3866,9 @@ mod grid_key_tests {
                 width: 1280.0,
                 height: 720.0,
             },
-            step: 80.0,
+            step_x: 80.0,
+            step_y: 80.0,
+            major_every: 5,
             origin: glam::DVec3::new(0.0, 0.0, 0.0),
             axes: (Vec3::X, Vec3::Y, Vec3::Z),
             limits: None,
@@ -3487,13 +3918,31 @@ mod grid_key_tests {
             "eye change must invalidate"
         );
 
-        // step: zoom in
+        // step_x: zoom in
         let mut p = baseline_params();
-        p.step = 40.0;
+        p.step_x = 40.0;
         assert_ne!(
             GridKey::from_grids(&[p], baseline_bounds, GridStyle::default()),
             baseline_key,
-            "step change must invalidate"
+            "step_x change must invalidate"
+        );
+
+        // step_y: non-square grid resize
+        let mut p = baseline_params();
+        p.step_y = 40.0;
+        assert_ne!(
+            GridKey::from_grids(&[p], baseline_bounds, GridStyle::default()),
+            baseline_key,
+            "step_y change must invalidate"
+        );
+
+        // major_every: major-line frequency change
+        let mut p = baseline_params();
+        p.major_every = 10;
+        assert_ne!(
+            GridKey::from_grids(&[p], baseline_bounds, GridStyle::default()),
+            baseline_key,
+            "major_every change must invalidate"
         );
 
         // origin: translate the UCS origin off-zero
@@ -3567,7 +4016,7 @@ mod grid_key_tests {
         let baseline = GridKey::from_grids(&both, bounds, GridStyle::default());
 
         let mut pane2_changed = pane2;
-        pane2_changed.step = 160.0;
+        pane2_changed.step_x = 160.0;
         let dirty = vec![pane1, pane2_changed];
         assert_ne!(
             GridKey::from_grids(&dirty, bounds, GridStyle::default()),
@@ -3600,12 +4049,89 @@ mod grid_key_tests {
     fn should_reuse_changed() {
         let grids_a = vec![baseline_params()];
         let mut pane2 = baseline_params();
-        pane2.step = 160.0;
+        pane2.step_x = 160.0;
         let grids_b = vec![pane2];
         let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1920.0, height: 720.0 };
         let old = GridKey::from_grids(&grids_a, bounds, GridStyle::default());
         let new = GridKey::from_grids(&grids_b, bounds, GridStyle::default());
         assert!(!should_reuse(Some(&old), &new));
+    }
+
+    /// Adaptive steps grow from the GRIDUNIT base (the old hardcoded 1.0 base
+    /// ignored the DSettings grid spacing). Fixed mode returns the base verbatim.
+    #[test]
+    fn grid_steps_follow_base_and_adaptive_flag() {
+        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
+        // Far zoom: 10-unit base must scale up to stay readable.
+        let (sx, sy) = compute_grid_steps(10.0, 10.0, 5000.0, 0.6, bounds, true);
+        assert!(sx >= 10.0 && sy >= 10.0);
+        assert_eq!((sx, sy), (sx.max(10.0), sy.max(10.0)));
+        // Non-uniform bases stay non-uniform.
+        let (nx, ny) = compute_grid_steps(10.0, 2.0, 5000.0, 0.6, bounds, true);
+        assert!(nx >= 10.0 && ny >= 2.0);
+        // Fixed mode returns exactly what was typed.
+        assert_eq!(compute_grid_steps(7.5, 2.5, 5000.0, 0.6, bounds, false), (7.5, 2.5));
+        // Degenerate input sanitizes to 1.0 instead of emptying the grid.
+        assert_eq!(compute_grid_steps(0.0, -3.0, 5000.0, 0.6, bounds, false), (1.0, 1.0));
+    }
+
+    /// Overflow fallback keeps each axis on its own base: an extreme zoom-out
+    /// that pushes the 5x growth past 1e9 must return (bx, by), never (bx, bx).
+    #[test]
+    fn grid_steps_overflow_falls_back_per_axis() {
+        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
+        assert_eq!(
+            compute_grid_steps(10.0, 2.0, 1e15, 0.6, bounds, true),
+            (10.0, 2.0)
+        );
+    }
+
+    /// Non-uniform steps still produce grid geometry on both families.
+    #[test]
+    fn grid_segments_support_non_square_spacing() {
+        // Top-down orthographic-ish view over the origin: deterministic lines.
+        let view_rot = glam::camera::rh::proj::directx::orthographic(
+            -400.0, 400.0, -300.0, 300.0, 0.1, 2000.0,
+        ) * glam::camera::rh::view::look_at_mat4(
+            Vec3::new(0.0, 0.0, 500.0),
+            Vec3::ZERO,
+            Vec3::Y,
+        );
+        let eye = glam::DVec3::new(0.0, 0.0, 500.0);
+        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 800.0, height: 600.0 };
+        let g = grid_segments(
+            view_rot, eye, bounds, 10.0, 2.0, 5,
+            glam::DVec3::ZERO, (Vec3::X, Vec3::Y, Vec3::Z), None,
+        );
+        assert!(!g.segments.is_empty(), "grid lines expected");
+    }
+
+    /// Every-Nth line lands in `major_segments`, the rest in `segments`.
+    #[test]
+    fn grid_segments_partition_major_lines() {
+        // Top-down orthographic-ish view over the origin: deterministic lines.
+        let view_rot = glam::camera::rh::proj::directx::orthographic(
+            -400.0, 400.0, -300.0, 300.0, 0.1, 2000.0,
+        ) * glam::camera::rh::view::look_at_mat4(
+            Vec3::new(0.0, 0.0, 500.0),
+            Vec3::ZERO,
+            Vec3::Y,
+        );
+        let eye = glam::DVec3::new(0.0, 0.0, 500.0);
+        let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 800.0, height: 600.0 };
+        let g = grid_segments(
+            view_rot, eye, bounds, 10.0, 10.0, 5,
+            glam::DVec3::ZERO, (Vec3::X, Vec3::Y, Vec3::Z), None,
+        );
+        assert!(!g.segments.is_empty(), "minor lines expected");
+        assert!(!g.major_segments.is_empty(), "major lines expected");
+        // major_every = 1 disables the split: everything is minor.
+        let flat = grid_segments(
+            view_rot, eye, bounds, 10.0, 10.0, 1,
+            glam::DVec3::ZERO, (Vec3::X, Vec3::Y, Vec3::Z), None,
+        );
+        assert!(flat.major_segments.is_empty());
+        assert!(!flat.segments.is_empty());
     }
 }
 
@@ -3631,7 +4157,6 @@ mod grid_canvas_state_tests {
         let view_rot = Mat4::from_rotation_x(0.15) * Mat4::from_rotation_y(0.05);
         let eye = glam::DVec3::new(4.0, 3.5, 9.0);
         let bounds = iced::Rectangle { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 };
-        let step = 80.0_f32;
         let grid_origin = glam::DVec3::new(0.0, 0.0, 0.0);
         let grid_axes = (Vec3::X, Vec3::Y, Vec3::Z);
         let limits: Option<(glam::DVec2, glam::DVec2)> = None;
@@ -3640,7 +4165,9 @@ mod grid_canvas_state_tests {
             view_rot,
             eye,
             bounds,
-            step,
+            step_x: 80.0,
+            step_y: 80.0,
+            major_every: 5,
             origin: grid_origin,
             axes: grid_axes,
             limits,

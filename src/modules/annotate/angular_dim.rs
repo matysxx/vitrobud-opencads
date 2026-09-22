@@ -7,8 +7,8 @@ use cadkernel::geom2d::{
 };
 
 use crate::command::{
-    CadCommand, CmdOption, CmdResult, DimensionAssociationInput,
-    DimensionAssociationSource, InputKind, WorkingPlane,
+    CadCommand, CmdOption, CmdResult, DimensionAssociationInput, DimensionAssociationSource,
+    DimensionPreview, InputKind, WorkingPlane,
 };
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
@@ -482,6 +482,42 @@ impl CadCommand for AngularDimensionCommand {
         CmdResult::Cancel
     }
 
+    /// Points and object picks may come through a paper-space viewport;
+    /// the committed dimension then reports the model measurement.
+    fn measures_through_viewports(&self) -> bool {
+        true
+    }
+
+    fn dimension_acquired_points(&self) -> Vec<DVec3> {
+        match self.step {
+            Step::Vertex => vec![],
+            Step::FirstRay(p) => vec![p],
+            Step::SecondRay { vertex, first } | Step::CircleSecondRay { vertex, first, .. } => {
+                vec![vertex, first]
+            }
+            Step::SecondLine {
+                first_start,
+                first_end,
+                ..
+            } => vec![first_start, first_end],
+            Step::ArcPoint3 {
+                vertex,
+                first,
+                second,
+            } => vec![vertex, first, second],
+            Step::ArcPoint2 {
+                first_start,
+                first_end,
+                second_start,
+                second_end,
+            } => vec![first_start, first_end, second_start, second_end],
+        }
+    }
+
+    fn dimension_placement_pending(&self) -> bool {
+        matches!(self.step, Step::ArcPoint3 { .. } | Step::ArcPoint2 { .. })
+    }
+
     fn on_escape(&mut self) -> CmdResult {
         CmdResult::Cancel
     }
@@ -489,8 +525,10 @@ impl CadCommand for AngularDimensionCommand {
     fn input_kind(&self) -> InputKind {
         if self.awaiting_text {
             InputKind::FreeText
-        } else {
+        } else if self.awaiting_angle || self.awaiting_quadrant {
             InputKind::SingleToken
+        } else {
+            InputKind::Point
         }
     }
 
@@ -769,6 +807,32 @@ impl CadCommand for AngularDimensionCommand {
         };
         Some(preview_wire(points))
     }
+
+    fn dimension_preview(&self, cursor: DVec3) -> Option<Vec<DimensionPreview>> {
+        if self.selecting_object {
+            return None;
+        }
+        let result = match self.step {
+            Step::ArcPoint3 {
+                vertex,
+                first,
+                second,
+            } => self.finish_three_point(vertex, first, second, cursor),
+            Step::ArcPoint2 {
+                first_start,
+                first_end,
+                second_start,
+                second_end,
+            } => self.finish_two_line(first_start, first_end, second_start, second_end, cursor),
+            _ => return None,
+        };
+        match result {
+            CmdResult::CommitDimension { entity, .. } => {
+                Some(vec![DimensionPreview::current_style(entity)])
+            }
+            _ => Some(Vec::new()),
+        }
+    }
 }
 
 fn picked_curve(entity: &EntityType, click: DVec3) -> Option<PickedCurve> {
@@ -1029,7 +1093,7 @@ fn point_angle_in_frame(vertex: DVec3, point: DVec3, frame: (f64, f64)) -> bool 
     (angle - frame.0).rem_euclid(std::f64::consts::TAU) <= sweep + 1.0e-9
 }
 
-fn two_line_frame(
+pub(crate) fn two_line_frame(
     first_start: DVec3,
     first_end: DVec3,
     second_start: DVec3,
@@ -1120,6 +1184,52 @@ fn angular_preview_with_frame(
         .map(DVec3::from_array),
     );
     points
+}
+
+/// A two-line angular dimension whose arc sits at `arc_point`, for a
+/// dimensional constraint; `None` when the lines are parallel or the arc
+/// point picks no sector.
+pub(crate) fn angular_two_line_entity(
+    first_start: DVec3,
+    first_end: DVec3,
+    second_start: DVec3,
+    second_end: DVec3,
+    arc_point: DVec3,
+    text: Option<String>,
+) -> Option<EntityType> {
+    two_line_frame(first_start, first_end, second_start, second_end, arc_point)?;
+    let mut dim = DimensionAngular2Ln::default();
+    dim.first_point = v3(first_start);
+    dim.second_point = v3(first_end);
+    dim.angle_vertex = v3(second_start);
+    dim.definition_point = v3(second_end);
+    dim.dimension_arc = v3(arc_point);
+    dim.base.definition_point = dim.definition_point;
+    // No stored text point: the style places the text (DIMTAD) beside the
+    // arc at render time, as the reference draws a dynamic dimension.
+    dim.base.insertion_point = dim.dimension_arc;
+    dim.base.actual_measurement = dim.measurement_degrees();
+    crate::entities::dimension::set_dimension_text_override(&mut dim.base, text);
+    Some(EntityType::Dimension(Dimension::Angular2Ln(dim)))
+}
+
+/// A three-point angular dimension (vertex, two points, arc point), for a
+/// dimensional constraint.
+pub(crate) fn angular_three_point_entity(
+    vertex: DVec3,
+    first: DVec3,
+    second: DVec3,
+    arc_point: DVec3,
+    text: Option<String>,
+) -> Option<EntityType> {
+    let mut dim = DimensionAngular3Pt::new(v3(vertex), v3(first), v3(second));
+    dim.definition_point = v3(arc_point);
+    dim.base.definition_point = dim.definition_point;
+    dim.base.text_middle_point = Vector3::new(0.0, 0.0, 0.0);
+    dim.base.insertion_point = dim.definition_point;
+    dim.base.actual_measurement = dim.measurement_degrees();
+    crate::entities::dimension::set_dimension_text_override(&mut dim.base, text);
+    Some(EntityType::Dimension(Dimension::Angular3Pt(dim)))
 }
 
 fn v3(point: DVec3) -> Vector3 {

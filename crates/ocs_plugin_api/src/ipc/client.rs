@@ -416,6 +416,58 @@ impl HostApi for PluginHostApi {
             }
         }
     }
+
+    fn add_layer(&mut self, config: crate::host::LayerConfig) -> Option<Handle> {
+        match self.client.request(PluginRequest::AddLayer(config)) {
+            Ok(PluginResponse::OptHandle(h)) => {
+                if h.is_some() {
+                    self.document_cache = OnceCell::new();
+                }
+                h
+            }
+            Ok(other) => {
+                eprintln!("[plugin] unexpected AddLayer response: {other:?}");
+                None
+            }
+            Err(e) => {
+                eprintln!("[plugin] AddLayer request failed: {e}");
+                None
+            }
+        }
+    }
+
+    fn modify_layer(&mut self, config: crate::host::LayerConfig) -> bool {
+        match self.client.request(PluginRequest::ModifyLayer(config)) {
+            Ok(PluginResponse::Bool(b)) => {
+                if b {
+                    self.document_cache = OnceCell::new();
+                }
+                b
+            }
+            Ok(other) => {
+                eprintln!("[plugin] unexpected ModifyLayer response: {other:?}");
+                false
+            }
+            Err(e) => {
+                eprintln!("[plugin] ModifyLayer request failed: {e}");
+                false
+            }
+        }
+    }
+
+    fn execute_command(&mut self, cmd: &str) -> bool {
+        match self.client.request(PluginRequest::ExecuteCommand(cmd.to_string())) {
+            Ok(PluginResponse::Bool(b)) => b,
+            Ok(other) => {
+                eprintln!("[plugin] unexpected ExecuteCommand response: {other:?}");
+                false
+            }
+            Err(e) => {
+                eprintln!("[plugin] ExecuteCommand request failed: {e}");
+                false
+            }
+        }
+    }
 }
 
 /// Sentinel reader used when the shared-memory view could not be initialized.

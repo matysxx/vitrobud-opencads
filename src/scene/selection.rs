@@ -1,40 +1,132 @@
 use super::*;
 
+/// The first PE_URL string is the URL; later strings describe the link.
+pub(crate) fn pe_url_of(entity: &EntityType) -> Option<&str> {
+    entity.common().extended_data.get_record("PE_URL")
+        .and_then(|record| {
+            record.values.iter().find_map(|value| match value {
+                acadrust::xdata::XDataValue::String(text) => Some(text.trim()),
+                _ => None,
+            })
+        })
+        .filter(|text| !text.is_empty())
+}
+
+/// Optional description stored after the URL in the standard PE_URL record.
+pub(crate) fn pe_url_description_of(entity: &EntityType) -> Option<&str> {
+    let record = entity.common().extended_data.get_record("PE_URL")?;
+    record
+        .values
+        .iter()
+        .filter_map(|value| match value {
+            acadrust::xdata::XDataValue::String(text) => Some(text.trim()),
+            _ => None,
+        })
+        .nth(1)
+        .filter(|text| !text.is_empty())
+}
+
 impl Scene {
     // ── Selection ─────────────────────────────────────────────────────────
     /// Treat a classic LEADER and its attached annotation as one logical object.
     /// Clicking/copying/deleting either side expands to the complete pair.
-    pub(crate) fn handles_expanded_for_leader_annotations(
+    /// Every LEADER that points at `annotation`, resolved once per
+    /// `geometry_epoch` rather than by walking the document per handle.
+    fn leaders_by_annotation(
         &self,
-        handles: &[Handle],
-    ) -> Vec<Handle> {
-        let mut expanded = handles.to_vec();
+    ) -> std::cell::Ref<'_, (u64, HashMap<Handle, Vec<Handle>>)> {
+        {
+            let cache = self.leaders_by_annotation_cache.borrow();
+            if cache.as_ref().is_some_and(|(epoch, _)| *epoch == self.geometry_epoch) {
+                drop(cache);
+                return std::cell::Ref::map(
+                    self.leaders_by_annotation_cache.borrow(),
+                    |c| c.as_ref().unwrap(),
+                );
+            }
+        }
+        let mut by_annotation: HashMap<Handle, Vec<Handle>> = HashMap::default();
+        for entity in self.document.entities() {
+            if let EntityType::Leader(leader) = entity {
+                if !leader.annotation_handle.is_null() {
+                    by_annotation
+                        .entry(leader.annotation_handle)
+                        .or_default()
+                        .push(entity.common().handle);
+                }
+            }
+        }
+        *self.leaders_by_annotation_cache.borrow_mut() =
+            Some((self.geometry_epoch, by_annotation));
+        std::cell::Ref::map(self.leaders_by_annotation_cache.borrow(), |c| {
+            c.as_ref().unwrap()
+        })
+    }
 
+    fn expanded_with_leaders(&self, handles: &[Handle]) -> Vec<Handle> {
+        let leaders = self.leaders_by_annotation();
+        let mut expanded = Vec::with_capacity(handles.len());
         for &handle in handles {
-            // LEADER -> annotation.
+            let start = expanded.len();
+            expanded.push(handle);
             if let Some(EntityType::Leader(leader)) = self.document.get_entity(handle) {
                 if !leader.annotation_handle.is_null() {
                     expanded.push(leader.annotation_handle);
                 }
             }
-
-            // Annotation -> LEADER.
-            expanded.extend(self.document.entities().filter_map(|entity| match entity {
-                EntityType::Leader(leader)
-                    if !leader.annotation_handle.is_null()
-                        && leader.annotation_handle == handle =>
-                {
-                    Some(entity.common().handle)
-                }
-                _ => None,
-            }));
+            if let Some(pointing) = leaders.1.get(&handle) {
+                expanded.extend(pointing.iter().copied());
+            }
+            expanded[start..].sort_unstable_by_key(Handle::value);
         }
+        expanded
+    }
 
+    pub fn select_entities(&mut self, handles: &[Handle]) {
+        if handles.is_empty() {
+            return;
+        }
+        self.selected_constraint = None;
+        let expanded = self.expanded_with_leaders(handles);
+        let mut changed = false;
+        for handle in expanded {
+            if self.selected.insert(handle) {
+                self.selected_order.push(handle);
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_selection_set();
+        }
+    }
+
+    pub fn deselect_entities(&mut self, handles: &[Handle]) {
+        if handles.is_empty() {
+            return;
+        }
+        let doomed: HashSet<Handle> =
+            self.expanded_with_leaders(handles).into_iter().collect();
+        let mut changed = false;
+        for handle in &doomed {
+            changed |= self.selected.remove(handle);
+        }
+        if changed {
+            self.selected_order.retain(|handle| !doomed.contains(handle));
+            self.bump_selection_set();
+        }
+    }
+
+    pub(crate) fn handles_expanded_for_leader_annotations(
+        &self,
+        handles: &[Handle],
+    ) -> Vec<Handle> {
+        let mut expanded = self.expanded_with_leaders(handles);
         expanded.sort_unstable_by_key(|handle| handle.value());
         expanded.dedup();
         expanded
     }
     pub fn select_entity(&mut self, handle: Handle, exclusive: bool) {
+        self.selected_constraint = None;
         let handles = self.handles_expanded_for_leader_annotations(&[handle]);
         let mut changed = false;
 
@@ -57,6 +149,7 @@ impl Scene {
     }
 
     pub fn deselect_all(&mut self) {
+        self.selected_constraint = None;
         if self.selected.is_empty() {
             return;
         }
@@ -139,6 +232,7 @@ impl Scene {
     /// only when its contents actually changed. History/file/command paths must
     /// use this instead of assigning `selected` directly.
     pub(crate) fn replace_selection(&mut self, selected: HashSet<Handle>) {
+        self.selected_constraint = None;
         let handles: Vec<Handle> = selected.iter().copied().collect();
         let selected: HashSet<Handle> = self
             .handles_expanded_for_leader_annotations(&handles)
@@ -360,19 +454,62 @@ impl Scene {
         self.selected.len()
     }
 
-    /// Sorted entity types in the current layout, cached until geometry or layout changes.
+    /// Entity type names in the current layout for the selection-filter menu.
+    /// Pure additions are folded into the cached set; other changes rebuild it.
     pub fn entity_type_names_in_layout(&self) -> std::sync::Arc<Vec<String>> {
         use crate::entities::traits::entity_type_name;
         let block = self.current_layout_block_handle();
+        let mut cached_epoch = None;
         {
             let cache = self.layout_type_names_cache.borrow();
-            if let Some((epoch, cached_block, names)) = cache.as_ref() {
-                if *epoch == self.geometry_epoch && *cached_block == block {
-                    return std::sync::Arc::clone(names);
+            if let Some((epoch, cached_block, _, names)) = cache.as_ref() {
+                if *cached_block == block {
+                    if *epoch == self.geometry_epoch {
+                        return std::sync::Arc::clone(names);
+                    }
+                    cached_epoch = Some(*epoch);
                 }
             }
         }
-        let mut names: std::collections::BTreeSet<&str> =
+
+        // Incremental: fold the changes since the cached epoch into the set.
+        if let Some(since) = cached_epoch {
+            if let Some(deltas) = self.replay_since(since) {
+                if deltas
+                    .iter()
+                    .all(|(_, kind)| *kind == ChangeKind::Added)
+                {
+                    let mut cache = self.layout_type_names_cache.borrow_mut();
+                    if let Some((epoch, _, present, names)) = cache.as_mut() {
+                        let mut added = false;
+                        for (handle, _) in &deltas {
+                            if let Some(entity) = self.document.get_entity(*handle) {
+                                if entity.common().owner_handle == block {
+                                    // `contains` first: the common case is a
+                                    // type already present, and that path must
+                                    // not allocate.
+                                    let name = entity_type_name(entity);
+                                    if !present.contains(name) {
+                                        present.insert(name.to_string());
+                                        added = true;
+                                    }
+                                }
+                            }
+                        }
+                        // Only rebuild the list when the set actually moved;
+                        // otherwise the existing `Arc` is still the answer.
+                        if added {
+                            *names =
+                                std::sync::Arc::new(present.iter().cloned().collect());
+                        }
+                        *epoch = self.geometry_epoch;
+                        return std::sync::Arc::clone(names);
+                    }
+                }
+            }
+        }
+
+        let mut present: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
         if let Some(record) = self
             .document
@@ -382,15 +519,21 @@ impl Scene {
         {
             for &handle in &record.entity_handles {
                 if let Some(entity) = self.document.get_entity(handle) {
-                    names.insert(entity_type_name(entity));
+                    let name = entity_type_name(entity);
+                    if !present.contains(name) {
+                        present.insert(name.to_string());
+                    }
                 }
             }
         }
-        let names: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
-            names.into_iter().map(str::to_string).collect(),
-        );
-        *self.layout_type_names_cache.borrow_mut() =
-            Some((self.geometry_epoch, block, std::sync::Arc::clone(&names)));
+        let names: std::sync::Arc<Vec<String>> =
+            std::sync::Arc::new(present.iter().cloned().collect());
+        *self.layout_type_names_cache.borrow_mut() = Some((
+            self.geometry_epoch,
+            block,
+            present,
+            std::sync::Arc::clone(&names),
+        ));
         names
     }
 
@@ -541,7 +684,9 @@ impl Scene {
                             ])
                         } else {
                             match prop.value {
-                                PropValue::PlainText(_) => QSelectValueEditor::Text,
+                                PropValue::PlainText(_) | PropValue::Hyperlink(_) => {
+                                    QSelectValueEditor::Text
+                                }
                                 PropValue::ReadOnly(ref value)
                                 | PropValue::ReadOnlyWithTooltip { ref value, .. }
                                 | PropValue::EditText(ref value) => {
@@ -622,7 +767,11 @@ impl Scene {
                                 PropValue::Stepper { .. }
                                 | PropValue::ColorVaries
                                 | PropValue::LwVaries
-                                | PropValue::FieldLwVaries { .. } => continue,
+                                | PropValue::FieldLwVaries { .. }
+                                | PropValue::EntityLink { .. }
+                                | PropValue::ParamRow { .. }
+                                | PropValue::ParamAddRow
+                                | PropValue::ParamsVisibilityToggle(_) => continue,
                             }
                         };
                         out.push(choice(prop.field, prop.label, editor));
@@ -708,21 +857,7 @@ impl Scene {
                     ((alpha as f64 / 255.0 * 100.0).round() as u32).to_string()
                 }
             }),
-            "hyperlink" => Some(
-                entity
-                    .common()
-                    .extended_data
-                    .get_record("PE_URL")
-                    .and_then(|record| {
-                        record.values.iter().find_map(|value| match value {
-                            acadrust::xdata::XDataValue::String(text) if !text.is_empty() => {
-                                Some(text.clone())
-                            }
-                            _ => None,
-                        })
-                    })
-                    .unwrap_or_default(),
-            ),
+            "hyperlink" => Some(pe_url_of(entity).unwrap_or_default().to_owned()),
             "material" => Some(
                 match entity.common().material_flags {
                     0 => "ByLayer",
@@ -753,7 +888,8 @@ impl Scene {
                     PropValue::ReadOnly(s)
                     | PropValue::ReadOnlyWithTooltip { value: s, .. }
                     | PropValue::EditText(s)
-                    | PropValue::PlainText(s) => s,
+                    | PropValue::PlainText(s)
+                    | PropValue::Hyperlink(s) => s,
                     PropValue::LayerChoice(s) => s,
                     PropValue::Choice { selected, .. } => selected,
                     PropValue::EditChoice { value, .. } => value,
@@ -770,7 +906,11 @@ impl Scene {
                     PropValue::Stepper { display, .. } => display,
                     PropValue::ColorVaries
                     | PropValue::LwVaries
-                    | PropValue::FieldLwVaries { .. } => return None,
+                    | PropValue::FieldLwVaries { .. }
+                    | PropValue::EntityLink { .. }
+                    | PropValue::ParamRow { .. }
+                    | PropValue::ParamAddRow
+                    | PropValue::ParamsVisibilityToggle(_) => return None,
                 })
             }
         }
@@ -825,18 +965,74 @@ impl Scene {
             if respect_layer_locks && self.is_layer_locked(h) {
                 continue;
             }
+            let settings_handle = self.document.get_entity(h).and_then(|entity| match entity {
+                EntityType::Extended(acadrust::entities::ExtendedEntity {
+                    data: acadrust::entities::ExtendedEntityData::SectionObject(data),
+                    ..
+                }) if !data.settings_handle.is_null() => Some(data.settings_handle),
+                _ => None,
+            });
+            let section_managers: Vec<Handle> = self
+                .document
+                .objects
+                .iter()
+                .filter_map(|(handle, object)| match object {
+                    ObjectType::ClassObject(object) => match &object.data {
+                        acadrust::objects::ClassObjectData::SectionManager(manager)
+                            if manager.sections.contains(&h) =>
+                        {
+                            Some(*handle)
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
             // Delta-undo: capture the removed entity so an undo can re-insert it.
             if self.is_recording_undo() {
                 let before = self.document.get_entity_arc(h);
                 self.record_undo_before(h, before);
+                if let Some(settings_handle) = settings_handle {
+                    let before = self.document.objects.get(&settings_handle).cloned();
+                    self.record_undo_object_before(settings_handle, before);
+                }
+                for &manager_handle in &section_managers {
+                    let before = self.document.objects.get(&manager_handle).cloned();
+                    self.record_undo_object_before(manager_handle, before);
+                }
             }
             self.delete_solid_history(h);
+            if let Some(settings_handle) = settings_handle {
+                self.document.objects.remove(&settings_handle);
+            }
+            for manager_handle in section_managers {
+                if let Some(ObjectType::ClassObject(object)) =
+                    self.document.objects.get_mut(&manager_handle)
+                {
+                    if let acadrust::objects::ClassObjectData::SectionManager(manager) =
+                        &mut object.data
+                    {
+                        manager.sections.retain(|section| *section != h);
+                    }
+                }
+            }
             self.remember_removed_cache_categories(h);
             self.document.remove_entity_arc(h);
             selection_changed |= self.selected.remove(&h);
             self.selected_order.retain(|selected| *selected != h);
             if self.hover_highlight == Some(h) {
                 self.hover_highlight = None;
+                hover_changed = true;
+            }
+            hover_changed |= self.constraint_hover_highlights.remove(&h);
+            if self
+                .constraint_hover_refs
+                .iter()
+                .any(|reference| reference.entity == h)
+            {
+                self.constraint_hover_refs.clear();
+                self.constraint_hover_wires.clear();
+                self.constraint_hover_highlights.clear();
                 hover_changed = true;
             }
             self.hatches.remove(&h);
@@ -952,7 +1148,223 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pe_url_of_reads_standard_hyperlink_xdata() {
+        use acadrust::entities::Point;
+        use acadrust::xdata::{ExtendedDataRecord, XDataValue};
+
+        let mut doc = CadDocument::new();
+
+        // An entity carrying a PE_URL hyperlink resolves to that link.
+        let mut linked = Point::new();
+        let mut rec = ExtendedDataRecord::new("PE_URL");
+        rec.add_value(XDataValue::String("https://example.com/gui".to_string()));
+        linked.common.extended_data.add_record(rec);
+        let linked_handle = doc
+            .add_entity(EntityType::Point(linked))
+            .expect("linked entity added");
+        assert_eq!(
+            pe_url_of(doc.get_entity(linked_handle).unwrap()),
+            Some("https://example.com/gui")
+        );
+
+        // No PE_URL record -> None.
+        let plain_handle = doc
+            .add_entity(EntityType::Point(Point::new()))
+            .expect("plain entity added");
+        assert_eq!(pe_url_of(doc.get_entity(plain_handle).unwrap()), None);
+
+        // Empty string in the record -> None.
+        let mut empty = Point::new();
+        let mut empty_rec = ExtendedDataRecord::new("PE_URL");
+        empty_rec.add_value(XDataValue::String(String::new()));
+        empty_rec.add_value(XDataValue::String("https://description.invalid/".into()));
+        empty.common.extended_data.add_record(empty_rec);
+        let empty_handle = doc
+            .add_entity(EntityType::Point(empty))
+            .expect("empty-link entity added");
+        assert_eq!(pe_url_of(doc.get_entity(empty_handle).unwrap()), None);
+    }
+
     use super::*;
+
+    #[test]
+    fn bulk_selection_matches_selecting_one_at_a_time() {
+        use acadrust::entities::Line;
+        use acadrust::types::Vector3;
+
+        let build = || {
+            let mut scene = Scene::new();
+            let handles: Vec<_> = (0..40)
+                .map(|k| {
+                    let x = k as f64;
+                    scene.add_entity(EntityType::Line(Line::from_points(
+                        Vector3::new(x, 0.0, 0.0),
+                        Vector3::new(x + 1.0, 0.0, 0.0),
+                    )))
+                })
+                .collect();
+            (scene, handles)
+        };
+
+        // Picked in an order that is neither creation nor handle order.
+        let picked = |handles: &[Handle]| -> Vec<Handle> {
+            let mut order: Vec<_> = handles.iter().copied().collect();
+            order.reverse();
+            order.retain(|h| h.value() % 3 != 0);
+            order
+        };
+
+        let (mut one_at_a_time, handles) = build();
+        let order = picked(&handles);
+        for &handle in &order {
+            one_at_a_time.select_entity(handle, false);
+        }
+
+        let (mut in_bulk, handles) = build();
+        in_bulk.select_entities(&picked(&handles));
+
+        assert_eq!(
+            in_bulk.selected_handles_in_order(),
+            one_at_a_time.selected_handles_in_order(),
+            "the bulk path must select the same entities in the same order",
+        );
+
+        // And removing a subset must agree too.
+        let drop: Vec<_> = order.iter().copied().take(7).collect();
+        for &handle in &drop {
+            one_at_a_time.deselect_entity(handle);
+        }
+        in_bulk.deselect_entities(&drop);
+        assert_eq!(
+            in_bulk.selected_handles_in_order(),
+            one_at_a_time.selected_handles_in_order(),
+            "the bulk removal must leave the same selection in the same order",
+        );
+    }
+
+    #[test]
+    fn the_leader_index_matches_a_document_walk() {
+        use acadrust::entities::Leader;
+        use acadrust::types::Vector3;
+
+        let mut scene = Scene::new();
+        let line = |x: f64| {
+            EntityType::Line(acadrust::entities::Line::from_points(
+                Vector3::new(x, 0.0, 0.0),
+                Vector3::new(x + 1.0, 0.0, 0.0),
+            ))
+        };
+        let annotation = scene.add_entity(line(0.0));
+        let unrelated = scene.add_entity(line(5.0));
+        let mut leader_on = |target: Handle| {
+            let mut leader = Leader::default();
+            leader.annotation_handle = target;
+            scene.add_entity(EntityType::Leader(leader))
+        };
+        // Two leaders share one annotation; a third points nowhere.
+        let first = leader_on(annotation);
+        let second = leader_on(annotation);
+        let dangling = leader_on(Handle::NULL);
+
+        // The walk this replaced, written out so the index is compared against
+        // behaviour rather than against itself.
+        let by_walk = |handle: Handle| -> Vec<Handle> {
+            let mut out = vec![handle];
+            if let Some(EntityType::Leader(leader)) = scene.document.get_entity(handle) {
+                if !leader.annotation_handle.is_null() {
+                    out.push(leader.annotation_handle);
+                }
+            }
+            out.extend(scene.document.entities().filter_map(|entity| match entity {
+                EntityType::Leader(leader)
+                    if !leader.annotation_handle.is_null()
+                        && leader.annotation_handle == handle =>
+                {
+                    Some(entity.common().handle)
+                }
+                _ => None,
+            }));
+            out.sort_unstable_by_key(Handle::value);
+            out.dedup();
+            out
+        };
+
+        for handle in [annotation, unrelated, first, second, dangling] {
+            assert_eq!(
+                scene.handles_expanded_for_leader_annotations(&[handle]),
+                by_walk(handle),
+                "the index must answer exactly what the walk answered",
+            );
+        }
+        let expanded = scene.handles_expanded_for_leader_annotations(&[annotation]);
+        assert!(
+            expanded.contains(&first) && expanded.contains(&second),
+            "both leaders on one annotation must come back, not just one",
+        );
+        for handle in [first, annotation, second] {
+            scene.deselect_all();
+            scene.select_entity(handle, false);
+            let expected = scene.selected_handles_in_order();
+            scene.deselect_all();
+            scene.select_entities(&[handle]);
+            assert_eq!(scene.selected_handles_in_order(), expected);
+        }
+    }
+
+    #[test]
+    fn adding_a_type_already_present_reuses_the_list() {
+        use acadrust::entities::{Circle, EntityType, Line};
+        use acadrust::types::Vector3;
+        use std::sync::Arc;
+
+        let line = || {
+            EntityType::Line(Line::from_points(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 0.0, 0.0),
+            ))
+        };
+        let mut scene = Scene::new();
+        scene.add_entity(line());
+        let first = scene.entity_type_names_in_layout();
+
+        scene.add_entity(line());
+        let second = scene.entity_type_names_in_layout();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a second line changes no type name, so the list must be reused",
+        );
+
+        scene.add_entity(EntityType::Circle(Circle::new()));
+        let third = scene.entity_type_names_in_layout();
+        assert_eq!(third.as_slice(), ["Circle", "Line"], "a new type must appear");
+
+        // The incremental answer has to be the answer a full walk gives.
+        scene.layout_type_names_cache.borrow_mut().take();
+        assert_eq!(
+            scene.entity_type_names_in_layout().as_slice(),
+            third.as_slice(),
+            "folding edits in must match rebuilding from scratch",
+        );
+    }
+
+    #[test]
+    fn changing_an_entity_type_rebuilds_the_type_names() {
+        use acadrust::entities::{Circle, EntityType, Line};
+        use acadrust::types::Vector3;
+
+        let mut scene = Scene::new();
+        let handle = scene.add_entity(EntityType::Line(Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+        )));
+        assert_eq!(scene.entity_type_names_in_layout().as_slice(), ["Line"]);
+
+        let mut circle = Circle::new();
+        circle.common.handle = handle;
+        assert!(scene.update_entity(EntityType::Circle(circle)));
+        assert_eq!(scene.entity_type_names_in_layout().as_slice(), ["Circle"]);
+    }
 
     #[test]
     fn layout_type_cache_reuses_and_invalidates_on_edits_undo_and_layout() {

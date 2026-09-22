@@ -553,17 +553,56 @@ pub trait HostApi {
         None
     }
 
-    /// DocApi v2 (`ocs_doc_api`): dispatch one bincode-serialized `DocApiEnvelope`
-    /// (one write op OR a read-only query batch) and return the bincode-serialized
-    /// `Result<Receipt, ApiError>`. Opaque bytes:
-    /// this crate does not depend on `ocs_doc_api`, it only routes the envelope.
+    /// Add a layer to the active document with full initial properties.
+    /// If an optional property in `config` is `None`, standard CAD defaults are applied.
+    /// Returns `None` if the layer already exists or `config.name` is invalid.
     ///
-    /// Added for the DocApi v2 adapter. The default returns `Err` ("not supported");
-    /// the in-process host (`HostSession`) overrides it to call the DocApi executor.
-    fn doc_api_dispatch(&mut self, tab_id: u64, bytes: &[u8]) -> Result<Vec<u8>, String> {
-        let _ = (tab_id, bytes);
-        Err("DocApi v2 not supported by this host".to_string())
+    /// To modify properties of an already existing layer, use [`modify_layer`](Self::modify_layer).
+    fn add_layer(&mut self, config: LayerConfig) -> Option<Handle> {
+        let _ = config;
+        None
     }
+
+    /// Modify specified properties of an existing layer in the active document.
+    /// Properties that are `None` in `config` are left untouched as-is.
+    /// Returns `false` if the layer does not exist or `config.name` is invalid.
+    ///
+    /// To create a new layer, use [`add_layer`](Self::add_layer).
+    fn modify_layer(&mut self, config: LayerConfig) -> bool {
+        let _ = config;
+        false
+    }
+
+    /// Run a command on the active document tab's command line (AutoLISP / script style).
+    ///
+    /// The string is passed to the host command driver as if entered into the command line,
+    /// supporting command names, space/newline-delimited arguments, AutoCAD-compatible
+    /// aliases, system variable setters (e.g. `SETVAR PDMODE 3`), and display commands
+    /// (e.g. `VSCURRENT`, `GRID`, `SNAP`).
+    ///
+    /// Headless async tasks spawned by commands are automatically pumped through the host
+    /// application lifecycle.
+    ///
+    /// Returns `true` if the command was recognized and initiated successfully, `false` otherwise.
+    fn execute_command(&mut self, cmd: &str) -> bool {
+        let _ = cmd;
+        false
+    }
+}
+
+/// Configuration properties for creating or modifying a layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LayerConfig {
+    pub name: String,
+    pub color: Option<acadrust::types::Color>,
+    pub linetype: Option<String>,
+    pub lineweight: Option<acadrust::types::LineWeight>,
+    pub off: Option<bool>,
+    pub frozen: Option<bool>,
+    pub locked: Option<bool>,
+    pub plottable: Option<bool>,
+    pub transparency: Option<acadrust::types::Transparency>,
+    pub description: Option<String>,
 }
 
 /// Simplified, read-only entity kind exposed by [`DocumentReader`].
@@ -746,10 +785,13 @@ mod repl {
             error: Option<String>,
             error_type: Option<String>,
             traceback: Option<String>,
-            line_number: Option<u32>,
-            column_number: Option<u32>,
+            position: Option<(u32, u32)>,
             duration_ms: f64,
         ) -> Self {
+            let (line_number, column_number) = match position {
+                Some((l, c)) => (Some(l), Some(c)),
+                None => (None, None),
+            };
             Self {
                 success,
                 output,

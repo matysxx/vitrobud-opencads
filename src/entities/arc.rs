@@ -3,8 +3,8 @@ use crate::t;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    center_grip, edit_angle_prop as edit_angle, edit_prop as edit, parse_f64, ro_prop as ro,
-    square_grip,
+    center_grip, edit_angle_prop as edit_angle, edit_prop as edit, format_angle, format_area,
+    format_length, parse_f64, ro_prop as ro, square_grip,
 };
 use crate::entities::traits::RenderConvertible;
 use crate::scene::convert::acad_to_render::{extrusion_wall_tris, RenderEntity, RenderObject};
@@ -197,24 +197,24 @@ fn properties(arc: &Arc) -> Vec<PropSection> {
     vec![PropSection {
         title: t!("Geometry").into_owned(),
         props: vec![
-            ro(t!("Start X").as_ref(), "start_x", format!("{sx:.4}")),
-            ro(t!("Start Y").as_ref(), "start_y", format!("{sy:.4}")),
-            ro(t!("Start Z").as_ref(), "start_z", format!("{sz:.4}")),
+            ro(t!("Start X").as_ref(), "start_x", format_length(sx)),
+            ro(t!("Start Y").as_ref(), "start_y", format_length(sy)),
+            ro(t!("Start Z").as_ref(), "start_z", format_length(sz)),
             edit(t!("Center X").as_ref(), "center_x", cwx),
             edit(t!("Center Y").as_ref(), "center_y", cwy),
             edit(t!("Center Z").as_ref(), "center_z", cwz),
-            ro(t!("End X").as_ref(), "end_x", format!("{ex:.4}")),
-            ro(t!("End Y").as_ref(), "end_y", format!("{ey:.4}")),
-            ro(t!("End Z").as_ref(), "end_z", format!("{ez:.4}")),
+            ro(t!("End X").as_ref(), "end_x", format_length(ex)),
+            ro(t!("End Y").as_ref(), "end_y", format_length(ey)),
+            ro(t!("End Z").as_ref(), "end_z", format_length(ez)),
             edit(t!("Radius").as_ref(), "radius", arc.radius),
             edit_angle(t!("Start angle").as_ref(), "start_angle", sa.to_degrees()),
             edit_angle(t!("End angle").as_ref(), "end_angle", ea.to_degrees()),
-            ro(t!("Total angle").as_ref(), "total_angle", format!("{total_angle:.2}")),
-            ro(t!("Arc length").as_ref(), "arc_length", format!("{arc_length:.4}")),
-            ro(t!("Area").as_ref(), "area", format!("{area:.4}")),
-            ro(t!("Normal X").as_ref(), "normal_x", format!("{:.4}", arc.normal.x)),
-            ro(t!("Normal Y").as_ref(), "normal_y", format!("{:.4}", arc.normal.y)),
-            ro(t!("Normal Z").as_ref(), "normal_z", format!("{:.4}", arc.normal.z)),
+            ro(t!("Total angle").as_ref(), "total_angle", format_angle(total_angle.to_radians())),
+            ro(t!("Arc length").as_ref(), "arc_length", format_length(arc_length)),
+            ro(t!("Area").as_ref(), "area", format_area(area)),
+            edit(t!("Normal X").as_ref(), "normal_x", arc.normal.x),
+            edit(t!("Normal Y").as_ref(), "normal_y", arc.normal.y),
+            edit(t!("Normal Z").as_ref(), "normal_z", arc.normal.z),
         ],
     }]
 }
@@ -244,6 +244,24 @@ fn apply_geom_prop(arc: &mut Arc, field: &str, value: &str) {
         "radius" if v > 0.0 => arc.radius = v,
         "start_angle" => arc.start_angle = v.to_radians(),
         "end_angle" => arc.end_angle = v.to_radians(),
+        "normal_x" | "normal_y" | "normal_z" => {
+            let center = arc.center_wcs();
+            let mut normal = cadkernel::space::Vec3::new(arc.normal.x, arc.normal.y, arc.normal.z);
+            match field {
+                "normal_x" => normal.x = v,
+                "normal_y" => normal.y = v,
+                "normal_z" => normal.z = v,
+                _ => {}
+            }
+            if let Some(normal) = normal.normalize() {
+                arc.normal = acadrust::types::Vector3::new(normal.x, normal.y, normal.z);
+                let (x, y, z) = crate::scene::view::transform::wcs_point_to_ocs(
+                    (center.x, center.y, center.z),
+                    (normal.x, normal.y, normal.z),
+                );
+                arc.center = acadrust::types::Vector3::new(x, y, z);
+            }
+        }
         _ => {}
     }
 }
@@ -364,19 +382,44 @@ impl crate::entities::traits::Grippable for Arc {
         action: crate::scene::model::object::GripMenuAction,
         point: glam::DVec3,
     ) -> Option<f64> {
+        use cadkernel::geom2d::{Circle as KernelCircle, Curve as KernelCurve, Vec2};
         use crate::scene::model::object::GripMenuAction as A;
-        if !matches!(action, A::Lengthen) || self.radius <= 1.0e-9 {
+        if self.radius <= 1.0e-9 {
             return None;
         }
-        let (x, y, _) = crate::scene::view::transform::wcs_point_to_ocs(
-            (point.x, point.y, point.z),
-            (self.normal.x, self.normal.y, self.normal.z),
-        );
-        let cursor_angle = (y - self.center.y).atan2(x - self.center.x);
-        let current_sweep = (self.end_angle - self.start_angle).rem_euclid(TAU);
+        let curve = crate::entities::curve::arc_curve(self);
+        let point = curve.plane.project(point.to_array())?;
+        let KernelCurve::Arc(arc) = &curve.curve else {
+            unreachable!("arc entity must produce an arc curve")
+        };
+        if matches!(action, A::Radius) && grip_id == 3 {
+            let radius = Vec2::from(point).distance(Vec2::from(arc.centre));
+            return (radius > 1.0e-9).then_some(radius);
+        }
+        if matches!(action, A::ArcLength) && grip_id == 3 {
+            let middle = Vec2::from(curve.curve.point_at(0.5));
+            let tangent = Vec2::from(curve.curve.tangent_at(0.5)).normalize()?;
+            let length = curve.length() + (Vec2::from(point) - middle).dot(tangent);
+            let circumference = KernelCircle {
+                centre: arc.centre,
+                radius: arc.radius,
+            }
+            .length();
+            return (length > 1.0e-9 && length < circumference - 1.0e-9).then_some(length);
+        }
+        if !matches!(action, A::Lengthen) {
+            return None;
+        }
+        let cursor_angle = KernelCurve::Circle(KernelCircle {
+            centre: arc.centre,
+            radius: arc.radius,
+        })
+        .parameter_at(point)
+            * TAU;
+        let current_sweep = arc.sweep();
         let desired_sweep = match grip_id {
-            1 => (self.end_angle - cursor_angle).rem_euclid(TAU),
-            2 => (cursor_angle - self.start_angle).rem_euclid(TAU),
+            1 => (arc.end_angle - cursor_angle).rem_euclid(TAU),
+            2 => (cursor_angle - arc.start_angle).rem_euclid(TAU),
             _ => return None,
         };
         if desired_sweep <= 1.0e-9 {
@@ -456,5 +499,50 @@ impl crate::entities::traits::MassPropsCalc for acadrust::entities::Arc {
             cx: centroid[0],
             cy: centroid[1],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entities::traits::Grippable;
+    use crate::scene::model::object::GripMenuAction;
+
+    #[test]
+    fn midpoint_grip_drives_radius_and_arc_length_in_entity_plane() {
+        let mut arc = Arc::default();
+        arc.center = acadrust::types::Vector3::new(1.0, 2.0, 3.0);
+        arc.normal = acadrust::types::Vector3::new(0.0, 1.0, 0.0);
+        arc.radius = 2.0;
+        arc.start_angle = 0.0;
+        arc.end_angle = std::f64::consts::FRAC_PI_2;
+
+        let curve = crate::entities::curve::arc_curve(&arc);
+        let middle_angle = std::f64::consts::FRAC_PI_4;
+        let radius_point = curve.plane.point_at([
+            arc.center.x + 5.0 * middle_angle.cos(),
+            arc.center.y + 5.0 * middle_angle.sin(),
+        ]);
+        let radius = arc
+            .grip_menu_point_value(3, GripMenuAction::Radius, radius_point.into())
+            .expect("radius value");
+        assert!((radius - 5.0).abs() < 1.0e-9);
+
+        let middle = glam::DVec3::from_array(curve.point_at(0.5));
+        let tangent = glam::DVec3::from_array(curve.tangent_at(0.5)).normalize();
+        let wanted_length = curve.length() + 1.25;
+        let arc_length = arc
+            .grip_menu_point_value(
+                3,
+                GripMenuAction::ArcLength,
+                middle + tangent * 1.25,
+            )
+            .expect("arc length value");
+        assert!((arc_length - wanted_length).abs() < 1.0e-9);
+
+        arc.apply_grip_menu_value(3, GripMenuAction::ArcLength, arc_length);
+        assert!(
+            (crate::entities::curve::arc_curve(&arc).length() - wanted_length).abs() < 1.0e-9
+        );
     }
 }

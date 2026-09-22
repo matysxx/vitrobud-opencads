@@ -195,7 +195,6 @@ impl Scene {
                 continue;
             };
             if !vp.status.is_on
-                || vp.common.invisible
                 || self.entity_temporarily_hidden(handle)
             {
                 continue;
@@ -819,7 +818,7 @@ impl Scene {
     fn model_wires_for_viewport(
         &self,
         vp_handle: Handle,
-        screen_height_px: f32,
+        _screen_height_px: f32,
     ) -> Arc<Vec<WireModel>> {
         use rustc_hash::FxHashSet as HSet;
 
@@ -829,17 +828,12 @@ impl Scene {
         // wheel tick whenever the drawing contained one annotative object.
         // Explicit viewport annotation-scale changes still rebuild the resident
         // set; PSLTSCALE is a viewport GPU uniform.
-        let (frozen, wpp) = match self.document.get_entity(vp_handle) {
+        let frozen = match self.document.get_entity(vp_handle) {
             Some(EntityType::Viewport(vp)) => {
                 let f: HSet<Handle> = vp.frozen_layers.iter().cloned().collect();
-                let w = if screen_height_px > 0.0 && vp.view_height > 0.0 {
-                    Some((vp.view_height as f32) / screen_height_px)
-                } else {
-                    None
-                };
-                (f, w)
+                f
             }
-            _ => (HSet::default(), None),
+            _ => HSet::default(),
         };
 
         let scale_handle = self.viewport_scale_handle(vp_handle);
@@ -849,7 +843,6 @@ impl Scene {
             scale_handle,
             Some(&frozen),
             Some(vp_handle),
-            wpp,
         )
     }
 

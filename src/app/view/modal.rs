@@ -13,6 +13,7 @@ impl OpenCADStudio {
             Some(K::About) => crate::tr!("modal", "about"),
             Some(K::Shortcuts) => crate::tr!("modal", "keyboard-shortcuts"),
             Some(K::Aliases) => crate::tr!("modal", "command-aliases"),
+            Some(K::NamedParameters) => crate::t!("Named Parameters").into_owned(),
             Some(K::Options) => crate::tr!("action", "options"),
             Some(K::FindReplace) => crate::tr!("modal", "find-replace"),
             Some(K::PluginManager) => crate::tr!("modal", "plugin-manager"),
@@ -22,14 +23,20 @@ impl OpenCADStudio {
             Some(K::LayerStateManager) => crate::tr!("modal", "layer-state-manager"),
             Some(K::LayerTranslator) => crate::t!("Layer Translator").into_owned(),
             Some(K::DrawingUnits) => crate::t!("Drawing Units").into_owned(),
+            Some(K::BlockDefinition) => crate::t!("Block Definition").into_owned(),
             Some(K::GeometricTolerance) => crate::t!("Geometric Tolerance").into_owned(),
             Some(K::DraftingSettings) => crate::t!("Drafting Settings").into_owned(),
+            Some(K::AutoConstrainSettings) => crate::t!("Constraint Settings").into_owned(),
             Some(K::LayerStateEditor) => crate::tr!("modal", "edit-layer-state"),
             Some(K::Plot) => crate::tr!("modal", "plot"),
             Some(K::PrintAll) => t!("Print All").into_owned(),
             Some(K::LayoutManager) => crate::tr!("modal", "layout-manager"),
             Some(K::ScaleManager) => crate::tr!("modal", "scale-manager"),
             Some(K::AnnoObjectScale) => crate::tr!("modal", "annotation-object-scale"),
+            Some(K::Hyperlink) => crate::t!("Hyperlink").into_owned(),
+            Some(K::InsertTable) => crate::t!("Insert Table").into_owned(),
+            Some(K::DataLinkManager) => crate::t!("Data Link Manager").into_owned(),
+            Some(K::DataExtraction) => crate::t!("Data Extraction Wizard").into_owned(),
             Some(K::Plotstyle) => crate::tr!("modal", "plot-style-editor"),
             Some(K::TextStyle) => crate::tr!("modal", "text-style-manager"),
             Some(K::MlStyle) => crate::tr!("modal", "multiline-style-manager"),
@@ -48,7 +55,10 @@ impl OpenCADStudio {
             Some(K::AttributeEditor) => crate::tr!("modal", "attribute-editor"),
             Some(K::SaveDialog) => crate::tr!("modal", "save-drawing-as"),
             Some(K::Recovery) => crate::tr!("modal", "recovery-report"),
+            Some(K::MissingFonts) => crate::t!("Missing fonts").into_owned(),
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
+            Some(K::GpuWarning) => crate::tr!("gpu", "title"),
+            Some(K::XrefHelp) => crate::t!("Reference Manager Help").into_owned(),
             None => String::new(),
         }
     }
@@ -58,8 +68,8 @@ impl OpenCADStudio {
     ) -> Element<'s, Message> {
         sized_flow(
             extra,
-            760,
-            540,
+            940,
+            690,
             |flow| {
                 crate::ui::window::plot::view_window(
                     &self.plot_dialog,
@@ -77,6 +87,9 @@ impl OpenCADStudio {
         Some(match self.active_modal? {
             super::super::ModalKind::About => {
                 automatic_flow(ex, crate::ui::window::about::view_window)
+            }
+            super::super::ModalKind::XrefHelp => {
+                automatic_flow(ex, crate::ui::window::xref_help::view_window)
             }
             super::super::ModalKind::Shortcuts => {
                 // Keys claimed by two rows — the cells turn red and a
@@ -161,6 +174,65 @@ impl OpenCADStudio {
                 )
             }
             super::super::ModalKind::Aliases => {
+                // Aliases claimed by two rows — the cells turn red and a
+                // persistent warning names the command already using each
+                // alias; the last row wins in the alias map on Apply.
+                let mut alias_rows: std::collections::BTreeMap<String, Vec<&(String, String)>> =
+                    std::collections::BTreeMap::new();
+                for row in &self.alias_editor_rows {
+                    let alias = row.0.trim().to_uppercase();
+                    if !alias.is_empty() {
+                        alias_rows.entry(alias).or_default().push(row);
+                    }
+                }
+                let duplicate_aliases: Vec<String> = alias_rows
+                    .iter()
+                    .filter(|(_, rows)| rows.len() > 1)
+                    .map(|(alias, _)| alias.clone())
+                    .collect();
+                let duplicate_conflicts: Vec<(String, String)> = alias_rows
+                    .iter()
+                    .filter(|(_, rows)| rows.len() > 1)
+                    .map(|(alias, rows)| {
+                        let command = rows
+                            .iter()
+                            .find(|(_, command)| !command.is_empty())
+                            .map(|(_, command)| command.clone())
+                            .unwrap_or_default();
+                        (alias.clone(), command)
+                    })
+                    .collect();
+                let duplicate_set: rustc_hash::FxHashSet<String> =
+                    duplicate_aliases.into_iter().collect();
+                // Commands the dispatcher can't run: not a registered
+                // command, plugin command, or input action.
+                let valid: rustc_hash::FxHashSet<String> =
+                    crate::command::all_registered_command_names()
+                        .into_iter()
+                        .map(str::to_uppercase)
+                        .chain(
+                            self.command_line
+                                .dynamic_commands
+                                .iter()
+                                .map(|cmd| cmd.to_uppercase()),
+                        )
+                        .chain(
+                            crate::app::shortcuts::INPUT_ACTIONS
+                                .iter()
+                                .map(|action| action.to_string()),
+                        )
+                        .collect();
+                let unknown_commands: Vec<String> = self
+                    .alias_editor_rows
+                    .iter()
+                    .filter_map(|(_, command)| {
+                        let command = command.trim();
+                        (!command.is_empty() && !valid.contains(command))
+                            .then(|| command.to_string())
+                    })
+                    .collect();
+                let unknown_set: rustc_hash::FxHashSet<String> =
+                    unknown_commands.into_iter().collect();
                 sized_flow(
                     ex,
                     480,
@@ -168,25 +240,122 @@ impl OpenCADStudio {
                     |flow| {
                         crate::ui::window::alias_editor::view_window(
                             &self.alias_editor_rows,
+                            self.alias_pending_add,
+                            self.alias_reset_confirm,
+                            &duplicate_set,
+                            &duplicate_conflicts,
+                            &unknown_set,
+                            self.alias_close_confirm,
                             flow,
                         )
                     },
                 )
             }
-            super::super::ModalKind::Options => sized_flow(
+            super::super::ModalKind::NamedParameters => {
+                let scene = &self.tabs[self.active_tab].scene;
+                sized_flow(
+                    ex,
+                    820,
+                    520,
+                    |flow| {
+                        crate::ui::window::named_parameters::view_window(
+                            &self.named_parameter_editor_rows,
+                            scene,
+                            flow,
+                        )
+                    },
+                )
+            }
+            super::super::ModalKind::Options => {
+                let dirty = self.options_dirty();
+                let close_confirm = self.options_close_confirm;
+                sized_flow(
                 ex,
-                540,
-                560,
+                880,
+                620,
                 |flow| {
                     crate::ui::window::options::view_window(
                         &self.default_save_format,
                         self.file_assoc_enabled,
+                        self.show_constraint_values,
                         &self.ui_theme,
                         &self.theme_color_inputs,
                         self.language,
                         self.options_tab,
                         self.cursor_size,
-                        self.pick_box,
+                        crate::ui::window::options::SelectionPrefs {
+                            pick_box: self.pick_box,
+                            pick_add: self.pick_add,
+                            pick_drag_rect: self.pick_drag_rect,
+                            grip_object_limit: self.grip_object_limit,
+                            selection_cycling: self.selection_cycling,
+                        },
+                        crate::ui::window::options::AppPrefs {
+                            savetime_min: self.savetime_min,
+                            backup_on_save: self.backup_on_save,
+                            page_setup_on_new_layout: self.plot_dialog.page_setup_on_new_layout,
+                            textfill: crate::scene::text::sdf_atlas::textfill(),
+                            cliprompt_lines: self.cliprompt_lines,
+                            commandline_fade_ms: self.commandline_fade_ms,
+                            zoom_wheel_reversed: self.zoom_wheel_reversed,
+                            zoom_factor: self.zoom_factor,
+                            texteditmode: self.texteditmode,
+                            dimension_continue_mode: self.dimension_continue_mode,
+                            qdim_snap_priority: self.quick_dimension_snap_priority,
+                            annotation_auto_scale: self.annotation_auto_scale,
+                            polar_increment_deg: self.polar_increment_deg,
+                            show_viewcube: self.show_viewcube,
+                            show_ucs_icon: self.show_ucs_icon,
+                            ucs_icon_at_origin: self.ucs_icon_at_origin,
+                            right_click_mode: self.right_click_mode,
+                            right_click_hold_ms: self.right_click_hold_ms,
+                        },
+                        crate::ui::window::options::spacemouse::view(
+                            self.spacemouse_preferences, self.spacemouse.status(),
+                            self.spacemouse_paused, self.spacemouse_details,
+                        ),
+                        &self.snap_angle_input,
+                        {
+                            let header = self
+                                .tabs
+                                .get(self.active_tab)
+                                .map(|tab| &tab.scene.document.header);
+                            crate::ui::window::options::DrawingPrefs {
+                                available: header.is_some(),
+                                isolines: header.map_or(4, |h| h.isolines),
+                                display_silhouette: header
+                                    .is_some_and(|h| h.display_silhouette),
+                                surface_u: header.map_or(6, |h| h.surface_u_density),
+                                surface_v: header.map_or(6, |h| h.surface_v_density),
+                                surface_type: header.map_or(6, |h| h.surface_type),
+                                record_solid_history: header
+                                    .is_some_and(|h| h.record_solid_history),
+                                show_solid_history: header
+                                    .map_or(1, |h| h.show_solid_history),
+                            }
+                        },
+                        {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                crate::ui::window::options::Folders {
+                                    config: crate::config::config_dir()
+                                        .map(|p| p.display().to_string()),
+                                    plot_styles: crate::io::plot_style::plot_styles_dir()
+                                        .ok()
+                                        .map(|p| p.display().to_string()),
+                                    plugins: crate::plugin::external::plugins_dir()
+                                        .map(|p| p.display().to_string()),
+                                    autosave: crate::config::config_dir()
+                                        .map(|_| std::env::temp_dir().display().to_string()),
+                                }
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                crate::ui::window::options::Folders::default()
+                            }
+                        },
+                        self.double_click_block_refedit,
+                        self.double_click_block_attedit,
                         self.cursor_type,
                         self.crosshair_color,
                         &self.crosshair_color_input,
@@ -195,25 +364,46 @@ impl OpenCADStudio {
                         &self.model_bg_input,
                         &self.paper_bg_input,
                         &self.desk_bg_input,
+                        self.bg_picker,
+                        dirty,
+                        close_confirm,
                         flow,
                     )
                 },
-            ),
-            super::super::ModalKind::DraftingSettings => sized_flow(
+                )
+            }
+            super::super::ModalKind::DraftingSettings => {
+                let state = self.drafting_settings_state.as_ref();
+                let dirty = self.drafting_settings_dirty();
+                let confirm = self.drafting_settings_close_confirm;
+                sized_flow(
+                    ex,
+                    780,
+                    500,
+                    |flow| {
+                        if let Some(state) = state {
+                            crate::ui::window::drafting_settings::view_window(
+                                state,
+                                dirty,
+                                confirm,
+                                flow,
+                            )
+                        } else {
+                            iced::widget::Space::new().into()
+                        }
+                    },
+                )
+            }
+            super::super::ModalKind::AutoConstrainSettings => sized_flow(
                 ex,
-                520,
-                560,
+                620,
+                610,
                 |flow| {
-                    crate::ui::window::drafting_settings::view_window(
-                        &self.snapper,
-                        self.show_grid,
-                        self.snapper.grid_snap(),
-                        self.ortho_mode,
-                        self.polar_mode,
-                        self.snapper.otrack_enabled,
-                        self.isometric_drafting,
-                        self.iso_plane,
-                        self.snap_angle_deg,
+                    crate::ui::window::auto_constrain_settings::view_window(
+                        &self.auto_constrain_settings,
+                        self.auto_constrain_selected_row,
+                        &self.auto_constrain_distance_input,
+                        &self.auto_constrain_angle_input,
                         flow,
                     )
                 },
@@ -308,6 +498,12 @@ impl OpenCADStudio {
                 let state = self.drawing_units.as_ref()?;
                 sized_flow(ex, 560, 420, |flow| {
                     crate::ui::window::drawing_units::view_window(state, flow)
+                })
+            }
+            super::super::ModalKind::BlockDefinition => {
+                let state = self.block_definition.as_ref()?;
+                sized_flow(ex, 580, 390, |flow| {
+                    crate::ui::window::block_definition::view_window(state, flow)
                 })
             }
             super::super::ModalKind::GeometricTolerance => {
@@ -497,6 +693,24 @@ impl OpenCADStudio {
                     },
                 )
             }
+            super::super::ModalKind::InsertTable => sized_flow(
+                ex,
+                620,
+                650,
+                |flow| crate::ui::window::annotation_data::table_insert_view(&self.table_insert, flow),
+            ),
+            super::super::ModalKind::DataLinkManager => sized_flow(
+                ex,
+                760,
+                560,
+                |flow| crate::ui::window::annotation_data::data_link_view(&self.data_link_manager, flow),
+            ),
+            super::super::ModalKind::DataExtraction => sized_flow(
+                ex,
+                780,
+                570,
+                |flow| crate::ui::window::annotation_data::data_extraction_view(&self.data_extraction, flow),
+            ),
             super::super::ModalKind::Plotstyle => sized_flow(
                 ex,
                 780,
@@ -1304,6 +1518,9 @@ impl OpenCADStudio {
             super::super::ModalKind::DonationPrompt => {
                 sized_flow(ex, 540, 360, donation_dialog_window)
             }
+            super::super::ModalKind::GpuWarning => {
+                sized_flow(ex, 520, 400, |flow| gpu_warning_window(&self.gpu_status, flow))
+            }
             super::super::ModalKind::AecDropWarning => {
                 let src_label = self
                     .tabs
@@ -1400,6 +1617,14 @@ impl OpenCADStudio {
                     )
                 },
             ),
+            super::super::ModalKind::Hyperlink => sized_flow(ex, 560, 260, |flow| {
+                hyperlink_dialog_window(
+                    &self.hyperlink_editor_url,
+                    &self.hyperlink_editor_description,
+                    self.hyperlink_editor_mixed,
+                    flow,
+                )
+            }),
             super::super::ModalKind::AttributeEditor => {
                 let doc = &self.tabs[self.active_tab].scene.document;
                 let layers: Vec<String> = doc.layers.iter().map(|l| l.name.clone()).collect();
@@ -1439,6 +1664,17 @@ impl OpenCADStudio {
                     save_as_dialog_window(
                         &self.save_dialog_filename,
                         &self.save_dialog_format,
+                        flow,
+                    )
+                })
+            }
+            super::super::ModalKind::MissingFonts => {
+                let fonts = self.missing_fonts.as_ref()?;
+                let font_source = &self.font_source_input;
+                automatic_flow(ex, |flow| {
+                    crate::ui::window::missing_fonts::view_window(
+                        fonts,
+                        &font_source,
                         flow,
                     )
                 })
@@ -1519,6 +1755,80 @@ fn dialog_muted_text_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
         color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
     }
+}
+
+fn hyperlink_dialog_window<'a>(
+    url: &'a str,
+    description: &'a str,
+    mixed: bool,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'a, Message> {
+    let label = |value: Cow<'static, str>| {
+        text(value)
+            .size(11)
+            .style(dialog_muted_text_style)
+            .width(90)
+    };
+    let mut items: Vec<Element<'a, Message>> = Vec::new();
+    if mixed {
+        items.push(
+            text(t!("Selected objects have different hyperlink values."))
+                .size(11)
+                .style(dialog_muted_text_style)
+                .into(),
+        );
+        items.push(Space::new().height(8).into());
+    }
+    items.push(
+        row![
+            label(t!("URL:")),
+            iced::widget::text_input("https://", url)
+                .on_input(Message::HyperlinkUrlChanged)
+                .size(13)
+                .padding([5, 8])
+                .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .width(sizing.width)
+        .into(),
+    );
+    items.push(Space::new().height(8).into());
+    items.push(
+        row![
+            label(t!("Description:")),
+            iced::widget::text_input("", description)
+                .on_input(Message::HyperlinkDescriptionChanged)
+                .size(13)
+                .padding([5, 8])
+                .width(Fill),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .width(sizing.width)
+        .into(),
+    );
+    items.push(Space::new().height(Fill).into());
+    items.push(
+        row![
+            dialog_button(t!("Remove"), Message::HyperlinkRemove, button::danger),
+            Space::new().width(Fill),
+            dialog_button(t!("Cancel"), Message::HyperlinkCancel, button::secondary),
+            Space::new().width(8),
+            dialog_button(t!("OK"), Message::HyperlinkApply, button::primary),
+        ]
+        .align_y(iced::Alignment::Center)
+        .into(),
+    );
+    container(
+        column(items)
+            .spacing(0)
+            .width(sizing.width)
+            .height(sizing.height),
+    )
+    .style(dialog_body_style)
+    .padding([14, 16])
+    .into()
 }
 
 /// Compact Save-As options dialog: pick the format/version and a default file
@@ -1836,6 +2146,57 @@ fn layer_delete_warning_window(
                 ),
                 iced::widget::Space::new().width(8),
                 dialog_button(t!("Cancel"), Message::CloseModal, button::secondary),
+            ],
+        ]
+        .spacing(0),
+    )
+    .style(dialog_body_style)
+    .center_x(sizing.width)
+    .center_y(sizing.height)
+    .padding([24, 28])
+    .into()
+}
+
+/// What the graphics verdict means and what usually fixes it. Two
+/// situations share the dialog — a software rasterizer (slow, but drawing)
+/// and no renderer at all (a blank viewport) — and the remedy hint is per
+/// platform. "OK" closes it for this session; the status-bar pill brings it
+/// back. "Don't show again" silences this verdict only, so a different
+/// failure on the same machine still prompts.
+fn gpu_warning_window(
+    status: &crate::scene::pipeline::GpuStatus,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
+    use crate::scene::pipeline::GpuStatus;
+    let (headline, consequences) = match status {
+        GpuStatus::Software(adapter) => (
+            crate::tr!("gpu", "software-headline", adapter = adapter.name.clone()),
+            Some(crate::tr!("gpu", "software-consequences")),
+        ),
+        _ => (crate::tr!("gpu", "no-renderer-headline"), None),
+    };
+    let mut body = column![text(headline).size(13)].spacing(8);
+    if let Some(consequences) = consequences {
+        body = body.push(text(consequences).size(13));
+    }
+    body = body.push(
+        text(crate::app::startup::gpu_platform_hint())
+            .size(13)
+            .style(dialog_muted_text_style),
+    );
+
+    container(
+        column![
+            body,
+            Space::new().height(20),
+            row![
+                dialog_button(t!("OK"), Message::CloseModal, button::primary),
+                Space::new().width(8),
+                dialog_button(
+                    crate::tr!("gpu", "silence"),
+                    Message::GpuWarningSilence,
+                    button::secondary
+                ),
             ],
         ]
         .spacing(0),

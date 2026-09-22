@@ -113,7 +113,7 @@ pub fn create_pipelines(
 ) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("ellipse.wgsl"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/ellipse.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(draw_order_shader!("ellipse.wgsl").into()),
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("ellipse.pipeline.layout"),
@@ -199,19 +199,12 @@ pub fn create_pipelines(
     (ellipse_pipeline, ellipse_xray_pipeline)
 }
 
-/// Helper to extract an analytical ellipse instance from a `WireModel`.
-pub fn extract_ellipse_instance(
+/// Helper to extract an analytical ellipse instance from a single `TangentGeom`.
+pub fn extract_ellipse_instance_from_geom(
+    geom: &crate::scene::model::wire_model::TangentGeom,
     wire: &crate::scene::WireModel,
     draw_depth: f32,
 ) -> Option<EllipseInstance> {
-    if wire.tangent_geoms.len() != 1
-        || !wire.fill_tris.is_empty()
-        || !wire.pick_tris.is_empty()
-        || !wire.text_verts.is_empty()
-        || wire.render_instance.is_some()
-    {
-        return None;
-    }
     let crate::scene::model::wire_model::TangentGeom::PlanarEllipse {
         center,
         major_axis,
@@ -219,13 +212,13 @@ pub fn extract_ellipse_instance(
         minor_axis_ratio,
         start_param,
         end_param,
-    } = wire.tangent_geoms[0] else {
+    } = *geom else {
         return None;
     };
 
     let major_len_sq = major_axis[0] * major_axis[0] + major_axis[1] * major_axis[1] + major_axis[2] * major_axis[2];
     let norm_len_sq = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
-    if major_len_sq <= 1e-12 || !major_len_sq.is_finite()
+    if major_len_sq <= 1e-12 || !major_len_sq.is_finite() || major_len_sq > 1e12
         || norm_len_sq <= 1e-12 || !norm_len_sq.is_finite()
         || minor_axis_ratio <= 1e-6 || !minor_axis_ratio.is_finite()
         || !start_param.is_finite() || !end_param.is_finite()
@@ -254,6 +247,43 @@ pub fn extract_ellipse_instance(
     })
 }
 
+/// Helper to extract all analytical ellipse instances from a `WireModel`.
+pub fn extract_ellipse_instances(
+    wire: &crate::scene::WireModel,
+    draw_depth: f32,
+) -> Option<Vec<EllipseInstance>> {
+    if wire.tangent_geoms.is_empty()
+        || !wire.fill_tris.is_empty()
+        || wire.fill_is_3d
+        || !wire.text_verts.is_empty()
+        || wire.render_instance.is_some()
+    {
+        return None;
+    }
+
+    let mut instances = Vec::with_capacity(wire.tangent_geoms.len());
+    for geom in &wire.tangent_geoms {
+        if let Some(inst) = extract_ellipse_instance_from_geom(geom, wire, draw_depth) {
+            instances.push(inst);
+        } else {
+            return None;
+        }
+    }
+    Some(instances)
+}
+
+/// Helper to extract a single analytical ellipse instance from a `WireModel`.
+pub fn extract_ellipse_instance(
+    wire: &crate::scene::WireModel,
+    draw_depth: f32,
+) -> Option<EllipseInstance> {
+    if wire.tangent_geoms.len() == 1 {
+        extract_ellipse_instances(wire, draw_depth).and_then(|mut v| v.pop())
+    } else {
+        None
+    }
+}
+
 fn split_ds_xyz(x: f64, y: f64, z: f64) -> ([f32; 3], [f32; 3]) {
     let hx = x as f32;
     let lx = (x - hx as f64) as f32;
@@ -275,7 +305,7 @@ mod tests {
 
     #[test]
     fn ellipse_shader_validates_with_naga() {
-        let source = include_str!("../../shaders/ellipse.wgsl");
+        let source = draw_order_shader!("ellipse.wgsl");
         let module = naga::front::wgsl::parse_str(source).expect("ellipse.wgsl parses cleanly");
         let mut validator = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

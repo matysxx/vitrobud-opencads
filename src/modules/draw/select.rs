@@ -17,6 +17,7 @@ use crate::modules::draw::fence::FencePick;
 use crate::scene::model::wire_model::WireModel;
 
 pub struct SelectObjectsCommand {
+    prompt_cmd: String,
     pending_cmd: String,
     /// Selection accumulated so far (kept in sync with the scene selection by
     /// each `on_selection_complete` call). Applied on Enter when `commit_on_enter`.
@@ -24,6 +25,8 @@ pub struct SelectObjectsCommand {
     /// When true, gathering continues until Enter / right-click commits the set.
     /// When false, the first completed selection action fires immediately.
     commit_on_enter: bool,
+    /// Whether the generic selection methods are shown as command buttons.
+    show_options: bool,
     /// A Fence / WPolygon / CPolygon path being picked point by point. While
     /// one is under way the host must send clicks here as points rather than
     /// treating them as picks, which is what `is_selection_gathering` reports.
@@ -31,17 +34,52 @@ pub struct SelectObjectsCommand {
     /// Whether the polygon being picked takes what it merely touches. Ignored
     /// by a fence, which has no inside to speak of.
     pick_crossing: bool,
+    /// Add the command-specific Settings keyword used by Auto Constrain.
+    auto_constrain_settings: bool,
 }
 
 impl SelectObjectsCommand {
     /// Standard selection set: accumulate picks, apply on Enter / right-click.
     pub fn new(pending_cmd: &str) -> Self {
         Self {
+            prompt_cmd: pending_cmd.to_string(),
             pending_cmd: pending_cmd.to_string(),
             handles: Vec::new(),
             commit_on_enter: true,
+            show_options: true,
             pick: None,
             pick_crossing: true,
+            auto_constrain_settings: false,
+        }
+    }
+
+    /// Plain gather prompt with no generic selection-method buttons. The
+    /// visible command name may differ from the private apply command.
+    pub fn plain(prompt_cmd: &str, pending_cmd: &str) -> Self {
+        Self {
+            prompt_cmd: prompt_cmd.to_string(),
+            pending_cmd: pending_cmd.to_string(),
+            handles: Vec::new(),
+            commit_on_enter: true,
+            show_options: false,
+            pick: None,
+            pick_crossing: true,
+            auto_constrain_settings: false,
+        }
+    }
+
+    /// Standard selection behavior routed to a private apply command while
+    /// retaining the public command name in the visible prompt.
+    pub fn routed(prompt_cmd: &str, pending_cmd: &str) -> Self {
+        Self {
+            prompt_cmd: prompt_cmd.to_string(),
+            pending_cmd: pending_cmd.to_string(),
+            handles: Vec::new(),
+            commit_on_enter: true,
+            show_options: true,
+            pick: None,
+            pick_crossing: true,
+            auto_constrain_settings: false,
         }
     }
 
@@ -49,12 +87,21 @@ impl SelectObjectsCommand {
     /// immediately, with no Enter (used by commands that act on one object).
     pub fn instant(pending_cmd: &str) -> Self {
         Self {
+            prompt_cmd: pending_cmd.to_string(),
             pending_cmd: pending_cmd.to_string(),
             handles: Vec::new(),
             commit_on_enter: false,
+            show_options: false,
             pick: None,
             pick_crossing: true,
+            auto_constrain_settings: false,
         }
+    }
+
+    pub fn auto_constrain(pending_cmd: &str) -> Self {
+        let mut command = Self::new(pending_cmd);
+        command.auto_constrain_settings = true;
+        command
     }
 }
 
@@ -80,14 +127,29 @@ impl CadCommand for SelectObjectsCommand {
             .into_owned();
         }
         if self.commit_on_enter && !self.handles.is_empty() {
+            if self.auto_constrain_settings {
+                return t!(
+                    "%{cmd}  Select objects or [Settings] (%{count} selected, Enter to apply):",
+                    cmd = self.prompt_cmd,
+                    count = self.handles.len()
+                )
+                .into_owned();
+            }
             t!(
                 "%{cmd}  Select objects (%{count} selected, Enter to apply):",
-                cmd = self.pending_cmd,
+                cmd = self.prompt_cmd,
                 count = self.handles.len()
             )
             .into_owned()
         } else {
-            t!("%{cmd}  Select objects:", cmd = self.pending_cmd).into_owned()
+            if self.auto_constrain_settings {
+                return t!(
+                    "%{cmd}  Select objects or [Settings]:",
+                    cmd = self.prompt_cmd
+                )
+                .into_owned();
+            }
+            t!("%{cmd}  Select objects:", cmd = self.prompt_cmd).into_owned()
         }
     }
 
@@ -108,8 +170,11 @@ impl CadCommand for SelectObjectsCommand {
     // they work typed as well — these buttons only surface them, which is what
     // the on-screen keyboard-less case needs.
     fn options(&self) -> Vec<CmdOption> {
-        if self.commit_on_enter {
-            vec![
+        if self.commit_on_enter && self.show_options {
+            if self.auto_constrain_settings {
+                return vec![CmdOption::new(t!("Settings").as_ref(), "S")];
+            }
+            let options = vec![
                 CmdOption::new(t!("Window").as_ref(), "W"),
                 CmdOption::new(t!("Crossing").as_ref(), "C"),
                 CmdOption::new(t!("Fence").as_ref(), "F"),
@@ -120,7 +185,8 @@ impl CadCommand for SelectObjectsCommand {
                 CmdOption::new(t!("Remove").as_ref(), "R"),
                 CmdOption::new(t!("Previous").as_ref(), "P"),
                 CmdOption::new(t!("Last").as_ref(), "L"),
-            ]
+            ];
+            options
         } else {
             Vec::new()
         }
@@ -160,6 +226,9 @@ impl CadCommand for SelectObjectsCommand {
             return None;
         }
         match text.trim().to_uppercase().as_str() {
+            "S" | "SETTINGS" if self.auto_constrain_settings => {
+                Some(CmdResult::OpenAutoConstrainSettings)
+            }
             "F" | "FENCE" => {
                 self.pick = Some(FencePick::fence());
                 Some(CmdResult::NeedPoint)

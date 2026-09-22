@@ -2,7 +2,7 @@
 use super::{Message, OpenCADStudio};
 use crate::command::{InputKind, StepInput};
 use iced::Task;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
@@ -131,6 +131,24 @@ struct Operation {
 fn failure(code: &str, error: impl ToString) -> Value {
     json!({"ok":false,"status":"failed","code":code,"error":error.to_string()})
 }
+/// `{"op":"open","name":"plan.dwg","data_base64":"…"}`: the web build has no
+/// filesystem path to open, so the caller sends the file itself. `name` is
+/// reduced to its file name; it labels the tab and the recent-files entry.
+fn open_bytes_request(req: &Value) -> Result<(String, Vec<u8>), Value> {
+    use base64::Engine as _;
+    let name = string(req, "name")?;
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    if name.is_empty() {
+        return Err(failure("invalid_request", "Missing name"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(req["data_base64"].as_str().unwrap_or_default())
+        .map_err(|e| failure("invalid_request", format!("data_base64: {e}")))?;
+    if bytes.is_empty() {
+        return Err(failure("invalid_request", "data_base64 is empty"));
+    }
+    Ok((name.to_string(), bytes))
+}
 fn string<'a>(req: &'a Value, key: &str) -> Result<&'a str, Value> {
     req[key]
         .as_str()
@@ -221,6 +239,26 @@ fn command_category(name: &str) -> &'static str {
     } else if name.starts_with("DIM") || ["LEADER", "MLEADER", "TOLERANCE"].contains(&name) {
         "annotate"
     } else if [
+        "GEOMCONSTRAINT",
+        "GCCOINCIDENT",
+        "GCCOLLINEAR",
+        "GCPERPENDICULAR",
+        "QCONSTRAINT",
+        "PCONSTRAINT",
+        "GCHORIZONTAL",
+        "VCONSTRAINT",
+        "ECONSTRAINT",
+        "GCEQUAL",
+        "TCONSTRAINT",
+        "GCCONCENTRIC",
+        "NRCONSTRAINT",
+        "LCONSTRAINT",
+        "DELCONSTRAINT",
+    ]
+    .contains(&name)
+    {
+        "parametric"
+    } else if [
         "BOX",
         "CYLINDER",
         "CONE",
@@ -289,11 +327,18 @@ fn active_command_metadata(command: &dyn crate::command::CadCommand) -> Value {
         accepts.push("entity");
     }
     if accepts.is_empty() && !command.needs_tangent_pick() {
-        accepts.push(match command.input_kind() {
+        let kind = match command.input_kind() {
             InputKind::Point => "point",
             InputKind::SingleToken => "token",
             InputKind::FreeText => "text",
-        });
+        };
+        // A point step that also takes keyword letters (MOVE/COPY's base
+        // point with [Displacement]) reports SingleToken so the letters reach
+        // the command line, but it still takes a point.
+        if command.point_step_accepts_keywords() && kind != "point" {
+            accepts.push("point");
+        }
+        accepts.push(kind);
     }
     if options.iter().any(|option| !option.keyword.is_empty()) && !accepts.contains(&"token") {
         accepts.push("token");
@@ -361,7 +406,7 @@ impl OpenCADStudio {
             "mtext_editor":self.mtext_editor.as_ref().map(|e|json!({"text":e.content.text(),"height":e.height,"style":e.style})),
             "text_editor":self.text_inline.is_some(),"event_cursor":self.control.serial,
             "operation":self.control.pending.as_ref().map(|p| &p.id),
-            "capabilities":["commands","command_manifest","step_input","batch","compact_results","entity_pick","structure_pick","selection","properties","layers","history","documents","events","capture","viewport_capture","measure","spatial_query"]
+            "capabilities":["commands","command_manifest","step_input","batch","compact_results","entity_pick","structure_pick","selection","properties","records","record_schemas","record_filters","atomic_record_updates","layers","history","documents","events","capture","viewport_capture","measure","spatial_query"]
         })
     }
 
@@ -377,6 +422,9 @@ impl OpenCADStudio {
                 | "properties"
                 | "measure"
                 | "query"
+                | "records"
+                | "record_schema"
+                | "capabilities"
                 | "entities"
                 | "layers"
                 | "header"
@@ -449,7 +497,9 @@ impl OpenCADStudio {
                     return (
                         failure(
                             "unknown_command",
-                            format!("Unknown command {requested}; call commands without name to list commands"),
+                            format!(
+                                "Unknown command {requested}; call commands without name to list commands"
+                            ),
                         ),
                         Task::none(),
                     );
@@ -511,7 +561,7 @@ impl OpenCADStudio {
                             "Supply a unique request_id (maximum 128 bytes)",
                         ),
                         Task::none(),
-                    )
+                    );
                 }
             };
             if let Some((_, old, result)) = self.control.completed.iter().find(|(i, _, _)| i == &id)
@@ -679,6 +729,24 @@ impl OpenCADStudio {
         let i = self.active_tab;
         Ok(match req["op"].as_str().unwrap_or("") {
             "new" => self.update(Message::TabNew),
+            "open" if req.get("data_base64").is_some() => {
+                let (name, bytes) = open_bytes_request(req)?;
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if self.opening.is_some() {
+                        return Err(failure("busy", "Another drawing is still opening"));
+                    }
+                    self.open_web_bytes(name, bytes)
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let _ = (name, bytes);
+                    return Err(failure(
+                        "invalid_request",
+                        "data_base64 is for the web build; supply path",
+                    ));
+                }
+            }
             "open" => self.update(Message::OpenExternal(std::path::PathBuf::from(string(
                 req, "path",
             )?))),
@@ -773,7 +841,10 @@ impl OpenCADStudio {
                 Task::none()
             }
             "property" => self.control_set_property(req)?,
+            "set_properties" => self.control_set_record_properties(req)?,
             "action" => self.control_ui_action(req)?,
+            #[cfg(not(target_arch = "wasm32"))]
+            "embed_image" => self.control_embed_image(req)?,
             #[cfg(not(target_arch = "wasm32"))]
             "save" => {
                 let path = req["path"]
@@ -803,8 +874,17 @@ impl OpenCADStudio {
                     .main_window
                     .ok_or_else(|| failure("gui_required", "Capture requires a GUI window"))?;
                 let path = string(req, "path")?.to_owned();
-                iced::window::screenshot(window)
-                    .map(move |s| Message::ControlScreenshot(path.clone(), Some(s)))
+                // A minimized window has a 0x0 surface and the renderer
+                // panics reading it back, so report instead of capturing.
+                iced::window::size(window).then(move |size| {
+                    let path = path.clone();
+                    if size.width <= 0.0 || size.height <= 0.0 {
+                        Task::done(Message::ControlScreenshot(path, None))
+                    } else {
+                        iced::window::screenshot(window)
+                            .map(move |s| Message::ControlScreenshot(path.clone(), Some(s)))
+                    }
+                })
             }
             "stop" => {
                 self.control.enabled = false;
@@ -812,6 +892,12 @@ impl OpenCADStudio {
             }
             _ => return Err(failure("unknown_operation", "Unknown operation")),
         })
+    }
+
+    pub(super) fn set_control_result(&mut self, value: Value) {
+        if let Some(operation) = self.control.pending.as_mut() {
+            operation.result = value;
+        }
     }
 
     pub(super) fn control_track(&mut self, task: Task<Message>) -> Task<Message> {
@@ -956,7 +1042,7 @@ impl OpenCADStudio {
             let Some(entity) = tab.scene.document.get_entity(handle) else {
                 continue;
             };
-            let bb = entity.as_entity().bounding_box();
+            let (min, max) = crate::scene::convert::tess::entity_bounds(entity);
             let metrics = tab
                 .scene
                 .meshes
@@ -982,7 +1068,7 @@ impl OpenCADStudio {
                     "area":planar.curve.is_closed().then(|| planar.curve.enclosed_area().abs())
                 })
             });
-            out.push(json!({"handle":format!("{:X}",handle.value()),"type":crate::entities::names::ui_name(entity),"bounds":{"min":[bb.min.x,bb.min.y,bb.min.z],"max":[bb.max.x,bb.max.y,bb.max.z]},"curve":curve,"mesh":metrics.map(|m|json!({"vertices":m.metrics.vertices,"triangles":m.metrics.triangles,"surface_area":m.metrics.surface_area,"volume":m.metrics.volume,"centroid":m.metrics.centroid}))}));
+            out.push(json!({"handle":format!("{:X}",handle.value()),"type":crate::entities::names::ui_name(entity),"bounds":{"min":min,"max":max},"curve":curve,"mesh":metrics.map(|m|json!({"vertices":m.metrics.vertices,"triangles":m.metrics.triangles,"surface_area":m.metrics.surface_area,"volume":m.metrics.volume,"centroid":m.metrics.centroid,"moment_of_inertia":m.metrics.moment_of_inertia,"principal_directions":m.metrics.principal_directions,"principal_moments":m.metrics.principal_moments,"product_of_inertia":m.metrics.product_of_inertia,"radii_of_gyration":m.metrics.radii_of_gyration}))}));
         }
         json!({"ok":true,"document_id":tab.id,"geometry_revision":tab.scene.geometry_epoch,"measurements":out})
     }
@@ -993,7 +1079,8 @@ impl OpenCADStudio {
         screenshot: Option<iced::window::Screenshot>,
     ) {
         let result = (|| -> Result<Value, String> {
-            let s = screenshot.ok_or("Renderer did not return an image")?;
+            let s = screenshot
+                .ok_or("The window is minimized or has no size; restore it and capture again")?;
             let requested_scope = self
                 .control
                 .pending
@@ -1101,10 +1188,12 @@ mod tests {
         );
         let started = request(&mut app, json!({"op":"start","cmd":"LINE"}));
         assert_eq!(started["status"], "waiting_input");
-        assert!(started["state"]["command"]["accepts"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("point")));
+        assert!(
+            started["state"]["command"]["accepts"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("point"))
+        );
         assert_eq!(
             started["state"]["command"]["input_example"]["kind"],
             "point"
@@ -1129,10 +1218,12 @@ mod tests {
         );
         assert_eq!(app.automation_op(r#"{"op":"entities"}"#)["total"], 1);
         request(&mut app, json!({"op":"select","type":"LINE"}));
-        assert!(!app.control_properties()["sections"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            !app.control_properties()["sections"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         let changed = request(&mut app, json!({"op":"property","field":"color","value":1}));
         assert_eq!(changed["ok"], true, "{changed}");
         assert_eq!(
@@ -1222,6 +1313,92 @@ mod tests {
         assert!((curve["length"].as_f64().unwrap() - std::f64::consts::TAU * 2.0).abs() < 1e-9);
         assert!((curve["area"].as_f64().unwrap() - std::f64::consts::PI * 4.0).abs() < 1e-9);
     }
+
+    #[test]
+    fn control_shell_roundtrips_with_kernel_mass_properties() {
+        let mut app = OpenCADStudio::new_for_test();
+        request(&mut app, json!({"op":"new"}));
+        request(&mut app, json!({"op":"start","cmd":"BOX"}));
+        request(
+            &mut app,
+            json!({"op":"input","kind":"point","point":[0.0,0.0,0.0]}),
+        );
+        request(
+            &mut app,
+            json!({"op":"input","kind":"point","point":[6.0,5.0,0.0]}),
+        );
+        assert_eq!(
+            request(&mut app, json!({"op":"input","kind":"token","text":"4"}))["status"],
+            "completed"
+        );
+        let handle = app.tabs[app.active_tab]
+            .scene
+            .document
+            .entities()
+            .find_map(|entity| {
+                matches!(entity, acadrust::EntityType::Solid3D(_)).then(|| entity.common().handle)
+            })
+            .unwrap();
+        let handle_text = format!("{:X}", handle.value());
+
+        request(&mut app, json!({"op":"select","handles":[handle_text]}));
+        request(&mut app, json!({"op":"start","cmd":"SHELL"}));
+        request(
+            &mut app,
+            json!({"op":"input","kind":"entity","handle":handle_text,"point":[3.0,2.5,4.0]}),
+        );
+        request(&mut app, json!({"op":"input","kind":"enter"}));
+        assert_eq!(
+            request(&mut app, json!({"op":"input","kind":"token","text":"0.5"}))["status"],
+            "completed"
+        );
+
+        let measured = app.control_measure(&json!({"handles":[handle_text]}));
+        let mesh = &measured["measurements"][0]["mesh"];
+        assert!((mesh["volume"].as_f64().unwrap() - 50.0).abs() < 1e-9);
+        assert_eq!(mesh["principal_moments"].as_array().unwrap().len(), 3);
+        assert!(matches!(
+            app.tabs[app.active_tab]
+                .scene
+                .document
+                .solid_history_operation(handle),
+            Some(acadrust::objects::SolidHistoryOperation::Brep(_))
+        ));
+
+        assert_eq!(request(&mut app, json!({"op":"undo"}))["ok"], true);
+        let restored = app.control_measure(&json!({"handles":[handle_text]}));
+        assert!(
+            (restored["measurements"][0]["mesh"]["volume"]
+                .as_f64()
+                .unwrap()
+                - 120.0)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(request(&mut app, json!({"op":"redo"}))["ok"], true);
+
+        let path = std::env::temp_dir().join(format!("ocs-shell-{}.dwg", session_id()));
+        assert_eq!(
+            request(&mut app, json!({"op":"save","path":path}))["ok"],
+            true
+        );
+        request(&mut app, json!({"op":"new"}));
+        assert_eq!(
+            request(&mut app, json!({"op":"open","path":path}))["status"],
+            "completed"
+        );
+        let reopened = app.control_measure(&json!({"handles":[handle_text]}));
+        assert!(
+            (reopened["measurements"][0]["mesh"]["volume"]
+                .as_f64()
+                .unwrap()
+                - 50.0)
+                .abs()
+                < 1e-9
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn control_retry_is_idempotent_and_stale_state_rejected() {
         let mut app = OpenCADStudio::new_for_test();
@@ -1284,5 +1461,109 @@ mod tests {
             1
         );
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn open_from_bytes_validates_the_request() {
+        let ok = open_bytes_request(&json!({"name":"C:\\plans\\plan.dwg","data_base64":"AAEC"}));
+        assert_eq!(ok, Ok(("plan.dwg".to_string(), vec![0, 1, 2])));
+        for (req, error) in [
+            (json!({"data_base64":"AAEC"}), "Missing name"),
+            (json!({"name":"dir/","data_base64":"AAEC"}), "Missing name"),
+            (
+                json!({"name":"a.dwg","data_base64":""}),
+                "data_base64 is empty",
+            ),
+        ] {
+            assert_eq!(
+                open_bytes_request(&req).unwrap_err()["error"],
+                error,
+                "{req}"
+            );
+        }
+        let bad = open_bytes_request(&json!({"name":"a.dwg","data_base64":"not base64!"}));
+        assert_eq!(bad.unwrap_err()["code"], "invalid_request");
+    }
+    #[test]
+    fn open_from_bytes_is_refused_natively_without_touching_documents() {
+        let mut app = OpenCADStudio::new_for_test();
+        request(&mut app, json!({"op":"new"}));
+        let tabs = app.tabs.len();
+        let reply = request(
+            &mut app,
+            json!({"op":"open","name":"a.dxf","data_base64":"AAEC"}),
+        );
+        assert_eq!(reply["code"], "invalid_request", "{reply}");
+        assert_eq!(app.tabs.len(), tabs);
+        assert!(app.opening.is_none());
+    }
+
+    #[test]
+    fn point_steps_that_take_keywords_accept_points() {
+        let mut app = OpenCADStudio::new_for_test();
+        request(&mut app, json!({"op":"new"}));
+        request(&mut app, json!({"op":"run","cmd":"CIRCLE 0,0 3"}));
+        request(&mut app, json!({"op":"select","type":"CIRCLE"}));
+        let started = request(&mut app, json!({"op":"start","cmd":"MOVE"}));
+        assert_eq!(started["status"], "waiting_input", "{started}");
+        let command = &started["state"]["command"];
+        let accepts = command["accepts"].as_array().unwrap();
+        assert!(accepts.contains(&json!("point")), "{command}");
+        assert!(accepts.contains(&json!("token")), "{command}");
+        assert_eq!(command["input_example"]["kind"], "point");
+        let base = request(
+            &mut app,
+            json!({"op":"input","kind":"point","point":[0.,0.,0.]}),
+        );
+        assert_eq!(base["status"], "waiting_input", "{base}");
+        let moved = request(
+            &mut app,
+            json!({"op":"input","kind":"point","point":[0.,-10.,0.]}),
+        );
+        assert_eq!(moved["status"], "completed", "{moved}");
+        let circle = app.tabs[app.active_tab]
+            .scene
+            .document
+            .entities()
+            .find_map(|e| match e {
+                acadrust::EntityType::Circle(c) => Some(c.center.y),
+                _ => None,
+            });
+        assert_eq!(circle, Some(-10.0));
+    }
+
+    #[test]
+    fn embed_image_op_places_an_ole2frame_and_undoes_it() {
+        let mut app = OpenCADStudio::new_for_test();
+        request(&mut app, json!({"op":"new"}));
+        let img = image::RgbaImage::from_pixel(40, 30, image::Rgba([9, 9, 9, 255]));
+        let path = std::env::temp_dir().join(format!("ocs-embed-{}.png", session_id()));
+        img.save(&path).unwrap();
+
+        let response = request(
+            &mut app,
+            json!({"op":"embed_image","path":path.to_string_lossy(),"at":[0,0,0],"width":20}),
+        );
+        assert_eq!(response["status"], "completed", "{response}");
+        let handle = response["result"]["handle"].as_str().unwrap().to_string();
+        assert_eq!(response["result"]["kind"], "Ole2Frame");
+        let ole_count = |app: &OpenCADStudio| {
+            app.tabs[app.active_tab]
+                .scene
+                .document
+                .entities()
+                .filter(|e| matches!(e, acadrust::EntityType::Ole2Frame(_)))
+                .count()
+        };
+        assert_eq!(ole_count(&app), 1);
+
+        // The entity must be queryable like any other and undoable as one step.
+        let queried =
+            app.automation_op(json!({"op":"entities","type":"OLE2FRAME"}).to_string().as_str());
+        assert_eq!(queried["total"], 1, "{queried}");
+        request(&mut app, json!({"op":"undo"}));
+        assert_eq!(ole_count(&app), 0);
+        let _ = std::fs::remove_file(path);
+        let _ = handle;
     }
 }

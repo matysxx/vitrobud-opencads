@@ -20,6 +20,10 @@ use acadrust::{EntityType as AcadEntityType, Handle};
 use iced::time::Instant;
 use iced::{mouse, Point, Task};
 
+fn eval_dynamic_angle(text: &str) -> Option<f64> {
+    let value = crate::app::expr_eval::eval_number(&text.trim().replace(',', "."))?;
+    crate::entities::common::parse_angle(&value.to_string())
+}
 
 impl OpenCADStudio {
     pub(in crate::app) fn active_distance_ray(
@@ -65,35 +69,78 @@ impl OpenCADStudio {
 
         // A normal 2D grip stretch behaves like a point-placement step:
         // distance and angle are measured from the grip's original position.
+        // Lengthen uses the same overlay machinery, but it only needs the
+        // distance field: the entity itself determines the endpoint direction
+        // (or arc sweep), so an angle entry would be misleading.
         //
         // Grip editing is not an `active_cmd`, so handle it before the normal
         // command-only path below.
-        let grip_origin = self.tabs[i]
+        let rectangle_frame = self.tabs[i]
             .active_grip
             .as_ref()
-            .filter(|grip| {
-                grip.mode == crate::scene::pick::grip::GripEditMode::Stretch
-            })
-            .map(|grip| grip.origin_world);
+            .and_then(|grip| grip.rectangle_frame);
+        let grip_input = self.tabs[i]
+            .active_grip
+            .as_ref()
+            .map(|grip| match grip.mode {
+                crate::scene::pick::grip::GripEditMode::Stretch => {
+                    (grip.origin_world, None)
+                }
+                crate::scene::pick::grip::GripEditMode::Lengthen => {
+                    (grip.origin_world, Some(crate::command::DynRole::Distance))
+                }
+                crate::scene::pick::grip::GripEditMode::Radius => {
+                    (grip.origin_world, Some(crate::command::DynRole::Radius))
+                }
+                crate::scene::pick::grip::GripEditMode::ArcLength => {
+                    (grip.origin_world, Some(crate::command::DynRole::Distance))
+                }
+                crate::scene::pick::grip::GripEditMode::RectangleWidth => {
+                    (grip.origin_world, Some(crate::command::DynRole::Width))
+                }
+                crate::scene::pick::grip::GripEditMode::RectangleHeight => {
+                    (grip.origin_world, Some(crate::command::DynRole::Height))
+                }
+                crate::scene::pick::grip::GripEditMode::MoveParallel => {
+                    (grip.origin_world, Some(crate::command::DynRole::Distance))
+                }
+                crate::scene::pick::grip::GripEditMode::RectangleResize => {
+                    (grip.origin_world, None)
+                }
+            });
 
-        if let Some(origin) = grip_origin {
-            let wanted = [DynComponent::Distance, DynComponent::Angle];
-            let current: Vec<DynComponent> = self.tabs[i]
+        if let Some((origin, scalar_role)) = grip_input {
+            let wanted_roles: Vec<crate::command::DynRole> = if rectangle_frame.is_some() {
+                vec![crate::command::DynRole::Width, crate::command::DynRole::Height]
+            } else {
+                scalar_role.map_or_else(
+                    || vec![crate::command::DynRole::Distance, crate::command::DynRole::Angle],
+                    |role| vec![role],
+                )
+            };
+            let current: Vec<crate::command::DynRole> = self.tabs[i]
                 .dyn_fields
                 .iter()
-                .map(|field| field.component)
+                .map(|field| field.role)
                 .collect();
 
-            if current.as_slice() != wanted {
-                self.tabs[i].dyn_fields = wanted
-                    .into_iter()
-                    .map(DynFieldEntry::new)
+            if current != wanted_roles {
+                self.tabs[i].dyn_fields = wanted_roles
+                    .iter()
+                    .copied()
+                    .map(DynFieldEntry::from_role)
                     .collect();
                 self.tabs[i].dyn_active = 0;
             }
 
-            self.tabs[i].dyn_guide = crate::command::DynGuide::Polar;
-            self.tabs[i].dyn_anchor = Some(origin);
+            self.tabs[i].dyn_guide = if rectangle_frame.is_some() {
+                crate::command::DynGuide::RectSides
+            } else if scalar_role.is_some() {
+                crate::command::DynGuide::Radius
+            } else {
+                crate::command::DynGuide::Polar
+            };
+            self.tabs[i].dyn_anchor = rectangle_frame.map(|frame| frame.0).or(Some(origin));
             self.tabs[i].dyn_ref = None;
             return;
         }
@@ -359,9 +406,9 @@ impl OpenCADStudio {
             let explicit_sign = raw
                 .as_deref()
                 .is_some_and(|s| s.starts_with('-') || s.starts_with('+'));
-            match raw.and_then(|s| crate::app::expr_eval::eval_number(&s)) {
-                Some(v) if explicit_sign => v.to_radians(),
-                Some(mag) => mag.abs().to_radians().copysign(dy),
+            match raw.as_deref().and_then(eval_dynamic_angle) {
+                Some(v) if explicit_sign => v,
+                Some(mag) => mag.abs().copysign(dy),
                 None => live_a,
             }
         };
@@ -431,7 +478,11 @@ impl OpenCADStudio {
                 // absolute CCW angle in the UCS plane, not a cursor-signed
                 // magnitude — keep it literal. Only the polar Distance+Angle
                 // pair uses the cursor-signed `angle_rad`.
-                let a = val(0, live_a.to_degrees()).to_radians();
+                let a = fields[0]
+                    .buffer
+                    .as_deref()
+                    .and_then(eval_dynamic_angle)
+                    .unwrap_or(live_a);
                 Some(rel(glam::DVec3::new(live_d * a.cos(), live_d * a.sin(), 0.0)))
             }
             _ => None,
@@ -740,6 +791,44 @@ impl OpenCADStudio {
             .as_mut()
             .map(|c| c.on_preview_wires(cur))
             .unwrap_or_default();
+        let preview_hidden = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .map(|command| command.preview_hidden_handles().to_vec())
+            .unwrap_or_default();
+        self.tabs[i]
+            .scene
+            .set_command_preview_hidden(&preview_hidden);
         self.tabs[i].scene.set_preview_wires(previews);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::eval_dynamic_angle;
+    use crate::entities::common::{set_unit_context, unit_context};
+
+    #[test]
+    fn dynamic_angle_expressions_follow_drawing_units() {
+        let previous = unit_context();
+        let mut context = previous;
+
+        context.aunits = 2;
+        set_unit_context(context);
+        assert!(
+            (eval_dynamic_angle("2 * 50").unwrap() - std::f64::consts::FRAC_PI_2).abs()
+                < 1e-12
+        );
+
+        context.aunits = 3;
+        set_unit_context(context);
+        assert!(
+            (eval_dynamic_angle("1.5707963267948966").unwrap()
+                - std::f64::consts::FRAC_PI_2)
+                .abs()
+                < 1e-12
+        );
+
+        set_unit_context(previous);
     }
 }
