@@ -1512,14 +1512,14 @@ impl OpenCADStudio {
                     async move {
                         crate::io::export_dxf_r12::export_to_file(&snapshot, &result_path)
                     },
-                    move |result| Message::DxfR12ExportFinished(path, result),
+                    move |result| Message::DxfR12ExportFinished(path, Box::new(result)),
                 )
             }
 
             Message::DxfR12ExportPath(None) => Task::none(),
 
             Message::DxfR12ExportFinished(path, result) => {
-                match result {
+                match *result {
                     Ok(report) => self.command_line.push_output(
                         crate::tf!(
                             "EXPORTDXFR12: exported to \"{}\" ({}).",

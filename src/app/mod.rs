@@ -3826,7 +3826,7 @@ pub enum Message {
     DxfR12ExportPath(Option<std::path::PathBuf>),
     DxfR12ExportFinished(
         std::path::PathBuf,
-        Result<crate::io::export_dxf_r12::ExportReport, String>,
+        Box<Result<crate::io::export_dxf_r12::ExportReport, String>>,
     ),
     // ── OBJ import ────────────────────────────────────────────────────────
     /// Trigger OBJ import: show open-file dialog.
