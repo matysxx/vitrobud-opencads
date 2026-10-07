@@ -36,8 +36,9 @@ builder baseline remains the official `rust:1.92.0-bookworm` image.
   Pages additionally publishes a marketing landing page and moves the app to
   `/app/`; the private runtime intentionally keeps the established root URL so
   reverse-proxy routes and bookmarks remain stable.
-- Serve the static WASM application with explicit COOP/COEP headers required
-  for SharedArrayBuffer-capable browser execution.
+- Serve the static WASM application with the existing COOP/COEP header policy
+  coordinated with the external proxy. The current browser build does not
+  require SharedArrayBuffer or these headers for its single-threaded execution.
 - Use rootless Podman and bridge networking with one explicitly published HTTP
   port. Host networking is unnecessary because the application has no service
   discovery, broadcast, or host-device requirement.

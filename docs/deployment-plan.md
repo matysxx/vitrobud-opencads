@@ -12,8 +12,11 @@
 
 1. Push the verified commit to `origin/main`.
 2. Confirm GitHub `main` resolves to the same SHA.
-3. Confirm tracked files contain no `.env`, credentials, private hostnames,
-   addresses, certificates, server paths, runtime state, or CAD files.
+3. Require Tests, including the registered R12 regressions, and Web build check
+   to pass for the exact SHA. Review additional upstream workflow results.
+4. Confirm tracked files contain no `.env`, credentials, private hostnames,
+   addresses, certificates, server paths, runtime state, or private CAD files.
+   Public synthetic test fixtures inherited from upstream are test assets.
 
 ## 3. Server
 

@@ -23,10 +23,15 @@ that in the external proxy/runtime override without committing certificates.
   reverse-proxy/administration sources only (preferred), or trusted-LAN access
   when direct IP use is an intentional requirement.
 - Forward the original host and scheme headers.
-- Preserve these response headers from the backend:
+- The backend emits these isolation headers by default:
   - `Cross-Origin-Opener-Policy: same-origin`
   - `Cross-Origin-Embedder-Policy: require-corp`
   - `Cross-Origin-Resource-Policy: same-origin`
+- Keep the effective browser header policy in the externally managed proxy.
+  Existing compatibility overrides must be reviewed against the supported
+  browser matrix. Upstream explicitly selects WebGL2; a historical Safari
+  workaround is not proof that a new build requires it. The single-threaded
+  app currently does not require SharedArrayBuffer or isolation headers.
 - Allow WASM MIME types and large static responses without content rewriting.
 - Verify `/healthz` directly and the application root through final HTTPS.
 - Validate the host firewall configuration before reload and confirm the

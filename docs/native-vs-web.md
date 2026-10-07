@@ -101,7 +101,9 @@ folder and load again on the next desktop launch.
 - Upstream Pages web app: `trunk build --release --public-url /app/ --dist dist/app --html-output index.html web-app.html`.
 - This maintained private container builds the same `web-app.html` target at
   `/` to preserve its established reverse-proxy URL and user bookmarks.
-  Run `sh scripts/assemble-site.sh` afterward to add the landing page.
-  `.github/workflows/pages.yml` builds and deploys to GitHub Pages on every
-  release. No COOP/COEP headers are needed because the web build is
-  single-threaded.
+  It does not run the upstream marketing-site assembly script.
+- Upstream Pages runs `sh scripts/assemble-site.sh` to add the landing page;
+  `.github/workflows/pages.yml` builds and deploys it on releases.
+- The web build does not require COOP/COEP for its current single-threaded
+  execution. The private runtime's response headers are an operational policy
+  coordinated with the external proxy; see `external-reverse-proxy.md`.
