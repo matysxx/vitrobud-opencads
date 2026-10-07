@@ -1,6 +1,6 @@
-use acadrust::entities::{EntityType, Line, LwPolyline, LwVertex, Text};
-use acadrust::types::{Vector2, Vector3};
-use acadrust::CadDocument;
+use codec::entities::{EntityType, Line, LwPolyline, LwVertex, Text};
+use codec::types::{Vector2, Vector3};
+use codec::CadDocument;
 use OpenCADStudio::io::export_dxf_r12::export_to_bytes;
 
 #[derive(Debug, PartialEq)]

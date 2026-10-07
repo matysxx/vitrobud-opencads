@@ -54,8 +54,18 @@ and a closed bulged polyline in both consumers. Do not add customer drawings to
 the public repository.
 
 The current implementation uses an isolated application-side compatibility
-writer alongside the directly pinned `cadcodec` dependency. The normal codec
+writer alongside the directly pinned `opencadcodec` dependency (`codec` in Rust).
+The normal codec
 writer serves ordinary DWG/DXF save targets, while this command deliberately
 emits the smaller, verified `AC1009` manufacturing profile described above.
 Generic codec corrections should be proposed upstream; the separate command
 and its fail-safe manufacturing policy remain a maintained-fork feature.
+
+## Regression verification during upstream updates
+
+`cargo test --test export_dxf_r12 --locked` exercises ASCII CRLF framing,
+AC1009, finite extents, bulged-polyline conversion, source immutability, and
+rejection of unsupported entities. This test target is registered explicitly
+in `Cargo.toml` because upstream uses `autotests = false`.
+The full GitHub test workflow includes this target. Updating the codec or its
+crate name must preserve these checks and the dedicated command registration.

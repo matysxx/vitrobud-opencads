@@ -4,9 +4,9 @@
 //! can label post-R12 structures as AC1009.  Keep this path isolated until the
 //! version-aware implementation is accepted by the upstream CAD codec.
 
-use acadrust::entities::{EntityCommon, EntityType};
-use acadrust::types::{BoundingBox3D, Color, Vector3};
-use acadrust::CadDocument;
+use codec::entities::{EntityCommon, EntityType};
+use codec::types::{BoundingBox3D, Color, Vector3};
+use codec::CadDocument;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
@@ -357,7 +357,7 @@ fn write_common<W: std::io::Write>(
     common: &EntityCommon,
 ) -> Result<(), String> {
     writer.write_string(8, if common.layer.trim().is_empty() { "0" } else { &common.layer })?;
-    if !matches!(common.color, acadrust::types::Color::ByLayer) {
+    if !matches!(common.color, codec::types::Color::ByLayer) {
         writer.write_color(62, common.color)?;
     }
     if is_r12_linetype(&common.linetype)

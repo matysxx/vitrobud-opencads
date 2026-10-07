@@ -2,6 +2,10 @@
 .DS_Store
 .env
 src/.env
+.ai/wiki/tasks
+.ai/prd/task-status.local.md
+.env.*
+!.env.dist
 compose.override.yaml
 dev-ops/storage
 target

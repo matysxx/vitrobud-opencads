@@ -11,15 +11,14 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The current locally integrated upstream candidate is Open CAD Studio `2026.38.0`
-at post-tag revision `652f4d6bbc040dc0b6950086099603dc28fb4185`
-(2026-09-22). This includes 92 additional commits after tag `v2026.38`;
-therefore the exact Git
-revision, not only the application version string, identifies the build. The
-application pins the CAD codec directly at `cadcodec` revision
-`5b682ed66ea2c89be8142c8dd83d83774fc3de08` and both the geometry kernel and
-constraint solver at `cadkernel` revision
-`6f046afdda94d8cd9cdbd7fc0ab73ee726aac9ab`.
+The integrated upstream baseline is Open CAD Studio `2026.40.1` at revision
+`41d93b6f5421477b0566197dd4ee581f7d48db3e` (2026-10-07). The exact Git
+revision identifies the build independently of the release version string.
+The application now imports its renamed libraries as `codec`, `kernel`,
+`kernel-constraints`, and `graph`. The lockfile pins `opencadcodec` at
+`063c10671fe7833d562f772159771318c7a0ebb9`, `opencadkernel` at
+`3f3781a227008aec6847c894dc843245b539c682`, and `opencadgraph` at
+`ca3e6a20d70210d1422feec536e0c2422bfadfd0`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
 builder baseline remains the official `rust:1.92.0-bookworm` image.
@@ -89,3 +88,12 @@ README.md
 The reusable infrastructure, firewall, reverse-proxy, autostart, migration, and
 acceptance boundary is defined in `docs/infrastructure-runbook.md`. Concrete
 deployment identifiers and acceptance records remain private and untracked.
+
+## Verification gates
+
+- GitHub Tests runs `cargo test --workspace --locked`, including the explicitly
+  registered fork test target `export_dxf_r12` (upstream disables test discovery).
+- GitHub Web build check validates the WASM target; the final release bundle
+  and worker are built on the Debian host before the web container is replaced.
+- Keep the R12 handlers outside the central update function's stack frame.
+- Inspect browser startup through the external HTTPS endpoint after rollout.
