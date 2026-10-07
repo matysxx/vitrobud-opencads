@@ -43,3 +43,5 @@
   (`20-fork-release-guard/`)
 - `OCSSTACK-21` — Sync reviewed upstream revision `652f4d6b`
   (`21-upstream-sync-652f4d6b/`)
+- `OCSSTACK-22` — Sync reviewed upstream revision `41d93b6f` and complete documentation
+  (`22-upstream-sync-41d93b6f/`)
