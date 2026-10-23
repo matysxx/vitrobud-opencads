@@ -108,6 +108,14 @@ unfinished changes from the original checkout. Preserve upstream ancestry.
 - Stop before server writes without exact command approval, or on failed required
   tests, unexpected origin changes, insufficient space or dirty server checkout.
 
+## CI follow-up authorized with test and rollout request
+
+The first run passed Linux/R12, WASM, MCP and packaging but exposed an inherited
+Arial-dependent italic test on Windows/macOS. Correct the fallback fixture to an
+embedded stroke font and separately assert that system-font face selection agrees
+with the required slant. Do not alter renderer behavior or skip OS tests. Publish
+the follow-up and require exact-SHA CI again before approved SSH rollout.
+
 ## Exclusions
 
 No backup timer activation, LDAP/Nextcloud work, upstream PR, unrelated container

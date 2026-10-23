@@ -3139,26 +3139,43 @@ mod adapter_tests {
     }
 
     #[test]
-    fn font_italic_flag_renders_as_oblique() {
-        // A `\f…|i1;` italic font has no true-italic glyphs in the stroke/SDF
-        // faces, so it must render as the same slant the editor's Italic button
-        // applies (~15°) — not upright.
-        let (_, it) = first_run(&adapt_mtext_paragraphs("\\fArial|i1;x", 2.5, true));
+    fn stroke_font_italic_flag_renders_as_oblique() {
+        // Use an embedded stroke font, not system Arial: Arial has a real
+        // italic face on some hosts and correctly needs no synthetic slant.
+        assert!(lff::is_builtin("simplex"));
+        let (_, it) = first_run(&adapt_mtext_paragraphs("\\fsimplex|i1;x", 2.5, true));
         assert!(
             (it.oblique_rad - 15f32.to_radians()).abs() < 1e-4,
             "italic flag should slant, got {}",
             it.oblique_rad
         );
+        assert!(!it.italic, "stroke fonts must use synthetic slant");
         // A non-italic font stays upright.
-        let (_, up) = first_run(&adapt_mtext_paragraphs("\\fArial|i0;x", 2.5, true));
+        let (_, up) = first_run(&adapt_mtext_paragraphs("\\fsimplex|i0;x", 2.5, true));
         assert!(up.oblique_rad.abs() < 1e-4, "got {}", up.oblique_rad);
         // An explicit `\Q` wins over the italic flag (no double slant).
-        let (_, q) = first_run(&adapt_mtext_paragraphs("\\Q30;\\fArial|i1;x", 2.5, true));
+        let (_, q) = first_run(&adapt_mtext_paragraphs("\\Q30;\\fsimplex|i1;x", 2.5, true));
         assert!(
             (q.oblique_rad - 30f32.to_radians()).abs() < 1e-4,
             "got {}",
             q.oblique_rad
         );
+    }
+
+    #[test]
+    fn system_font_italic_flag_matches_available_face_without_double_slant() {
+        // Both outcomes are valid, but selection and slant must agree. Never
+        // skip this check on hosts without Arial (including browser builds).
+        let has_italic_face = resolve_font_reference("Arial")
+            .and_then(|family| styled_font(&family, false, true))
+            .is_some();
+        let (_, it) = first_run(&adapt_mtext_paragraphs("\\fArial|i1;x", 2.5, true));
+        let expected_slant = 15f32.to_radians() * u8::from(!has_italic_face) as f32;
+        assert_eq!(it.italic, has_italic_face);
+        assert!((it.oblique_rad - expected_slant).abs() < 1e-4);
+
+        let (_, explicit) = first_run(&adapt_mtext_paragraphs("\\Q30;\\fArial|i1;x", 2.5, true));
+        assert!((explicit.oblique_rad - 30f32.to_radians()).abs() < 1e-4);
     }
 
     #[test]
