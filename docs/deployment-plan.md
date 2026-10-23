@@ -1,5 +1,9 @@
 # Deployment plan
 
+Include container-packaging privacy/cache checks and the acceptance procedure in
+[browser-updates.md](browser-updates.md). The final bundle's worker cache stamp
+is content-derived, not a separately configured runtime version.
+
 ## 1. Local
 
 1. Fetch `upstream/main` and review the selected upstream SHA.

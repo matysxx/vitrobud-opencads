@@ -54,7 +54,8 @@ and a closed bulged polyline in both consumers. Do not add customer drawings to
 the public repository.
 
 The current implementation uses an isolated application-side compatibility
-writer alongside the directly pinned `opencadcodec` dependency (`codec` in Rust).
+writer alongside the directly pinned codec dependency (`codec` in Rust; package
+`acadrust` in the current lockfile).
 The normal codec
 writer serves ordinary DWG/DXF save targets, while this command deliberately
 emits the smaller, verified `AC1009` manufacturing profile described above.
@@ -69,3 +70,7 @@ rejection of unsupported entities. This test target is registered explicitly
 in `Cargo.toml` because upstream uses `autotests = false`.
 The full GitHub test workflow includes this target. Updating the codec or its
 crate name must preserve these checks and the dedicated command registration.
+
+Upstream's shared `ocs_save` and worker-backed SAVE paths do not replace this
+writer. Follow [browser update acceptance](browser-updates.md) after deploying
+a new revision, and keep real Fusion/machine acceptance separate from CI success.

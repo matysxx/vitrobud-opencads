@@ -23,3 +23,7 @@
 
 No CAD files are stored by this runtime, so application rollback does not move
 or restore user drawings.
+
+Before either operation, save open drawings. Follow [browser update acceptance](browser-updates.md)
+afterward: close all app/PWA windows and reopen online to activate the waiting
+worker. Do not clear recovery data or reload unsaved sessions to force an update.

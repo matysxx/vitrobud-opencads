@@ -36,6 +36,8 @@ ancestry rather than squashing the synchronization.
 - Update the technical specification when dependencies or web behavior change.
 - Confirm private configuration, drawings, local wiki, and runtime state are
   excluded from Git and the container build context.
+- Run `python3 scripts/test_container_packaging.py`, align Podman/Docker context
+  rules and preserve the bundle-derived worker cache stamp after Trunk builds.
 
 ## GitHub and server gates
 
@@ -49,3 +51,6 @@ The server runs `./dev-ops/update`, rebuilding the application and worker before
 recreating only the web service. Verify checkout, image tag, health, the enabled
 user unit, and browser startup through HTTPS. Record the rollback SHA and final
 result locally; keep the server configuration and task wiki out of public Git.
+
+Follow `docs/browser-updates.md` for acceptance: an existing editing tab can
+intentionally retain its previous worker until all application windows close.

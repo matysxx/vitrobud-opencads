@@ -16,3 +16,10 @@
 - CAD drawings and all user runtime data
 
 Review `git status`, `git diff --cached`, and `git ls-files` before every push.
+
+Local wiki (`.ai/wiki/tasks/`), local task status and `.env.*` backups are excluded
+from Git and both build contexts; `.env.dist` templates remain available. Podman
+prefers `.containerignore`, so keep it aligned with `.dockerignore` and run
+`python3 scripts/test_container_packaging.py`. Ignore rules do not untrack files
+or replace a secret/private-data review. Public upstream fixtures are not user
+drawings; never add customer CAD files as public regression data.

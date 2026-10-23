@@ -17,7 +17,8 @@ RUN trunk build --release \
     --public-url / \
     --dist dist \
     --html-output index.html \
-    web-app.html
+    web-app.html \
+    && sh scripts/stamp-container-cache.sh dist
 
 FROM ${CADDY_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="Open CAD Studio Web" \

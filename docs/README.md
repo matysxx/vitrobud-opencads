@@ -7,6 +7,9 @@ certificates, CAD files, or host-specific runtime values.
 
 ## Runtime and deployment
 
+- [Browser updates and offline state](browser-updates.md) — PWA activation,
+  safe refresh/rollback, browser recovery and version verification.
+
 - [Container quick start](container-quickstart.md) — prepare private `.env`
   files, install the pinned Compose provider, start the rootless stack, and
   verify health and browser headers.

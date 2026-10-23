@@ -11,17 +11,18 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The integrated upstream baseline is Open CAD Studio `2026.40.1` at revision
-`41d93b6f5421477b0566197dd4ee581f7d48db3e` (2026-10-07). The exact Git
+The integrated upstream baseline is Open CAD Studio `2026.42.0` at revision
+`79b6a1f97d0455e43f2e553afce2a19031e567a7` (2026-10-23). The exact Git
 revision identifies the build independently of the release version string.
 The application now imports its renamed libraries as `codec`, `kernel`,
-`kernel-constraints`, and `graph`. The lockfile pins `opencadcodec` at
-`063c10671fe7833d562f772159771318c7a0ebb9`, `opencadkernel` at
-`3f3781a227008aec6847c894dc843245b539c682`, and `opencadgraph` at
-`ca3e6a20d70210d1422feec536e0c2422bfadfd0`.
+`kernel-constraints`, and `graph`. The `codec` alias now refers to package
+`acadrust`; the lockfile pins it at `f64721613076af70ae7db8ce53f2c53d98d5af1a`,
+`opencadkernel` at `fd15b9411b848fc0d65f82446145bc4204e7ccaa`, and
+`opencadgraph` at `84194ead00cbe1c315e222855cb3e1707a4aea96`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
-builder baseline remains the official `rust:1.92.0-bookworm` image.
+builder baseline remains the official `rust:1.92.0-bookworm` image; the new
+revision's release build must pass on Debian before rollout is accepted.
 
 ## Recommended runtime model
 
@@ -36,9 +37,12 @@ builder baseline remains the official `rust:1.92.0-bookworm` image.
   Pages additionally publishes a marketing landing page and moves the app to
   `/app/`; the private runtime intentionally keeps the established root URL so
   reverse-proxy routes and bookmarks remain stable.
+- Stamp the generated service-worker cache from built bundle contents via
+  `scripts/stamp-container-cache.sh`, rather than shipping the `v1` placeholder.
+  The relative PWA manifest and worker registration resolve at `/`.
 - Serve the static WASM application with the existing COOP/COEP header policy
   coordinated with the external proxy. The current browser build does not
-  require SharedArrayBuffer or these headers for its single-threaded execution.
+  require SharedArrayBuffer for its main thread plus dedicated Web Worker.
 - Use rootless Podman and bridge networking with one explicitly published HTTP
   port. Host networking is unnecessary because the application has no service
   discovery, broadcast, or host-device requirement.
@@ -59,6 +63,11 @@ the private web runtime documentation aligned with `docs/native-vs-web.md`.
 Upstream now explicitly selects the WebGL2 renderer for the browser build,
 avoiding the unstable WebGPU path previously observed in Safari and affected
 Chromium adapters.
+
+Ordinary SAVE/autosave can serialize in the worker via `ocs_save`, with an inline
+fallback. `EXPORTDXFR12` remains the separate ASCII writer with unchanged
+restrictions. Browser recovery/PWA caches are not server storage or host backups.
+See `docs/browser-updates.md` before refreshing an active editing session.
 
 ## Repository target structure
 
@@ -98,3 +107,5 @@ deployment identifiers and acceptance records remain private and untracked.
   and worker are built on the Debian host before the web container is replaced.
 - Keep the R12 handlers outside the central update function's stack frame.
 - Inspect browser startup through the external HTTPS endpoint after rollout.
+- Run `python3 scripts/test_container_packaging.py` for privacy and cache-stamp
+  regressions; the same checks run in the container-packaging CI job.

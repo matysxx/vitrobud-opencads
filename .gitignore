@@ -40,6 +40,8 @@ __pycache__/
 .DS_Store
 .env
 src/.env
+**/.env.*
+!**/.env.dist
 compose.override.yaml
 dev-ops/storage/**
 !dev-ops/storage/.gitignore

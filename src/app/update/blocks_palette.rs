@@ -51,12 +51,53 @@ impl OpenCADStudio {
                 self.persist_settings_if_changed();
             }
             BlockPaletteMsg::Refresh => self.refresh_block_palette(),
+            // Web: read the picked file's bytes and parse them right away —
+            // the picker's name-only path has nothing behind it to read later.
+            #[cfg(target_arch = "wasm32")]
+            BlockPaletteMsg::PickFile => {
+                return Task::perform(
+                    async {
+                        crate::io::pick_and_parse_web(
+                            crate::t!("Select Drawing to Insert as Block").as_ref(),
+                            crate::t!("DWG/DXF Files").as_ref(),
+                            &["dwg", "dxf", "DWG", "DXF"],
+                        )
+                        .await
+                        .and_then(|picked| picked.ok_or_else(|| "Cancelled".to_string()))
+                    },
+                    |r| Message::BlockPalette(BlockPaletteMsg::FilePickedDoc(r)),
+                );
+            }
+            #[cfg(target_arch = "wasm32")]
+            BlockPaletteMsg::FilePickedDoc(Ok((name, document))) => {
+                let stem = std::path::Path::new(&name)
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Block".to_string());
+                match self.import_document_block(document, stem, false) {
+                    Ok(name) => {
+                        self.refresh_block_palette();
+                        return self.start_palette_insert(&name, None);
+                    }
+                    Err(e) => self.command_line.push_error(&e),
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            BlockPaletteMsg::FilePickedDoc(Err(e)) => {
+                if e != "Cancelled" {
+                    self.command_line.push_error(&e);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             BlockPaletteMsg::PickFile => {
                 return Task::perform(
                     async {
                         let handle = rfd::AsyncFileDialog::new()
                             .set_title(crate::t!("Select Drawing to Insert as Block").as_ref())
-                            .add_filter(crate::t!("DWG/DXF Files").as_ref(), &["dwg", "dxf", "DWG", "DXF"])
+                            .add_filter(
+                                crate::t!("DWG/DXF Files").as_ref(),
+                                &["dwg", "dxf", "DWG", "DXF"],
+                            )
                             .pick_file()
                             .await;
                         match handle {
@@ -67,7 +108,9 @@ impl OpenCADStudio {
                     |r| Message::BlockPalette(BlockPaletteMsg::FilePicked(r)),
                 );
             }
-            BlockPaletteMsg::FilePicked(Ok(path)) => return self.palette_insert(Item::File(path), None),
+            BlockPaletteMsg::FilePicked(Ok(path)) => {
+                return self.palette_insert(Item::File(path), None)
+            }
             BlockPaletteMsg::FilePicked(Err(e)) | BlockPaletteMsg::LibraryPicked(Err(e)) => {
                 if e != "Cancelled" {
                     self.command_line.push_error(&e);
@@ -99,7 +142,12 @@ impl OpenCADStudio {
             BlockPaletteMsg::LibraryPicked(Ok(path)) => self.open_block_library(path),
             BlockPaletteMsg::LibrarySelect(path) => self.open_block_library(PathBuf::from(path)),
             BlockPaletteMsg::LibraryUp => {
-                if let Some(parent) = self.block_palette.library_dir.as_ref().and_then(|d| d.parent()) {
+                if let Some(parent) = self
+                    .block_palette
+                    .library_dir
+                    .as_ref()
+                    .and_then(|d| d.parent())
+                {
                     let parent = parent.to_path_buf();
                     self.list_block_library(parent);
                 }
@@ -124,7 +172,7 @@ impl OpenCADStudio {
     /// BLOCKSPALETTE: open (expanded) on `tab`, or on the tab it was left on.
     pub(crate) fn open_blocks_palette(&mut self, tab: Option<Tab>) {
         self.show_block_palette = true;
-        self.dock_expanded = Some(crate::ui::dock::PanelId::BlockPalette);
+        self.dock_reveal(crate::ui::dock::PanelId::BlockPalette);
         self.show_block_palette_tab(tab.unwrap_or(self.block_palette.tab));
     }
 
@@ -165,17 +213,30 @@ impl OpenCADStudio {
                     return None;
                 }
                 if path.is_dir() {
-                    Some(LibraryEntry { path, folder: true, thumb: None })
+                    Some(LibraryEntry {
+                        path,
+                        folder: true,
+                        thumb: None,
+                    })
                 } else if is_drawing(&path) {
                     let thumb = crate::io::thumbnail::read_handle(&path);
-                    Some(LibraryEntry { path, folder: false, thumb })
+                    Some(LibraryEntry {
+                        path,
+                        folder: false,
+                        thumb,
+                    })
                 } else {
                     None
                 }
             })
             .collect();
         entries.sort_by_key(|e| {
-            (!e.folder, e.path.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+            (
+                !e.folder,
+                e.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase()),
+            )
         });
         self.block_palette.library_dir = Some(dir);
         self.block_palette.library_entries = entries;
@@ -245,6 +306,11 @@ impl OpenCADStudio {
             options.repeat = false;
         }
         let mut cmd = InsertBlockCommand::palette(name.to_string(), wires, &options);
+        if let Some(record)=self.tabs[i].scene.document.block_records.get(name) {
+            let doc=&self.tabs[i].scene.document;
+            cmd.set_insertion_points(crate::scene::render_graph::block_base_point(doc,name),
+                crate::scene::block_grips::insertion_points(doc,record.handle));
+        }
         if let Some(point) = drop_at {
             cmd.set_point(point);
         }
@@ -270,7 +336,11 @@ impl OpenCADStudio {
 
     /// Insert `item` (a click, or a drop at `drop_at`), bringing its block
     /// into the drawing first when it lives elsewhere.
-    pub(crate) fn palette_insert(&mut self, item: Item, drop_at: Option<glam::DVec3>) -> Task<Message> {
+    pub(crate) fn palette_insert(
+        &mut self,
+        item: Item,
+        drop_at: Option<glam::DVec3>,
+    ) -> Task<Message> {
         match self.resolve_palette_block(&item) {
             Ok(name) => {
                 self.refresh_block_palette();
@@ -286,7 +356,12 @@ impl OpenCADStudio {
     }
 
     fn block_exists(&self, name: &str) -> bool {
-        self.tabs[self.active_tab].scene.document.block_records.get(name).is_some()
+        self.tabs[self.active_tab]
+            .scene
+            .document
+            .block_records
+            .get(name)
+            .is_some()
     }
 
     fn current_drawing_path(&self) -> String {
@@ -354,13 +429,33 @@ impl OpenCADStudio {
         let i = self.active_tab;
         self.push_undo_snapshot(i, "INSERT");
         self.merge_dependencies(i, &deps);
-        for def in deps.blocks {
+        let apps = crate::app::command_driver::clipboard::eed_app_map(
+            &self.tabs[i].scene.document,
+            &deps,
+        );
+        let mut created = Vec::new();
+        for def in &deps.blocks {
             let scene = &mut self.tabs[i].scene;
-            if redefine && def.name.eq_ignore_ascii_case(name) {
-                scene.redefine_block_raw(&def.name, def.base_point, def.entities);
-            } else if scene.document.block_records.get(&def.name).is_none() {
-                scene.define_block_raw(&def.name, def.base_point, def.entities);
+            let mut entities = def.entities.clone();
+            for entity in &mut entities {
+                crate::app::command_driver::clipboard::remap_eed_apps(entity, &apps);
             }
+            if redefine && def.name.eq_ignore_ascii_case(name) {
+                if let Err(err) = scene.redefine_block_raw(&def.name, def.base_point, entities) {
+                    self.command_line.push_error(&err);
+                    return Err(err);
+                }
+            } else if scene.document.block_records.get(&def.name).is_none() {
+                scene.define_block_raw(&def.name, def.base_point, entities);
+                created.push(def);
+            }
+        }
+        // A dynamic definition keeps its parameters and states.
+        use crate::app::command_driver::clipboard::{block_record_map, import_block_def_graph};
+        let document = &mut self.tabs[i].scene.document;
+        let records = block_record_map(document, &deps.blocks);
+        for def in created {
+            import_block_def_graph(document, def, &records);
         }
         self.tabs[i].scene.populate_meshes_from_document();
         self.tabs[i].dirty = true;
@@ -395,12 +490,16 @@ impl OpenCADStudio {
             MenuAction::Insert => return self.palette_insert(item, None),
             MenuAction::Redefine => {
                 let result = match &item {
-                    Item::Ref(r) if r.drawing => self.import_drawing_block(PathBuf::from(&r.source), true),
+                    Item::Ref(r) if r.drawing => {
+                        self.import_drawing_block(PathBuf::from(&r.source), true)
+                    }
                     Item::File(path) => self.import_drawing_block(path.clone(), true),
-                    Item::Ref(r) if !r.source.is_empty() => crate::io::load_file(Path::new(&r.source))
-                        .map_err(|e| e.to_string())
-                        .and_then(|doc| self.import_block_definition(&doc, &r.name, true))
-                        .map(|_| r.name.clone()),
+                    Item::Ref(r) if !r.source.is_empty() => {
+                        crate::io::load_file(Path::new(&r.source))
+                            .map_err(|e| e.to_string())
+                            .and_then(|doc| self.import_block_definition(&doc, &r.name, true))
+                            .map(|_| r.name.clone())
+                    }
                     _ => return Task::none(),
                 };
                 match result {
@@ -430,14 +529,22 @@ impl OpenCADStudio {
             MenuAction::Edit => {
                 let name = item.name();
                 let i = self.active_tab;
-                let reference = self.tabs[i].scene.document.entities().find_map(|e| match e {
-                    codec::EntityType::Insert(ins) if ins.block_name.eq_ignore_ascii_case(&name) => {
-                        Some(ins.common.handle)
-                    }
-                    _ => None,
-                });
+                let reference = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .find_map(|e| match e {
+                        codec::EntityType::Insert(ins)
+                            if ins.block_name.eq_ignore_ascii_case(&name) =>
+                        {
+                            Some(ins.common.handle)
+                        }
+                        _ => None,
+                    });
                 match reference {
-                    Some(handle) => return self.dispatch_command(&format!("BEDIT_BEGIN:{}", handle.value())),
+                    Some(handle) => {
+                        return self.dispatch_command(&format!("BEDIT_BEGIN:{}", handle.value()))
+                    }
                     None => self.command_line.push_error(&crate::tf!(
                         "Block \"{name}\" has no reference in the drawing to edit."
                     )),
@@ -447,19 +554,31 @@ impl OpenCADStudio {
                 Tab::Current => {
                     let name = item.name();
                     let i = self.active_tab;
-                    let referenced = self.tabs[i].scene.document.entities().any(|e| {
-                        matches!(e, codec::EntityType::Insert(ins) if ins.block_name.eq_ignore_ascii_case(&name))
-                    });
-                    if referenced {
-                        self.command_line.push_error(&crate::tf!(
-                            "Block \"{name}\" is referenced in the drawing and cannot be removed."
-                        ));
-                    } else {
-                        self.push_undo_snapshot(i, "PURGE");
-                        crate::app::control::erase_block_definition(&mut self.tabs[i].scene, &name);
-                        self.tabs[i].dirty = true;
-                        self.command_line.push_output(&crate::tf!("Block \"{name}\" removed."));
-                        self.refresh_block_palette();
+                    let open_edits: Vec<codec::Handle> = self.tabs[i]
+                        .block_edits
+                        .iter()
+                        .map(|session| session.br_handle)
+                        .collect();
+                    self.push_undo_snapshot(i, format!("Delete block {name}"));
+                    let outcome = crate::scene::block_service::delete(
+                        &mut self.tabs[i].scene,
+                        &name,
+                        crate::scene::block_service::DeleteOptions {
+                            force: false,
+                            open_edits: &open_edits,
+                        },
+                    );
+                    match outcome {
+                        Ok(_) => {
+                            self.tabs[i].dirty = true;
+                            self.command_line
+                                .push_output(&crate::tf!("Block \"{name}\" removed."));
+                            self.refresh_block_palette();
+                        }
+                        Err(error) => {
+                            self.discard_last_undo_entry(i);
+                            self.command_line.push_error(&error.to_string());
+                        }
                     }
                 }
                 Tab::Recent | Tab::Favorites => {
@@ -492,12 +611,20 @@ impl OpenCADStudio {
 
     /// Put `name` at the top of the Recent list (BLOCKMRULIST long).
     pub(crate) fn note_recent_block(&mut self, name: &str) {
-        let (source, drawing) = match self.block_palette.file_sources.get(&name.to_ascii_uppercase()) {
+        let (source, drawing) = match self
+            .block_palette
+            .file_sources
+            .get(&name.to_ascii_uppercase())
+        {
             Some(path) => (path.clone(), true),
             None => (self.current_drawing_path(), false),
         };
         let entry = PaletteBlockRef {
-            name: if drawing { file_stem(Path::new(&source)) } else { name.to_string() },
+            name: if drawing {
+                file_stem(Path::new(&source))
+            } else {
+                name.to_string()
+            },
             source,
             time: now_secs(),
             drawing,
@@ -509,7 +636,9 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn trim_recent_blocks(&mut self) {
-        self.block_palette.recent.truncate(self.block_mru_list as usize);
+        self.block_palette
+            .recent
+            .truncate(self.block_mru_list as usize);
     }
 
     /// Rebuild the Current Drawing list, and the previews kept for blocks
@@ -521,14 +650,7 @@ impl OpenCADStudio {
         self.block_palette.source_tab_id = Some(self.tabs[i].id);
         self.block_palette.source_block_epoch = self.tabs[i].scene.block_epoch;
         let doc = &self.tabs[i].scene.document;
-        let annotative = |name: &str| {
-            doc.block_records.get(name).is_some_and(|br| {
-                matches!(
-                    doc.get_entity(br.block_entity_handle),
-                    Some(codec::EntityType::Block(b)) if b.common.extended_data.records().iter().any(|r| r.application_name == "AcadAnnotative")
-                )
-            })
-        };
+        let annotative = |name: &str| crate::scene::annotative::block_is_annotative(doc, name);
         let entries: Vec<BlockEntry> = names
             .into_iter()
             .map(|name| BlockEntry {
@@ -541,7 +663,9 @@ impl OpenCADStudio {
         let here = self.current_drawing_path();
         for entry in &entries {
             let key = format!("{here}|{}", entry.name.to_ascii_uppercase());
-            self.block_palette.ref_wires.insert(key, entry.wires.clone());
+            self.block_palette
+                .ref_wires
+                .insert(key, entry.wires.clone());
         }
         self.block_palette.blocks = entries;
         let drawings: Vec<String> = self
@@ -579,8 +703,12 @@ impl OpenCADStudio {
         let mut user = Vec::new();
         let mut unnamed = 0;
         let mut units = rustc_hash::FxHashMap::default();
+        let mut insertion_points = rustc_hash::FxHashMap::default();
         for br in doc.block_records.iter() {
-            if br.flags.is_xref || br.name.eq_ignore_ascii_case("*Model_Space") || br.name.to_ascii_uppercase().starts_with("*PAPER_SPACE") {
+            if br.flags.is_xref
+                || br.name.eq_ignore_ascii_case("*Model_Space")
+                || br.name.to_ascii_uppercase().starts_with("*PAPER_SPACE")
+            {
                 continue;
             }
             if br.name.starts_with('*') {
@@ -597,11 +725,21 @@ impl OpenCADStudio {
                 ),
             );
             user.push(br.name.clone());
+            insertion_points.insert(br.name.to_ascii_uppercase(),(
+                crate::scene::render_graph::block_base_point(doc,&br.name),
+                crate::scene::block_grips::insertion_points(doc,br.handle),
+            ));
         }
         user.sort_by_key(|n| n.to_ascii_uppercase());
         let search_path = std::env::current_dir()
             .map(|d| d.display().to_string())
             .unwrap_or_default();
-        BlockCatalog { user, unnamed, units, search_path }
+        BlockCatalog {
+            user,
+            unnamed,
+            units,
+            search_path,
+            insertion_points,
+        }
     }
 }

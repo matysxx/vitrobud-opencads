@@ -45,3 +45,5 @@
   (`21-upstream-sync-652f4d6b/`)
 - `OCSSTACK-22` — Sync reviewed upstream revision `41d93b6f` and complete documentation
   (`22-upstream-sync-41d93b6f/`)
+- `OCSSTACK-23` — Sync reviewed upstream revision `79b6a1f9` and refresh container documentation
+  (`23-upstream-sync-79b6a1f9/`)

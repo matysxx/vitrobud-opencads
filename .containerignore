@@ -2,8 +2,16 @@
 .DS_Store
 .env
 src/.env
+**/.env.*
+!**/.env.dist
+.ai/wiki/tasks
+.ai/prd/task-status.local.md
 compose.override.yaml
 dev-ops/storage
+dev-ops/.runtime
+container-*.service
+*.service.generated
+*.timer.generated
 target
 dist
 *.tar.gz
