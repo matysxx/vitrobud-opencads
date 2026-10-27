@@ -55,7 +55,7 @@ the public repository.
 
 The current implementation uses an isolated application-side compatibility
 writer alongside the directly pinned codec dependency (`codec` in Rust; package
-`acadrust` in the current lockfile).
+`opencaddocument` in the current lockfile, using acadrust internally).
 The normal codec
 writer serves ordinary DWG/DXF save targets, while this command deliberately
 emits the smaller, verified `AC1009` manufacturing profile described above.

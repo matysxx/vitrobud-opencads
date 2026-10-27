@@ -99,6 +99,14 @@ const RIBBON_AREA: &str = "KEYTIP_RIBBON_AREA";
 pub(super) const XREF_LAUNCHER: &str = "XREF_LAUNCHER";
 /// The xref fading switch in the Reference slide-out.
 pub(super) const XREF_FADE: &str = "XREF_FADE";
+/// The Text panel's corner arrow (Text Style).
+pub(super) const TEXT_LAUNCHER: &str = "TEXT_LAUNCHER";
+/// The Text panel's text height box.
+pub(super) const TEXT_HEIGHT: &str = "TEXT_HEIGHT";
+/// The Dimensions panel's corner arrow (Dimension Style).
+pub(super) const DIMENSION_LAUNCHER: &str = "DIMENSION_LAUNCHER";
+/// The Leaders panel's corner arrow (Multileader Style).
+pub(super) const LEADER_LAUNCHER: &str = "LEADER_LAUNCHER";
 const COLLAPSED_PREFIX: &str = "panel:";
 
 pub fn active() -> bool {
@@ -307,6 +315,7 @@ const CODES: &[(&str, &str, &str)] = &[
     ("draw", "LAYLCK", "LK"),
     ("draw", "LAYMCUR", "LC"),
     ("draw", "LAYISO", "LS"),
+    ("draw", "LAYWALK", "LX"),
     ("draw", "LAYON", "LN"),
     ("draw", "LAYTHW", "LW"),
     ("draw", "LAYULK", "UL"),
@@ -412,27 +421,54 @@ const CODES: &[(&str, &str, &str)] = &[
     ("insert", "PDFSHXTEXT", "PS"),
     ("insert", "PDFSHXTEXT_SETTINGS", "PT"),
     ("insert", "TXT2MTXT", "TM"),
+    ("insert", "FIELD", "FI"),
+    ("insert", "UPDATEFIELD", "UF"),
+    ("insert", "INSERTOBJ", "OL"),
+    ("insert", "HYPERLINK", "HY"),
+    ("insert", "DATALINK", "DL"),
+    ("insert", "DATALINKUPDATE", "UD"),
+    ("insert", "DATALINKUPDATE_WRITE", "WD"),
+    ("insert", "DATAEXTRACTION", "DX"),
     // Annotate.
     ("annotate", "Text", "TE"),
     ("annotate", "ANNOTATE_TEXT", "MT"),
     ("annotate", "TEXT_STYLE_COMBO", "TY"),
+    ("annotate", TEXT_LAUNCHER, "TS"),
+    ("annotate", "SPELL", "CS"),
+    ("annotate", "TEXTALIGN", "TA"),
+    ("annotate", "JUSTIFYTEXT", "JT"),
+    ("annotate", TEXT_HEIGHT, "TH"),
+    ("text_extension", "SCALETEXT", "ST"),
     ("annotate", "Dimensions", "DM"),
-    ("annotate", "ANNOTATE_DIM", "DN"),
+    ("annotate", "DIM", "DI"),
     ("annotate", "DIM_STYLE_COMBO", "DY"),
-    ("annotate", "QDIM", "QD"),
-    ("annotate", "DIMCONTINUE", "CO"),
-    ("annotate", "TOLERANCE", "TO"),
-    ("annotate", "DIMEDIT", "DE"),
     ("annotate", "DIMBREAK", "BR"),
     ("annotate", "DIMSPACE", "SP"),
     ("annotate", "DIMJOGLINE", "DJ"),
+    ("annotate", super::widgets::DIM_LAYER_COMBO, "DA"),
+    ("annotate", "DIMINSPECT", "DP"),
+    ("annotate", "DIMSTYLE_APPLY", "DU"),
+    ("annotate", "DIMREASSOCIATE", "DR"),
+    ("annotate", "ANNOTATE_DIM", "DN"),
+    ("annotate", "QDIM", "QD"),
+    ("annotate", "ANNOTATE_DIM_CONTINUE", "CO"),
+    ("annotate", DIMENSION_LAUNCHER, "DS"),
+    ("dimensions_extension", "TOLERANCE", "TO"),
+    ("dimensions_extension", "DIMEDIT;O", "DE"),
+    ("dimensions_extension", "DIMTEDIT_ANGLE", "DTA"),
+    ("dimensions_extension", "DIMTEDIT_LEFT", "DTL"),
+    ("dimensions_extension", "DIMTEDIT_CENTER", "DTC"),
+    ("dimensions_extension", "DIMTEDIT_RIGHT", "DTR"),
+    ("dimensions_extension", "DIMOVERRIDE", "DO"),
     ("annotate", "Centerlines", "CE"),
     ("annotate", "CENTERMARK", "CM"),
     ("annotate", "CENTERLINE", "CL"),
-    ("annotate", "ANNOTATE_LEADER", "ML"),
+    ("annotate", "MLEADER", "ML"),
     ("annotate", "MLEADER_STYLE_COMBO", "MY"),
-    ("annotate", "MLEADERADD", "MAD"),
-    ("annotate", "MLEADERREMOVE", "MV"),
+    ("annotate", super::widgets::MLEADER_LAYER_COMBO, "MU"),
+    ("annotate", LEADER_LAUNCHER, "MS"),
+    ("annotate", "AIMLEADEREDITADD", "MAD"),
+    ("annotate", "AIMLEADEREDITREMOVE", "MV"),
     ("annotate", "MLEADERALIGN", "MAL"),
     ("annotate", "MLEADERCOLLECT", "MC"),
     ("annotate", "TABLE", "TB"),
@@ -735,6 +771,9 @@ impl Ribbon {
                     }
                     RibbonItem::StyleComboGroup { combo_id, rows, .. } => {
                         tips.push(dropdown_tip(scope, combo_id));
+                        if *combo_id == "MLEADER_STYLE_COMBO" {
+                            tips.push(dropdown_tip(scope, super::widgets::MLEADER_LAYER_COMBO));
+                        }
                         tips.extend(rows.iter().flatten().map(|tool| tool_tip(scope, tool)));
                     }
                 }
@@ -754,6 +793,14 @@ impl Ribbon {
             };
             let Some(id) = draw_panel::slide_out_id(group.title, &ids) else {
                 tips.push(flyout);
+                if group.title == "Leaders" && ids.contains(&"MLEADER") {
+                    tips.push(Tip {
+                        anchor: LEADER_LAUNCHER.to_string(),
+                        target: LEADER_LAUNCHER,
+                        code: code(scope, LEADER_LAUNCHER).map(str::to_string),
+                        action: Action::Run(Message::Command("MLEADERSTYLE".to_string())),
+                    });
+                }
                 continue;
             };
             let slide_out = Tip {
@@ -774,6 +821,28 @@ impl Ribbon {
                     target: XREF_LAUNCHER,
                     code: code(scope, XREF_LAUNCHER).map(str::to_string),
                     action: Action::Run(Message::ToggleXrefManager),
+                });
+            }
+            if id == draw_panel::DIMENSIONS_PANEL_ID {
+                tips.push(Tip {
+                    anchor: DIMENSION_LAUNCHER.to_string(),
+                    target: DIMENSION_LAUNCHER,
+                    code: code(scope, DIMENSION_LAUNCHER).map(str::to_string),
+                    action: Action::Run(Message::Command("DIMSTYLE".to_string())),
+                });
+            }
+            if id == draw_panel::TEXT_PANEL_ID {
+                tips.push(Tip {
+                    anchor: TEXT_LAUNCHER.to_string(),
+                    target: TEXT_LAUNCHER,
+                    code: code(scope, TEXT_LAUNCHER).map(str::to_string),
+                    action: Action::Run(Message::Command("STYLE".to_string())),
+                });
+                tips.push(Tip {
+                    anchor: TEXT_HEIGHT.to_string(),
+                    target: TEXT_HEIGHT,
+                    code: code(scope, TEXT_HEIGHT).map(str::to_string),
+                    action: Action::Run(Message::RibbonTextHeightFocus),
                 });
             }
         }

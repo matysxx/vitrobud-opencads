@@ -8,6 +8,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_private_web_entry_excludes_upstream_analytics(self):
+        entry = (ROOT / "web-app.html").read_text()
+        self.assertNotIn("openaec-analytics-loader", entry)
+        self.assertNotIn("open-aec.com/shared/analytics.js", entry)
+
     def test_cache_stamp_is_repeatable_and_tracks_bundle_changes(self):
         with tempfile.TemporaryDirectory() as directory:
             bundle = pathlib.Path(directory)

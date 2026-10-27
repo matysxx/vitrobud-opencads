@@ -3,6 +3,13 @@ use codec::entities::{Insert, Line};
 use codec::types::Vector3;
 use codec::{EntityType, Handle};
 
+mod retained_save_as;
+mod table_properties;
+mod lookup_properties;
+mod visibility_properties;
+mod grip_descriptions;
+mod flip_state_labels;
+
 fn fixture() -> (OpenCADStudio, Handle) {
     let mut app = OpenCADStudio::new_for_test();
     app.automation_op(r#"{"op":"new"}"#);
@@ -67,6 +74,33 @@ fn edit_action_set(app: &mut OpenCADStudio, action: Handle, mode: &str, targets:
     let _ = app.feed_command(crate::command::StepInput::SelectionComplete(targets));
     let _ = app.feed_command(crate::command::StepInput::Enter);
     assert!(app.tabs[app.active_tab].active_cmd.is_none());
+}
+
+#[test]
+fn block_editor_save_redraws_only_the_saved_blocks_palette_preview() {
+    let (mut app, reference) = fixture();
+    let i = app.active_tab;
+    app.tabs[i].scene.define_block_raw(
+        "OTHER",
+        Vector3::ZERO,
+        vec![EntityType::Line(Line::from_points(
+            Vector3::ZERO,
+            Vector3::UNIT_Y,
+        ))],
+    );
+    app.show_block_palette = true;
+    let preview = |app: &OpenCADStudio, name: &str| {
+        std::rc::Rc::clone(&app.block_palette.current_entry(name).unwrap().preview)
+    };
+    begin(&mut app, reference);
+    circle(&mut app, 3.);
+    // Up to date right before the save, as after any handled message.
+    app.refresh_block_palette_if_stale();
+    let (edited, other) = (preview(&app, "EDIT_ME"), preview(&app, "OTHER"));
+    let _ = app.dispatch_command("BSAVE");
+    app.refresh_block_palette_if_stale();
+    assert!(!std::rc::Rc::ptr_eq(&preview(&app, "EDIT_ME"), &edited));
+    assert!(std::rc::Rc::ptr_eq(&preview(&app, "OTHER"), &other));
 }
 
 #[test]
@@ -1553,6 +1587,7 @@ fn block_parameter_leader_and_crossing_box_select_then_delete() {
         iced::Point::new(box_bounds.x, box_bounds.y),
         iced::Point::new(box_bounds.x + box_bounds.width, box_bounds.y + box_bounds.height),
         true,
+        false,
     ));
     assert_eq!(app.tabs[i].selected_authoring, Some(handle));
 
@@ -3437,7 +3472,6 @@ fn local_undo_preserves_imported_native_networks_when_constraints_are_unchanged(
     begin(&mut app, reference);
     let original_objects = app.tabs[i].scene.document.objects.clone();
     circle(&mut app, 1.0);
-    assert!(!app.save_block_edit_as(i, "COPY"));
     assert_eq!(app.tabs[i].scene.document.objects, original_objects);
     app.undo_steps(1);
     assert_eq!(members(&app).len(), 1);
@@ -3445,6 +3479,18 @@ fn local_undo_preserves_imported_native_networks_when_constraints_are_unchanged(
     app.redo_steps(1);
     assert_eq!(members(&app).len(), 2);
     assert_eq!(app.tabs[i].scene.document.objects, original_objects);
+    assert!(app.save_block_edit_as(i, "COPY"));
+    for (handle, object) in original_objects {
+        let mut actual = app.tabs[i].scene.document.objects[&handle].clone();
+        if handle == app.tabs[i].scene.document.header.named_objects_dict_handle {
+            // Copying the first scope installs the drawing's root network.
+            let ObjectType::Dictionary(dictionary) = &mut actual else { panic!() };
+            dictionary.entries.retain(|(key, _)| key != "ACAD_ASSOCNETWORK");
+        }
+        assert_eq!(actual, object);
+    }
+    assert_eq!(members(&app).len(), 1);
+    assert_eq!(app.tabs[i].scene.document.block_records.get("COPY").unwrap().entity_handles.len(), 2);
 }
 
 #[test]
@@ -5920,7 +5966,7 @@ fn block_polar_stretch_end_binding_command_scratch_and_reference_history() {
             insert: (!testing).then_some(insert), document, definition, parameter: parameter.handle,
             value: actions::Value::Point(DVec3::new(0., 15., 0.)),
         });
-        let geometry = |doc: &codec::CadDocument| {
+        let geometry = |doc: &codec::Document| {
             let EntityType::Insert(reference) = doc.get_entity(insert).unwrap() else { panic!() };
             let line = doc.block_records.get(&reference.block_name).unwrap().entity_handles.iter().find_map(|h| match doc.get_entity(*h) { Some(EntityType::Line(line)) => Some(line), _ => None }).unwrap();
             (line.start, line.end)
@@ -5985,7 +6031,7 @@ fn block_action_self_grip_selection_edits_keep_native_links_and_reference_histor
         let _ = app.handle_block_action_result(crate::command::CmdResult::EvaluateBlockParameter { grip: None,
             insert: (!testing).then_some(insert), document, definition, parameter: parameter.handle, value: actions::Value::Point(DVec3::new(0., 15., 0.)),
         });
-        let circle_center = |doc: &codec::CadDocument| {
+        let circle_center = |doc: &codec::Document| {
             let EntityType::Insert(reference) = doc.get_entity(insert).unwrap() else { panic!() };
             doc.block_records.get(&reference.block_name).unwrap().entity_handles.iter().find_map(|h| match doc.get_entity(*h) {
                 Some(EntityType::Circle(circle)) => Some(circle.center), _ => None,
@@ -6277,7 +6323,7 @@ fn block_alignment_type_placement_properties_history_and_native_roundtrips() {
     let _ = app.run_command_line("BPARAMETER ALIGNMENT 0,0 TYPE P 10,0");
     let parameter = orientation::parameters(&app.tabs[i].scene.document, definition).into_iter()
         .find(|p| p.kind == Kind::Alignment).unwrap().handle;
-    let perpendicular = |doc: &codec::CadDocument| match &doc.objects[&parameter] {
+    let perpendicular = |doc: &codec::Document| match &doc.objects[&parameter] {
         ObjectType::DynamicBlock(object) => match &object.data {
             DynamicBlockData::AlignmentParameter(p) => p.align_perpendicular,
             _ => panic!(),
@@ -7200,3 +7246,11 @@ fn block_key_point_grip_eligibility_and_pending_result_follow_reassociation() {
         }
     }
 }
+
+mod scalar_grip_bindings;
+
+mod alignment_insertion;
+
+mod parameter_preview;
+
+mod lookup_expressions;

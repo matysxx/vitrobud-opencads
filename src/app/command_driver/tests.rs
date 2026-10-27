@@ -1,4 +1,8 @@
 #[cfg(test)]
+#[path = "trim_hatch_tests.rs"]
+mod trim_hatch_tests;
+
+#[cfg(test)]
 mod command_replacement_tests {
     use super::super::*;
     use codec::entities::{Circle, Line};
@@ -2126,5 +2130,89 @@ mod block_base_point_tests {
             app.tabs[i].visibility_grip.is_some(),
             "the selection is a dynamic-block reference"
         );
+    }
+
+    /// The visibility grip opens a list, so its triangle points down like a
+    /// list arrow, even on a rotated reference (the fixture turns it 30 deg).
+    #[test]
+    fn visibility_grip_points_down() {
+        let mut app = OpenCADStudio::new_for_test();
+        let handle = block_and_instance_with_base(&mut app, "VIS_DOWN");
+        let i = app.active_tab;
+        let def_block = app.tabs[i]
+            .scene
+            .document
+            .block_records
+            .get("VIS_DOWN")
+            .expect("the block record")
+            .handle;
+        let mut param = codec::objects::BlockVisibilityParameter::default();
+        param.owner = def_block;
+        param.def_point = Vector3::new(12.0, 3.0, 0.0);
+        app.tabs[i]
+            .scene
+            .document
+            .block_visibility_params
+            .insert(codec::Handle::new(0x70), param);
+        app.tabs[i].selected_handle = Some(handle);
+
+        app.refresh_visibility_grip([0.0, 0.0, 0.0]);
+
+        let grip = app.tabs[i]
+            .selected_grips
+            .last()
+            .expect("the visibility lookup grip");
+        assert_eq!(grip.dir, Some(glam::DVec3::NEG_Y));
+    }
+}
+
+#[cfg(test)]
+mod sweep_path_end_tests {
+    use crate::app::OpenCADStudio;
+    use crate::command::CmdResult;
+    use codec::entities::{LwPolyline, LwVertex};
+    use codec::types::Vector2;
+
+    /// Picked near its far end, a path is swept from that end. A path whose
+    /// start lies farther from the world origin than its end used to fail.
+    #[test]
+    fn sweep_from_the_picked_end_of_a_bent_path() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let mut hexagon = LwPolyline::new();
+        for k in 0..6 {
+            let a = (60.0 * k as f64).to_radians();
+            hexagon.vertices.push(LwVertex::new(Vector2::new(5.0 * a.cos(), 5.0 * a.sin())));
+        }
+        hexagon.is_closed = true;
+        let profile = app.tabs[i].scene.add_entity(codec::EntityType::LwPolyline(hexagon));
+        let mut path = LwPolyline::new();
+        path.vertices.push(LwVertex::new(Vector2::new(20.0, 0.0)));
+        path.vertices.push(LwVertex::with_bulge(
+            Vector2::new(60.0, 0.0),
+            22.5f64.to_radians().tan(),
+        ));
+        path.vertices.push(LwVertex::new(Vector2::new(80.0, 20.0)));
+        path.vertices.push(LwVertex::new(Vector2::new(80.0, 60.0)));
+        let path = app.tabs[i].scene.add_entity(codec::EntityType::LwPolyline(path));
+        let options = crate::command::SweepOptions {
+            path_pick: Some(glam::DVec3::new(80.0, 40.0, 0.0)),
+            ..crate::command::SweepOptions::default()
+        };
+        let _ = app.apply_cmd_result(CmdResult::SweepEntities {
+            handles: vec![profile],
+            path_handle: path,
+            mode: crate::command::ExtrudeMode::Solid,
+            options,
+            color: [1.0; 4],
+            expressions: [None, None],
+        });
+        let swept = app.tabs[i]
+            .scene
+            .document
+            .entities()
+            .any(|entity| matches!(entity, codec::EntityType::Solid3D(_)));
+        assert!(swept, "the sweep from the picked end makes a solid");
     }
 }

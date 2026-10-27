@@ -27,6 +27,10 @@ ancestry rather than squashing the synchronization.
 ## Maintained fork checks
 
 - Keep the container build at the root application URL `/` using `web-app.html`.
+- Keep the external analytics loader out of that private web entry; review new
+  remote scripts at each merge and run the packaging privacy regression test.
+- Review the `codec` alias against `opencaddocument` API changes; ordinary SAVE
+  uses converters while the dedicated R12 writer remains separate.
 - Preserve WebGL2 and the separate `EXPORTDXFR12` command, writer, and tests.
 - Keep R12 handlers isolated from the large central update stack frame.
 - Verify renamed codec APIs against the R12 output regression tests.

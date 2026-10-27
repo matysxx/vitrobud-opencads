@@ -113,7 +113,7 @@ pub struct TextInlineState {
     /// Canvas-space anchor where the field is drawn (the insertion-point click).
     pub screen_anchor: iced::Point,
 }
-pub(super) fn can_edit_text(mut handle: Handle, document: &codec::CadDocument) -> bool {
+pub(super) fn can_edit_text(mut handle: Handle, document: &codec::Document) -> bool {
     for _ in 0..8 {
         match document.get_entity(handle) {
             Some(codec::EntityType::Leader(l)) => {
@@ -332,7 +332,7 @@ impl super::OpenCADStudio {
             {
                 self.tabs[i].scene.document.header.text_height = paper_height;
             }
-            let handle = self.commit_entity_handle(plane.place_entity(EntityType::Text(t)));
+            let handle = self.commit_new_text(plane.place_entity(EntityType::Text(t)));
             if annotative {
                 let scale = self.tabs[i].scene.creation_annotation_scale_handle();
                 if let (Some(handle), Some(scale)) = (handle, scale) {

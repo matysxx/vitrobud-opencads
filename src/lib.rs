@@ -2,6 +2,14 @@
 #![recursion_limit = "512"]
 
 pub mod app;
+
+/// Tests that build a headless iced renderer take this first: two made in
+/// parallel crash the process, wherever in the crate they run.
+#[cfg(test)]
+pub(crate) fn headless_ui_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cli;
 pub mod command;
@@ -16,6 +24,8 @@ pub(crate) mod input;
 pub mod io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mcp_intent;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mcp_ops;
 pub mod modules;

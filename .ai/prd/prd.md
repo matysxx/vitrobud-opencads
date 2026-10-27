@@ -8,6 +8,9 @@
 
 ## Current tasks
 
+- `OCSSTACK-24` — Sync reviewed upstream revision `9d0f29aa` with fork compatibility and privacy review
+  (`24-upstream-sync-9d0f29aa/`)
+
 - `OCSSTACK-1` — Scaffold maintained fork and rootless Podman runtime
 - `OCSSTACK-2` — Add machine-compatible binary DXF R12 export
   (`2-export-dxf-r12/`)

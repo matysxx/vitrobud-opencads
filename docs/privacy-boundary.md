@@ -2,6 +2,11 @@
 
 ## Public repository
 
+The private web entry (`web-app.html`) deliberately omits upstream's external
+OpenAEC analytics loader. A packaging test guards this fork policy. The upstream
+marketing page is not the container entry point. This does not disable other
+application network features; do not describe the application as air-gapped.
+
 - upstream source and GPL notices
 - container build and anonymous Compose defaults
 - operational scripts and reusable documentation

@@ -307,10 +307,12 @@ impl canvas::Program<Message> for DimensionPreview {
                         );
                     }
                 }
-                ArrowKind::Tick { size } => {
+                ArrowKind::Tick { size, width } => {
+                    // The architectural tick reads heavier than the oblique.
+                    let w = if *width > 0.0 { 3.0 } else { 1.6 };
                     frame.stroke(
                         &tick_path(tip_x, *size),
-                        canvas::Stroke::default().with_color(guide).with_width(1.6),
+                        canvas::Stroke::default().with_color(guide).with_width(w),
                     );
                 }
                 ArrowKind::Box_ { size, filled } => {
@@ -1432,6 +1434,7 @@ pub fn view_window<'a>(
         on_new: Message::DimStyleDialogNew,
         on_copy: Message::DimStyleDialogCopy,
         on_delete: Message::DimStyleDialogDelete,
+        on_import: Some(Message::StyleImportPick(crate::app::StyleKind::Dim)),
         on_select: Message::DimStyleDialogSelect,
         on_set_current: Message::DimStyleDialogSetCurrent,
         on_apply: Message::DimStyleDialogApply,

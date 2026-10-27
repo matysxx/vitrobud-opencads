@@ -108,6 +108,17 @@ impl AutoConstrainSettings {
     }
 }
 
+/// Check Spelling preferences kept with the profile.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpellPrefs {
+    /// BCP-47 tag of the main dictionary; empty: the system language.
+    pub language: String,
+    pub options: crate::ui::window::spell_dialog::SpellOptions,
+    /// Words added to the user's dictionary.
+    pub custom: Vec<String>,
+}
+
 /// TXT2MTXT (Combine Text) settings, the profile values
 /// TXT2MTXTCOMBINEMTEXT, TXT2MTXTTEXTORDER, TXT2MTXTWORDWRAP and
 /// TXT2MTXTLINESPACING.
@@ -123,6 +134,30 @@ pub struct Txt2MtxtSettings {
     pub word_wrap: bool,
     /// Force uniform line spacing (always on while word-wrap is).
     pub uniform_spacing: bool,
+}
+
+/// The Inspection Dimension window's last values, offered the next time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DimInspectSettings {
+    /// 0 round, 1 angular, 2 no frame.
+    pub shape: u8,
+    pub label_on: bool,
+    pub label: String,
+    pub rate_on: bool,
+    pub rate: String,
+}
+
+impl Default for DimInspectSettings {
+    fn default() -> Self {
+        Self {
+            shape: 0,
+            label_on: false,
+            label: String::new(),
+            rate_on: true,
+            rate: "100%".to_string(),
+        }
+    }
 }
 
 impl Default for Txt2MtxtSettings {
@@ -635,10 +670,16 @@ pub struct UserSettings {
     pub wblock_object_mode: u8,
     /// FIELDDISPLAY: fields show on a gray background.
     pub field_display: bool,
+    /// HYPERLINKOPTIONS: the hyperlink cursor, tooltip and shortcut menu.
+    pub hyperlink_options: bool,
     /// XDWGFADECTL: how much referenced drawings fade (-90..=90; negative is off).
     pub xref_fade: i32,
     /// FILEDIA: file dialogs of commands that have a command-line form.
     pub file_dia: bool,
+    /// OLEHIDE: which OLE objects show (0 all, 1 paper space, 2 model space, 3 none).
+    pub ole_hide: i16,
+    /// OLEQUALITY: the plot quality of new OLE objects (3 automatic).
+    pub ole_quality: i16,
     /// TRIMEXTENDMODE: TRIM and EXTEND start in Quick mode (else Standard).
     pub trim_extend_quick: bool,
     /// Fonts and plot styles kept in a chosen folder (`None`: the default).
@@ -774,6 +815,12 @@ pub struct UserSettings {
     /// TXT2MTXT settings (Text to MText Settings dialog).
     #[serde(default)]
     pub txt2mtxt: Txt2MtxtSettings,
+    /// Check Spelling: main dictionary, options and the user's words.
+    #[serde(default)]
+    pub spell: SpellPrefs,
+    /// Inspection Dimension window values.
+    #[serde(default)]
+    pub dim_inspect: DimInspectSettings,
     /// Keep existing geometry size while solving after a constraint edit.
     #[serde(default = "default_constraint_solve_mode")]
     pub constraint_solve_mode: bool,
@@ -1106,7 +1153,8 @@ impl Default for UserSettings {
             zoom_wheel_reversed: false,
             navigation_style: NavigationStyle::Cad,
             dynamic_ucs: true,
-            touchpad_pan: false,
+            // A Mac's built-in trackpad is the common case there.
+            touchpad_pan: cfg!(target_os = "macos"),
             ui_scale_percent: 100,
             zoom_factor: 60,
             cursor_size: 5,
@@ -1135,8 +1183,11 @@ impl Default for UserSettings {
             block_open_in_editor: false,
             wblock_object_mode: 0,
             field_display: true,
+            hyperlink_options: true,
             xref_fade: 50,
             file_dia: true,
+            ole_hide: 0,
+            ole_quality: 3,
             trim_extend_quick: true,
             fonts_folder: None,
             plot_styles_folder: None,
@@ -1182,6 +1233,8 @@ impl Default for UserSettings {
             show_constraint_values: true,
             auto_constrain: AutoConstrainSettings::default(),
             txt2mtxt: Txt2MtxtSettings::default(),
+            spell: SpellPrefs::default(),
+            dim_inspect: DimInspectSettings::default(),
             constraint_solve_mode: true,
             constraint_infer: false,
             constraint_bar_display: 3,

@@ -14,14 +14,22 @@ mod count;
 mod dash;
 mod dgn_import;
 mod dim;
+mod dim_cmd;
+mod dim_inspect;
+mod dim_layer;
+mod mleader_layer;
 pub(crate) mod display;
 mod draw;
 mod field;
 mod fileops;
+mod hyperlink;
+pub(crate) use hyperlink::{hyperlink_options, set_hyperlink_options};
 mod inquiry;
 mod layerprops;
 mod layers;
 mod model_import;
+mod ole;
+pub(crate) use ole::{ole_quality, set_ole_quality};
 mod pc_colormap;
 mod pc_extract;
 mod pdf_dialogs;
@@ -33,7 +41,10 @@ mod plotvars;
 mod point_cloud;
 mod refedit;
 pub(crate) mod sheet_set;
+mod spell;
 mod styleprops;
+mod text_edit;
+mod text_layer;
 mod ucsfollow;
 mod view;
 mod view_presets;
@@ -372,6 +383,12 @@ impl OpenCADStudio {
             self.resume_transparent_parent(i);
             return Some(task);
         }
+        // A walk is only a temporary hide, and these commands take ownership of
+        // layer visibility from here on: starting one puts the drawing back
+        // first, so the override never swallows the result it is hiding.
+        if self.tabs[i].layer_walk.is_some() && Self::layer_walk_conflicts_with(cmd) {
+            self.abandon_layer_walk_on(i);
+        }
         // A new command abandons any grip edit and its numeric input.
         let had_pending_grip_input = self.grip_pending.take().is_some();
         let had_active_grip = self.cancel_active_grip_edit();
@@ -494,6 +511,21 @@ impl OpenCADStudio {
     /// `finish_dispatch`), or `None` to defer to the next — equivalent to one
     /// sequential `match` over all arms.
     fn dispatch_families(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
+        if let Some(t) = self.dispatch_text_layer(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_dim_layer(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_dim_cmd(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_dim_inspect(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_mleader_layer(cmd, i) {
+            return Some(t);
+        }
         if let Some(t) = self.dispatch_dash(cmd, i) {
             return Some(t);
         }
@@ -536,10 +568,22 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_attdef(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_ole(cmd, i) {
+            return Some(t);
+        }
         if let Some(t) = self.dispatch_sheet_set(cmd, i) {
             return Some(t);
         }
         if let Some(t) = self.dispatch_field(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_hyperlink(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_text_edit(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_spell(cmd, i) {
             return Some(t);
         }
         if let Some(t) = self.dispatch_count(cmd, i) {
@@ -898,6 +942,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "PERSPECTIVE",
         "GRIDMODE",
         "GRIDUNIT",
+        "QPMODE",
         "ZOOMWHEEL",
         "ZOOMFACTOR",
         "SHORTCUTMENU",
@@ -1078,6 +1123,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "COLORSCHEME",
         "COUNT",
         "DATAEXTRACTION",
+        "-DATAEXTRACTION",
         "DE",
         "DESELALL",
         "DESELECT",
@@ -1123,6 +1169,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "LAYOUTTAB",
         "LAYTHW",
         "LAYUNISO",
+        "LAYWALK",
         "LI",
         "LINETYPE",
         "LIST",

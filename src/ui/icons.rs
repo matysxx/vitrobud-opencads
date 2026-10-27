@@ -73,8 +73,6 @@ pub static COPY: &[u8] = include_bytes!("../../assets/icons/ui/copy.svg");
 pub static MENU: &[u8] = include_bytes!("../../assets/icons/ui/menu.svg");
 pub static MOVE: &[u8] = include_bytes!("../../assets/icons/ui/move.svg");
 pub static RESIZE: &[u8] = include_bytes!("../../assets/icons/ui/resize.svg");
-/// `RESIZE` mirrored for a bottom-left corner grip.
-pub static RESIZE_LEFT: &[u8] = include_bytes!("../../assets/icons/ui/resize_left.svg");
 pub static PIN: &[u8] = include_bytes!("../../assets/icons/ui/pin.svg");
 /// `PIN` tilted 30°: the pin while auto-hide is on.
 pub static PIN_ACTIVE: &[u8] = include_bytes!("../../assets/icons/ui/pin_active.svg");
@@ -681,6 +679,13 @@ pub fn osnap(snap: crate::snap::SnapType) -> &'static [u8] {
 /// MTP menu icon: modal 2-pick modifier, not a persistent `SnapType` mode.
 pub fn mtp_icon() -> &'static [u8] {
     OSNAP_MTP
+}
+
+/// Base marker and offset arrow for the FROM point modifier.
+pub fn from_icon() -> &'static [u8] {
+    br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.5">
+<circle cx="5" cy="18" r="3"/><path d="M7 16L19 4M12 4h7v7"/>
+</svg>"##
 }
 
 /// Context-menu glyphs for the transparent navigation rows.

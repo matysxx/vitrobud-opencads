@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "2026.42.0"
+version = "2026.43.0"
 edition = "2021"
 build = "build.rs"
 default-run = "OpenCADStudio"
@@ -37,10 +37,10 @@ rfd = "0.17"
 clap = { version = "4", features = ["derive", "string"] }
 env_logger = "0.11"
 log = "0.4"
-codec = { package = "acadrust", git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "f647216", features = ["serde"] }
-kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "fd15b94", features = ["acis", "offset"] }
-kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "fd15b94" }
-graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "84194ea" }
+codec = { package = "opencaddocument", git = "https://github.com/HakanSeven12/opencaddocument.git", rev = "245b0e8", features = ["serde"] }
+kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "5708ede", features = ["acis", "offset"] }
+kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "5708ede" }
+graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "2eff15a" }
 dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 # Shared SAVE serialization dispatch + web-worker wire format: one
 # implementation for the inline (fallback/native) path and the worker path.
@@ -95,7 +95,7 @@ naga = { version = "27", features = ["wgsl-in"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 libloading = "0.8"
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Security", "Win32_System_Com", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Printing", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_Globalization", "Win32_Security_Authentication_Identity", "Win32_UI_Controls_Dialogs"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Printing", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_Globalization", "Win32_Security_Authentication_Identity", "Win32_UI_Controls_Dialogs"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "settings", "wayland"] }
@@ -114,6 +114,7 @@ objc2-foundation = { version = "0.2", features = ["NSArray", "NSURL", "NSString"
 [patch.crates-io]
 iced_core = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 iced_widget = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
+
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = "0.3"
@@ -279,6 +280,10 @@ name = "model_space_handle_lookup"
 harness = false
 
 [[bench]]
+name = "dimension_association_refresh"
+harness = false
+
+[[bench]]
 name = "parametric_presolve_fixpoint"
 harness = false
 
@@ -288,6 +293,30 @@ harness = false
 
 [[bench]]
 name = "tds_material_groups"
+harness = false
+
+[[bench]]
+name = "associative_refresh_dedup"
+harness = false
+
+[[bench]]
+name = "centerline_refresh_scan"
+harness = false
+
+[[bench]]
+name = "navigation_selection_bounds"
+harness = false
+
+[[bench]]
+name = "paper_viewport_hidden_handles"
+harness = false
+
+[[bench]]
+name = "i18n_label_render"
+harness = false
+
+[[bench]]
+name = "dependency_index_rebuild"
 harness = false
 
 [[test]]

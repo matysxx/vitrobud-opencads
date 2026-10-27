@@ -1,5 +1,9 @@
 # Browser updates and offline state
 
+The private entry excludes upstream's external analytics loader. Existing cached
+application windows keep their own bundle until the update procedure below is
+completed; a server rollout alone does not replace code in active browser tabs.
+
 This container serves the app at `/`, not upstream Pages' `/app/`. Relative
 manifest, start URL and service-worker registration follow that root. The build
 stamps the generated worker cache with a hash of the final bundle, reproducing

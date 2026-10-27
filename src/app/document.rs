@@ -8,7 +8,7 @@ use crate::snap::SnapResult;
 use crate::t;
 use crate::ui::{LayerPanel, PropertiesPanel};
 use codec::tables::{normalize_name, Ucs};
-use codec::{CadDocument, EntityType, Handle};
+use codec::{Document, EntityType, Handle};
 use iced;
 use std::any::Any;
 use std::collections::HashMap;
@@ -17,6 +17,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 static NEXT_DOCUMENT_TAB_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LayisoMode {
+    Off,
+    LockAndFade,
+}
+
+#[derive(Clone)]
+pub(super) struct LayisoLayerSnapshot {
+    pub(super) name: String,
+    pub(super) before: codec::tables::Layer,
+    pub(super) after: codec::tables::Layer,
+}
+
+#[derive(Clone)]
+pub(super) struct LayisoState {
+    pub(super) mode: LayisoMode,
+    pub(super) layers: Vec<LayisoLayerSnapshot>,
+}
 
 // ── Dynamic input ──────────────────────────────────────────────────────────
 
@@ -157,6 +176,18 @@ pub(super) struct DocumentTab {
     pub(super) tab_title: String,
     pub(super) properties: PropertiesPanel,
     pub(super) layers: LayerPanel,
+    /// The LAYWALK pallet session, while a walk is open on this drawing.
+    pub(super) layer_walk: Option<crate::ui::window::layer_walk::LayerWalkSession>,
+    /// Rows cached for that session, so the pallet and the pure logic agree on
+    /// one view of the layer table (rebuilt by `walk_rebuild`).
+    pub(super) layer_walk_rows: Vec<crate::ui::window::layer_walk::LayerWalkRow>,
+    /// The pallet asked for a pick (Select Objects) and is hidden while the
+    /// selection prompt owns the pointer.
+    pub(super) layer_walk_picking: bool,
+    /// Saved wildcard filters, per drawing (not persisted with the DWG).
+    pub(super) layer_walk_filters: Vec<String>,
+    /// Dropdown state for `layer_walk_filters`.
+    pub(super) layer_walk_combo: iced::widget::combo_box::State<String>,
     pub(super) active_cmd: Option<Box<dyn CadCommand>>,
     /// Follow-up command for a Parameter Set macro after parameter placement.
     pub(super) pending_parameter_set_follow_up: Option<&'static str>,
@@ -165,9 +196,11 @@ pub(super) struct DocumentTab {
     pub(super) measurement: super::measurement::MeasurementDisplay,
     /// Remaining command tokens queued behind a PAUSE (or `\`) awaiting user interaction.
     pub(super) pending_pause_tokens: Option<Vec<String>>,
-    /// Layers the last LAYISO turned off, so LAYUNISO turns back on exactly
-    /// those and leaves layers that were already off alone (#2021).
-    pub(super) layiso_turned_off: Option<Vec<String>>,
+    /// The last LAYISO state for this drawing. It is intentionally kept on the
+    /// tab rather than globally, so LAYUNISO never crosses drawing tabs.
+    pub(super) layiso_state: Option<LayisoState>,
+    /// The mode used by the next LAYISO command. AutoCAD defaults to Off.
+    pub(super) layiso_mode: LayisoMode,
     /// The selection set the most recent command worked on, captured when a
     /// finishing command drops the live selection — re-selectable with the
     /// "Previous" keyword at any Select objects prompt (#426).
@@ -256,6 +289,8 @@ pub(super) struct DocumentTab {
     /// handle numbering, so an app-global set keyed by raw handle leaks one
     /// tab's opt-out into another tab reusing the value (#47).
     pub(super) props_asym_scale: std::collections::HashSet<u64>,
+    /// OLE objects' scale base and aspect lock, by handle.
+    pub(super) ole_frames: std::collections::HashMap<u64, crate::entities::ole2frame::FrameState>,
     /// Node graph shown by the command line's graph button.
     pub(super) graph: crate::ui::node_graph::Graph,
     /// Currently active UCS. `None` means WCS (identity transform).
@@ -307,6 +342,11 @@ pub(super) struct DocumentTab {
     /// of the model-space shader. The scene is still constructed so the
     /// rest of the code can treat it as a normal tab when reading.
     pub(super) is_start: bool,
+    /// Room the docked edges took beside the viewport (left, right) when
+    /// this drawing was last on screen, and the window size then. A dock
+    /// change pans the view by the difference so the drawing stays put,
+    /// and either change sets the viewport's new size right away.
+    pub(super) dock_inset: Option<(f32, f32, (f32, f32))>,
     /// Interactive PAN mode (the PAN command / tool). While active, a left-
     /// button drag pans the view instead of selecting — the only pan path on a
     /// device with no middle mouse button (a trackpad / web client). Exited
@@ -742,7 +782,8 @@ impl DocumentTab {
             pending_action_pair: None,
             measurement: super::measurement::MeasurementDisplay::default(),
             pending_pause_tokens: None,
-            layiso_turned_off: None,
+            layiso_state: None,
+            layiso_mode: LayisoMode::Off,
             last_cmd: None,
             last_draw_anchor: None,
             snap_result: None,
@@ -782,6 +823,7 @@ impl DocumentTab {
             block_test: None,
             active_layer: "0".to_string(),
             props_asym_scale: std::collections::HashSet::new(),
+            ole_frames: std::collections::HashMap::new(),
             graph: Default::default(),
             active_ucs: None,
             sketch_session: None,
@@ -802,6 +844,7 @@ impl DocumentTab {
             xref_missing: 0,
             xref_report: Vec::new(),
             is_start: false,
+            dock_inset: None,
             pan_mode: false,
             orbit_mode: false,
             zoom_dynamic_mode: false,
@@ -810,6 +853,11 @@ impl DocumentTab {
             transparent_resume: false,
             last_crossing_window: None,
             recent_colors: Vec::new(),
+            layer_walk: None,
+            layer_walk_rows: Vec::new(),
+            layer_walk_picking: false,
+            layer_walk_filters: Vec::new(),
+            layer_walk_combo: iced::widget::combo_box::State::new(Vec::new()),
         }
     }
 
@@ -957,6 +1005,9 @@ pub(super) struct DeltaSnapshot {
     pub(super) dirty_before: bool,
     pub(super) dirty_after: bool,
     pub(super) active_layer: Option<(String, String)>,
+    /// LAYISO state changed by this history entry, if any. Other commands leave
+    /// the isolation state untouched, so their history entries keep this None.
+    pub(super) layiso_state: Option<(Option<LayisoState>, Option<LayisoState>)>,
     /// Opposite non-entity document state. `apply_delta_state` swaps this with
     /// the live structure, so the same allocation shuttles between undo/redo.
     pub(super) structure: Option<StructureSnapshot>,
@@ -985,7 +1036,7 @@ pub(super) enum StructureSnapshot {
     /// A broad save-time synchronization followed by a command's bounded edits.
     Combined(Vec<StructureSnapshot>),
     /// Compatibility fallback for genuinely broad structural commands.
-    Full(CadDocument),
+    Full(Document),
     /// Exact layer-table entries touched by one command.
     Layers(Vec<TableEntryDelta<codec::tables::Layer>>),
     /// Exact text-style entries touched by one command.
@@ -1075,7 +1126,7 @@ pub(super) struct PendingHistorySnapshot {
     pub(super) active_layer: String,
     pub(super) selected_before: Vec<Handle>,
     pub(super) dirty_before: bool,
-    pub(super) structure_before: CadDocument,
+    pub(super) structure_before: Document,
     pub(super) recorder: Arc<codec::document::EntityChangeRecorder>,
     /// First-touch before-values of reference-only designations (API v9)
     /// mutated inside this plugin scope (see `scene::reference_only`). Set

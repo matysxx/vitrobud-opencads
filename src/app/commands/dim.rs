@@ -123,132 +123,6 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
-            // JUSTIFYTEXT <option> — change the justification of selected text and
-            // multiline-text objects.
-            "JUSTIFYTEXT" => {
-                use crate::command::SelectThenKeywordCommand;
-                let has_sel = !self.tabs[i].scene.selected_entities().is_empty();
-                let c = SelectThenKeywordCommand::new(
-                    "JUSTIFYTEXT",
-                    "JUSTIFYTEXT  [Left / Center / Right / Middle / Aligned / Fit]:",
-                    vec![
-                        ("Left", "LEFT", None),
-                        ("Center", "CENTER", None),
-                        ("Right", "RIGHT", None),
-                        ("Middle", "MIDDLE", None),
-                        ("Aligned", "ALIGN", None),
-                        ("Fit", "FIT", None),
-                    ],
-                    has_sel,
-                );
-                self.command_line.push_info(&c.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(c));
-            }
-            cmd if cmd.starts_with("JUSTIFYTEXT ") => {
-                let opt = cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase();
-                let handles: Vec<codec::Handle> = self.tabs[i]
-                    .scene
-                    .selected_entities()
-                    .iter()
-                    .map(|(h, _)| *h)
-                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
-                    .collect();
-                if handles.is_empty() {
-                    self.command_line
-                        .push_error(crate::t!("JUSTIFYTEXT: select text objects first.").as_ref());
-                    return Some(Task::none());
-                }
-                if opt.is_empty() {
-                    self.command_line.push_info(
-                        crate::t!("Usage: JUSTIFYTEXT <Left|Center|Right|Middle|TL|TC|TR|ML|MC|MR|BL|BC|BR>").as_ref(),
-                    );
-                    return Some(Task::none());
-                }
-                use codec::entities::{
-                    AttachmentPoint as AP, TextHorizontalAlignment as TH,
-                    TextVerticalAlignment as TV,
-                };
-                let text_align = match opt.as_str() {
-                    "L" | "LEFT" | "TL" | "ML" | "BL" => Some(TH::Left),
-                    "C" | "CENTER" | "TC" | "BC" => Some(TH::Center),
-                    "R" | "RIGHT" | "TR" | "MR" | "BR" => Some(TH::Right),
-                    "M" | "MIDDLE" | "MC" => Some(TH::Middle),
-                    "A" | "ALIGN" | "ALIGNED" => Some(TH::Aligned),
-                    "F" | "FIT" => Some(TH::Fit),
-                    _ => None,
-                };
-                // Vertical band for single-line TEXT. Bare L/C/R (and Aligned/Fit
-                // and the special Middle) keep the baseline; the T*/M*/B* codes
-                // pin the top/middle/bottom of the text box.
-                let text_valign = match opt.as_str() {
-                    "TL" | "TC" | "TR" => Some(TV::Top),
-                    "ML" | "MC" | "MR" => Some(TV::Middle),
-                    "BL" | "BC" | "BR" => Some(TV::Bottom),
-                    _ => None,
-                };
-                let mtext_ap = match opt.as_str() {
-                    "TL" => Some(AP::TopLeft),
-                    "TC" => Some(AP::TopCenter),
-                    "TR" => Some(AP::TopRight),
-                    "ML" | "L" | "LEFT" => Some(AP::MiddleLeft),
-                    "MC" | "M" | "MIDDLE" | "C" | "CENTER" => Some(AP::MiddleCenter),
-                    "MR" | "R" | "RIGHT" => Some(AP::MiddleRight),
-                    "BL" => Some(AP::BottomLeft),
-                    "BC" => Some(AP::BottomCenter),
-                    "BR" => Some(AP::BottomRight),
-                    _ => None,
-                };
-                if text_align.is_none() && mtext_ap.is_none() {
-                    self.command_line.push_error(
-                        crate::t!("JUSTIFYTEXT: unknown justification option.").as_ref(),
-                    );
-                    return Some(Task::none());
-                }
-                self.push_undo_snapshot(i, "JUSTIFYTEXT");
-                let mut n = 0usize;
-                for h in &handles {
-                    if let Some(e) = self.tabs[i]
-                        .scene
-                        .document
-                        .entities_mut()
-                        .find(|e| e.common().handle == *h)
-                    {
-                        match e {
-                            codec::EntityType::Text(t) => {
-                                let mut changed = false;
-                                if let Some(a) = text_align {
-                                    t.horizontal_alignment = a;
-                                    changed = true;
-                                }
-                                if let Some(v) = text_valign {
-                                    t.vertical_alignment = v;
-                                    changed = true;
-                                }
-                                if changed {
-                                    crate::entities::text::sync_text_alignment_point(t);
-                                    n += 1;
-                                }
-                            }
-                            codec::EntityType::MText(m) => {
-                                if let Some(a) = mtext_ap {
-                                    m.attachment_point = a;
-                                    n += 1;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                self.tabs[i].dirty = true;
-                let changes: Vec<_> = handles
-                    .into_iter()
-                    .map(|handle| (handle, crate::scene::ChangeKind::Modified))
-                    .collect();
-                self.tabs[i].scene.bump_entities(&changes);
-                self.command_line
-                    .push_output(crate::tf!("JUSTIFYTEXT: updated {n} text object(s).").as_ref());
-            }
-
             // TCASE <Upper|Lower|Sentence|Title> — change the case of the text in
             // selected text and multiline-text objects.
             "TCASE" => {
@@ -642,7 +516,8 @@ impl OpenCADStudio {
                     .map_or_else(MLeaderCommand::new, |style| {
                         MLeaderCommand::with_style(style, multiplier)
                     })
-                    .with_drawing_resources(block_sources, layers, text_styles);
+                    .with_drawing_resources(block_sources, layers, text_styles)
+                    .with_layer(self.mleader_layer(i));
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -737,6 +612,12 @@ impl OpenCADStudio {
                     .collect();
                 let cmd =
                     QdimCommand::new(selection, dim_spacing, self.quick_dimension_snap_priority);
+                let priority = if self.quick_dimension_snap_priority == 1 {
+                    crate::t!("Associative dimension priority = Intersection")
+                } else {
+                    crate::t!("Associative dimension priority = Endpoint")
+                };
+                self.command_line.push_output(&priority);
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -744,6 +625,20 @@ impl OpenCADStudio {
             "DIMEDIT" => {
                 use crate::modules::annotate::dimedit::DimEditCommand;
                 let cmd = DimEditCommand::new();
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+
+            // The Dimensions panel's text buttons: pick, then the option.
+            "DIMTEDIT_ANGLE" | "DIMTEDIT_LEFT" | "DIMTEDIT_CENTER" | "DIMTEDIT_RIGHT" => {
+                use crate::modules::annotate::dimtedit::DimTeditCommand;
+                let option = match cmd {
+                    "DIMTEDIT_ANGLE" => "A",
+                    "DIMTEDIT_LEFT" => "L",
+                    "DIMTEDIT_CENTER" => "C",
+                    _ => "R",
+                };
+                let cmd = DimTeditCommand::with_option(option);
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -776,16 +671,14 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
 
-            "MLEADERADD" => {
-                use crate::modules::annotate::mleader_edit::MLeaderAddCommand;
-                let cmd = MLeaderAddCommand::new();
-                self.command_line.push_info(&cmd.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(cmd));
-            }
-
-            "MLEADERREMOVE" => {
-                use crate::modules::annotate::mleader_edit::MLeaderRemoveCommand;
-                let cmd = MLeaderRemoveCommand::new();
+            "MLEADEREDIT" | "AIMLEADEREDITADD" | "AIMLEADEREDITREMOVE" => {
+                use crate::modules::annotate::mleader_edit::MLeaderEditCommand;
+                let name = match cmd {
+                    "AIMLEADEREDITADD" => "AIMLEADEREDITADD",
+                    "AIMLEADEREDITREMOVE" => "AIMLEADEREDITREMOVE",
+                    _ => "MLEADEREDIT",
+                };
+                let cmd = MLeaderEditCommand::new(name);
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -1356,12 +1249,15 @@ impl OpenCADStudio {
 
             "TRIM" => {
                 use crate::modules::draw::modify::trim::{is_trim_boundary_entity, TrimCommand};
-                // Only curves cut or get cut: block references, text and the
-                // like stay out of the working copy (#1978). HATCH fills have
+                // Only curves cut or get cut: text and the like stay out of
+                // the working copy (#1978), and a block reference cuts only
+                // through its contents, added below (#2192). HATCH fills have
                 // their own renderer, so visible top-level hatches are added
-                // for the hatch trim solver.
-                let mut entities =
-                    self.tabs[i].scene.visible_entities_for_edit(is_trim_boundary_entity);
+                // for the hatch trim solver. A multiline is trimmed but never
+                // cuts (#2068).
+                let mut entities = self.tabs[i].scene.visible_entities_for_edit(|entity| {
+                    is_trim_boundary_entity(entity) || matches!(entity, codec::EntityType::MLine(_))
+                });
                 let mut seen: std::collections::HashSet<codec::Handle> =
                     entities.iter().map(|(handle, _)| *handle).collect();
                 for handle in self.tabs[i].scene.visible_hatch_handles_for_edit() {
@@ -1375,11 +1271,44 @@ impl OpenCADStudio {
                     .scene
                     .selected_entities()
                     .into_iter()
-                    .filter(|(_, entity)| is_trim_boundary_entity(entity))
+                    .filter(|(_, entity)| {
+                        is_trim_boundary_entity(entity)
+                            || matches!(entity, codec::EntityType::Insert(_))
+                    })
                     .map(|(handle, _)| handle)
                     .collect();
                 let all_entities: Vec<_> = entities.into_iter().map(|(_, e)| e).collect();
-                let new_cmd = TrimCommand::with_cutting_edges(all_entities, initial_edges);
+                let visible_inserts = self.tabs[i]
+                    .scene
+                    .visible_entities_for_edit(|entity| {
+                        matches!(entity, codec::EntityType::Insert(_))
+                    });
+                let document = &self.tabs[i].scene.document;
+                let block_boundaries = visible_inserts
+                    .into_iter()
+                    .filter_map(|entity| {
+                        let (handle, entity) = entity;
+                        let codec::EntityType::Insert(insert) = entity else {
+                            return None;
+                        };
+                        let children = insert.block_entities_from_document(document)?;
+                        let pieces = insert
+                            .explode(&children)
+                            .into_iter()
+                            .filter(|child| {
+                                !crate::scene::block_construction::is_construction(
+                                    child.common(),
+                                )
+                            })
+                            .collect();
+                        Some((handle, pieces))
+                    })
+                    .collect();
+                let new_cmd = TrimCommand::with_block_boundaries(
+                    all_entities,
+                    block_boundaries,
+                    initial_edges,
+                );
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -1480,9 +1409,189 @@ impl OpenCADStudio {
                 );
             }
 
+            "DIMOVERRIDE" => {
+                use crate::modules::annotate::dimoverride::DimOverrideCommand;
+                let cmd = DimOverrideCommand::new();
+                self.command_line.push_info(&cmd.prompt());
+                self.command_line.set_step_options(cmd.options());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+
+            cmd if cmd.starts_with("DIMOVERRIDE_APPLY ") => {
+                let spec = cmd.trim_start_matches("DIMOVERRIDE_APPLY ").trim();
+                let values = if spec.eq_ignore_ascii_case("CLEAR") {
+                    Vec::new()
+                } else {
+                    match crate::modules::annotate::dimoverride::parse_spec(spec) {
+                        Ok(values) if !values.is_empty() => values,
+                        Ok(_) => return Some(self.finish_dispatch(cmd)),
+                        Err(entry) => {
+                            self.command_line.push_error(
+                                crate::tf!("DIMOVERRIDE: invalid override \"{entry}\".").as_ref(),
+                            );
+                            return Some(self.finish_dispatch(cmd));
+                        }
+                    }
+                };
+                let handles = self.selected_editable_dimensions(i);
+                if self.tabs[i].scene.selected_handles_in_order().is_empty() {
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    let sel = SelectObjectsCommand::routed("DIMOVERRIDE", cmd);
+                    self.command_line.push_info(&sel.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(sel));
+                } else if handles.is_empty() {
+                    self.command_line.push_error(
+                        crate::t!("DIMOVERRIDE: no editable dimensions were selected.").as_ref(),
+                    );
+                } else {
+                    use crate::entities::dim_override as dov;
+                    self.push_undo_snapshot(i, "DIMOVERRIDE");
+                    for &handle in &handles {
+                        let doc = &mut self.tabs[i].scene.document;
+                        if values.is_empty() {
+                            dov::replace(doc, handle, Vec::new());
+                        }
+                        for (code, value) in &values {
+                            dov::set(doc, handle, *code, Some(value.clone()));
+                        }
+                    }
+                    self.invalidate_property_targets(i, &handles);
+                    self.tabs[i].dirty = true;
+                    self.refresh_properties();
+                    self.command_line.push_output(
+                        crate::tf!("DIMOVERRIDE: updated {} dimension(s).", handles.len()).as_ref(),
+                    );
+                }
+            }
+
+            // DIMREASSOCIATE's Disassociated: every dimension of the space
+            // without associations.
+            "_DIMREASSOCIATE_DISASSOCIATED" => {
+                let scene = &self.tabs[i].scene;
+                let handles: Vec<codec::Handle> = scene
+                    .document
+                    .entities()
+                    .filter_map(|entity| match entity {
+                        codec::EntityType::Dimension(dimension) => {
+                            Some(dimension.base().common.handle)
+                        }
+                        _ => None,
+                    })
+                    .filter(|&handle| {
+                        scene.document.get_entity(handle).is_some_and(|entity| {
+                            entity.common().owner_handle == scene.current_layout_block_handle_pub()
+                        }) && scene.dimension_association(handle).is_none()
+                            && !scene.is_layer_locked(handle)
+                    })
+                    .collect();
+                self.tabs[i].scene.deselect_all();
+                if handles.is_empty() {
+                    return Some(self.finish_dispatch(cmd));
+                }
+                let found = handles.len();
+                self.command_line.push_output(&crate::tf!("{found} found"));
+                self.tabs[i].scene.select_entities(&handles);
+                return Some(self.dispatch_command("DIMREASSOCIATE"));
+            }
+
+            "DIMDISASSOCIATE" | "DIMREASSOCIATE" => {
+                let handles = self.selected_editable_dimensions(i);
+                if handles.is_empty() {
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    self.tabs[i].scene.deselect_all();
+                    let sel = if cmd == "DIMDISASSOCIATE" {
+                        self.command_line
+                            .push_info(&crate::t!("Select dimensions to disassociate ..."));
+                        SelectObjectsCommand::associative_dimensions(cmd, cmd, "Select objects:")
+                    } else {
+                        self.command_line
+                            .push_info(&crate::t!("Select dimensions to reassociate ..."));
+                        SelectObjectsCommand::with_keyword(
+                            cmd,
+                            cmd,
+                            "Select objects or [Disassociated]:",
+                            "Disassociated",
+                            "D",
+                            || crate::command::CmdResult::Dispatch("_DIMREASSOCIATE_DISASSOCIATED".into()),
+                        )
+                    };
+                    self.command_line.push_info(&sel.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(sel));
+                } else if cmd == "DIMDISASSOCIATE" {
+                    self.push_undo_snapshot(i, "DIMDISASSOCIATE");
+                    let count = handles
+                        .iter()
+                        .filter(|&&handle| self.tabs[i].scene.detach_dimension_association(handle))
+                        .count();
+                    self.invalidate_property_targets(i, &handles);
+                    self.tabs[i].dirty |= count > 0;
+                    self.command_line
+                        .push_output(crate::tf!("{count} disassociated.").as_ref());
+                } else {
+                    self.push_undo_snapshot(i, "DIMREASSOCIATE");
+                    let (mut count, mut partial) = (0, 0);
+                    for &handle in &handles {
+                        let scene = &mut self.tabs[i].scene;
+                        let owner_of = |handle: codec::Handle| {
+                            scene.document.get_entity(handle).map(|e| e.common().owner_handle)
+                        };
+                        // Only geometry in the dimension's own space may anchor it.
+                        let owner = owner_of(handle);
+                        let sources: Vec<_> = scene
+                            .infer_dimension_sources(handle)
+                            .into_iter()
+                            .map(|source| source.filter(|source| owner_of(*source) == owner))
+                            .collect();
+                        if sources.iter().all(Option::is_none) {
+                            continue;
+                        }
+                        let complete = sources.iter().all(Option::is_some);
+                        scene.detach_dimension_association(handle);
+                        scene.attach_dimension_association(handle, sources);
+                        if scene.dimension_association(handle).is_some() {
+                            if complete {
+                                count += 1;
+                            } else {
+                                partial += 1;
+                            }
+                        }
+                    }
+                    self.invalidate_property_targets(i, &handles);
+                    self.tabs[i].dirty |= count + partial > 0;
+                    self.command_line.push_output(
+                        crate::tf!(
+                            "DIMREASSOCIATE: {count} of {} dimension(s) associated.",
+                            handles.len()
+                        )
+                        .as_ref(),
+                    );
+                    if partial > 0 {
+                        self.command_line.push_output(
+                            crate::tf!(
+                                "DIMREASSOCIATE: {partial} dimension(s) only partially associated (no object at some definition points)."
+                            )
+                            .as_ref(),
+                        );
+                    }
+                }
+            }
+
             _ => return None,
         }
         Some(self.finish_dispatch(cmd))
+    }
+
+    /// The selected dimensions that are not on a locked layer.
+    fn selected_editable_dimensions(&self, i: usize) -> Vec<codec::Handle> {
+        let scene = &self.tabs[i].scene;
+        scene
+            .selected_entities()
+            .into_iter()
+            .filter(|(handle, entity)| {
+                matches!(entity, codec::EntityType::Dimension(_)) && !scene.is_layer_locked(*handle)
+            })
+            .map(|(handle, _)| handle)
+            .collect()
     }
 }
 

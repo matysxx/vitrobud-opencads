@@ -1088,9 +1088,12 @@ impl Scene {
             entity = crate::modules::draw::modify::explode::normalize_entity_for_block(entity);
             entity.common_mut().handle = Handle::NULL;
             entity.common_mut().owner_handle = br_handle;
-            self.document
+            let handle = self
+                .document
                 .add_entity(entity)
                 .map_err(|e| e.to_string())?;
+            // An image draws from its cached model, not the entity (#2149).
+            self.reseed_derived_caches(handle);
             if options.mode != crate::ui::window::block_definition::BlockObjectMode::Retain {
                 self.erase_entities(&[old_handle]);
             }
@@ -1383,6 +1386,8 @@ impl Scene {
         let end_handle = Handle::new(next + 2);
 
         let mut block_record = codec::tables::BlockRecord::new(name);
+        block_record.flags.anonymous = name.starts_with('*')
+            && !(block_record.is_model_space() || block_record.is_paper_space());
         block_record.handle = br_handle;
         block_record.block_entity_handle = block_handle;
         block_record.block_end_handle = end_handle;
@@ -1873,6 +1878,35 @@ impl Scene {
         include_preview_hidden: bool,
         plot_only: bool,
     ) -> Vec<HatchModel> {
+        self.instanced_hatch_models_for_document(
+            &self.document,
+            layout_block,
+            hatch_bg,
+            tint_selected,
+            frozen,
+            annotation_scale_handle,
+            all_visible,
+            viewport,
+            targets,
+            include_preview_hidden,
+            plot_only,
+        )
+    }
+
+    pub(super) fn instanced_hatch_models_for_document(
+        &self,
+        document: &Document,
+        layout_block: Handle,
+        hatch_bg: [f32; 4],
+        tint_selected: bool,
+        frozen: Option<&rustc_hash::FxHashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+        viewport: Option<Handle>,
+        targets: Option<&rustc_hash::FxHashSet<Handle>>,
+        include_preview_hidden: bool,
+        plot_only: bool,
+    ) -> Vec<HatchModel> {
         let constraint_display = (!plot_only && self.constraint_shading_active() && self.block_edit_block == Some(layout_block))
             .then(|| (self.block_constraint_report(layout_block), self.constraint_palette()));
         let depth_map = self.draw_depth_map();
@@ -1881,14 +1915,21 @@ impl Scene {
         } else {
             self.visibility_reveal_handles()
         };
+        // Plot passes draw the stored drawing; live renders of the walked
+        // space hide layers outside its visible set (foreign viewports
+        // resolve to `None` inside `render_space_layer_walk`).
+        let layer_walk = (!plot_only)
+            .then(|| self.render_space_layer_walk(layout_block, viewport))
+            .flatten();
         let graph = crate::scene::render_graph::RenderSceneGraph::new(
-            &self.document,
+            document,
             frozen,
             annotation_scale_handle,
             all_visible,
             depth_map.as_ref(),
         )
         .with_visibility_reveal(&visibility_reveal)
+        .with_layer_walk(layer_walk)
         .with_annotation_scale(self.annotation_scale)
         .with_viewport(viewport);
         let mut hatch_block_memo = std::collections::HashMap::new();
@@ -1919,7 +1960,7 @@ impl Scene {
                         && targets.contains(&common.handle);
                 }
                 let block_uses: Vec<_> = crate::scene::render_graph::entity_render_block_uses(
-                    &self.document,
+                    document,
                     entity,
                     1.0,
                 )
@@ -1931,7 +1972,7 @@ impl Scene {
                 } else {
                     block_uses.into_iter().any(|block_use| {
                         crate::scene::render_graph::block_contains_hatch(
-                            &self.document,
+                            document,
                             &block_use.insert.block_name,
                             &mut hatch_block_memo,
                         )
@@ -1948,7 +1989,7 @@ impl Scene {
                 if plot_only && !self.layer_plottable_in_context(entity, context) {
                     return;
                 }
-                let style = context.style_for(&self.document, entity);
+                let style = context.style_for(document, entity);
                 let preserve_white_mask = source_hatch.is_solid
                     && matches!(source_hatch.common.color, codec::types::Color::Index(7));
                 let color = if preserve_white_mask {
@@ -2072,6 +2113,7 @@ impl Scene {
         frozen: Option<&rustc_hash::FxHashSet<Handle>>,
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
+        viewport: Option<Handle>,
     ) -> Vec<HatchModel> {
         let bg_color = if self.current_layout != "Model" {
             self.paper_bg_color
@@ -2086,6 +2128,7 @@ impl Scene {
             bg_color,
             false,
             false,
+            viewport,
         )
     }
 
@@ -2098,6 +2141,7 @@ impl Scene {
         bg_color: [f32; 4],
         tint_insert_selection: bool,
         plot_only: bool,
+        viewport: Option<Handle>,
     ) -> Vec<HatchModel> {
         let depth_map = self.draw_depth_map();
         let visibility_reveal = if plot_only {
@@ -2105,6 +2149,10 @@ impl Scene {
         } else {
             self.visibility_reveal_handles()
         };
+        // LAYWALK hides block-tree wipeouts only in the walked space itself.
+        let layer_walk = (!plot_only)
+            .then(|| self.render_space_layer_walk(target_block, viewport))
+            .flatten();
         let graph = crate::scene::render_graph::RenderSceneGraph::new(
             &self.document,
             frozen,
@@ -2113,6 +2161,7 @@ impl Scene {
             depth_map.as_ref(),
         )
         .with_visibility_reveal(&visibility_reveal)
+        .with_layer_walk(layer_walk)
         .with_annotation_scale(self.annotation_scale);
         let mut models = Vec::new();
         let mut wipeout_sources = rustc_hash::FxHashMap::default();
@@ -3295,7 +3344,7 @@ impl Scene {
 
     pub fn clear(&mut self) {
         self.document.record_all_entities_for_transaction();
-        self.document = CadDocument::new();
+        self.document = Document::new();
         self.replace_selection(HashSet::default());
         self.preview_wires = vec![];
         self.preview_text = vec![];
@@ -3368,6 +3417,16 @@ impl Scene {
                     s.landing_gap = 2.0;
                     s.landing_distance = 8.0;
                     s.break_gap_size = 3.75;
+                }
+                // Likewise the Standard table style: the metric template's
+                // cells are 4.5 high (title 6) with 1.5 margins, not 0.18.
+                codec::objects::ObjectType::TableStyle(s)
+                    if s.name.eq_ignore_ascii_case("Standard") =>
+                {
+                    s.set_margins(1.5);
+                    s.data_row_style.text_height = 4.5;
+                    s.header_row_style.text_height = 4.5;
+                    s.title_row_style.text_height = 6.0;
                 }
                 _ => {}
             }

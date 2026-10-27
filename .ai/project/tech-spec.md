@@ -11,14 +11,14 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The integrated upstream baseline is Open CAD Studio `2026.42.0` at revision
-`79b6a1f97d0455e43f2e553afce2a19031e567a7` (2026-10-23). The exact Git
+The integrated upstream baseline is Open CAD Studio `2026.43.0` at revision
+`9d0f29aac0b238871ad450620972a0a952cba64d` (reviewed 2026-10-27). The exact Git
 revision identifies the build independently of the release version string.
 The application now imports its renamed libraries as `codec`, `kernel`,
 `kernel-constraints`, and `graph`. The `codec` alias now refers to package
-`acadrust`; the lockfile pins it at `f64721613076af70ae7db8ce53f2c53d98d5af1a`,
-`opencadkernel` at `fd15b9411b848fc0d65f82446145bc4204e7ccaa`, and
-`opencadgraph` at `84194ead00cbe1c315e222855cb3e1707a4aea96`.
+`opencaddocument`; the lockfile pins it at `245b0e8eedb73b89a5024a0f72dc9dd8e77cf692`,
+`opencadkernel` at `5708ede26f7901f7721c93ef415f22c727fce3d2`, and
+`opencadgraph` at `2eff15a82032bd0296254f1bd033b634469b0a41`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
 builder baseline remains the official `rust:1.92.0-bookworm` image; the new
@@ -40,6 +40,8 @@ revision's release build must pass on Debian before rollout is accepted.
 - Stamp the generated service-worker cache from built bundle contents via
   `scripts/stamp-container-cache.sh`, rather than shipping the `v1` placeholder.
   The relative PWA manifest and worker registration resolve at `/`.
+- Exclude the upstream external analytics loader from `web-app.html`, guarded
+  by a packaging regression test. This is not a blanket network-offline policy.
 - Serve the static WASM application with the existing COOP/COEP header policy
   coordinated with the external proxy. The current browser build does not
   require SharedArrayBuffer for its main thread plus dedicated Web Worker.
