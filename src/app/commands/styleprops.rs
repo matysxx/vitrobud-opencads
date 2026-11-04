@@ -10,7 +10,7 @@ impl OpenCADStudio {
                     .unwrap_or(cmd)
                     .split_whitespace()
                     .next(),
-                Some("PERSPECTIVE" | "GRIDMODE" | "GRIDUNIT" | "QPMODE")
+                Some("PERSPECTIVE" | "GRIDMODE" | "GRIDUNIT" | "QPMODE" | "QPLOCATION")
             ) =>
             {
                 let mut words = cmd.strip_prefix("SETVAR ").unwrap_or(cmd).splitn(2, ' ');
@@ -24,6 +24,7 @@ impl OpenCADStudio {
                     }
                     "GRIDMODE" => (self.show_grid as i32).to_string(),
                     "QPMODE" => (self.quick_properties as i32).to_string(),
+                    "QPLOCATION" => (self.quick_properties_float as i32).to_string(),
                     _ => format!("{},{}", self.grid_spacing_x, self.grid_spacing_y),
                 };
                 let Some(value) = value else {
@@ -46,6 +47,12 @@ impl OpenCADStudio {
                     ("QPMODE", "0" | "1" | "2") => {
                         if (value != "0") != self.quick_properties {
                             return Some(Task::done(Message::ToggleQuickProperties));
+                        }
+                    }
+                    ("QPLOCATION", "0" | "1") => {
+                        if (value == "1") != self.quick_properties_float {
+                            self.quick_properties_float = value == "1";
+                            self.persist_settings_if_changed();
                         }
                     }
                     ("GRIDUNIT", _) => {
@@ -252,24 +259,9 @@ impl OpenCADStudio {
             }
 
             // ── PURGE unused definitions ──────────────────────────────────
-            // Bare PURGE prompts with the category options as clickable
-            // keywords; PURGE <sub> (typed, clicked or scripted) runs directly.
-            "PURGE" => {
-                use crate::command::KeywordCommand;
-                let c = KeywordCommand::new(
-                    "PURGE",
-                    "PURGE  [All / Blocks / LAyers / LineTypes / STyles]:",
-                    vec![
-                        ("All", "ALL", None),
-                        ("Blocks", "BLOCKS", None),
-                        ("LAyers", "LAYERS", None),
-                        ("LineTypes", "LINETYPES", None),
-                        ("STyles", "STYLES", None),
-                    ],
-                );
-                self.command_line.push_info(&c.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(c));
-            }
+            // Bare PURGE opens the Purge dialog (-PURGE asks on the command
+            // line); PURGE <sub> (typed or scripted) runs directly.
+            "PURGE" => self.open_purge_dialog(),
             cmd if cmd.starts_with("PURGE ") => {
                 let sub = cmd
                     .split_whitespace()
@@ -284,6 +276,10 @@ impl OpenCADStudio {
                         .split(',')
                         .any(|p| crate::io::xref_model::wildcard_match(name, p.trim()))
                 };
+                // The Purge dialog's choice, when it runs the command.
+                let only = self.purge_only.take();
+                let chosen =
+                    |kind: usize, name: &str| only.as_ref().is_none_or(|o| o.allows(kind, name));
                 let all = sub == "ALL" || sub.is_empty();
                 let do_layers = all || matches!(sub.as_str(), "LAYERS" | "LAYER" | "LA");
                 let do_styles = all || matches!(sub.as_str(), "TEXTSTYLES" | "STYLES" | "ST");
@@ -300,12 +296,6 @@ impl OpenCADStudio {
                 // (nested blocks, layers, linetypes, styles), so those become
                 // purgeable on the next pass — repeat until a pass removes
                 // nothing, so one PURGE does what re-running it used to.
-                // Xref-dependent records (`Xref|Name`) belong to the xref and
-                // come back with its next reload, so they are never purged —
-                // also when the xref did not resolve and nothing in the host
-                // draws on them (#1929). Blocks get the same rule in
-                // `block_service::protected_reason`.
-                let xref_dependent = |name: &str, flagged: bool| flagged || name.contains('|');
                 let (mut n_layers, mut n_styles, mut n_lts, mut n_blocks) =
                     (0usize, 0usize, 0usize, 0usize);
                 let mut snapshot_pushed = false;
@@ -313,266 +303,25 @@ impl OpenCADStudio {
                     // Collect names in use (immutable borrows — own scope per pass).
                     // An INSERT's attributes live inside it, not in the entity
                     // list, so their layer, style and linetype count separately.
-                    let insert_attributes = || {
-                        self.tabs[i]
-                            .scene
-                            .document
-                            .entities()
-                            .filter_map(|e| match e {
-                                codec::EntityType::Insert(ins) => Some(ins.attributes.iter()),
-                                _ => None,
-                            })
-                            .flatten()
-                    };
-                    let used_layers: rustc_hash::FxHashSet<String> = self.tabs[i]
-                        .scene
-                        .document
-                        .entities()
-                        .map(|e| e.common())
-                        .chain(insert_attributes().map(|a| &a.common))
-                        .filter_map(|common| {
-                            let name = &common.layer;
-                            if name.is_empty() {
-                                None
-                            } else {
-                                Some(name.to_uppercase())
-                            }
-                        })
-                        // The current layer is never purged, empty or not.
-                        .chain(std::iter::once(
-                            self.tabs[i]
-                                .scene
-                                .document
-                                .header
-                                .current_layer_name
-                                .to_uppercase(),
-                        ))
-                        .collect();
-                    // Text styles: entity references plus every dimension
-                    // style's DIMTXSTY — a style only a dimstyle uses is not
-                    // purgeable.
-                    let used_text_styles: rustc_hash::FxHashSet<String> = self.tabs[i]
-                        .scene
-                        .document
-                        .entities()
-                        .filter_map(|e| match e {
-                            codec::EntityType::Text(t) => Some(t.style.clone()),
-                            codec::EntityType::MText(t) => Some(t.style.clone()),
-                            codec::EntityType::AttributeDefinition(a) => Some(a.text_style.clone()),
-                            codec::EntityType::AttributeEntity(a) => Some(a.text_style.clone()),
-                            _ => None,
-                        })
-                        .chain(insert_attributes().map(|a| a.text_style.clone()))
-                        .chain(std::iter::once(
-                            self.tabs[i]
-                                .scene
-                                .document
-                                .header
-                                .current_text_style_name
-                                .clone(),
-                        ))
-                        .chain(
-                            self.tabs[i]
-                                .scene
-                                .document
-                                .dim_styles
-                                .iter()
-                                .map(|ds| ds.dimtxsty.clone()),
-                        )
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_uppercase())
-                        .collect();
-                    // Complex linetypes reach their text and shape styles by handle.
-                    let linetype_styles: rustc_hash::FxHashSet<codec::Handle> = self.tabs[i]
-                        .scene
-                        .document
-                        .line_types
+                    let open_edits: Vec<codec::Handle> = self.tabs[i]
+                        .block_edits
                         .iter()
-                        .flat_map(|lt| lt.elements.iter())
-                        .filter_map(|element| element.complex.as_ref())
-                        .map(|complex| complex.style_handle)
+                        .map(|session| session.br_handle)
                         .collect();
-                    // Multileaders and their styles, and table styles, reach
-                    // their text styles by handle (a table style also by name).
-                    let object_text_styles: rustc_hash::FxHashSet<codec::Handle> = {
-                        let doc = &self.tabs[i].scene.document;
-                        let leaders = doc.entities().filter_map(|e| match e {
-                            codec::EntityType::MultiLeader(m) => Some(m),
-                            _ => None,
-                        });
-                        leaders
-                            .flat_map(|m| [m.text_style_handle, m.context.text_style_handle])
-                            .chain(doc.objects.values().flat_map(|o| {
-                                match o {
-                                    codec::objects::ObjectType::MultiLeaderStyle(style) => {
-                                        vec![style.text_style_handle]
-                                    }
-                                    codec::objects::ObjectType::TableStyle(style) => [
-                                        &style.data_row_style,
-                                        &style.header_row_style,
-                                        &style.title_row_style,
-                                    ]
-                                    .iter()
-                                    .map(|row| row.text_style_handle)
-                                    .collect(),
-                                    _ => vec![],
-                                }
-                            }))
-                            .flatten()
-                            .filter(|h| !h.is_null())
-                            .collect()
-                    };
-                    let table_style_text_styles: rustc_hash::FxHashSet<String> = self.tabs[i]
-                        .scene
-                        .document
-                        .objects
-                        .values()
-                        .filter_map(|o| match o {
-                            codec::objects::ObjectType::TableStyle(style) => Some(style),
-                            _ => None,
-                        })
-                        .flat_map(|style| {
-                            [
-                                &style.data_row_style,
-                                &style.header_row_style,
-                                &style.title_row_style,
-                            ]
-                        })
-                        .filter(|row| !row.text_style_name.is_empty())
-                        .map(|row| row.text_style_name.to_uppercase())
-                        .collect();
-                    // Dimension styles reach their dimension and extension line
-                    // linetypes by handle.
-                    let dimstyle_linetypes: rustc_hash::FxHashSet<codec::Handle> = self.tabs[i]
-                        .scene
-                        .document
-                        .dim_styles
-                        .iter()
-                        .flat_map(|ds| [ds.dimltex_handle, ds.dimltex1_handle, ds.dimltex2_handle])
-                        .filter(|h| !h.is_null())
-                        .collect();
-                    // Linetypes: entity references plus every layer's own
-                    // linetype — a ByLayer entity reaches it through the layer.
-                    let used_linetypes: rustc_hash::FxHashSet<String> = self.tabs[i]
-                        .scene
-                        .document
-                        .entities()
-                        .map(|e| e.common())
-                        .chain(insert_attributes().map(|a| &a.common))
-                        .filter_map(|common| {
-                            let lt = &common.linetype;
-                            if lt.is_empty() || lt == "ByLayer" || lt == "ByBlock" {
-                                None
-                            } else {
-                                Some(lt.clone())
-                            }
-                        })
-                        .chain(
-                            self.tabs[i]
-                                .scene
-                                .document
-                                .layers
-                                .iter()
-                                .map(|l| l.line_type.clone()),
-                        )
-                        .chain(std::iter::once(
-                            self.tabs[i]
-                                .scene
-                                .document
-                                .header
-                                .current_linetype_name
-                                .clone(),
-                        ))
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_uppercase())
-                        .collect();
-
-                    // Build removal lists (still immutable)
-                    let layer_remove: Vec<String> = if do_layers {
-                        self.tabs[i]
-                            .scene
-                            .document
-                            .layers
-                            .iter()
-                            .filter(|l| {
-                                l.name != "0"
-                                    && !xref_dependent(&l.name, l.flags.xref_dependent)
-                                    && !used_layers.contains(&l.name.to_uppercase())
-                            })
-                            .map(|l| l.name.clone())
-                            .collect()
-                    } else {
-                        vec![]
-                    };
-                    let style_remove: Vec<String> = if do_styles {
-                        self.tabs[i]
-                            .scene
-                            .document
-                            .text_styles
-                            .iter()
-                            // Unnamed shape-file records serve complex linetypes
-                            // and are never listed for purging.
-                            .filter(|s| {
-                                !s.name.is_empty()
-                                    && !s.is_shape_file
-                                    && !s.name.eq_ignore_ascii_case("Standard")
-                                    && !xref_dependent(&s.name, s.xref_dependent)
-                                    && !used_text_styles.contains(&s.name.to_uppercase())
-                                    && !linetype_styles.contains(&s.handle)
-                                    && !object_text_styles.contains(&s.handle)
-                                    && !table_style_text_styles.contains(&s.name.to_uppercase())
-                            })
-                            .map(|s| s.name.clone())
-                            .collect()
-                    } else {
-                        vec![]
-                    };
-                    let lt_remove: Vec<String> = if do_lts {
-                        let standard = ["Continuous", "ByLayer", "ByBlock"];
-                        self.tabs[i]
-                            .scene
-                            .document
-                            .line_types
-                            .iter()
-                            .filter(|lt| {
-                                !standard.iter().any(|s| s.eq_ignore_ascii_case(&lt.name))
-                                    && !xref_dependent(&lt.name, lt.xref_dependent)
-                                    && !used_linetypes.contains(&lt.name.to_uppercase())
-                                    && !dimstyle_linetypes.contains(&lt.handle)
-                            })
-                            .map(|lt| lt.name.clone())
-                            .collect()
-                    } else {
-                        vec![]
-                    };
-
-                    // Remove blocks nothing references any more. The shared
-                    // service decides what qualifies — layout/xref/dynamic
-                    // records and open BEDIT sessions are protected, and so is
-                    // every reference kind — so a purge and a delete give the
-                    // same answer.
-                    let block_remove: Vec<String> = if do_blocks {
-                        let open_edits: Vec<codec::Handle> = self.tabs[i]
-                            .block_edits
-                            .iter()
-                            .map(|session| session.br_handle)
-                            .collect();
-                        crate::scene::block_service::purge_candidates(
+                    let [layer_remove, style_remove, lt_remove, block_remove] =
+                        super::purge::purge_pass(
                             &self.tabs[i].scene.document,
                             &open_edits,
-                        )
-                    } else {
-                        vec![]
-                    };
+                            [do_layers, do_styles, do_lts, do_blocks],
+                        );
 
-                    let layer_remove: Vec<String> =
-                        layer_remove.into_iter().filter(|n| wanted(n)).collect();
-                    let style_remove: Vec<String> =
-                        style_remove.into_iter().filter(|n| wanted(n)).collect();
-                    let lt_remove: Vec<String> =
-                        lt_remove.into_iter().filter(|n| wanted(n)).collect();
-                    let block_remove: Vec<String> =
-                        block_remove.into_iter().filter(|n| wanted(n)).collect();
+                    let pick = |list: Vec<String>, kind: usize| -> Vec<String> {
+                        list.into_iter().filter(|n| wanted(n) && chosen(kind, n)).collect()
+                    };
+                    let layer_remove = pick(layer_remove, 0);
+                    let style_remove = pick(style_remove, 1);
+                    let lt_remove = pick(lt_remove, 2);
+                    let block_remove = pick(block_remove, 3);
                     if layer_remove.len()
                         + style_remove.len()
                         + lt_remove.len()
@@ -1167,6 +916,9 @@ impl OpenCADStudio {
                     | "ZOOMFACTOR"
                     | "SHORTCUTMENU"
                     | "SHORTCUTMENUDURATION"
+                    | "QUAD"
+                    | "QUADWIDTH"
+                    | "QUADCOMMANDLAUNCH"
                     | "CURSORSIZE"
                     | "PICKBOX"
                     | "APERTURE"
@@ -1240,8 +992,15 @@ impl OpenCADStudio {
                     | "FILEDIA"
                     | "SDI"
                     | "TRIMEXTENDMODE"
+                    | "REVCLOUDCREATEMODE"
+                    | "REVCLOUDARCVARIANCE"
+                    | "REVCLOUDGRIPS"
+                    | "GROUPDISPLAYMODE"
+                    | "REVCLOUDAPPROXARCLEN"
                     | "PELLIPSE"
                     | "SELECTIONCYCLING"
+                    | "OSNAPZ"
+                    | "SELECTSIMILARMODE"
                     | "UCSDETECT"
                     | "SURFACEASSOCIATIVITY"
                     | "DGNIMPORTMODE"
@@ -1295,6 +1054,7 @@ impl OpenCADStudio {
                     | "SELECTIONAREAOPACITY"
                     | "SELECTIONEFFECT"
                     | "SELECTIONEFFECTCOLOR"
+                    | "VSEDGECOLOR"
                     | "WINDOWSAREACOLOR"
                     | "WINDOWAREACOLOR"
                     | "CROSSINGAREACOLOR"
@@ -1345,9 +1105,28 @@ impl OpenCADStudio {
                     self.command_line
                         .push_info(&super::block_editor_vars::setvar_listing());
                     self.command_line.push_info(
-                        crate::t!("SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY CONSTRAINTBARMODE CONSTRAINTNAMEFORMAT DYNCONSTRAINTDISPLAY DYNMODE ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)").as_ref(),
+                        crate::t!("SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY CONSTRAINTBARMODE CONSTRAINTNAMEFORMAT DYNCONSTRAINTDISPLAY DYNMODE ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)").as_ref(),
                     );
                 } else {
+                    // Annotation and hatch variables live with the drawing's
+                    // annotation state rather than the generic scalar table:
+                    // route them here so SETVAR can read and write them like
+                    // the variables that have their own commands (#M025).
+                    if matches!(
+                        name.as_str(),
+                        "CANNOSCALE" | "ANNOALLVISIBLE" | "ANNOAUTOSCALE" | "HPLAYER"
+                    ) {
+                        return Some(self.annotation_setvar(i, &name, value.as_deref()));
+                    }
+                    if name == "GROUPDISPLAYMODE" {
+                        self.group_display_setvar(value.as_deref());
+                        return Some(self.finish_dispatch(cmd));
+                    }
+                    if name.starts_with("REVCLOUD") {
+                        if self.revcloud_setvar(&name, value.as_deref(), i) {
+                            return Some(self.finish_dispatch(cmd));
+                        }
+                    }
                     // Point cloud settings, kept with the drawing.
                     if let Some(setting) = crate::scene::model::point_cloud::setting(&name) {
                         let document = &self.tabs[i].scene.document;
@@ -1889,6 +1668,62 @@ impl OpenCADStudio {
                         }
                         return Some(self.finish_dispatch(cmd));
                     }
+                    if name == "SELECTSIMILARMODE" {
+                        let current = self.select_similar_mode;
+                        let prompt = format!("Enter new value for SELECTSIMILARMODE <{current}>:");
+                        match value
+                            .as_deref()
+                            .map(|v| v.trim().parse::<u16>().ok().filter(|v| *v <= 255))
+                        {
+                            Some(Some(mode)) => {
+                                if self.select_similar_mode != mode {
+                                    self.select_similar_mode = mode;
+                                    self.persist_settings_if_changed();
+                                }
+                            }
+                            Some(None) => {
+                                let (min, max) = (0, 255);
+                                self.command_line.push_error(&crate::tf!(
+                                    "Requires an integer between {min} and {max}."
+                                ));
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                            None => {
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
+                    if name == "OSNAPZ" {
+                        let current = i16::from(self.osnap_z);
+                        let prompt = format!("Enter new value for OSNAPZ <{current}>:");
+                        match value
+                            .as_deref()
+                            .map(|v| v.trim().parse::<i16>().ok().filter(|v| (0..=1).contains(v)))
+                        {
+                            Some(Some(mode)) => {
+                                if self.osnap_z != (mode != 0) {
+                                    self.osnap_z = mode != 0;
+                                    self.persist_settings_if_changed();
+                                }
+                            }
+                            Some(None) => {
+                                let (min, max) = (0, 1);
+                                self.command_line.push_error(&crate::tf!(
+                                    "Requires an integer between {min} and {max}."
+                                ));
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                            None => {
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
                     if name == "SELECTIONCYCLING" {
                         // 1 and 2 both turn cycling on; the candidate list
                         // always shows.
@@ -2145,56 +1980,10 @@ impl OpenCADStudio {
                         }
                         return Some(self.finish_dispatch(cmd));
                     }
-                    if matches!(
-                        name.as_str(),
-                        "CENTEREXE"
-                            | "CENTERLAYER"
-                            | "CENTERLTYPE"
-                            | "CENTERLTSCALE"
-                            | "CENTERLTYPEFILE"
-                            | "CENTERCROSSSIZE"
-                            | "CENTERCROSSGAP"
-                            | "CENTERMARKEXE"
-                    ) {
-                        let settings = self.tabs[i].scene.centerline_settings();
-                        let current = match name.as_str() {
-                            "CENTEREXE" => settings.extension.to_string(),
-                            "CENTERLAYER" => settings.layer,
-                            "CENTERLTYPE" => settings.linetype,
-                            "CENTERLTSCALE" => settings.linetype_scale.to_string(),
-                            "CENTERLTYPEFILE" => settings.linetype_file,
-                            "CENTERCROSSSIZE" => settings.cross_size,
-                            "CENTERCROSSGAP" => settings.cross_gap,
-                            "CENTERMARKEXE" => i16::from(settings.mark_extensions).to_string(),
-                            _ => unreachable!(),
-                        };
-                        if let Some(value) = &value {
-                            // Web CENTERLTYPEFILE: no path to read — pick the
-                            // .lin/.dnl file through the browser, read its
-                            // bytes at pick time and populate the document
-                            // from the text (native reads the typed path
-                            // inside `set_centerline_setting`).
-                            #[cfg(target_arch = "wasm32")]
-                            if name == "CENTERLTYPEFILE" && !value.trim().is_empty() {
-                                return Some(Task::perform(
-                                    crate::io::pick_linetype_file_web(),
-                                    Message::CenterlineLinetypeFilePicked,
-                                ));
-                            }
-                            match self.tabs[i].scene.set_centerline_setting(&name, value) {
-                                Ok(message) => {
-                                    self.tabs[i].dirty = true;
-                                    self.command_line.push_output(&message);
-                                }
-                                Err(error) => self.command_line.push_error(&error),
-                            }
-                        } else {
-                            self.command_line.push_output(
-                                crate::tf!("Enter new value for {name} <{current}>:").as_ref(),
-                            );
-                            self.pending_setvar = Some(name.clone());
-                        }
-                        return Some(self.finish_dispatch(cmd));
+                    if crate::app::commands::center_vars::is_center_variable(&name) {
+                        let task = self.center_setvar(&name, value.as_deref(), i);
+                        let done = self.finish_dispatch(cmd);
+                        return Some(Task::batch([task, done]));
                     }
                     if name == "DIMCONTINUEMODE" {
                         let current = self.dimension_continue_mode;
@@ -2550,6 +2339,62 @@ impl OpenCADStudio {
                                     false,
                                 )),
                             },
+                            // Master switch of the Quad cursor menu (F12 /
+                            // the status-bar QUAD field). 0/1 like any
+                            // boolean variable; the display options the menu
+                            // honours live in the settings, not the variable.
+                            "QUAD" => match &value {
+                                Some(v) => match parse_bool(v) {
+                                    Some(on) => {
+                                        self.quad = on;
+                                        Ok((format!("QUAD = {}", on as i32), true))
+                                    }
+                                    None => Err("SETVAR: 0 or 1 required.".into()),
+                                },
+                                None => Ok((format!("QUAD = {}", self.quad as i32), false)),
+                            },
+                            // Columns the expanded quad lays out. The
+                            // variable keeps 2..=12: a value from outside
+                            // that range lands on the bounds so the quad
+                            // stays renderable, a non-integer is refused.
+                            "QUADWIDTH" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(width) => {
+                                        let width = crate::app::settings::clamp_quad_width(width);
+                                        self.quad_width = width;
+                                        Ok((format!("QUADWIDTH = {width}"), true))
+                                    }
+                                    _ => Err(format!(
+                                        "SETVAR: integer from {} to {} required.",
+                                        crate::app::settings::QUAD_WIDTH_MIN,
+                                        crate::app::settings::QUAD_WIDTH_MAX
+                                    )),
+                                },
+                                None => Ok((format!("QUADWIDTH = {}", self.quad_width), false)),
+                            },
+                            // QUADCOMMANDLAUNCH: a right-click over an entity
+                            // without entering the quad launches the entity's
+                            // default command directly instead of only
+                            // clicking the icon.
+                            "QUADCOMMANDLAUNCH" => match &value {
+                                Some(v) => match parse_bool(v) {
+                                    Some(on) => {
+                                        self.quad_command_launch = on;
+                                        Ok((
+                                            format!("QUADCOMMANDLAUNCH = {}", on as i32),
+                                            true,
+                                        ))
+                                    }
+                                    None => Err("SETVAR: 0 or 1 required.".into()),
+                                },
+                                None => Ok((
+                                    format!(
+                                        "QUADCOMMANDLAUNCH = {}",
+                                        self.quad_command_launch as i32
+                                    ),
+                                    false,
+                                )),
+                            },
                             "CURSORSIZE" => match &value {
                                 Some(v) => match v.parse::<i32>() {
                                     Ok(size) if (1..=100).contains(&size) => {
@@ -2784,6 +2629,34 @@ impl OpenCADStudio {
                                         format!(
                                             "SELECTIONEFFECTCOLOR = {}",
                                             self.model_space.selection_highlight_color
+                                        ),
+                                        false,
+                                    )),
+                                }
+                            }
+                            // An index, a colour name or R,G,B; BLACK (or 0)
+                            // goes back to the default black edges.
+                            "VSEDGECOLOR" => {
+                                let shown = |rgb: Option<[u8; 3]>| match rgb {
+                                    Some([r, g, b]) => format!("{r},{g},{b}"),
+                                    None => "BLACK".to_string(),
+                                };
+                                match &value {
+                                    Some(v) => match parse_edge_color(v) {
+                                        Some(rgb) => {
+                                            self.model_space.edge_color = rgb;
+                                            self.sync_model_space_theme(false);
+                                            Ok((format!("VSEDGECOLOR = {}", shown(rgb)), true))
+                                        }
+                                        None => Err(
+                                            "SETVAR: a colour index, name or R,G,B required."
+                                                .into(),
+                                        ),
+                                    },
+                                    None => Ok((
+                                        format!(
+                                            "VSEDGECOLOR = {}",
+                                            shown(self.model_space.edge_color)
                                         ),
                                         false,
                                     )),
@@ -3068,13 +2941,16 @@ impl OpenCADStudio {
                                     .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
                                 None => Ok((format!("BLIPMODE = {}", h.blip_mode as i32), false)),
                             },
+                            // Only 0 or 1; anything else is refused and
+                            // asked for again, an accepted value is silent.
                             "SPLFRAME" => match &value {
-                                Some(v) => parse_bool(v)
-                                    .map(|b| {
-                                        h.spline_frame = b;
-                                        (format!("SPLFRAME = {}", b as i32), true)
-                                    })
-                                    .ok_or_else(|| "SETVAR: 0 or 1 required.".into()),
+                                Some(v) => match v.trim() {
+                                    "0" | "1" => {
+                                        h.spline_frame = v.trim() == "1";
+                                        Ok((String::new(), true))
+                                    }
+                                    _ => Err(crate::t!("Requires 0 or 1 only.").into_owned()),
+                                },
                                 None => {
                                     Ok((format!("SPLFRAME = {}", h.spline_frame as i32), false))
                                 }
@@ -3601,6 +3477,9 @@ impl OpenCADStudio {
                                         | "ZOOMFACTOR"
                                         | "SHORTCUTMENU"
                                         | "SHORTCUTMENUDURATION"
+                                        | "QUAD"
+                                        | "QUADWIDTH"
+                                        | "QUADCOMMANDLAUNCH"
                                         | "CURSORSIZE"
                                         | "PICKBOX"
                                         | "APERTURE"
@@ -3617,6 +3496,7 @@ impl OpenCADStudio {
                                         | "SELECTIONAREAOPACITY"
                                         | "SELECTIONEFFECT"
                                         | "SELECTIONEFFECTCOLOR"
+                                        | "VSEDGECOLOR"
                                         | "WINDOWSAREACOLOR"
                                         | "WINDOWAREACOLOR"
                                         | "CROSSINGAREACOLOR"
@@ -3645,7 +3525,9 @@ impl OpenCADStudio {
                                 if matches!(name.as_str(), "PSLTSCALE" | "PLIMCHECK") {
                                     self.tabs[i].scene.persist_current_layout_state();
                                 }
-                                self.command_line.push_output(&msg);
+                                if !msg.is_empty() {
+                                    self.command_line.push_output(&msg);
+                                }
                             } else {
                                 // Queried with no value (`changed == false`):
                                 // prompt for a new value on the next line instead
@@ -3657,7 +3539,16 @@ impl OpenCADStudio {
                                 self.pending_setvar = Some(name.clone());
                             }
                         }
-                        Err(e) => self.command_line.push_error(&e),
+                        Err(e) => {
+                            self.command_line.push_error(&e);
+                            if name == "SPLFRAME" {
+                                let current = self.tabs[i].scene.document.header.spline_frame as i32;
+                                self.command_line.push_output(
+                                    crate::tf!("Enter new value for {name} <{current}>:").as_ref(),
+                                );
+                                self.pending_setvar = Some(name.clone());
+                            }
+                        }
                     }
                     // TEXTFILL reset the glyph atlas; re-tessellate so text picks
                     // up the re-baked filled / hollow tiles.
@@ -3865,7 +3756,8 @@ impl OpenCADStudio {
             // Bare RENAME prompts step by step (type → old → new); the argument
             // form below both handles a fully-typed line and is the target the
             // stepped front-end dispatches to.
-            "RENAME" | "-RENAME" => {
+            "RENAME" => self.open_rename_dialog(),
+            "-RENAME" => {
                 use crate::command::RenameCommand;
                 let c = RenameCommand::new();
                 self.command_line.push_info(&c.prompt());
@@ -3884,97 +3776,7 @@ impl OpenCADStudio {
                         crate::t!("Usage: RENAME <type> <old> <new>  (types: LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW)").as_ref()
                     );
                 } else {
-                    // Snapshot BEFORE mutating (undo must restore the old
-                    // name); dropped again if nothing was renamed.
-                    let block = type_str == "BLOCK";
-                    let label = if block {
-                        format!("Rename block {old_name} to {new_name}")
-                    } else {
-                        "RENAME".to_string()
-                    };
-                    self.push_undo_snapshot(i, label);
-                    let known = matches!(
-                        type_str.as_str(),
-                        "LAYER"
-                            | "BLOCK"
-                            | "STYLE"
-                            | "TEXTSTYLE"
-                            | "DIMSTYLE"
-                            | "LINETYPE"
-                            | "LT"
-                            | "UCS"
-                            | "VIEW"
-                    );
-                    // The block path's refusal text comes from the shared
-                    // service, so the command line, the palette, the plugin
-                    // API and the control op all word it the same way.
-                    let mut block_error: Option<String> = None;
-                    let ok = if block {
-                        let open_edits: Vec<codec::Handle> = self.tabs[i]
-                            .block_edits
-                            .iter()
-                            .map(|session| session.br_handle)
-                            .collect();
-                        // Re-keys the record, syncs the Block marker and every
-                        // INSERT reference; refuses anonymous/xref sources,
-                        // protected records and invalid/taken names.
-                        match crate::scene::block_service::rename(
-                            &mut self.tabs[i].scene,
-                            &old_name,
-                            &new_name,
-                            &open_edits,
-                        ) {
-                            Ok(_) => true,
-                            Err(error) => {
-                                block_error = Some(error.to_string());
-                                false
-                            }
-                        }
-                    } else if type_str == "LAYER" {
-                        self.tabs[i].rename_layer(&old_name, &new_name)
-                    } else if known {
-                        rename_symbol(
-                            &mut self.tabs[i].scene.document,
-                            &type_str,
-                            &old_name,
-                            &new_name,
-                        )
-                    } else {
-                        false
-                    };
-                    if ok {
-                        if type_str != "LAYER" {
-                            self.tabs[i].scene.bump_geometry_no_blocks();
-                        }
-                        if type_str == "UCS" {
-                            self.tabs[i].scene.bump_ucs_epoch();
-                            if let Some(active) = self.tabs[i].active_ucs.as_mut() {
-                                if active.name.eq_ignore_ascii_case(&old_name) {
-                                    active.name = new_name.clone();
-                                    self.tabs[i].persist_active_ucs();
-                                }
-                            }
-                        }
-                        self.tabs[i].dirty = true;
-                        if type_str == "LAYER" {
-                            self.refresh_layer_panel();
-                        }
-                        self.command_line.push_output(
-                            crate::tf!("RENAME: '{}' → '{}'.", old_name, new_name).as_ref(),
-                        );
-                    } else {
-                        self.discard_last_undo_entry(i);
-                        if let Some(message) = block_error {
-                            self.command_line.push_error(&message);
-                        } else if !known {
-                            self.command_line.push_error(crate::tf!("RENAME: unknown type '{}'. Use LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW", type_str).as_ref());
-                        } else {
-                            self.command_line.push_error(crate::tf!(
-                                "RENAME: could not rename '{}' in {} — not found or protected, or '{}' is invalid or taken.",
-                                old_name, type_str, new_name
-                            ).as_ref());
-                        }
-                    }
+                    self.rename_named_object(i, &type_str, &old_name, &new_name);
                 }
             }
 
@@ -4024,6 +3826,9 @@ impl OpenCADStudio {
                 } else {
                     if self.tabs[i].scene.document.dim_styles.contains(&name_arg) {
                         self.tabs[i].scene.document.header.current_dimstyle_name = name_arg.clone();
+                        crate::scene::creation_style::sync_header_dim_vars(
+                            &mut self.tabs[i].scene.document,
+                        );
                         self.tabs[i].dirty = true;
                         self.command_line.push_output(
                             crate::tf!("Active dim style set to \"{name_arg}\"").as_ref(),
@@ -4368,6 +4173,295 @@ impl OpenCADStudio {
         }
         Some(self.finish_dispatch(cmd))
     }
+
+    /// Read or write an annotation / hatch variable through SETVAR.
+    ///
+    /// These values have typed homes outside the scalar table: the current
+    /// scale and all-visible flag live on the scene, auto-scale on the app
+    /// session, and HPLAYER in the drawing's variable dictionary. Reading is
+    /// always allowed; writes validate the same ranges as the dedicated
+    /// commands and report the canonical value back.
+    fn annotation_setvar(
+        &mut self,
+        i: usize,
+        name: &str,
+        value: Option<&str>,
+    ) -> Task<Message> {
+        match name {
+            "CANNOSCALE" => match value {
+                None => {
+                    let current = self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .current_annotation_scale
+                        .clone();
+                    self.command_line
+                        .push_output(crate::tf!("CANNOSCALE = {current}").as_ref());
+                }
+                Some(value) => {
+                    let value = value.trim();
+                    if value.is_empty() {
+                        let current = self.tabs[i]
+                            .scene
+                            .document
+                            .header
+                            .current_annotation_scale
+                            .clone();
+                        self.command_line
+                            .push_output(crate::tf!("CANNOSCALE = {current}").as_ref());
+                        return Task::none();
+                    }
+                    match self.tabs[i].scene.set_annotation_scale_named(value) {
+                        Some(_) => {
+                            self.tabs[i].dirty = true;
+                            let current = self.tabs[i]
+                                .scene
+                                .document
+                                .header
+                                .current_annotation_scale
+                                .clone();
+                            self.command_line.push_output(
+                                crate::tf!("CANNOSCALE = {current}").as_ref(),
+                            );
+                        }
+                        None => {
+                            self.command_line.push_error(
+                                crate::t!(
+                                    "CANNOSCALE: use a scale in the list (e.g. 1:50, 2:1, or a factor)."
+                                )
+                                .as_ref(),
+                            );
+                            self.command_line.push_output("Enter new value for CANNOSCALE:");
+                            self.pending_setvar = Some("CANNOSCALE".into());
+                        }
+                    }
+                }
+            },
+            "ANNOALLVISIBLE" => match value {
+                None => {
+                    let current = u8::from(self.tabs[i].scene.annotation_all_visible());
+                    self.command_line
+                        .push_output(crate::tf!("ANNOALLVISIBLE = {current}").as_ref());
+                }
+                Some(value) => {
+                    let parsed = match value.trim().to_uppercase().as_str() {
+                        "0" | "OFF" | "FALSE" => Some(false),
+                        "1" | "ON" | "TRUE" => Some(true),
+                        _ => None,
+                    };
+                    match parsed {
+                        Some(on) => {
+                            self.tabs[i].scene.set_annotation_all_visible(on);
+                            self.tabs[i].dirty = true;
+                            self.command_line.push_output(
+                                crate::tf!("ANNOALLVISIBLE = {}", u8::from(on)).as_ref(),
+                            );
+                        }
+                        None => {
+                            self.command_line.push_error(
+                                crate::t!("ANNOALLVISIBLE: enter 0 or 1.").as_ref(),
+                            );
+                            self.command_line.push_output("Enter new value for ANNOALLVISIBLE <0>:");
+                            self.pending_setvar = Some("ANNOALLVISIBLE".into());
+                        }
+                    }
+                }
+            },
+            "ANNOAUTOSCALE" => {
+                let current = self.annotation_auto_scale;
+                match value.and_then(|v| v.trim().parse::<i8>().ok()) {
+                    Some(mode) if (-4..=4).contains(&mode) => {
+                        self.annotation_auto_scale = mode;
+                        self.command_line
+                            .push_output(crate::tf!("ANNOAUTOSCALE = {mode}").as_ref());
+                    }
+                    _ if value.is_some_and(|v| !v.trim().is_empty()) => {
+                        self.command_line.push_error(
+                            crate::t!("ANNOAUTOSCALE: enter an integer from -4 through 4.")
+                                .as_ref(),
+                        );
+                        self.command_line.push_output(&format!(
+                            "Enter new value for ANNOAUTOSCALE <{current}>:"
+                        ));
+                        self.pending_setvar = Some("ANNOAUTOSCALE".into());
+                    }
+                    _ => {
+                        self.command_line.push_output(
+                            crate::tf!("ANNOAUTOSCALE = {current}").as_ref(),
+                        );
+                    }
+                }
+            }
+            "HPLAYER" => {
+                let current = crate::io::drawing_variable(&self.tabs[i].scene.document, "HPLAYER")
+                    .unwrap_or_default();
+                match value {
+                    None => {
+                        let shown = if current.is_empty() { "." } else { &current };
+                        self.command_line
+                            .push_output(crate::tf!("HPLAYER = {shown}").as_ref());
+                    }
+                    Some(value) => {
+                        let value = value.trim();
+                        if value.is_empty() || value == "." {
+                            crate::io::set_drawing_variable(
+                                &mut self.tabs[i].scene.document,
+                                "HPLAYER",
+                                "",
+                            );
+                            self.command_line.push_output("HPLAYER = .");
+                        } else if self.tabs[i]
+                            .scene
+                            .document
+                            .layers
+                            .get(value)
+                            .is_some()
+                        {
+                            crate::io::set_drawing_variable(
+                                &mut self.tabs[i].scene.document,
+                                "HPLAYER",
+                                value,
+                            );
+                            self.tabs[i].dirty = true;
+                            self.command_line
+                                .push_output(crate::tf!("HPLAYER = {value}").as_ref());
+                        } else {
+                            self.command_line.push_error(
+                                crate::tf!("HPLAYER: no layer named \"{value}\".").as_ref(),
+                            );
+                            self.command_line.push_output("Enter new value for HPLAYER:");
+                            self.pending_setvar = Some("HPLAYER".into());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+}
+
+impl OpenCADStudio {
+    /// Rename a named object of `type_str` (LAYER BLOCK STYLE DIMSTYLE
+    /// LINETYPE UCS VIEW) as one undo step, reporting on the command line.
+    pub(crate) fn rename_named_object(
+        &mut self,
+        i: usize,
+        type_str: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> bool {
+        let (old_name, new_name) = (old_name.to_string(), new_name.to_string());
+        // Snapshot BEFORE mutating (undo must restore the old
+        // name); dropped again if nothing was renamed.
+        let block = type_str == "BLOCK";
+        let label = if block {
+            format!("Rename block {old_name} to {new_name}")
+        } else {
+            "RENAME".to_string()
+        };
+        self.push_undo_snapshot(i, label);
+        let known = matches!(
+            type_str,
+            "LAYER"
+                | "BLOCK"
+                | "STYLE"
+                | "TEXTSTYLE"
+                | "DIMSTYLE"
+                | "LINETYPE"
+                | "LT"
+                | "UCS"
+                | "VIEW"
+        );
+        // The block path's refusal text comes from the shared
+        // service, so the command line, the palette, the plugin
+        // API and the control op all word it the same way.
+        let mut block_error: Option<String> = None;
+        let ok = if block {
+            let open_edits: Vec<codec::Handle> = self.tabs[i]
+                .block_edits
+                .iter()
+                .map(|session| session.br_handle)
+                .collect();
+            // Re-keys the record, syncs the Block marker and every
+            // INSERT reference; refuses anonymous/xref sources,
+            // protected records and invalid/taken names.
+            match crate::scene::block_service::rename(
+                &mut self.tabs[i].scene,
+                &old_name,
+                &new_name,
+                &open_edits,
+            ) {
+                Ok(_) => true,
+                Err(error) => {
+                    block_error = Some(error.to_string());
+                    false
+                }
+            }
+        } else if type_str == "LAYER" {
+            self.tabs[i].rename_layer(&old_name, &new_name)
+        } else if known {
+            rename_symbol(
+                &mut self.tabs[i].scene.document,
+                &type_str,
+                &old_name,
+                &new_name,
+            )
+        } else {
+            false
+        };
+        if ok {
+            if type_str != "LAYER" {
+                self.tabs[i].scene.bump_geometry_no_blocks();
+            }
+            if type_str == "UCS" {
+                self.tabs[i].scene.bump_ucs_epoch();
+                if let Some(active) = self.tabs[i].active_ucs.as_mut() {
+                    if active.name.eq_ignore_ascii_case(&old_name) {
+                        active.name = new_name.clone();
+                        self.tabs[i].persist_active_ucs();
+                    }
+                }
+            }
+            self.tabs[i].dirty = true;
+            if type_str == "LAYER" {
+                self.refresh_layer_panel();
+            }
+            self.command_line.push_output(
+                crate::tf!("RENAME: '{}' → '{}'.", old_name, new_name).as_ref(),
+            );
+        } else {
+            self.discard_last_undo_entry(i);
+            if let Some(message) = block_error {
+                self.command_line.push_error(&message);
+            } else if !known {
+                self.command_line.push_error(crate::tf!("RENAME: unknown type '{}'. Use LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW", type_str).as_ref());
+            } else {
+                self.command_line.push_error(crate::tf!(
+                    "RENAME: could not rename '{}' in {} — not found or protected, or '{}' is invalid or taken.",
+                    old_name, type_str, new_name
+                ).as_ref());
+            }
+        }
+        ok
+    }
+}
+
+/// A VSEDGECOLOR value: an index, a colour name or R,G,B, with BLACK (or 0)
+/// for the default black edges (`Some(None)`).
+fn parse_edge_color(value: &str) -> Option<Option<[u8; 3]>> {
+    let value = value.trim().trim_start_matches("RGB:");
+    if value.eq_ignore_ascii_case("BLACK") || value == "0" {
+        return Some(None);
+    }
+    let parts: Vec<Option<u8>> = value.split(',').map(|p| p.trim().parse().ok()).collect();
+    if let [Some(r), Some(g), Some(b)] = parts[..] {
+        return Some(Some([r, g, b]));
+    }
+    crate::ui::window::attman_dialog::parse_color(value)
+        .and_then(crate::ui::color_select::math::color_rgb)
+        .map(|(r, g, b)| Some([r, g, b]))
 }
 
 /// RENAME for the remaining name-keyed symbol tables.
@@ -4824,6 +4918,36 @@ mod tests {
         let _ = app.update(crate::app::Message::ToggleDynInput);
         assert!(app.dyn_input);
         assert_eq!(app.dyn_mode, 1);
+    }
+
+    /// The quad sysvars mirror the settings the Options window, the
+    /// status-bar field and persistent config share: 0/1 booleans map the
+    /// flags the way ORTHOMODE does, and QUADWIDTH lands any integer the
+    /// variable cannot render on its own 2..=12 bounds.
+    #[test]
+    fn setvar_quad_sysvars_map_their_settings() {
+        let mut app = fresh_app();
+
+        let _ = app.run_command_line("SETVAR QUAD 1");
+        assert!(app.quad);
+        let _ = app.run_command_line("SETVAR QUAD yes");
+        assert!(app.quad, "a non-boolean is refused");
+        let _ = app.run_command_line("QUAD OFF");
+        assert!(!app.quad);
+
+        let _ = app.run_command_line("SETVAR QUADWIDTH 9");
+        assert_eq!(app.quad_width, 9);
+        let _ = app.run_command_line("SETVAR QUADWIDTH 1");
+        assert_eq!(app.quad_width, 2, "below the range clamps to the bound");
+        let _ = app.run_command_line("SETVAR QUADWIDTH 13");
+        assert_eq!(app.quad_width, 12, "above the range clamps to the bound");
+        let _ = app.run_command_line("SETVAR QUADWIDTH 300");
+        assert_eq!(app.quad_width, 12, "an unparsable integer is refused");
+
+        let _ = app.run_command_line("SETVAR QUADCOMMANDLAUNCH 1");
+        assert!(app.quad_command_launch);
+        let _ = app.run_command_line("QUADCOMMANDLAUNCH 0");
+        assert!(!app.quad_command_launch);
     }
 }
 

@@ -1,7 +1,8 @@
 use super::*;
+use crate::command::CadCommand;
 
 impl OpenCADStudio {
-    pub(super) fn handle_match_entity_layer(&mut self, dest: Vec<Handle>, src: Handle) {
+    pub(super) fn handle_match_entity_layer(&mut self, dest: Vec<Handle>, src: Handle, copy: bool) {
         let i = self.active_tab;
         self.tabs[i].active_cmd = None;
         self.tabs[i].snap_result = None;
@@ -19,7 +20,15 @@ impl OpenCADStudio {
             self.command_line
                 .push_info(crate::t!("No editable objects selected.").as_ref());
         } else if let Some(layer) = src_layer {
-            self.push_undo_snapshot(i, "LAYMATCH");
+            self.push_undo_snapshot(i, if copy { "COPYTOLAYER" } else { "LAYMATCH" });
+            // Create the copies now; placement continues without another undo entry.
+            let dest = if copy {
+                self.tabs[i]
+                    .scene
+                    .copy_entities(&dest, &crate::command::EntityTransform::Translate(glam::DVec3::ZERO))
+            } else {
+                dest
+            };
             // Pure mutation lives in the shared kernel; lock-filter (above)
             // plus undo, invalidate, dirty and echo stay caller-side.
             let _ = crate::entities::match_props::match_layer_kernel(
@@ -32,9 +41,25 @@ impl OpenCADStudio {
             // repaint immediately (issue #231 class).
             self.invalidate_property_targets(i, &dest);
             self.tabs[i].dirty = true;
-            self.command_line
-                .push_info(crate::tf!("Layer matched to \"{layer}\".").as_ref());
+            if copy {
+                self.command_line.push_info(
+                    crate::tf!("{} object(s) copied to layer \"{layer}\".", dest.len()).as_ref(),
+                );
+            } else {
+                self.command_line
+                    .push_info(crate::tf!("Layer matched to \"{layer}\".").as_ref());
+            }
             self.sync_ribbon_layers();
+            if copy && !dest.is_empty() {
+                use crate::modules::draw::modify::copy::CopyCommand;
+                let wires = self.tabs[i].scene.wire_models_for(&dest);
+                self.tabs[i].scene.deselect_all();
+                let cmd = CopyCommand::move_layer_copies(dest, wires);
+                self.command_line.push_info(&cmd.prompt());
+                self.command_line.set_step_options(cmd.options());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+                self.sync_dyn_fields();
+            }
         } else {
             self.command_line
                 .push_error(crate::t!("Source object not found.").as_ref());
@@ -47,6 +72,7 @@ impl OpenCADStudio {
         src: Handle,
     ) -> Option<Task<Message>> {
         let i = self.active_tab;
+        self.tabs[i].last_matchprop_src = src;
         dest.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
         if dest.is_empty() {
             return Some(Task::none());

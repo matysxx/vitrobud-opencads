@@ -11,14 +11,14 @@
 - Upstream container/Compose definition: none
 - Upstream web deployment: static GitHub Pages artifact
 
-The integrated upstream baseline is Open CAD Studio `2026.43.0` at revision
-`9d0f29aac0b238871ad450620972a0a952cba64d` (reviewed 2026-10-27). The exact Git
+The integrated upstream baseline is Open CAD Studio `2026.44.0` at revision
+`03e4c1324021afe183e44dd4149de7bff135fa6a` (reviewed 2026-11-04). The exact Git
 revision identifies the build independently of the release version string.
 The application now imports its renamed libraries as `codec`, `kernel`,
 `kernel-constraints`, and `graph`. The `codec` alias now refers to package
-`opencaddocument`; the lockfile pins it at `245b0e8eedb73b89a5024a0f72dc9dd8e77cf692`,
-`opencadkernel` at `5708ede26f7901f7721c93ef415f22c727fce3d2`, and
-`opencadgraph` at `2eff15a82032bd0296254f1bd033b634469b0a41`.
+`opencaddocument`; the lockfile pins it at `2f2931689b0c17902ae5c8e77d96569e93d48b49`,
+`opencadkernel` at `c4a13af3ad9550647abe077de15bb5a49c1eb0d3`, and
+`opencadgraph` at `5e4dc20c50d1280bed312598fb757ecf71513b54`.
 The container builder must install the exact `wasm-bindgen-cli` version selected
 in `Cargo.lock`; for this baseline that version remains `0.2.108`. The verified
 builder baseline remains the official `rust:1.92.0-bookworm` image; the new

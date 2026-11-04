@@ -31,6 +31,11 @@ impl OpenCADStudio {
                 .push_info(crate::t!("Select objects").as_ref());
             return;
         }
+        if self.any_entity_is_fixed(i, &handles) {
+            self.command_line
+                .push_error(crate::app::properties::HELD_BY_FIXED);
+            return;
+        }
 
         let bounds: Vec<_> = self.tabs[i]
             .scene
@@ -91,6 +96,9 @@ impl OpenCADStudio {
                 self.command_line
                     .push_output(crate::tf!("SELECTALL: {} object(s) selected.", count).as_ref());
                 self.refresh_properties();
+                // Same as SELECTSIMILAR: leave the command field so Ctrl+C
+                // reaches COPYCLIP.
+                return Some(self.unfocus_widgets());
             }
 
             "DESELECT" | "DESELALL" => {
@@ -100,11 +108,43 @@ impl OpenCADStudio {
                 self.refresh_properties();
             }
 
+            "SELECTPREVIOUS" => {
+                match self.tabs[i].scene.select_previous() {
+                    Some(count) => self.command_line.push_output(
+                        crate::tf!("SELECTPREVIOUS: {} object(s) selected.", count).as_ref(),
+                    ),
+                    None => self.command_line.push_error(
+                        crate::t!("SELECTPREVIOUS: no previous selection.").as_ref(),
+                    ),
+                }
+                self.refresh_properties();
+            }
+
+            "SELECTSIMILAR SETTINGS" | "SELECTSIMILAR SE" => {
+                self.select_similar_settings = Some(self.select_similar_mode);
+                self.active_modal = Some(crate::app::ModalKind::SelectSimilarSettings);
+                self.reset_modal_geometry();
+            }
+            "SELECTSIMILAR" | "SELSIM" if self.tabs[i].scene.selected.is_empty() => {
+                use crate::modules::draw::select::SelectObjectsCommand;
+                let command = SelectObjectsCommand::with_settings(
+                    "SELECTSIMILAR",
+                    "SELECTSIMILAR",
+                    "Select objects or [SEttings]:",
+                    || crate::command::CmdResult::Dispatch("SELECTSIMILAR SETTINGS".to_string()),
+                );
+                self.command_line.push_info(&command.prompt());
+                self.command_line.set_step_options(command.options());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
             "SELECTSIMILAR" | "SELSIM" => {
-                let added = self.tabs[i].scene.select_similar();
+                let added = self.tabs[i].scene.select_similar(self.select_similar_mode);
                 self.command_line
                     .push_output(crate::tf!("Select Similar: {} added.", added).as_ref());
                 self.refresh_properties();
+                // The completed selection belongs to the canvas; an empty
+                // focused command field would swallow the next Ctrl+C.
+                return Some(self.unfocus_widgets());
             }
 
             // ADDSELECTED — draw a new object of the same type as the selected
@@ -125,6 +165,15 @@ impl OpenCADStudio {
             //   spaces inside the expression don't end the input.
             // QUICKCALC / QC show or hide the QuickCalc pallet.
             "QUICKCALC" | "QC" => return Some(self.toggle_quick_calc()),
+            // COMMANDHISTORY shows or hides the Command History pallet.
+            "COMMANDHISTORY" => {
+                let id = crate::ui::dock::PanelId::CommandHistory;
+                let open = !self.dock_panel_wanted(id);
+                if open {
+                    self.pallet_as_window(id);
+                }
+                return Some(self.dock_set_open(id, open));
+            }
             "CAL" => {
                 use crate::command::FreeTextValuePromptCommand;
                 let c = FreeTextValuePromptCommand::new("CAL", "CAL  expression  (e.g. (2+3)*4):");
@@ -158,6 +207,27 @@ impl OpenCADStudio {
                             .push_error(crate::tf!("CAL: {e}").as_ref()),
                     }
                 }
+            }
+
+            // ── SELECT — a selection set for the next command ─────────────
+            // Objects already selected are taken as they are; otherwise the
+            // prompt gathers them. Either way they stay selected and become
+            // the Previous set.
+            "SELECT" | "PSELECT" => {
+                let found = self.tabs[i].scene.selected.len();
+                if found == 0 {
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    let cmd = SelectObjectsCommand::routed("SELECT", "_SELECT_DONE");
+                    self.command_line.push_info(&cmd.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(cmd));
+                    return Some(Task::none());
+                }
+                self.command_line
+                    .push_output(crate::tf!("{found} found").as_ref());
+                self.tabs[i].prev_selection = self.tabs[i].scene.selected.iter().copied().collect();
+            }
+            "_SELECT_DONE" => {
+                self.tabs[i].prev_selection = self.tabs[i].scene.selected.iter().copied().collect();
             }
 
             // ── LIST — entity info ────────────────────────────────────────
@@ -909,7 +979,13 @@ impl OpenCADStudio {
 
             // -DATAEXTRACTION: run a saved extraction from the command line.
             "-DATAEXTRACTION" => {
-                let command = crate::modules::annotate::data_extract::TemplateCommand;
+                let command = crate::modules::annotate::data_extract::TemplateCommand {
+                    drawing_dir: self.tabs[i]
+                        .current_path
+                        .as_deref()
+                        .and_then(std::path::Path::parent)
+                        .map(std::path::Path::to_path_buf),
+                };
                 self.command_line.push_info(&command.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(command));
             }
@@ -1105,6 +1181,7 @@ impl OpenCADStudio {
         self.grip_popup = None;
         self.visibility_popup = None;
         self.table_popup = None;
+        self.flip_popup = None;
         // Entering BEDIT changes which block is assembled, not the
         // cached geometry of that block's entities.
         self.tabs[i].scene.bump_geometry_no_blocks();
@@ -1140,6 +1217,7 @@ impl OpenCADStudio {
         self.grip_popup = None;
         self.visibility_popup = None;
         self.table_popup = None;
+        self.flip_popup = None;
 
         let parent_index = return_block.and_then(|parent_name| {
             self.tabs[i]
@@ -1800,5 +1878,58 @@ mod cal_tests {
         let _ = app.dispatch_command("CAL 1500mm");
         let last = &app.command_line.history.last().unwrap().text;
         assert!(last.ends_with("= 1.5"), "{last}");
+    }
+}
+
+#[cfg(test)]
+mod select_similar_clipboard_tests {
+    use super::*;
+    use iced::futures::StreamExt;
+
+    #[test]
+    fn select_similar_releases_command_focus_for_copy_shortcut() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let handles = app.tabs[i].scene.add_entities(
+            (0..2)
+                .map(|y| {
+                    codec::EntityType::Line(codec::entities::Line::from_points(
+                        codec::types::Vector3::new(0.0, y as f64, 0.0),
+                        codec::types::Vector3::new(10.0, y as f64, 0.0),
+                    ))
+                })
+                .collect(),
+        );
+        app.tabs[i].scene.select_entities(&handles[..1]);
+        type Paragraph = <iced::Renderer as iced::advanced::text::Renderer>::Paragraph;
+        let mut input = iced::widget::text_input::State::<Paragraph>::new();
+        input.focus();
+        let task = app.dispatch_command("SELECTSIMILAR");
+        if let Some(mut stream) = iced_runtime::task::into_stream(task) {
+            while let Some(action) = iced::futures::executor::block_on(stream.next()) {
+                if let iced_runtime::Action::Widget(mut operation) = action {
+                    operation.focusable(
+                        Some(&iced::widget::Id::new(
+                            crate::ui::command_line::CMD_INPUT_ID,
+                        )),
+                        iced::Rectangle::default(),
+                        &mut input,
+                    );
+                }
+            }
+        }
+        assert_eq!(app.tabs[i].scene.selected.len(), 2);
+        assert!(
+            !input.is_focused(),
+            "empty command input must not capture Ctrl+C"
+        );
+        let shortcut = if cfg!(target_os = "macos") {
+            "CMD+C"
+        } else {
+            "CTRL+C"
+        };
+        let _ = app.run_shortcut(shortcut);
+        assert_eq!(app.clipboard.len(), 2, "both similar entities must copy");
     }
 }

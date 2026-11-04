@@ -73,11 +73,7 @@ impl CadCommand for DimSpaceCommand {
         }
         match &self.step {
             Step::PickBase => t!("DIMSPACE  Select base dimension:").into_owned(),
-            Step::PickOthers { others, .. } => t!(
-                "DIMSPACE  Select dimension to space (%{count} selected, Enter when done):",
-                count = others.len()
-            )
-            .into_owned(),
+            Step::PickOthers { .. } => t!("DIMSPACE  Select dimensions to space:").into_owned(),
             Step::EnterSpacing { .. } => {
                 t!("DIMSPACE  Specify distance between dimensions or [Auto] <Auto>:").into_owned()
             }
@@ -173,6 +169,10 @@ impl CadCommand for DimSpaceCommand {
         let Step::PickOthers { base, others } = &self.step else {
             return CmdResult::Cancel;
         };
+        // DIM's aliGn keeps gathering until Enter, like its other selections.
+        if self.align {
+            return CmdResult::NeedPoint;
+        }
         if others.is_empty() {
             return CmdResult::ReportError(
                 t!("DIMSPACE: select one or more linear or aligned dimensions.").into_owned(),
@@ -223,6 +223,13 @@ impl CadCommand for DimSpaceCommand {
     }
 
     fn on_enter(&mut self) -> CmdResult {
+        if let (true, Step::PickOthers { base, others }) = (self.align, &self.step) {
+            return CmdResult::SpaceDimensions {
+                base: *base,
+                others: others.clone(),
+                spacing: Some(0.0),
+            };
+        }
         if matches!(self.step, Step::EnterSpacing { .. }) {
             return self.on_text_input("AUTO").unwrap_or(CmdResult::Cancel);
         }

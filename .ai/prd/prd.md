@@ -8,6 +8,9 @@
 
 ## Current tasks
 
+- `OCSSTACK-25` — Sync reviewed upstream revision `03e4c132`
+  (`25-upstream-sync-03e4c132/`)
+
 - `OCSSTACK-24` — Sync reviewed upstream revision `9d0f29aa` with fork compatibility and privacy review
   (`24-upstream-sync-9d0f29aa/`)
 

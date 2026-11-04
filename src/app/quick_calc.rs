@@ -28,6 +28,7 @@ pub(super) fn sysvars(tab: &DocumentTab) -> SysVars {
         ("angbase", n(h.angle_base)),
         ("angdir", i(h.angle_direction)),
         ("insunits", i(h.insertion_units)),
+        ("measurement", i(h.measurement)),
         ("ltscale", n(h.linetype_scale)),
         ("celtscale", n(h.current_entity_linetype_scale)),
         ("textsize", n(h.text_height)),
@@ -144,6 +145,7 @@ impl OpenCADStudio {
         if self.dock_panel_visible(PanelId::QuickCalc) {
             return self.on_dock(crate::ui::dock::DockMsg::Close(PanelId::QuickCalc));
         }
+        self.pallet_as_window(PanelId::QuickCalc);
         self.quick_calc.show = true;
         self.dock_open_at_default(PanelId::QuickCalc);
         self.save_config();

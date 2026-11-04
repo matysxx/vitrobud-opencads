@@ -66,6 +66,9 @@ impl OpenCADStudio {
         if !self.block_editor_preferences.grip_tips {
             return None;
         }
+        if crate::scene::assoc_array_grips::is_array_grip(id) {
+            return self.array_grip_tip(handle, id);
+        }
         let tab = &self.tabs[self.active_tab];
         if let Some(index) = super::super::block_authoring_edit::editor_grip_index(id) {
             let definition = tab.active_block_edit_session()?.br_handle;
@@ -148,6 +151,7 @@ impl OpenCADStudio {
             || tab.active_grip.is_some()
             || self.grip_popup.is_some()
             || self.visibility_popup.is_some()
+            || self.flip_popup.is_some()
             || !tab
                 .selected_grips
                 .iter()

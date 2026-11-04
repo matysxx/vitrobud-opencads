@@ -4069,7 +4069,7 @@ fn materialize_scope(
     allocator.insert_associative_at(
         network_handle,
         holder_handle,
-        "ASSOCNETWORK",
+        "ACDBASSOCNETWORK",
         "AcDbAssocNetwork",
         AssociativeData::Network(network),
     );
@@ -4116,7 +4116,7 @@ impl Scene {
             root
         } else {
             let root = document.allocate_handle();
-            let mut object = AssociativeObject::new("ASSOCNETWORK", "AcDbAssocNetwork");
+            let mut object = AssociativeObject::new("ACDBASSOCNETWORK", "AcDbAssocNetwork");
             object.handle = root;
             object.owner = dictionary;
             object.reactors.push(dictionary);
@@ -4242,9 +4242,18 @@ impl Scene {
             owners.push(model_owner);
         }
 
+        // Whether each owner already holds a network is a read of the
+        // untouched document, and a drawing can have tens of thousands of
+        // block definitions, so ask for all of them across the cores first.
+        let existing_networks: Vec<bool> = {
+            use crate::par::prelude::*;
+            owners
+                .par_iter()
+                .map(|&owner| native_scope_network_handle(&self.document, owner).is_some())
+                .collect()
+        };
         let mut scopes = Vec::new();
-        for owner in owners {
-            let existing = native_scope_network_handle(&self.document, owner).is_some();
+        for (owner, existing) in owners.into_iter().zip(existing_networks) {
             let runtime = self
                 .parametric_constraints
                 .iter()
@@ -4327,7 +4336,7 @@ impl Scene {
             handle: root_network_handle,
             owner: global_dictionary,
             reactors: vec![global_dictionary],
-            dxf_name: "ASSOCNETWORK".to_string(),
+            dxf_name: "ACDBASSOCNETWORK".to_string(),
             cpp_class_name: "AcDbAssocNetwork".to_string(),
             data: AssociativeData::Network(AssocNetwork {
                 action: AssocAction {

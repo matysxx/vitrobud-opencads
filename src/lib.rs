@@ -3,6 +3,10 @@
 
 pub mod app;
 
+/// The Quad display-option message, re-exported at the crate root so every
+/// surface reaches it as `crate::QuadOptionMsg` (see `app/mod.rs`).
+pub(crate) use app::QuadOptionMsg;
+
 /// Tests that build a headless iced renderer take this first: two made in
 /// parallel crash the process, wherever in the crate they run.
 #[cfg(test)]
@@ -32,6 +36,8 @@ pub mod modules;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod network;
 pub mod par;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod parametric;
 pub mod patreon;
 pub mod perf;
 pub mod plugin;

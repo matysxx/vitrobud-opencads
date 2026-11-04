@@ -1765,9 +1765,27 @@ pub enum DimensionEditOperation {
     Oblique(f64),
 }
 
-#[derive(Clone, Copy)]
+/// What DIMREASSOCIATE moves a dimension's definition points onto.
+#[derive(Clone, Debug)]
+pub enum ReassociateTarget {
+    /// The definition point `index` goes to `point`, on the object there.
+    Point { index: usize, point: DVec3 },
+    /// Both extension line origins go to the ends of a line or arc.
+    Ends(Handle),
+    /// A three-point angle takes an arc's centre and ends.
+    Arc(Handle),
+    /// One of a two-line angle's lines.
+    Line { index: usize, object: Handle },
+    /// A radius or diameter dimension measures this arc or circle.
+    Radial(Handle),
+}
+
+#[derive(Clone)]
 pub enum DimensionBreakOperation {
     Auto,
+    /// Break where the picked objects cross.
+    Objects(Vec<Handle>),
+    /// Break where this one object crosses.
     Object(Handle),
     Manual(DVec3, DVec3),
     Remove,
@@ -1812,6 +1830,7 @@ pub enum CmdResult {
         definition: Handle,
         action: Handle,
         expected: Box<codec::objects::ObjectType>,
+        point_choices: Option<(i32, Vec<(Handle, i32, String)>)>,
         targets: Vec<Handle>,
         frame: Option<Vec<DVec3>>,
         rotate_only: Option<Vec<Handle>>,
@@ -1836,6 +1855,7 @@ pub enum CmdResult {
         kind: crate::scene::block_actions::Kind,
         parameter: Handle,
         xy_key_point: Option<crate::scene::block_actions::XyKeyPoint>,
+        point_choices: Option<(i32, Vec<(Handle, i32, String)>)>,
         targets: Vec<Handle>,
         location: DVec3,
         frame: Option<Vec<DVec3>>,
@@ -1865,14 +1885,32 @@ pub enum CmdResult {
         parameter: Handle,
         value: crate::scene::block_actions::Value,
     },
-    /// Place or relocate a Basepoint, or place a Lookup parameter.
+    /// Place or relocate a Basepoint, or place a Lookup parameter. A Lookup
+    /// takes its grip count, where `None` keeps the default one grip.
     PlaceBlockSingleParameter {
         document_id: u64,
         definition: Handle,
         kind: crate::modules::block_editor::single_parameter::Kind,
         location: DVec3,
+        grips: Option<usize>,
+        /// Answers given to the placement prompt's options; a missing answer
+        /// keeps the parameter's own default.
+        options: crate::modules::block_editor::single_parameter::Options,
     },
-    /// Place a native Rotation, Alignment or Flip parameter.
+    /// An action type was chosen that has no geometry action of its own:
+    /// continue with Lookup parameter selection.
+    StartBlockLookupAction {
+        document: u64,
+        definition: Handle,
+    },
+    /// The chosen Lookup parameter's property table should open for editing.
+    OpenBlockLookupTable {
+        document: u64,
+        definition: Handle,
+        name: String,
+    },
+    /// Place a native Rotation, Alignment or Flip parameter. Rotation takes a
+    /// label location, which becomes the label's distance from the arc.
     PlaceBlockOrientationParameter {
         document_id: u64,
         definition: Handle,
@@ -1881,8 +1919,14 @@ pub enum CmdResult {
         base: DVec3,
         end: DVec3,
         reference: DVec3,
+        label_offset: Option<f64>,
+        grips: Option<usize>,
+        /// Answers given to the base-point prompt's options; a missing answer
+        /// keeps the parameter's own default.
+        options: crate::modules::block_editor::orientation_parameter::Options,
     },
-    /// Place a native two-point parameter after its base, end and label picks.
+    /// Place a native two-point parameter: Linear and Polar take a base, end and
+    /// label pick; XY takes its grip count and labels itself at the endpoint.
     PlaceBlockDistanceParameter {
         document_id: u64,
         definition: Handle,
@@ -1890,6 +1934,11 @@ pub enum CmdResult {
         base: DVec3,
         end: DVec3,
         label: DVec3,
+        /// XY parameter grip count chosen at authoring time, when asked.
+        grips: Option<usize>,
+        /// Answers given to the base-point prompt's options; a missing answer
+        /// keeps the parameter's own default.
+        options: crate::modules::block_editor::distance_parameter::Options,
     },
     /// Place a native Point parameter after both authoring picks complete.
     PlaceBlockPointParameter {
@@ -1897,6 +1946,9 @@ pub enum CmdResult {
         definition: Handle,
         location: DVec3,
         label: DVec3,
+        /// Answers given to the placement prompt's options; a missing answer
+        /// keeps the parameter's own default.
+        options: crate::modules::block_editor::point_parameter::Options,
     },
     /// Place the visibility parameter in the definition that requested it.
     PlaceBlockVisibilityParameter {
@@ -1913,6 +1965,11 @@ pub enum CmdResult {
     /// A QuickCalc pick finished: the point, distance or angle it measured,
     /// for the pallet's input.
     QuickCalcPick(crate::app::calc::Value),
+    /// The Table Style window's starting-table pick ended: the picked
+    /// object, or none when the pick was left with Enter or Esc.
+    TableTemplatePick(Option<Handle>),
+    /// Turn a layer off (or back on) and keep the command for its next pick.
+    SetLayerOn { layer: String, on: bool },
     /// Command is still waiting for the next point; show updated prompt.
     NeedPoint,
     /// Update the committed-segment wire (normal colour) and keep collecting points.
@@ -1927,6 +1984,8 @@ pub enum CmdResult {
     CommitEntitiesAndExit(Vec<EntityType>),
     /// Commit an opencadcodec entity to the document and end the command.
     CommitAndExit(EntityType),
+    /// `CommitAndExit`, then print the message.
+    CommitAndReport(EntityType, String),
     /// Commit a dimension using the drawing's association mode.
     CommitDimension {
         entity: EntityType,
@@ -2290,6 +2349,13 @@ pub enum CmdResult {
         source: Handle,
         point: DVec3,
     },
+    /// Attach one smart centre line to two newly selected lines, each given
+    /// with the point it was picked at.
+    ReassociateCenterLine {
+        target: Handle,
+        first: (Handle, DVec3),
+        second: (Handle, DVec3),
+    },
     EditDimensionBreak {
         dimensions: Vec<Handle>,
         operation: DimensionBreakOperation,
@@ -2298,10 +2364,29 @@ pub enum CmdResult {
         dimension: Handle,
         point: Option<DVec3>,
     },
+    /// DIMREASSOCIATE answered one prompt of `dimension`; `last` ends it.
+    ReassociateDimension {
+        dimension: Handle,
+        target: ReassociateTarget,
+        last: bool,
+    },
     SpaceDimensions {
         base: Handle,
         others: Vec<Handle>,
         spacing: Option<f64>,
+    },
+    /// DIM's Distribute: `offset` steps the dimensions away from `base`;
+    /// `None` spaces them evenly between the outermost two.
+    DistributeDimensions {
+        base: Option<Handle>,
+        dimensions: Vec<Handle>,
+        offset: Option<f64>,
+    },
+    /// An associative array arrow grip: set these parameters on the array
+    /// referenced by `insert` and rebuild its items.
+    EditAssocArray {
+        insert: Handle,
+        changes: Vec<(&'static str, f64)>,
     },
     /// Cancel: discard any preview and end the command.
     Cancel,
@@ -2342,11 +2427,20 @@ pub enum CmdResult {
     /// command calls of a script). A plugin command's script starts from an
     /// empty selection.
     Script(String),
-    /// Move `dest` entities to the layer of the `src` entity; end command.
+    /// Merge several layers in a single undo step; end command.
+    MergeLayers {
+        sources: Vec<String>,
+        target: String,
+    },
+    /// Move `dest` entities to the layer of the `src` entity, or put copies
+    /// of them there when `copy` is set and offer placement of those copies.
     MatchEntityLayer {
         dest: Vec<Handle>,
         src: Handle,
+        copy: bool,
     },
+    /// Translate the copies already owned by COPYTOLAYER's undo snapshot; end command.
+    MoveLayerCopies(Vec<Handle>, DVec3),
     /// Copy all visual properties (layer/color/linetype/lineweight) from `src` to `dest`; end command.
     MatchProperties {
         dest: Vec<Handle>,
@@ -2565,6 +2659,9 @@ pub enum CmdResult {
         /// A Shift+window excludes points inside this area without adding a
         /// new crossing window or subtracting whole entities.
         subtract_window: Option<(DVec3, DVec3)>,
+        /// Objects taken out with Shift+click. They stay out when the crossing
+        /// windows are queried again for this command.
+        removed_handles: Vec<Handle>,
     },
     /// Stretch entities: move only vertices/endpoints inside any gathered
     /// crossing window.
@@ -2978,6 +3075,11 @@ impl CommandSuggestion {
 }
 
 pub trait CadCommand: Send {
+    /// The table cell this command edits (table, row, column): Tab and
+    /// Shift+Tab move its editor to the next or previous cell.
+    fn table_cell(&self) -> Option<(Handle, usize, usize)> {
+        None
+    }
     /// Preserve source appearance for commands that extract existing entities.
     fn preserve_commit_style(&self) -> bool {
         false
@@ -3045,6 +3147,11 @@ pub trait CadCommand: Send {
     /// Remove one selected vertex in STRETCH's crossing-window collection stage.
     /// Other commands keep the normal Shift+grip behavior.
     fn remove_stretch_point(&mut self, _handle: Handle, _world: DVec3) -> bool {
+        false
+    }
+
+    /// Remove a whole object in STRETCH's crossing-window collection stage.
+    fn remove_stretch_entity(&mut self, _handle: Handle) -> bool {
         false
     }
 
@@ -3223,6 +3330,16 @@ pub trait CadCommand: Send {
 
     fn on_editor_display_height(&mut self, _height: f64) {}
 
+    /// Return modal dialog definition if this command requires a GUI dialog.
+    fn modal_dialog(&self) -> Option<ocs_plugin_api::dialog::DialogDef> {
+        None
+    }
+
+    /// Called when a modal dialog is submitted or cancelled.
+    fn on_dialog_response(&mut self, _response: ocs_plugin_api::dialog::DialogResponse) -> CmdResult {
+        CmdResult::Cancel
+    }
+
     /// Called when the user clicks and `needs_entity_pick()` is true.
     /// `handle` is the nearest wire's entity handle (Handle::NULL if nothing found).
     fn on_entity_pick(&mut self, _handle: Handle, _pt: DVec3) -> CmdResult {
@@ -3374,6 +3491,19 @@ pub trait CadCommand: Send {
         vec![]
     }
 
+    /// Every change the command makes while it runs is one undo step: the
+    /// message boundary leaves its history transaction open.
+    fn groups_undo(&self) -> bool {
+        false
+    }
+
+    /// DIM asks how to handle the dimensions `new` was placed over; false
+    /// when the command is at no step that asks (DIM asks at its own prompt
+    /// and in its continued series, not in a baseline series).
+    fn ask_dim_overlap(&mut self, _new: Handle, _others: Vec<Handle>) -> bool {
+        false
+    }
+
     /// Opt in to transient measurement text; unrelated Measurement users keep
     /// their existing command-line-only behavior.
     fn has_measurement_readout(&self) -> bool {
@@ -3390,6 +3520,10 @@ pub trait CadCommand: Send {
     fn on_mouse_move(&mut self, _pt: DVec3) -> Option<WireModel> {
         None
     }
+
+    /// The view's world units per screen pixel, given before the preview
+    /// wires are asked for, for markers drawn at a fixed screen size.
+    fn set_world_per_pixel(&mut self, _world_per_pixel: f64) {}
 
     /// Called on every mouse-move; return all preview wires to show (object ghosts + rubber-band).
     /// Default: forwards to `on_mouse_move` for backwards compatibility.
@@ -3544,6 +3678,41 @@ pub trait CadCommand: Send {
 
     fn selection_forces_add(&self) -> bool {
         false
+    }
+
+    /// Consume an eligible Block Editor marker click while gathering a selection.
+    /// The returned name is drawing-authored and is shown as selection feedback.
+    fn on_selection_marker_click(
+        &mut self,
+        _scene: &Scene,
+        _position: iced::Point,
+        _context: PointPickContext,
+        _remove: bool,
+        _replace: bool,
+    ) -> Option<String> {
+        None
+    }
+
+    /// Whether a Point marker is in this command's pending target selection.
+    fn selection_marker_selected(&self, _handle: Handle) -> bool {
+        false
+    }
+
+    /// Clear pending marker selections when an entity pick replaces the set.
+    fn clear_selection_markers(&mut self) {}
+
+    /// Gather eligible Block Editor markers within a viewport selection region.
+    fn on_selection_marker_region(
+        &mut self,
+        _scene: &Scene,
+        _polygon: &[iced::Point],
+        _context: PointPickContext,
+        _crossing: bool,
+        _remove: bool,
+        _replace: bool,
+        _geometry_hit: bool,
+    ) -> Vec<String> {
+        Vec::new()
     }
 
     /// The command takes associative dimensions only. The host drops every
@@ -3796,6 +3965,11 @@ pub trait CadCommand: Send {
     fn dyn_label_point(&self, _cursor: DVec3) -> Option<DVec3> {
         None
     }
+
+    /// Pending panel updates buffered during interactive command execution.
+    fn take_pending_panel_updates(&mut self) -> Vec<(String, std::collections::HashMap<String, ocs_plugin_api::dialog::DialogValue>)> {
+        Vec::new()
+    }
 }
 
 // ── Autocomplete registry ─────────────────────────────────────────────────
@@ -3837,6 +4011,16 @@ mod constraint_registry_tests {
                 "{target} must validate in ALIASEDIT"
             );
         }
+        // Every command the shipped alias file points at validates too (#2452).
+        let unknown: Vec<&str> = include_str!("../assets/ocad.pgp")
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with(';'))
+            .filter_map(|line| line.split_once(','))
+            .filter_map(|(_, target)| target.trim().strip_prefix('*'))
+            .filter(|target| !names.iter().any(|name| name.eq_ignore_ascii_case(target)))
+            .collect();
+        assert!(unknown.is_empty(), "alias targets missing from the registry: {unknown:?}");
     }
 
     /// Ensures every constraint command remains discoverable by autocomplete
@@ -3867,6 +4051,10 @@ mod constraint_registry_tests {
             "FXCONSTRAINT",
             "GCFIX",
             "SYCONSTRAINT",
+            "GCPARALLEL",
+            "GCCOLLINEAR",
+            "GCTANGENT",
+            "GCSYMMETRIC",
             "DCONSTRAINT",
             "ACONSTRAINT",
         ] {

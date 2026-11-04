@@ -168,6 +168,8 @@ pub struct ViewportData {
     /// Point cloud lighting and density for this view: `[mode, source,
     /// drawn fraction, _, light direction x, y, z, _]`.
     pub(in crate::scene) point_cloud_light: [f32; 12],
+    /// Live-section planes clipping the point clouds (`n·p + d >= 0` kept).
+    pub(in crate::scene) point_cloud_clip: Vec<[f64; 4]>,
     pub(in crate::scene) meshes: Arc<Vec<MeshLodSet>>,
     pub(in crate::scene) background_image: Option<crate::scene::model::image_model::DecodedImage>,
     pub(in crate::scene) environment_image: Option<crate::scene::model::image_model::DecodedImage>,
@@ -618,7 +620,21 @@ impl shader::Primitive for Primitive {
                 inner.upload_point_clouds(device, queue, &vp.point_clouds);
                 inner.cached_point_cloud_source = Some(Arc::clone(&vp.point_clouds));
             }
-            inner.set_point_cloud_view(queue, vp.point_cloud_light);
+            // Relative to the eye, as the sprites are positioned.
+            let eye = glam::DVec3::new(
+                vp.uniforms.eye_high[0] as f64 + vp.uniforms.eye_low[0] as f64,
+                vp.uniforms.eye_high[1] as f64 + vp.uniforms.eye_low[1] as f64,
+                vp.uniforms.eye_high[2] as f64 + vp.uniforms.eye_low[2] as f64,
+            );
+            let clip: Vec<[f32; 4]> = vp
+                .point_cloud_clip
+                .iter()
+                .map(|&[x, y, z, d]| {
+                    let offset = glam::DVec3::new(x, y, z).dot(eye) + d;
+                    [x as f32, y as f32, z as f32, offset as f32]
+                })
+                .collect();
+            inner.set_point_cloud_view(queue, vp.point_cloud_light, &clip);
             let text_source_changed = inner
                 .cached_text_source
                 .as_ref()
@@ -933,6 +949,43 @@ impl shader::Primitive for Primitive {
                                         })
                                 })
                             });
+                        // A move leaves how many analytical instances an object has
+                        // unchanged, only their values: write the new values over the
+                        // old ones instead of rebuilding every block, circle and ellipse
+                        // buffer. Anything else falls through to the full rebuild.
+                        let mut patched_in_place = false;
+                        if !analytical_untouched
+                            && _patched
+                            && crate::scene::pipeline::analytic_patch_enabled()
+                        {
+                            if let Some(patch) = patch {
+                                let t_in_place = _perf.then(iced::time::Instant::now);
+                                match inner.patch_analytic_in_place(
+                                    queue,
+                                    patch,
+                                    &draw_depths,
+                                    vp.draw_depth_generation,
+                                ) {
+                                    Ok(edits) => {
+                                        patched_in_place = true;
+                                        if let Some(started) = t_in_place {
+                                            crate::perf_record!(
+                                                "[perf] analytic-patch in-place edits={edits} {:.1}ms",
+                                                started.elapsed().as_secs_f64() * 1000.0
+                                            );
+                                        }
+                                    }
+                                    Err(reason) => {
+                                        if _perf {
+                                            crate::perf_record!(
+                                                "[perf] analytic-patch rebuild reason={reason}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let analytical_untouched = analytical_untouched || patched_in_place;
                         let t_part = _perf.then(iced::time::Instant::now);
                         let partitioned = (!analytical_untouched)
                             .then(|| wire_arena::partition_wires(&vp_wires, &draw_depths));
@@ -943,27 +996,72 @@ impl shader::Primitive for Primitive {
                         // `None` means the three uploads this slot holds are
                         // still the answer, so they are left alone.
                         if let Some(partitioned) = &partitioned {
-                            inner.gpu_block_wires = std::sync::Arc::new(inner.upload_block_wires(
-                                device,
-                                queue,
-                                &partitioned.instanced,
-                                &draw_depths,
-                                &mut pipeline.block_geometry,
-                            ));
+                            let track = crate::scene::pipeline::analytic_patch_enabled();
+                            let (block_gpus, block_tracking) = if track {
+                                inner.upload_block_wires_tracked(
+                                    device,
+                                    queue,
+                                    &partitioned.instanced,
+                                    &draw_depths,
+                                    &mut pipeline.block_geometry,
+                                )
+                            } else {
+                                (
+                                    inner.upload_block_wires(
+                                        device,
+                                        queue,
+                                        &partitioned.instanced,
+                                        &draw_depths,
+                                        &mut pipeline.block_geometry,
+                                    ),
+                                    None,
+                                )
+                            };
+                            inner.gpu_block_wires = std::sync::Arc::new(block_gpus);
                             blk_ms = t_blk.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
                             let t_curve = _perf.then(iced::time::Instant::now);
-                            inner.gpu_circles =
-                                std::sync::Arc::new(inner.upload_circles_from_instances(
+                            let (circle_gpus, circle_slots) = if track {
+                                inner.upload_circles_tracked(
                                     device,
                                     queue,
                                     &partitioned.circle_instances,
-                                ));
-                            inner.gpu_ellipses =
-                                std::sync::Arc::new(inner.upload_ellipses_from_instances(
+                                    &partitioned.circle_owners,
+                                )
+                            } else {
+                                (
+                                    inner.upload_circles_from_instances(
+                                        device,
+                                        queue,
+                                        &partitioned.circle_instances,
+                                    ),
+                                    Vec::new(),
+                                )
+                            };
+                            inner.gpu_circles = std::sync::Arc::new(circle_gpus);
+                            let (ellipse_gpus, ellipse_slots) = if track {
+                                inner.upload_ellipses_tracked(
                                     device,
                                     queue,
                                     &partitioned.ellipse_instances,
-                                ));
+                                    &partitioned.ellipse_owners,
+                                )
+                            } else {
+                                (
+                                    inner.upload_ellipses_from_instances(
+                                        device,
+                                        queue,
+                                        &partitioned.ellipse_instances,
+                                    ),
+                                    Vec::new(),
+                                )
+                            };
+                            inner.gpu_ellipses = std::sync::Arc::new(ellipse_gpus);
+                            inner.record_analytic_slots(
+                                block_tracking,
+                                circle_slots,
+                                ellipse_slots,
+                                vp.draw_depth_generation,
+                            );
                             inner
                                 .partition_contributors
                                 .clone_from(&partitioned.contributors);
@@ -1508,6 +1606,9 @@ fn render_signature(
     }
     .hash(&mut h);
     vp.point_cloud_light.map(f32::to_bits).hash(&mut h);
+    for plane in &vp.point_cloud_clip {
+        plane.map(f64::to_bits).hash(&mut h);
+    }
     vp.geometry_epoch.hash(&mut h);
     vp.selection_generation.hash(&mut h);
     vp.selected_sig.hash(&mut h);
@@ -4234,33 +4335,33 @@ impl Scene {
                 return arc;
             }
         }
-        let mut out: Vec<crate::scene::pipeline::text_gpu::TextVertex> = Vec::new();
-        for w in wires {
-            if !w.display_visible {
-                continue;
-            }
-            if w.render_instance.is_some() {
-                continue;
-            }
-            if !w.text_verts.is_empty() {
-                // Bake the host wire's draw-order depth into its glyphs so
-                // text layers like the rest of the entity: its own background
-                // fill lands at the same biased depth (glyphs draw after fills
-                // and win the LessEqual test), and a hatch later in draw order
-                // still covers the text. A tessellation-time value (block-local
-                // compose) survives as an offset on top of the wire's depth.
-                let d = crate::scene::pipeline::wire_gpu::wire_draw_depth(w, depth_map);
-                if d == 0.0 {
-                    out.extend_from_slice(&w.text_verts);
-                } else {
-                    out.extend(w.text_verts.iter().map(|tv| {
+        // Most wires carry no text, but finding the ones that do touches
+        // every wire, so the walk runs across the cores; the ordered collect
+        // keeps the glyphs in submission order.
+        let out: Vec<crate::scene::pipeline::text_gpu::TextVertex> = {
+            use crate::par::prelude::*;
+            wires
+                .par_iter()
+                .filter(|w| w.display_visible && w.render_instance.is_none() && !w.text_verts.is_empty())
+                .flat_map_iter(|w| {
+                    // Bake the host wire's draw-order depth into its glyphs so
+                    // text layers like the rest of the entity: its own
+                    // background fill lands at the same biased depth (glyphs
+                    // draw after fills and win the LessEqual test), and a
+                    // hatch later in draw order still covers the text. A
+                    // tessellation-time value (block-local compose) survives
+                    // as an offset on top of the wire's depth.
+                    let d = crate::scene::pipeline::wire_gpu::wire_draw_depth(w, depth_map);
+                    w.text_verts.iter().map(move |tv| {
                         let mut tv = *tv;
-                        tv.draw_depth += d;
+                        if d != 0.0 {
+                            tv.draw_depth += d;
+                        }
                         tv
-                    }));
-                }
-            }
-        }
+                    })
+                })
+                .collect()
+        };
         let verts = Arc::new(out);
         {
             let mut cache = self.sdf_text_cache.borrow_mut();
@@ -4492,9 +4593,7 @@ impl Scene {
                     continue;
                 }
                 let context_scale = match self.document.objects.get(&scale) {
-                    Some(codec::objects::ObjectType::Scale(value)) => {
-                        (value.inverse_factor() / self.annotation_scale_unit_factor()) as f32
-                    }
+                    Some(codec::objects::ObjectType::Scale(value)) => value.inverse_factor() as f32,
                     _ => annotation_scale,
                 };
                 let block_cache = self.block_cache_arc_for(Some(scale), true, self.active_viewport);
@@ -4761,10 +4860,23 @@ impl Scene {
         } else {
             self.model_wires_for_viewport_arc(inst.handle, full.height)
         };
+        // Cumulative stage times for the PERF trace: which step of building a
+        // viewport's data is slow after an edit.
+        let vp_started = crate::perf::enabled().then(iced::time::Instant::now);
+        let vp_mark = |stage: &str| {
+            if let Some(started) = vp_started {
+                crate::perf_record!(
+                    "[perf] vp-build {stage}={:.1}ms",
+                    started.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+        };
+        vp_mark("wires");
         let source_gen = self.last_model_wire_gen.get();
         let styled_fill_source = Arc::clone(&base_arc);
         let (base_arc, styled_gen) = self.display_styled_wires(base_arc, source_gen);
         self.last_model_wire_gen.set(styled_gen);
+        vp_mark("styled");
         // Wire-buffer content id for the upload gate. Preview / interim wires
         // are NOT part of this buffer anymore (they go in a separate per-frame
         // overlay buffer below), so the base id is the source's stable content
@@ -4846,6 +4958,7 @@ impl Scene {
         // per-frame buffer so the (potentially huge) base buffer stays resident
         // and unchanged while a command preview or grip drag is live.
         let all_wires = other_arc;
+        vp_mark("split");
         // The 3-D wireframe deliberately ignores entity draw order and lets
         // true depth decide overlaps. Tag its resident wire id separately so
         // switching between the 2-D and 3-D styles rebuilds the GPU constants
@@ -4877,6 +4990,7 @@ impl Scene {
         } else {
             Arc::new(Vec::new())
         };
+        vp_mark("annotation-highlight");
         // 2D wireframe draws no cloud points; the clouds show their extents
         // and a message there instead (drawn with the live overlays).
         let wireframe_2d = inst.render_mode == codec::entities::ViewportRenderMode::Wireframe2D;
@@ -4885,11 +4999,18 @@ impl Scene {
         } else {
             Vec::new()
         };
+        let (indicator_wires, indicator_hatches) = if show_live_overlay {
+            let pixel = 2.0 * inst.camera.ortho_size() as f64 / f64::from(full.height.max(1.0));
+            self.table_indicator_overlay(pixel)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let mut preview_wires = if !show_live_overlay
             || (self.interim_wire.is_none()
                 && self.preview_wires.is_empty()
                 && self.constraint_hover_wires.is_empty()
-                && cloud_2d_wires.is_empty())
+                && cloud_2d_wires.is_empty()
+                && indicator_wires.is_empty())
         {
             Arc::new(Vec::new())
         } else {
@@ -4905,13 +5026,22 @@ impl Scene {
             v.extend(self.preview_wires.iter().cloned());
             v.extend(self.constraint_hover_wires.iter().cloned());
             v.extend(cloud_2d_wires);
+            v.extend(indicator_wires);
             Arc::new(v)
         };
         let preview_hatches = if show_live_overlay {
-            self.render_preview_hatches()
+            let hatches = self.render_preview_hatches();
+            if indicator_hatches.is_empty() {
+                hatches
+            } else {
+                let mut all = (*hatches).clone();
+                all.extend(indicator_hatches);
+                Arc::new(all)
+            }
         } else {
             Arc::new(Vec::new())
         };
+        vp_mark("preview-hatches");
 
         // Per-viewport frozen-layer set for a paper content viewport. Content
         // viewports hide special fills, media, meshes and lights on VP-frozen
@@ -4952,11 +5082,16 @@ impl Scene {
             uniforms.lineweight_scale = paper_units_per_mm / paper_per_pixel / MM_TO_PX;
         }
 
-        // Model space: scale linetypes using the current annotation scale so their
-        // appearance can match a paper-space viewport at the same drawing scale.
+        // Model space: scale linetypes by the current annotation scale's ratio
+        // (1:100 draws them 100 times longer) so they match a paper-space
+        // viewport at that scale. The ratio alone: a linetype is defined in
+        // drawing units, so the paper-millimetre conversion that
+        // `annotation_scale` carries shrank a metre drawing's dashes 1000
+        // times, below a pixel, and they drew solid (#2036).
         if self.current_layout == "Model" {
-            if self.annotation_scale.is_finite() && self.annotation_scale > 1e-9 {
-                uniforms.linetype_scale = self.annotation_scale;
+            let ratio = 1.0 / self.document.header.annotation_scale_value;
+            if ratio.is_finite() && ratio > 1e-9 {
+                uniforms.linetype_scale = ratio as f32;
             }
         } else if self.document.header.paper_space_linetype_scaling
             && !inst.paper_sheet
@@ -4983,6 +5118,7 @@ impl Scene {
         uniforms.flat_shade = if flags.flat_shade { 1.0 } else { 0.0 };
         uniforms.transparency_enable = if self.transparency_display { 1.0 } else { 0.0 };
         uniforms.highlight_widen = self.selection_widen;
+        uniforms.edge_rgb = crate::scene::pipeline::uniforms::edge_rgb_bits(self.edge_color);
         uniforms.viewport_background = display.background.base;
         uniforms.view_tone = [display.brightness, display.contrast, 0.0, 0.0];
         uniforms.background_top = display.background.colors[0];
@@ -5023,7 +5159,9 @@ impl Scene {
             ];
             uniforms.visual_style_color = style.mono_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
         }
+        vp_mark("before-lighting");
         self.apply_document_lighting(&mut uniforms, lighting_block, &vp_frozen, inst);
+        vp_mark("lighting");
 
         // `screen_rect` carries the *visible* sub-rectangle in normalized
         // canvas coords — that's what `Pipeline::prepare` uses to size
@@ -5050,12 +5188,13 @@ impl Scene {
                 self.paper_sheet_render_models_for_view(show_interaction);
             (hatches, wipeouts, Some(images))
         } else {
-            (
-                self.hatch_models_for_viewport(inst.handle, &vp_frozen, show_interaction),
-                self.wipeout_models_for_viewport(inst.handle, &vp_frozen),
-                None,
-            )
+            let hatches = self.hatch_models_for_viewport(inst.handle, &vp_frozen, show_interaction);
+            vp_mark("hatch-models");
+            let wipeouts = self.wipeout_models_for_viewport(inst.handle, &vp_frozen);
+            vp_mark("wipeout-models");
+            (hatches, wipeouts, None)
         };
+        vp_mark("hatches");
         let viewport_scale = if inst.paper_sheet {
             1.0
         } else {
@@ -5079,6 +5218,7 @@ impl Scene {
             styled_wire_fills.as_ref().filter(|fills| !fills.is_empty()),
             pattern_scale,
         );
+        vp_mark("styled-hatches");
         let images = if let Some(images) = paper_images {
             images
         } else {
@@ -5129,8 +5269,10 @@ impl Scene {
         } else {
             self.draw_depth_map()
         };
+        vp_mark("meshes-depths");
         let text_verts =
             self.gather_text_verts(&all_wires, wire_content_id, text_source_key, &draw_depths);
+        vp_mark("text");
         // Grip-drag / command-preview glyphs, excluded from the epoch-cached base
         // gather above. Two sources, both tiny (one operation's worth) and walked
         // per frame: the overlay wires' own glyphs (MOVE / COPY / ROTATE / SCALE /
@@ -5227,6 +5369,11 @@ impl Scene {
             hatches,
             wipeout_hatches,
             images,
+            point_cloud_clip: if point_clouds.clouds.is_empty() {
+                Vec::new()
+            } else {
+                self.live_section_clip_planes()
+            },
             point_clouds,
             point_cloud_light,
             meshes,
@@ -5271,10 +5418,13 @@ impl Scene {
             selected_handles: Arc::new(if show_interaction {
                 // A partly picked polyline lights only its picked segments,
                 // drawn with the highlight wires.
+                // A table whose cells are picked draws plain under its labels.
+                let cells = self.table_cells_handle();
                 self.selected
                     .iter()
                     .copied()
                     .filter(|handle| self.picked_segments(*handle).is_none())
+                    .filter(|handle| Some(*handle) != cells)
                     .collect()
             } else {
                 rustc_hash::FxHashSet::default()

@@ -129,6 +129,7 @@ impl OpenCADStudio {
             // The reference's hidden system layers (`*ADSK_CONSTRAINTS`) stay out.
             .filter(|l| !l.name.starts_with('*'))
             .map(|l| crate::ui::ribbon::LayerInfo {
+                stored_color: l.color,
                 name: l.name.clone(),
                 color: crate::ui::window::layers::iced_color_from_acad(&l.color),
                 visible: l.visible,
@@ -147,6 +148,15 @@ impl OpenCADStudio {
         self.tabs[i].active_layer = active.clone();
         self.tabs[i].layers.current_layer = active.clone();
         self.ribbon.set_layers(infos, &active);
+        let mut states: Vec<String> = self.tabs[i]
+            .scene
+            .document
+            .layer_states()
+            .into_iter()
+            .map(|state| state.name)
+            .collect();
+        states.sort_by_key(|name| name.to_lowercase());
+        self.ribbon.layer_states = states;
         let lt_items: Vec<ui::properties::LinetypeItem> = self.tabs[i]
             .scene
             .document

@@ -314,13 +314,22 @@ impl Camera {
     /// coordinates — the CPU equivalent of the GPU's relative-to-eye path.
     /// Returns `None` for points at/behind the perspective eye plane.
     pub fn project(&self, p: glam::DVec3, bounds: Rectangle) -> Option<glam::Vec2> {
-        let screen = crate::scene::view::projection::project_screen(
-            self.view_proj_rte(bounds),
-            self.eye(),
-            bounds,
-            p,
-        )?;
-        Some(glam::vec2(screen.x, screen.y))
+        self.projector(bounds)(p)
+    }
+
+    /// [`Self::project`] with the view matrix built once, for projecting
+    /// many points under one view.
+    pub fn projector(
+        &self,
+        bounds: Rectangle,
+    ) -> impl Fn(glam::DVec3) -> Option<glam::Vec2> + Copy {
+        let view_rot = self.view_proj_rte(bounds);
+        let eye = self.eye();
+        move |p| {
+            let screen =
+                crate::scene::view::projection::project_screen(view_rot, eye, bounds, p)?;
+            Some(glam::vec2(screen.x, screen.y))
+        }
     }
 
     /// Unproject in f64, with the kernel intersection relative to the plane
@@ -871,6 +880,20 @@ impl Camera {
         self.snap_to_face(dir, ucs);
     }
 
+    /// Free (arcball) rotation by a screen drag about the view target: the
+    /// model follows the pointer, about an axis in the screen plane, with no
+    /// fixed up direction.
+    pub fn trackball(&mut self, delta_x: f32, delta_y: f32) {
+        let length = delta_x.hypot(delta_y);
+        if !(length > 1e-6) || !length.is_finite() {
+            return;
+        }
+        let axis = Vec3::new(-delta_y, -delta_x, 0.0) / length;
+        self.rotation =
+            (self.rotation * Quat::from_axis_angle(axis, length * 0.005)).normalize();
+        self.sync_yaw_pitch();
+    }
+
     /// Roll the camera about its own view axis by `angle` radians. The gaze
     /// direction is unchanged; only the up-sense twists.
     pub fn roll_by(&mut self, angle: f32) {
@@ -930,6 +953,14 @@ pub fn yaw_pitch_to_quat(yaw: f32, pitch: f32, roll: f32) -> Quat {
     let q_yaw = Quat::from_rotation_z(yaw);
     let q_pitch = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 - pitch);
     let q_roll = Quat::from_rotation_z(roll);
+    (q_yaw * q_pitch * q_roll).normalize()
+}
+
+/// [`yaw_pitch_to_quat`] in f64, for placing points far along the view axes.
+pub fn yaw_pitch_to_dquat(yaw: f64, pitch: f64, roll: f64) -> glam::DQuat {
+    let q_yaw = glam::DQuat::from_rotation_z(yaw);
+    let q_pitch = glam::DQuat::from_rotation_x(std::f64::consts::FRAC_PI_2 - pitch);
+    let q_roll = glam::DQuat::from_rotation_z(roll);
     (q_yaw * q_pitch * q_roll).normalize()
 }
 

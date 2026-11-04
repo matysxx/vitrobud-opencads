@@ -89,7 +89,10 @@ mod parameters;
 mod property_match;
 mod solid3d;
 mod tests;
+mod autolisp_tests;
 mod text_edit;
+#[cfg(test)]
+mod mtext_preview_tests;
 mod transform;
 mod utilities;
 mod viewport;
@@ -112,6 +115,23 @@ impl OpenCADStudio {
     /// command, so `was_active` is false and their selection is preserved.
     pub(super) fn apply_cmd_result(&mut self, mut result: CmdResult) -> Task<Message> {
         let i = self.active_tab;
+        // A constraint addition records the geometry its solve moved outside
+        // the command's own list. Only the outermost result owns the record:
+        // a handler that applies a follow-up result must not wipe it.
+        let outermost = self.result_depth == 0;
+        if outermost {
+            self.tabs[i].scene.constraint_network_moves.clear();
+        }
+        let panel_updates = self.tabs[i]
+            .active_cmd
+            .as_mut()
+            .map(|c| c.take_pending_panel_updates())
+            .unwrap_or_default();
+        for (panel_id, values) in panel_updates {
+            if let Some(panel) = self.plugin_panels.get_mut(&panel_id) {
+                panel.update_values(values);
+            }
+        }
         if let CmdResult::ReturnPoint(pt) = result {
             self.tabs[i].scene.clear_preview_wire();
             if let Some(mut suspended) = self.tabs[i].suspended_cmd.take() {
@@ -159,6 +179,14 @@ impl OpenCADStudio {
             .active_cmd
             .as_ref()
             .and_then(|command| command.drawing_variable_update());
+        // REVCLOUD's type choice is a profile setting (REVCLOUDCREATEMODE).
+        if self.tabs[self.active_tab]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|command| command.name() == "REVCLOUD")
+        {
+            self.save_config();
+        }
         if let Some((name, value)) = variable {
             let tab = &mut self.tabs[self.active_tab];
             if crate::io::drawing_variable(&tab.scene.document, name).as_deref() != Some(value.as_str()) {
@@ -197,8 +225,18 @@ impl OpenCADStudio {
                 | CmdResult::SolidSubtract { .. }
                 | CmdResult::SliceEntities { .. }
                 | CmdResult::SliceSurfaceEntities { .. }
+                // An array arrow keeps the array selected for the next arrow.
+                | CmdResult::EditAssocArray { .. }
         );
+        self.result_depth += 1;
         let task = self.apply_cmd_result_inner(result);
+        self.result_depth -= 1;
+        // An unwinding panic skips the decrement, but nothing here catches
+        // it: the process ends instead of applying another result with the
+        // counter left high.
+        if outermost {
+            self.report_pending_network_moves(i);
+        }
         let i = self.active_tab;
         // A typed `<angle` does not outlive the command it was typed in.
         if self.tabs[i].active_cmd.is_none() {
@@ -509,6 +547,8 @@ impl OpenCADStudio {
                     crate::ui::window::quick_calc::QuickCalcMsg::Picked(value),
                 ));
             }
+            CmdResult::TableTemplatePick(handle) => self.table_template_pick_done(handle),
+            CmdResult::SetLayerOn { layer, on } => self.set_layer_on_from_command(i, &layer, on),
             CmdResult::OpenTxt2MtxtSettings => self.open_txt2mtxt_settings(),
             CmdResult::OpenAutoConstrainSettings => {
                 self.handle_open_auto_constrain_settings();
@@ -581,6 +621,19 @@ impl OpenCADStudio {
                     return task;
                 }
             }
+            CmdResult::MoveLayerCopies(handles, delta) => {
+                let i = self.active_tab;
+                // Copy + layer + placement share the snapshot taken before copying.
+                self.tabs[i].scene.transform_entities(
+                    &handles,
+                    &crate::command::EntityTransform::Translate(delta),
+                );
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.refresh_properties();
+            }
             CmdResult::CopySelected(handles, transform) => {
                 if let Some(task) = self.handle_copy_selected(handles, transform) {
                     return task;
@@ -591,6 +644,13 @@ impl OpenCADStudio {
             }
             CmdResult::CommitAndExit(entity) => {
                 if let Some(task) = self.handle_commit_and_exit(entity, preserve_commit_layer) {
+                    return task;
+                }
+            }
+            CmdResult::CommitAndReport(entity, message) => {
+                let task = self.handle_commit_and_exit(entity, preserve_commit_layer);
+                self.command_line.push_output(&message);
+                if let Some(task) = task {
                     return task;
                 }
             }
@@ -671,6 +731,16 @@ impl OpenCADStudio {
             }
             result @ CmdResult::PlaceBlockSingleParameter { .. } => {
                 return self.handle_place_block_single_parameter(result);
+            }
+            CmdResult::StartBlockLookupAction { document, definition } => {
+                return self.start_block_lookup_action(document, definition);
+            }
+            CmdResult::OpenBlockLookupTable {
+                document,
+                definition,
+                name,
+            } => {
+                return self.open_lookup_table_from_action(document, definition, name);
             }
             result @ CmdResult::PlaceBlockOrientationParameter { .. } => {
                 return self.handle_place_block_orientation_parameter(result);
@@ -909,6 +979,15 @@ impl OpenCADStudio {
                     return task;
                 }
             }
+            CmdResult::ReassociateCenterLine {
+                target,
+                first,
+                second,
+            } => {
+                if let Some(task) = self.handle_reassociate_center_line(target, first, second) {
+                    return task;
+                }
+            }
             CmdResult::EditDimensionBreak {
                 dimensions,
                 operation,
@@ -918,12 +997,29 @@ impl OpenCADStudio {
             CmdResult::EditDimensionJog { dimension, point } => {
                 self.handle_edit_dimension_jog(dimension, point);
             }
+            CmdResult::ReassociateDimension {
+                dimension,
+                target,
+                last,
+            } => {
+                self.handle_reassociate_dimension(dimension, target, last);
+            }
             CmdResult::SpaceDimensions {
                 base,
                 others,
                 spacing,
             } => {
                 self.handle_space_dimensions(base, others, spacing);
+            }
+            CmdResult::DistributeDimensions {
+                base,
+                dimensions,
+                offset,
+            } => {
+                self.handle_distribute_dimensions(base, dimensions, offset);
+            }
+            CmdResult::EditAssocArray { insert, changes } => {
+                self.handle_edit_assoc_array(insert, changes);
             }
             CmdResult::ReplaceEntity(handle, new_entities) => {
                 if let Some(task) = self.handle_replace_entity(handle, new_entities) {
@@ -1002,8 +1098,11 @@ impl OpenCADStudio {
                     return task;
                 }
             }
-            CmdResult::MatchEntityLayer { dest, src } => {
-                self.handle_match_entity_layer(dest, src);
+            CmdResult::MergeLayers { sources, target } => {
+                self.handle_merge_layers(sources, target);
+            }
+            CmdResult::MatchEntityLayer { dest, src, copy } => {
+                self.handle_match_entity_layer(dest, src, copy);
             }
             CmdResult::MatchProperties { dest, src } => {
                 if let Some(task) = self.handle_match_properties(dest, src) {
@@ -1109,8 +1208,15 @@ impl OpenCADStudio {
                 windows,
                 excluded_points,
                 subtract_window,
+                removed_handles,
             } => {
-                self.handle_stretch_window(handles, windows, excluded_points, subtract_window);
+                self.handle_stretch_window(
+                    handles,
+                    windows,
+                    excluded_points,
+                    subtract_window,
+                    removed_handles,
+                );
             }
             CmdResult::StretchEntities {
                 handles,
@@ -1255,6 +1361,7 @@ impl OpenCADStudio {
         } else {
             self.focus_cmd_input()
         };
+        crate::ui::ribbon::keytip_note_command_finished();
         Task::batch([dispatched, focus])
     }
 
@@ -1321,6 +1428,7 @@ impl OpenCADStudio {
     }
 
     fn handle_done(&mut self) {
+        crate::ui::ribbon::keytip_note_command_finished();
         let i = self.active_tab;
         self.tabs[i].scene.clear_preview_wire();
         if self.tabs[i].suspended_cmd.is_some() {
@@ -1345,6 +1453,7 @@ impl OpenCADStudio {
     }
 
     fn handle_cancel(&mut self, cancel: CmdResult) {
+        crate::ui::ribbon::keytip_note_command_finished();
         let i = self.active_tab;
         self.tabs[i].pending_parameter_set_follow_up = None;
         self.tabs[i].pending_xy_box_set = None;
@@ -1395,6 +1504,30 @@ impl OpenCADStudio {
             self.command_line.push_error(line);
         }
         self.apply_cmd_result(CmdResult::Cancel)
+    }
+
+    /// Whether a world point lies inside the drawing area as it is shown.
+    /// Without a sized canvas (no window yet) every point counts as shown.
+    pub(super) fn typed_point_in_view(&self, i: usize, wcs: glam::DVec3) -> bool {
+        let canvas = self.tabs[i].scene.selection.borrow().view.vp_size;
+        if canvas.0 <= 0.0 || canvas.1 <= 0.0 {
+            return true;
+        }
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: canvas.0,
+            height: canvas.1,
+        };
+        let edit_cam = self.tabs[i]
+            .scene
+            .viewport_edit_frame(canvas)
+            .map(|(cam, _)| cam);
+        let (view_rot, eye, _) = self.pick_view(i, &edit_cam, bounds);
+        crate::scene::view::projection::project_screen(view_rot, eye, bounds, wcs)
+            .is_some_and(|p| {
+                (0.0..=bounds.width).contains(&p.x) && (0.0..=bounds.height).contains(&p.y)
+            })
     }
 
     /// A window between two typed corners, run through the same box test
@@ -1535,10 +1668,15 @@ impl OpenCADStudio {
 
     fn handle_relaunch(&mut self, cmd: String, handles: Vec<Handle>) -> Task<Message> {
         let i = self.active_tab;
+        // Polylines gathered by segment (SUbobject) keep their picked
+        // segments into the command the selection is handed to.
+        let segments = std::mem::take(&mut self.tabs[i].scene.sub_segments);
         self.tabs[i].scene.deselect_all();
         for h in &handles {
             self.tabs[i].scene.select_entity(*h, false);
         }
+        self.tabs[i].scene.sub_segments =
+            segments.into_iter().filter(|(handle, _)| handles.contains(handle)).collect();
         self.tabs[i].active_cmd = None;
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
@@ -1552,6 +1690,51 @@ impl OpenCADStudio {
         // through the normal dispatcher. Selection is left untouched.
         // The option picked in DIMCONSTRAINT becomes its next default;
         // the same command run on its own leaves the default alone.
+        // DIM's Offset sets the drawing's DIMDLI; the series goes on.
+        if let Some(value) = cmd
+            .strip_prefix("_DIM_SET_DIMDLI ")
+            .and_then(|value| value.trim().parse::<f64>().ok())
+        {
+            self.tabs[i].scene.document.header.dim_line_increment = value;
+            self.tabs[i].dirty = true;
+            if let Some(command) = self.tabs[i].active_cmd.as_ref() {
+                let (prompt, options) = (command.prompt(), command.options());
+                self.command_line.push_info(&prompt);
+                self.command_line.set_step_options(options);
+            }
+            return Task::none();
+        }
+        // DIM's answer about the dimensions it placed one over; DIM (or its
+        // continued series) goes on.
+        if let Some(rest) = cmd.strip_prefix("_DIM_OVERLAP ") {
+            let mut parts = rest.split_whitespace();
+            let choice = parts.next().and_then(|v| v.chars().next()).unwrap_or('N');
+            let new = parts
+                .next()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(codec::Handle::new);
+            let others: Vec<codec::Handle> = parts
+                .next()
+                .unwrap_or("")
+                .split(',')
+                .filter_map(|v| v.parse::<u64>().ok())
+                .map(codec::Handle::new)
+                .collect();
+            if let (Some(new), false) = (new, others.is_empty() || choice == 'N') {
+                let dimdli = crate::scene::creation_style::drawing_dimdli(
+                    &self.tabs[i].scene.document,
+                );
+                self.push_undo_snapshot(i, "DIM");
+                dim_edit::apply_dim_overlap(&mut self.tabs[i].scene, choice, new, &others, dimdli);
+                self.tabs[i].dirty = true;
+            }
+            if let Some(command) = self.tabs[i].active_cmd.as_ref() {
+                let (prompt, options) = (command.prompt(), command.options());
+                self.command_line.push_info(&prompt);
+                self.command_line.set_step_options(options);
+            }
+            return Task::none();
+        }
         let from_menu = self.tabs[i]
             .active_cmd
             .as_ref()
@@ -1623,9 +1806,9 @@ impl OpenCADStudio {
         self.tabs[i].scene.clear_preview_wire();
         self.refresh_area_preview(i);
         self.command_line.push_output(&msg);
-        if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
-            self.command_line.push_info(&prompt);
-        }
+        // Reports can advance a step (LAYMRG's warning or Name input), so
+        // refresh its options and dynamic input along with the prompt.
+        let _ = self.handle_need_point();
     }
 
     fn handle_report_error(&mut self, msg: String) {
@@ -1633,9 +1816,9 @@ impl OpenCADStudio {
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
         self.command_line.push_error(&msg);
-        if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
-            self.command_line.push_info(&prompt);
-        }
+        // Reports can advance a step (LAYMRG's warning or Name input), so
+        // refresh its options and dynamic input along with the prompt.
+        let _ = self.handle_need_point();
     }
 
     fn handle_report_measurement_and_deselect(&mut self, msg: String) {

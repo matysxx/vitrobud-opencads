@@ -1,5 +1,11 @@
 # Upstream maintenance
 
+The 2026.44.0 review included new codec/kernel pins, a macOS-15 CI runner,
+and expanded native release matrices. Keep the fork's no-automatic-release
+guard, explicit R12 regression target, and private-web analytics exclusion
+when adapting these changes. CI validates code; machine importer compatibility
+still requires separate acceptance.
+
 Remotes:
 
 - `origin` — maintained deployment fork

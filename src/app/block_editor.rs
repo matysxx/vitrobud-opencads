@@ -49,6 +49,33 @@ fn same_constraints(
         && before.dimensions == after.dimensions
 }
 
+/// Number of block references in the drawing that resolve to `definition`,
+/// including references whose anonymous representation record points at it.
+/// References nested inside another definition are not drawing instances and
+/// are left out.
+pub(super) fn block_reference_count(
+    scene: &crate::scene::Scene,
+    definition: codec::Handle,
+) -> usize {
+    let document = &scene.document;
+    // Model- and paper-space records also list their contents; only records
+    // without a layout are definitions whose children are not drawn directly.
+    let inside_definition: FxHashSet<codec::Handle> = document
+        .block_records
+        .iter()
+        .filter(|record| record.layout.is_null())
+        .flat_map(|record| record.entity_handles.iter().copied())
+        .collect();
+    document
+        .entities()
+        .filter(|entity| matches!(entity, EntityType::Insert(_)))
+        .filter(|entity| !inside_definition.contains(&entity.common().handle))
+        .filter(|entity| {
+            document.dynamic_definition_for_insert(entity.common().handle) == Some(definition)
+        })
+        .count()
+}
+
 fn normalize_allocation(document: &mut Document, next: u64) {
     if document.next_handle() < next {
         document.header.handle_seed = next - 1;
@@ -277,7 +304,7 @@ impl OpenCADStudio {
             parametric_constraints,
             reference_designations: Vec::new(),
             named_parameters,
-            label: format!("Edit block {}", session.block_name),
+            label: super::document::HistoryLabel::formatted(format!("Edit block {}", session.block_name), "edit-block", session.block_name.to_owned().into()),
         })
     }
 
@@ -391,7 +418,16 @@ impl OpenCADStudio {
         };
         let id = state.document_id;
         let name = state.name.trim().to_string();
-        if name.is_empty() || state.error.is_some() {
+        let refused = state.error.is_some();
+        if name.is_empty() || refused {
+            if name.is_empty() {
+                // `OK` is reachable with an empty field, and silence is not an
+                // answer: say what the field is short of.
+                let state = self.block_edit_picker.as_mut().unwrap();
+                state.error = Some(
+                    crate::t!("The name must be at least one character long.").into_owned(),
+                );
+            }
             return Task::none();
         }
         let Some(i) = self.tabs.iter().position(|tab| tab.id == id) else {
@@ -568,7 +604,7 @@ impl OpenCADStudio {
         let mut delta = self
             .block_edit_delta(i, true)
             .expect("a new definition changes the document");
-        delta.label = format!("Save block as {name}");
+        delta.label = super::document::HistoryLabel::formatted(format!("Save block as {name}"), "save-block", name.to_owned().into());
         let mut history = self.tabs[i].block_edit_history.take().unwrap();
         std::mem::swap(&mut self.tabs[i].history, &mut history.main);
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -588,6 +624,7 @@ impl OpenCADStudio {
         self.grip_popup = None;
         self.visibility_popup = None;
         self.table_popup = None;
+        self.flip_popup = None;
         history.checkpoint = self.block_edit_checkpoint(i);
         self.tabs[i].block_edit_history = Some(history);
         self.tabs[i].scene.bump_geometry();
@@ -719,6 +756,16 @@ impl OpenCADStudio {
             }
             self.tabs[i].scene.visibility_states.remove(&definition);
         }
+        // The saved definition advertises attributes because its body holds
+        // them, so an attribute authored here marks the record and erasing the
+        // last one takes the mark off again.
+        crate::scene::Scene::sync_attribute_flag(&mut self.tabs[i].scene.document, &name);
+        // The saved definition's terminator belongs after its body. The undo
+        // entry below is taken afterwards, so it carries the swap.
+        if let Err(error) = self.tabs[i].scene.reterminate_block_definition(&name) {
+            self.command_line.push_error(&error);
+            return false;
+        }
         if let Some(delta) = self.block_edit_delta(i, true) {
             let mut history = self.tabs[i].block_edit_history.take().unwrap();
             std::mem::swap(&mut self.tabs[i].history, &mut history.main);
@@ -764,6 +811,8 @@ impl OpenCADStudio {
             self.tabs[i].scene.object_isolation = history.return_isolation;
         }
         self.tabs[i].active_block_edit = None;
+        // An open Parameters Manager cell belongs to the session that ended.
+        self.tabs[i].parameters_panel = Default::default();
         self.restore_after_block_edit_close(
             i,
             None,
@@ -781,10 +830,14 @@ impl OpenCADStudio {
         continuation: BlockEditContinuation,
     ) -> Task<Message> {
         let id = self.tabs[i].id;
-        if self.tabs[i].active_block_edit_session().is_some() {
+        if let Some(definition) = self.tabs[i]
+            .active_block_edit_session()
+            .map(|session| session.br_handle)
+        {
             if self.block_edit_dirty(i) {
+                let references = block_reference_count(&self.tabs[i].scene, definition);
                 self.active_tab = i;
-                self.pending_block_close = Some((self.tabs[i].id, continuation));
+                self.pending_block_close = Some((self.tabs[i].id, continuation, references));
                 self.active_modal = Some(ModalKind::BlockEditChanges);
                 return Task::none();
             }
@@ -831,7 +884,7 @@ impl OpenCADStudio {
     }
 
     pub(super) fn resolve_block_edit_close(&mut self, save: bool) -> Task<Message> {
-        let Some((id, continuation)) = self.pending_block_close.clone() else {
+        let Some((id, continuation, _references)) = self.pending_block_close.clone() else {
             return Task::none();
         };
         let Some(i) = self.tabs.iter().position(|tab| tab.id == id) else {
@@ -851,7 +904,7 @@ impl OpenCADStudio {
     pub(super) fn cancel_block_edit_close(&mut self) {
         self.pending_block_close = None;
         self.pending_tab_closes.clear();
-        if self.active_modal == Some(ModalKind::BlockEditChanges) {
+        if self.focus_dialog(ModalKind::BlockEditChanges) {
             self.active_modal = None;
         }
     }

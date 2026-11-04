@@ -233,6 +233,24 @@ fn num(v: f64) -> String {
     format!("{v:.6}")
 }
 
+/// The property a `CustomDP.<Name>` field variable names (the stored code
+/// for a custom drawing property).
+pub fn custom_property_name(variable: &str) -> Option<&str> {
+    let variable = variable.trim();
+    let prefix = variable.get(..CUSTOM_PROPERTY_PREFIX.len())?;
+    prefix
+        .eq_ignore_ascii_case(CUSTOM_PROPERTY_PREFIX)
+        .then(|| variable[CUSTOM_PROPERTY_PREFIX.len()..].trim())
+}
+
+/// The variable prefix of a custom drawing property in a field code.
+pub const CUSTOM_PROPERTY_PREFIX: &str = "CustomDP.";
+
+/// The field code that shows custom drawing property `name`.
+pub fn custom_property_code(name: &str) -> String {
+    format!("\\AcVar {CUSTOM_PROPERTY_PREFIX}{name}")
+}
+
 /// A system variable's value as a field shows it.
 pub fn sysvar(document: &Document, name: &str) -> Option<String> {
     let h = &document.header;
@@ -318,6 +336,51 @@ fn epoch_secs() -> i64 {
     }
 }
 
+/// The one field a text is made of, as FIELD inserts it: the field's code
+/// and the objects it reads. `None` when the text has no field, or text
+/// around or between its fields.
+pub fn whole_text_field(document: &Document, host: Handle) -> Option<(String, Vec<Handle>)> {
+    let owner = |handle: Handle| -> Option<Handle> {
+        if let Some(field) = document.fields.get(&handle) {
+            return Some(field.owner);
+        }
+        match document.objects.get(&handle)? {
+            codec::objects::ObjectType::Dictionary(dictionary) => Some(dictionary.owner),
+            _ => None,
+        }
+    };
+    // The text container sits a few dictionaries below its host.
+    let hosted_by = |mut handle: Handle| {
+        for _ in 0..12 {
+            match owner(handle) {
+                Some(next) if next == host => return true,
+                Some(next) => handle = next,
+                None => return false,
+            }
+        }
+        false
+    };
+    let container = document
+        .fields
+        .values()
+        .find(|field| field.evaluator == "_text" && hosted_by(field.handle))?;
+    if container.code.trim() != "%<\\_FldIdx 0>%" {
+        return None;
+    }
+    let mut children = document
+        .fields
+        .values()
+        .filter(|field| field.owner == container.handle);
+    let child = children.next()?;
+    if children.next().is_some() {
+        return None;
+    }
+    // Operands the field holds as fields of their own come back written in
+    // its code.
+    codec::fields::inline_code(document, child.handle)
+        .or_else(|| Some((child.code.clone(), child.objects.clone())))
+}
+
 /// Attach `field` (its code and referenced objects) to `host`, showing
 /// `value`; `None` removes the host's field.
 pub fn set_text_field(
@@ -336,6 +399,24 @@ pub fn set_text_field(
             document.remove_text_field(host);
         }
     }
+}
+
+/// The regional currency symbol (the default a Currency table cell
+/// format starts with); `$` where the system does not tell.
+pub(crate) fn os_currency_symbol() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Globalization::GetLocaleInfoEx;
+        let mut buffer = [0u16; 16];
+        // LOCALE_SCURRENCY of the user's default locale.
+        let len = unsafe {
+            GetLocaleInfoEx(std::ptr::null(), 0x14, buffer.as_mut_ptr(), buffer.len() as i32)
+        };
+        if len > 1 {
+            return String::from_utf16_lossy(&buffer[..len as usize - 1]);
+        }
+    }
+    "$".to_string()
 }
 
 /// Month and day names and the regional date / time pictures, as date
@@ -554,6 +635,21 @@ pub fn refresh_sheet_set_fields(document: &mut Document) -> Vec<Handle> {
     changed
 }
 
+/// The hosts holding an `\AcVar` field (document properties, system
+/// variables, dates), each once: what a change to the drawing's summary
+/// information can alter.
+pub fn acvar_hosts(document: &Document) -> Vec<Handle> {
+    let mut hosts: Vec<Handle> = document
+        .fields
+        .values()
+        .filter(|f| f.evaluator.starts_with("AcVar"))
+        .filter_map(|f| field_host(document, f.handle))
+        .collect();
+    hosts.sort_by_key(|h| h.value());
+    hosts.dedup();
+    hosts
+}
+
 /// The entity hosting field `field`: up its owner chain (fields, then the
 /// field dictionary and extension dictionary) to the first non-object.
 fn field_host(document: &Document, field: Handle) -> Option<Handle> {
@@ -660,5 +756,94 @@ impl FieldContext for PlotContext<'_> {
     }
     fn getenv(&self, name: &str) -> Option<String> {
         self.0.getenv(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codec::entities::{EntityType, MText};
+
+    fn document_with_properties() -> Document {
+        let mut document = Document::new();
+        document.summary_info.custom_properties = vec![
+            ("Client".into(), "Acme".into()),
+            ("Job No".into(), "42-7".into()),
+        ];
+        document
+    }
+
+    fn shown(document: &Document, host: Handle) -> String {
+        match document.get_entity(host) {
+            Some(EntityType::MText(m)) => m.value.clone(),
+            other => panic!("expected an MText, got {other:?}"),
+        }
+    }
+
+    /// S6: the field code evaluates to the property's value, and the name
+    /// matches without regard to case.
+    #[test]
+    fn a_custom_property_field_evaluates_to_the_value() {
+        let document = document_with_properties();
+        for code in [
+            r"\AcVar CustomDP.Client",
+            r"\AcVar CustomDP.client",
+            r"\AcVar CustomDP.CLIENT",
+            r"%<\AcVar CustomDP.Client>%",
+        ] {
+            assert_eq!(evaluate(&document, code, &[], None).as_deref(), Some("Acme"), "{code}");
+        }
+        assert_eq!(
+            evaluate(&document, r"\AcVar CustomDP.job no", &[], None).as_deref(),
+            Some("42-7")
+        );
+    }
+
+    /// S6: a property the drawing lacks is as unresolvable as any other
+    /// unknown variable.
+    #[test]
+    fn a_missing_custom_property_is_unresolved_like_an_unknown_variable() {
+        let document = document_with_properties();
+        let unknown = evaluate(&document, r"\AcVar NoSuchVariable", &[], None);
+        assert_eq!(
+            evaluate(&document, r"\AcVar CustomDP.Missing", &[], None),
+            unknown
+        );
+        let mut document = document;
+        let host = document
+            .add_entity(EntityType::MText(Box::new(MText::new())))
+            .unwrap();
+        set_text_field(
+            &mut document,
+            host,
+            Some((r"\AcVar CustomDP.Missing".into(), vec![])),
+            "old",
+        );
+        update_fields(&mut document, 32, None);
+        let missing = shown(&document, host);
+        set_text_field(
+            &mut document,
+            host,
+            Some((r"\AcVar NoSuchVariable".into(), vec![])),
+            "old",
+        );
+        update_fields(&mut document, 32, None);
+        assert_eq!(missing, shown(&document, host));
+    }
+
+    /// Existing behavior: `\AcVar <Name>` keeps resolving summary fields.
+    #[test]
+    fn an_acvar_summary_field_still_evaluates() {
+        let mut document = document_with_properties();
+        document.summary_info.author = "Ana".into();
+        assert_eq!(
+            evaluate(&document, r"\AcVar Author", &[], None).as_deref(),
+            Some("Ana")
+        );
+        // A bare custom property name keeps working as before.
+        assert_eq!(
+            evaluate(&document, r"\AcVar Client", &[], None).as_deref(),
+            Some("Acme")
+        );
     }
 }

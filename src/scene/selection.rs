@@ -78,6 +78,7 @@ impl Scene {
             return;
         }
         self.selected_constraint = None;
+        self.table_cells = None;
         let expanded = self.expanded_with_leaders(handles);
         let mut changed = false;
         for handle in expanded {
@@ -131,6 +132,7 @@ impl Scene {
     }
     pub fn select_entity(&mut self, handle: Handle, exclusive: bool) {
         self.selected_constraint = None;
+        self.table_cells = None;
         let handles = self.handles_expanded_for_leader_annotations(&[handle]);
         let mut changed = false;
 
@@ -154,6 +156,7 @@ impl Scene {
 
     pub fn deselect_all(&mut self) {
         self.selected_constraint = None;
+        self.table_cells = None;
         self.sub_segments.clear();
         if self.selected.is_empty() {
             return;
@@ -161,6 +164,29 @@ impl Scene {
         self.selected.clear();
         self.selected_order.clear();
         self.bump_selection_set();
+    }
+
+    /// Snapshot the current selection as the "previous" set SELECTPREVIOUS
+    /// hands back. Called when a command starts, before its own picks replace
+    /// the set, and skipped by the commands that only read the set.
+    pub(crate) fn remember_selection_set(&mut self) {
+        let current = self.selected_handles_in_order();
+        if current != self.previous_selected {
+            self.previous_selected = current;
+        }
+    }
+
+    /// Swap the current selection with the remembered one. Returns the number
+    /// of objects restored, or `None` when nothing was remembered.
+    pub(crate) fn select_previous(&mut self) -> Option<usize> {
+        if self.previous_selected.is_empty() {
+            return None;
+        }
+        let current = self.selected_handles_in_order();
+        let previous = std::mem::take(&mut self.previous_selected);
+        self.replace_selection_exact(&previous);
+        self.previous_selected = current;
+        Some(previous.len())
     }
 
     /// Script-facing replacement: preserve exactly the validated input order.
@@ -342,36 +368,49 @@ impl Scene {
     /// layout that matches one of the selected entities by `(variant,
     /// layer)`. The seed selection stays selected. No-op when nothing is
     /// selected. Returns the number of newly-added entities.
-    pub fn select_similar(&mut self) -> usize {
+    /// Add every object of the active layout that has the type of a
+    /// selected object and the same properties `mode` names (the
+    /// SELECTSIMILARMODE bits, see [`SIMILAR_FIELDS`]).
+    pub fn select_similar(&mut self, mode: u16) -> usize {
         use crate::entities::traits::entity_type_name;
         if self.selected.is_empty() {
             return 0;
         }
-        let pairs: rustc_hash::FxHashSet<(&str, String)> = self
-            .selected
-            .iter()
-            .filter_map(|h| self.document.get_entity(*h))
-            .map(|e| (entity_type_name(e), e.as_entity().layer().to_string()))
-            .collect();
-        let handles = self.current_layout_entity_handles();
-        let mut added = 0;
-        for h in handles {
-            if self.selected.contains(&h) {
-                continue;
-            }
-            if let Some(e) = self.document.get_entity(h) {
-                let key = (entity_type_name(e), e.as_entity().layer().to_string());
-                if pairs.contains(&key) {
-                    self.selected.insert(h);
-                    self.selected_order.push(h);
-                    added += 1;
-                }
-            }
+        let key = |e: &codec::EntityType| -> Vec<Option<String>> {
+            SIMILAR_FIELDS
+                .iter()
+                .filter(|(bit, _)| mode & bit != 0)
+                .map(|(_, fields)| {
+                    fields
+                        .iter()
+                        .find_map(|field| self.entity_property_value(e, field))
+                })
+                .collect()
+        };
+        let mut keys: rustc_hash::FxHashMap<&str, rustc_hash::FxHashSet<Vec<Option<String>>>> =
+            Default::default();
+        for e in self.selected.iter().filter_map(|h| self.document.get_entity(*h)) {
+            keys.entry(entity_type_name(e)).or_default().insert(key(e));
         }
-        if added > 0 {
+        let matches: Vec<Handle> = self
+            .current_layout_entity_handles()
+            .into_iter()
+            .filter(|h| !self.selected.contains(h))
+            .filter(|h| {
+                self.document.get_entity(*h).is_some_and(|e| {
+                    keys.get(entity_type_name(e))
+                        .is_some_and(|wanted| wanted.contains(&key(e)))
+                })
+            })
+            .collect();
+        for &h in &matches {
+            self.selected.insert(h);
+            self.selected_order.push(h);
+        }
+        if !matches.is_empty() {
             self.bump_selection_set();
         }
-        added
+        matches.len()
     }
 
     /// Replace the selection with its complement: every selectable object
@@ -824,6 +863,12 @@ impl Scene {
                                     QSelectValueEditor::Choice(vec!["false".into(), "true".into()])
                                 }
                                 PropValue::AttrText { .. } => QSelectValueEditor::Text,
+                                PropValue::PluginParam { .. } => {
+                                    // A class parameter's record value is text to the
+                                    // quick-select reader; the committed edit stays on
+                                    // the class's own record path (API v14).
+                                    QSelectValueEditor::Text
+                                }
                                 PropValue::BlockNumber { .. }
                                 | PropValue::BlockChoice { .. }
                                 | PropValue::Stepper { .. }
@@ -953,7 +998,9 @@ impl Scene {
             } else {
                 entity.common().linetype.clone()
             }),
-            "linetype_scale" => Some(format!("{:.4}", entity.common().linetype_scale)),
+            "linetype_scale" => Some(crate::entities::common::format_decimal(
+                entity.common().linetype_scale,
+            )),
             "plot_style" => Some(
                 match entity.common().plotstyle_flags {
                     0 => "ByLayer",
@@ -1015,6 +1062,7 @@ impl Scene {
                     PropValue::HatchPatternChoice(s) => s,
                     PropValue::BoolToggle { value, .. } => value.to_string(),
                     PropValue::AttrText { value, .. } => value,
+                    PropValue::PluginParam { value, .. } => value,
                     PropValue::Stepper { display, .. } => display,
                     PropValue::BlockNumber { .. }
                     | PropValue::BlockChoice { .. }
@@ -1054,7 +1102,12 @@ impl Scene {
     // ── Erase ─────────────────────────────────────────────────────────────
 
     pub fn erase_entities(&mut self, handles: &[Handle]) {
-        self.remove_entities(handles, true, true);
+        self.remove_entities(handles, true, true, true);
+    }
+
+    /// Replace only planned sources, preserving annotations or leaders not exploded.
+    pub fn erase_entities_exact(&mut self, handles: &[Handle]) {
+        self.remove_entities(handles, true, true, false);
     }
 
     /// Like [`erase_entities`](Self::erase_entities) but without the
@@ -1062,7 +1115,7 @@ impl Scene {
     /// removes them through the plugin host API; locked-layer policy stays
     /// enforced either way.
     pub fn erase_entities_plugin(&mut self, handles: &[Handle]) {
-        self.remove_entities(handles, true, false);
+        self.remove_entities(handles, true, false, true);
     }
 
     /// Roll back entities created by the current command after a downstream
@@ -1071,7 +1124,7 @@ impl Scene {
     /// The shared removal path keeps first-touch undo state, history objects,
     /// groups, selection, and derived caches coherent.
     pub(crate) fn rollback_new_entities(&mut self, handles: &[Handle]) {
-        self.remove_entities(handles, false, false);
+        self.remove_entities(handles, false, false, true);
     }
 
     fn remove_entities(
@@ -1079,8 +1132,13 @@ impl Scene {
         handles: &[Handle],
         respect_layer_locks: bool,
         respect_reference_only: bool,
+        expand_linked: bool,
     ) {
-        let erase_handles = self.handles_expanded_for_leader_annotations(handles);
+        let erase_handles = if expand_linked {
+            self.handles_expanded_for_leader_annotations(handles)
+        } else {
+            handles.to_vec()
+        };
 
         // One pass over document.objects instead of a scan per erased handle.
         let mut managers_by_section: HashMap<Handle, Vec<Handle>> = HashMap::default();
@@ -1144,6 +1202,7 @@ impl Scene {
                     self.record_undo_reference_designation_before(h);
                 }
             }
+            self.remove_image_definition_reactor(h);
             self.delete_solid_history(h);
             if let Some(settings_handle) = settings_handle {
                 self.document.objects.remove(&settings_handle);
@@ -1279,6 +1338,14 @@ impl Scene {
             if self.is_recording_undo() {
                 self.record_undo_before(handle, None);
             }
+            // OOPS restores entities without replaying the erased object images.
+            let entity = if matches!(entity.as_ref(), EntityType::RasterImage(_)) {
+                let mut image = (*entity).clone();
+                self.ensure_image_definition(&mut image);
+                Arc::new(image)
+            } else {
+                entity
+            };
             if self.document.restore_entity_arc(entity).is_some() {
                 self.reseed_derived_caches(handle);
                 restored.push(handle);
@@ -1292,6 +1359,22 @@ impl Scene {
         restored
     }
 }
+
+/// SELECTSIMILARMODE's default: layer and name.
+pub const SELECT_SIMILAR_DEFAULT: u16 = 130;
+
+/// The SELECTSIMILARMODE bits and the property each compares; the first
+/// field an object has is its value.
+const SIMILAR_FIELDS: &[(u16, &[&str])] = &[
+    (1, &["color"]),
+    (2, &["layer"]),
+    (4, &["linetype"]),
+    (8, &["linetype_scale"]),
+    (16, &["lineweight"]),
+    (32, &["plot_style"]),
+    (64, &["style", "style_name", "dimension_style"]),
+    (128, &["block"]),
+];
 
 #[cfg(test)]
 mod tests {
@@ -1620,5 +1703,75 @@ mod tests {
         scene.set_hover_highlight(Some(Handle::new(3)));
         assert!(!scene.selection_fingerprint_dirty);
         assert_eq!(scene.selection_fingerprint(), fingerprint);
+    }
+}
+
+
+
+/// Cells picked in one table: the cell the pick started from and the one it
+/// reaches (a Shift+click or a drag moves the second).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableCellSelection {
+    pub table: Handle,
+    pub anchor: (usize, usize),
+    pub end: (usize, usize),
+}
+
+impl TableCellSelection {
+    /// Top row, left column, bottom row, right column.
+    pub fn range(&self) -> (usize, usize, usize, usize) {
+        (
+            self.anchor.0.min(self.end.0),
+            self.anchor.1.min(self.end.1),
+            self.anchor.0.max(self.end.0),
+            self.anchor.1.max(self.end.1),
+        )
+    }
+}
+
+impl Scene {
+    /// Select cells of a table: the table becomes the only selected object.
+    pub fn select_table_cells(&mut self, cells: TableCellSelection) {
+        self.select_entity(cells.table, true);
+        self.table_cells = Some(cells);
+        self.bump_selection_set();
+    }
+
+    /// The cell of a shown table in the current space whose inside holds
+    /// `point` at least `margin` from its edges, topmost table first.
+    pub(crate) fn table_cell_pick(
+        &self,
+        point: glam::DVec3,
+        margin: f64,
+    ) -> Option<(Handle, (usize, usize))> {
+        let block = self.interaction_block_handle();
+        let record = self.document.block_records.iter().find(|r| r.handle == block)?;
+        record.entity_handles.iter().rev().find_map(|&handle| {
+            let Some(EntityType::Table(table)) = self.document.get_entity(handle) else {
+                return None;
+            };
+            let layer = self.document.layers.get(&table.common.layer);
+            if self.entity_temporarily_hidden(handle)
+                || self.is_reference_only(handle)
+                || !self.passes_selection_filter(handle)
+                || layer.is_some_and(|l| l.is_off() || l.is_frozen() || l.is_locked())
+                || table.common.invisible
+            {
+                return None;
+            }
+            let style = table.table_style_handle.and_then(|h| match self.document.objects.get(&h)? {
+                codec::objects::ObjectType::TableStyle(style) => Some(style),
+                _ => None,
+            });
+            crate::modules::annotate::table_cmd::table_cell_inside(table, style, point, margin)
+                .map(|cell| (handle, cell))
+        })
+    }
+
+    /// The table whose cells are selected.
+    pub fn table_cells_handle(&self) -> Option<Handle> {
+        self.table_cells
+            .filter(|cells| self.selected.contains(&cells.table))
+            .map(|cells| cells.table)
     }
 }

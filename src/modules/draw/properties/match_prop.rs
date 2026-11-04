@@ -23,11 +23,23 @@ use crate::scene::Scene;
 pub struct MatchPropCommand {
     /// Source handle; NULL until phase 1 is complete.
     src: Handle,
+    /// The previous run's source, still in the drawing; Enter at the source
+    /// prompt takes it.
+    last: Handle,
 }
 
 impl MatchPropCommand {
-    pub fn new() -> Self {
-        Self { src: Handle::NULL }
+    /// A single preselected object can supply the source; NULL asks for a pick.
+    pub fn new(src: Handle) -> Self {
+        Self {
+            src,
+            last: Handle::NULL,
+        }
+    }
+
+    pub fn with_last(mut self, last: Handle) -> Self {
+        self.last = last;
+        self
     }
 
     fn phase1_done(&self) -> bool {
@@ -44,7 +56,7 @@ impl CadCommand for MatchPropCommand {
         if !self.phase1_done() {
             crate::t!("MATCHPROP  Select source object:").into_owned()
         } else {
-            crate::t!("MATCHPROP  Select destination objects (Enter to finish):").into_owned()
+            crate::t!("MATCHPROP  Select destination object(s):").into_owned()
         }
     }
 
@@ -125,6 +137,10 @@ impl CadCommand for MatchPropCommand {
     }
 
     fn on_enter(&mut self) -> CmdResult {
+        if !self.phase1_done() && !self.last.is_null() {
+            self.src = self.last;
+            return CmdResult::NeedPoint;
+        }
         CmdResult::Cancel
     }
 

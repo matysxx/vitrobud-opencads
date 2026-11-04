@@ -564,6 +564,9 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
         return Vec::new();
     }
     let mut hits: Vec<(f32, &str)> = Vec::new();
+    // Mirrors the names in `hits` so the fill/pick/glyph phases below test
+    // membership in O(1) instead of a linear scan per candidate wire.
+    let mut hit_names: HashSet<&str> = HashSet::default();
     let mut marker_hits: HashMap<&str, f32> = HashMap::default();
     for wire in wires
         .iter()
@@ -602,6 +605,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             .into_iter()
             .map(|(name, distance)| (distance, name)),
     );
+    hit_names.extend(hits.iter().map(|&(_, name)| name));
     if let Some(segments) = wires.segments() {
         let mut best_by_wire: HashMap<u32, f32> = HashMap::default();
         for segment in segments {
@@ -647,6 +651,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
                 .source_wire(wire_idx)
                 .map(|wire| (distance, wire.name.as_str()))
         }));
+        hit_names.extend(hits.iter().map(|&(_, name)| name));
     } else {
         for wire in wires.iter() {
             if wire.snap_only || wire.reference_only {
@@ -684,6 +689,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             }
             if hit {
                 hits.push((best_for_wire, &wire.name));
+                hit_names.insert(&wire.name);
             }
         }
     }
@@ -701,7 +707,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             if wire.snap_only || wire.reference_only {
                 continue;
             }
-            if hits.iter().any(|&(_, name)| name == wire.name) {
+            if hit_names.contains(wire.name.as_str()) {
                 matched.insert(triangle.wire);
                 continue;
             }
@@ -717,6 +723,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             .is_some()
             {
                 hits.push((base_radius_px.max(1.0), wire.name.as_str()));
+                hit_names.insert(wire.name.as_str());
                 matched.insert(triangle.wire);
             }
         }
@@ -725,7 +732,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             if wire.snap_only || wire.reference_only {
                 continue;
             }
-            if wire.fill_tris.is_empty() || hits.iter().any(|&(_, name)| name == wire.name) {
+            if wire.fill_tris.is_empty() || hit_names.contains(wire.name.as_str()) {
                 continue;
             }
             if tris_hit_depth(
@@ -739,6 +746,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             .is_some()
             {
                 hits.push((base_radius_px.max(1.0), wire.name.as_str()));
+                hit_names.insert(wire.name.as_str());
             }
         }
     }
@@ -761,7 +769,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             if wire.snap_only || wire.reference_only {
                 continue;
             }
-            if hits.iter().any(|&(_, name)| name == wire.name) {
+            if hit_names.contains(wire.name.as_str()) {
                 matched.insert(triangle.wire);
                 continue;
             }
@@ -777,6 +785,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             .is_some()
             {
                 hits.push((base_radius_px.max(1.0), wire.name.as_str()));
+                hit_names.insert(wire.name.as_str());
                 matched.insert(triangle.wire);
             }
         }
@@ -785,7 +794,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             if wire.snap_only || wire.reference_only {
                 continue;
             }
-            if wire.pick_tris.is_empty() || hits.iter().any(|&(_, name)| name == wire.name) {
+            if wire.pick_tris.is_empty() || hit_names.contains(wire.name.as_str()) {
                 continue;
             }
             if tris_hit_depth(
@@ -799,6 +808,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             .is_some()
             {
                 hits.push((base_radius_px.max(1.0), wire.name.as_str()));
+                hit_names.insert(wire.name.as_str());
             }
         }
     }
@@ -817,7 +827,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             if wire.snap_only || wire.reference_only {
                 continue;
             }
-            if hits.iter().any(|&(_, name)| name == wire.name) {
+            if hit_names.contains(wire.name.as_str()) {
                 matched.insert(glyph.wire);
                 continue;
             }
@@ -827,6 +837,7 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             };
             if text_quad_hit_area(cursor, vertices, view_rot, eye, bounds).is_some() {
                 hits.push((base_radius_px.max(1.0), wire.name.as_str()));
+                hit_names.insert(wire.name.as_str());
                 matched.insert(glyph.wire);
             }
         }
@@ -835,11 +846,12 @@ pub fn click_hits_all<'a, W: WireSource + ?Sized>(
             if wire.snap_only || wire.reference_only {
                 continue;
             }
-            if wire.text_verts.is_empty() || hits.iter().any(|&(_, name)| name == wire.name) {
+            if wire.text_verts.is_empty() || hit_names.contains(wire.name.as_str()) {
                 continue;
             }
             if text_quad_hit_area(cursor, &wire.text_verts, view_rot, eye, bounds).is_some() {
                 hits.push((base_radius_px.max(1.0), wire.name.as_str()));
+                hit_names.insert(wire.name.as_str());
             }
         }
     }
@@ -2396,7 +2408,7 @@ fn marker_segment_hit(
 /// that the ray-cast doesn't draw a spurious closing edge between the
 /// end of one sub-path and the start of the next. Each sub-path with at
 /// least 2 finite vertices contributes its segments to the parity flip.
-fn point_in_polygon(p: Point, poly: &[Point]) -> bool {
+pub(crate) fn point_in_polygon(p: Point, poly: &[Point]) -> bool {
     // Ray-cast crossing test for a single edge a→b.
     fn cross(p: Point, a: Point, b: Point, inside: &mut bool) {
         if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
@@ -2442,7 +2454,7 @@ fn point_in_polygon(p: Point, poly: &[Point]) -> bool {
 }
 
 /// Does segment `[a, b]` cross any edge of the polygon?
-fn segment_crosses_polygon(a: Point, b: Point, poly: &[Point]) -> bool {
+pub(crate) fn segment_crosses_polygon(a: Point, b: Point, poly: &[Point]) -> bool {
     let n = poly.len();
     for i in 0..n {
         let c = poly[i];
@@ -2962,6 +2974,7 @@ mod aabb_reject_tests {
             uv: [0.0; 2],
             color: [1.0; 4],
             draw_depth: 0.0,
+            pen: 0.0,
         };
         let mut block = wire(
             "479",

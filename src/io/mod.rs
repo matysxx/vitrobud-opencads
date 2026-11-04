@@ -41,6 +41,7 @@ pub mod tds_legacy;
 pub mod thumbnail;
 pub mod update_check;
 pub mod visual_styles;
+pub mod svg_import;
 pub mod wmf_import;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod web_recent;
@@ -216,7 +217,7 @@ pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
             &["bak", "sv$", "BAK"],
         );
     for format in ocs_save::external_formats() {
-        dialog = dialog.add_filter(format.name(), format.extensions());
+        dialog = dialog.add_filter(ocs_save::external_format_label(*format), format.extensions());
     }
     let handle = dialog
         .add_filter(crate::t!("All Files").as_ref(), &["*"])
@@ -522,7 +523,7 @@ async fn open_path_with_phase_attempt(
                     progress2.set(crate::app::OPEN_PHASE_FINALIZING, 9600, 0, 1);
                     let t_finalize = Instant::now();
                     let (prepared_doc, prepared_geometry) =
-                        crate::scene::prepare_open_geometry(doc, &caches, model_bg);
+                        crate::scene::prepare_open_geometry(doc, &mut caches, model_bg);
                     caches.timings.finalize_ms = t_finalize.elapsed().as_millis() as u32;
                     doc = prepared_doc;
                     caches.prepared_geometry = Some(prepared_geometry);
@@ -797,6 +798,7 @@ async fn load_web_bytes(
     }
     let mut doc = outcome.document;
     normalize_block_origins(&mut doc);
+    crate::scene::center_native::import(&mut doc);
     if name.to_ascii_lowercase().ends_with(".dxf") {
         fix_dxf_layout_plot_settings(&mut doc);
     }
@@ -838,6 +840,7 @@ async fn parse_web_document(name: &str, bytes: &[u8]) -> Result<Document, String
         .map_err(|error| error.message)?;
     let mut doc = outcome.document;
     normalize_block_origins(&mut doc);
+    crate::scene::center_native::import(&mut doc);
     if name.to_ascii_lowercase().ends_with(".dxf") {
         fix_dxf_layout_plot_settings(&mut doc);
     }
@@ -1003,6 +1006,7 @@ pub fn load_bytes_finalized(path: &Path, bytes: Vec<u8>) -> Result<Document, Str
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
     let mut doc = load_bytes(&name, bytes)?;
     normalize_block_origins(&mut doc);
+    crate::scene::center_native::import(&mut doc);
     resolve_raster_image_paths(&mut doc, path.parent());
     doc.source_path = Some(path.to_string_lossy().into_owned());
     // Opening is a field evaluation event (FIELDEVAL bit 1).
@@ -1268,6 +1272,7 @@ fn finalize_loaded_outcome(
 ) -> Result<codec::ReadOutcome, String> {
     let doc = &mut outcome.document;
     normalize_block_origins(doc);
+    crate::scene::center_native::import(doc);
     materialize_missing_block_markers(doc);
     if outcome.stats.source_format == Some(codec::SourceFormat::Dxf) {
         fix_dxf_layout_plot_settings(doc);
@@ -1647,7 +1652,7 @@ pub const SAVE_FORMAT_OPTIONS: &[&str] = &[
 
 /// The Save As format list: the DWG/DXF targets, then each listed converter.
 pub fn save_format_options() -> Vec<String> {
-    let converters = ocs_save::external_formats().iter().map(|format| format.name());
+    let converters = ocs_save::external_formats().iter().map(|format| ocs_save::external_format_label(*format));
     SAVE_FORMAT_OPTIONS
         .iter()
         .copied()
@@ -1657,6 +1662,9 @@ pub fn save_format_options() -> Vec<String> {
 }
 
 pub fn canonical_save_format(format: &str) -> &'static str {
+    if let Some(converter) = ocs_save::external_format_by_label(format) {
+        return ocs_save::external_format_label(converter);
+    }
     SAVE_FORMAT_OPTIONS
         .iter()
         .copied()
@@ -1683,10 +1691,7 @@ pub fn source_is_dxf(path: Option<&Path>, document: &Document) -> bool {
 /// `(extension, DxfVersion)`.  Falls back to ("dwg", AC1032) for unknown strings.
 pub fn parse_save_format(format: &str) -> (&'static str, codec::DxfVersion) {
     // A converter writes its own format; the DXF version does not apply.
-    if let Some(converter) = ocs_save::external_formats()
-        .iter()
-        .find(|converter| converter.name().eq_ignore_ascii_case(format))
-    {
+    if let Some(converter) = ocs_save::external_format_by_label(format) {
         let ext = converter.extensions().first().copied().unwrap_or("dwg");
         return (ext, codec::DxfVersion::AC1032);
     }
@@ -1757,6 +1762,48 @@ pub fn format_for_version(version: codec::DxfVersion, is_dxf: bool) -> String {
     format!("{} {}", if is_dxf { "DXF" } else { "DWG" }, year)
 }
 
+/// Drawing properties (`SummaryInfo`, the DWGPROPS dialog) that saving to
+/// `version` would silently drop. DWG R2000 and older write no SummaryInfo
+/// section at all; DXF R2000 and older write no `$TITLE`…`$CUSTOMPROPERTY`
+/// header variables. The hyperlink base (summary value, else
+/// `header_hyperlink_base`) has its own place: DXF `$HYPERLINKBASE` from R2000
+/// and the DWG R2000 header copy, so it is lost by DXF R14 and older, by DWG
+/// R14 and older, and by DWG R2000 only when the header copy is empty.
+/// Counts the filled-in fields plus every custom property; `0` means the save
+/// loses nothing. "Last saved by" is not counted: it is stamped, not authored,
+/// and would otherwise ask on every save of a drawing nobody filled in.
+pub fn drawing_properties_lost_on_save(
+    info: &codec::document::SummaryInfo,
+    header_hyperlink_base: &str,
+    version: codec::DxfVersion,
+    is_dxf: bool,
+) -> usize {
+    if version >= codec::DxfVersion::AC1018 {
+        return 0;
+    }
+    let mut lost = [
+        &info.title,
+        &info.subject,
+        &info.author,
+        &info.keywords,
+        &info.comments,
+        &info.revision_number,
+    ]
+    .iter()
+    .filter(|value| !value.is_empty())
+    .count()
+        + info.custom_properties.len();
+    let base_lost = if info.hyperlink_base.is_empty() && header_hyperlink_base.is_empty() {
+        false
+    } else if version < codec::DxfVersion::AC1015 {
+        true
+    } else {
+        !is_dxf && header_hyperlink_base.is_empty()
+    };
+    lost += usize::from(base_lost);
+    lost
+}
+
 /// Count of unsupported "raw passthrough" objects/entities — AEC / application
 /// objects with no native representation, kept only as verbatim source-version
 /// bytes — that would be DROPPED when saving `doc` to `target_version` (or to
@@ -1811,6 +1858,105 @@ pub fn dropped_on_save_count(
     }
     n
 }
+
+/// MTEXT data the pinned codec's writer has no place for in an older target.
+/// DWG 2018 keeps all of it; DXF keeps all but columns before R2007, the
+/// first format that stores MTEXT columns. The table is pinned against the
+/// writer by `mtext_save_loss_tests`, so a codec change fails a test instead
+/// of silently making this warning wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MTextTargetLoss {
+    /// Column type, count, width, gutter, flow and per-column heights.
+    Columns,
+    /// A defined box height (`rectangle_height`).
+    BoxHeight,
+    /// Background mask flags, colour, border scale and transparency.
+    Background,
+    /// A non-default line spacing factor or style.
+    LineSpacing,
+}
+
+impl MTextTargetLoss {
+    pub const ALL: [Self; 4] = [
+        Self::Columns,
+        Self::BoxHeight,
+        Self::Background,
+        Self::LineSpacing,
+    ];
+
+    pub fn lost_in(self, version: codec::DxfVersion, is_dxf: bool) -> bool {
+        use codec::DxfVersion::*;
+        match self {
+            // R2007 to R2013 DWG keeps them in the text's xdata.
+            Self::Columns => version < AC1021,
+            _ if is_dxf => false,
+            Self::BoxHeight => version < AC1021,
+            Self::Background => version < AC1018,
+            Self::LineSpacing => version < AC1015,
+        }
+    }
+
+    pub fn carried_by(self, t: &codec::entities::MText) -> bool {
+        let default = codec::entities::MText::default();
+        match self {
+            Self::Columns => t.column_data != codec::entities::MTextColumnData::new(),
+            Self::BoxHeight => t.rectangle_height.is_some(),
+            Self::Background => {
+                t.background_fill_flags != default.background_fill_flags
+                    || t.background_scale != default.background_scale
+                    || t.background_color != default.background_color
+                    || t.background_transparency != default.background_transparency
+            }
+            Self::LineSpacing => {
+                t.line_spacing_factor != default.line_spacing_factor
+                    || t.line_spacing_style != default.line_spacing_style
+            }
+        }
+    }
+
+    /// Stable machine-readable name for automation replies.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Columns => "columns",
+            Self::BoxHeight => "box_height",
+            Self::Background => "background",
+            Self::LineSpacing => "line_spacing",
+        }
+    }
+
+    pub fn message(self, count: usize) -> String {
+        match self {
+            Self::Columns => crate::tf!("{count} MTEXT object(s): column layout"),
+            Self::BoxHeight => crate::tf!("{count} MTEXT object(s): defined box height"),
+            Self::Background => crate::tf!("{count} MTEXT object(s): background mask"),
+            Self::LineSpacing => crate::tf!("{count} MTEXT object(s): line spacing"),
+        }
+        .into_owned()
+    }
+}
+
+/// How many MTEXT objects, in any space or block definition, would lose each
+/// [`MTextTargetLoss`] when written as a `target_version` DWG or DXF.
+pub fn mtext_losses_on_save(
+    doc: &codec::Document,
+    target_version: codec::DxfVersion,
+    is_dxf: bool,
+) -> Vec<(MTextTargetLoss, usize)> {
+    MTextTargetLoss::ALL
+        .into_iter()
+        .filter(|loss| loss.lost_in(target_version, is_dxf))
+        .filter_map(|loss| {
+            let count = doc
+                .entities()
+                .filter(|e| matches!(e, codec::EntityType::MText(t) if loss.carried_by(t)))
+                .count();
+            (count > 0).then_some((loss, count))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod mtext_save_loss_tests;
 
 /// Before overwriting `path`, copy the existing file to a sibling `<name>.bak`
 /// so a faulty or accidental save can be recovered (#205). Best-effort: a
@@ -2084,7 +2230,8 @@ pub async fn pick_plot_style() -> Result<Option<plot_style::PlotStyleTable>, Str
     {
         let name = handle.file_name();
         let bytes: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(handle.read().await);
-        let table = plot_style::PlotStyleTable::from_bytes(&name, &bytes)?;
+        let table = plot_style::PlotStyleTable::from_bytes(&name, &bytes)
+            .map_err(|e| e.to_string())?;
         plot_style::register_session_table(&name, bytes);
         Ok(Some(table))
     }
@@ -2118,19 +2265,25 @@ pub async fn pick_image_file() -> Result<(PathBuf, u32, u32), String> {
         .await
         .ok_or_else(|| "Cancelled".to_string())?;
     let path = crate::sys::handle_path(&handle);
-    let reference = path.to_string_lossy().into_owned();
-    let short = std::path::Path::new(&reference)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| reference.clone());
     // Web only: the name-only path has nothing behind it, so the bytes go
     // into the registry. Native decodes from the file itself, so an edited
     // image reloads and the bytes are not held for the session.
     #[cfg(target_arch = "wasm32")]
     crate::scene::model::image_model::register_source(
-        &reference,
+        &path.to_string_lossy(),
         std::sync::Arc::new(handle.read().await),
     );
+    image_file_size(path)
+}
+
+/// An image file to attach and its size in pixels, as IMAGEATTACH places
+/// it: from its picker, or a file dropped on the drawing.
+pub fn image_file_size(path: PathBuf) -> Result<(PathBuf, u32, u32), String> {
+    let reference = path.to_string_lossy().into_owned();
+    let short = std::path::Path::new(&reference)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| reference.clone());
     let decoded = crate::scene::model::image_model::resolve_image(&reference).ok_or_else(|| {
         // An over-budget decode refusal explains itself (dims + limit);
         // anything else stays the generic unsupported/corrupt message.
@@ -2460,11 +2613,48 @@ pub fn prepare_document_for_save(mut doc: Document, version: codec::DxfVersion) 
     let dimensions_started = perf.then(iced::time::Instant::now);
     crate::modules::draw::modify::explode::bake_dimension_blocks(&mut doc);
     let dimensions_ms = crate::perf::elapsed_ms(dimensions_started);
+    let attributes_started = perf.then(iced::time::Instant::now);
+    // The "block has attribute definitions" marker a DXF file writes for a
+    // definition comes from this record flag alone, so every definition says
+    // what its body actually holds before the copy is handed to the writers —
+    // whichever route wrote the body: an editor session, a paste, an importer,
+    // a programmatic add. An external reference is the exception: its body is
+    // not in this drawing (the save copy strips what resolving it merged in,
+    // and the writer never emits it), so its marker describes the file it came
+    // from and has to be left as that file said it.
+    let attributed: Vec<(String, bool)> = doc
+        .block_records
+        .iter()
+        .filter(|record| {
+            !(record.is_model_space()
+                || record.is_paper_space()
+                || record.flags.is_xref
+                || record.flags.is_xref_overlay)
+        })
+        .map(|record| {
+            (
+                record.name.clone(),
+                record.entity_handles.iter().any(|handle| {
+                    matches!(
+                        doc.get_entity(*handle),
+                        Some(codec::EntityType::AttributeDefinition(_))
+                    )
+                }),
+            )
+        })
+        .collect();
+    for (name, holds_definitions) in attributed {
+        if let Some(record) = doc.block_records.get_mut(&name) {
+            record.flags.has_attributes = holds_definitions;
+        }
+    }
+    let attributes_ms = crate::perf::elapsed_ms(attributes_started);
     if perf {
         crate::perf_record!(
-            "[perf] save-prepare styles={:.1} dimensions={:.1} entities={} objects={}",
+            "[perf] save-prepare styles={:.1} dimensions={:.1} attributes={:.1} entities={} objects={}",
             styles_ms,
             dimensions_ms,
+            attributes_ms,
             doc.entities().count(),
             doc.objects.len(),
         );
@@ -2554,61 +2744,53 @@ fn fix_current_style_names(doc: &mut Document) {
     // them — they live in the variable dictionary as DICTIONARYVAR entries
     // keyed "CTABLESTYLE" / "CMLEADERSTYLE". Resolve from there when present;
     // a missing entry simply leaves the existing value untouched.
-    if let Some(v) = vardict_value(doc, "CTABLESTYLE") {
+    if let Some(v) = drawing_variable(doc, "CTABLESTYLE") {
         if !v.is_empty() {
             doc.header.current_table_style_name = v;
         }
     }
-    if let Some(v) = vardict_value(doc, "CMLEADERSTYLE") {
+    if let Some(v) = drawing_variable(doc, "CMLEADERSTYLE") {
         if !v.is_empty() {
             doc.header.current_mleader_style_name = v;
         }
     }
+    // The variables may carry the name in another case ("STANDARD"); the
+    // current style is the record of that name, spelled as the record is.
+    let record_name = |doc: &Document, table: bool, name: &str| {
+        doc.objects.values().find_map(|o| match o {
+            ObjectType::TableStyle(s) if table && s.name.eq_ignore_ascii_case(name) => {
+                Some(s.name.clone())
+            }
+            ObjectType::MultiLeaderStyle(s) if !table && s.name.eq_ignore_ascii_case(name) => {
+                Some(s.name.clone())
+            }
+            _ => None,
+        })
+    };
+    if let Some(name) = record_name(doc, true, &doc.header.current_table_style_name) {
+        doc.header.current_table_style_name = name;
+    }
+    if let Some(name) = record_name(doc, false, &doc.header.current_mleader_style_name) {
+        doc.header.current_mleader_style_name = name;
+    }
     reflect_sketch_settings(doc);
 }
 
-/// Find the handle of the `DictionaryVariable` registered under `name` in any
-/// of the document's dictionaries (the variable dictionary).
-fn vardict_handle(doc: &Document, name: &str) -> Option<codec::Handle> {
-    use codec::objects::ObjectType;
-    doc.objects.values().find_map(|o| {
-        let entries = match o {
-            ObjectType::Dictionary(d) => &d.entries,
-            ObjectType::DictionaryWithDefault(d) => &d.entries,
-            _ => return None,
-        };
-        entries
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, h)| *h)
-    })
-}
-
-/// Look up a system-variable value stored in the document's variable
-/// dictionary.
-fn vardict_value(doc: &Document, name: &str) -> Option<String> {
-    use codec::objects::ObjectType;
-    let handle = vardict_handle(doc, name)?;
-    match doc.objects.get(&handle) {
-        Some(ObjectType::DictionaryVariable(v)) => Some(v.value.clone()),
-        _ => None,
-    }
-}
-
+/// A system variable stored in the drawing's variable dictionary.
 pub(crate) fn drawing_variable(doc: &Document, name: &str) -> Option<String> {
-    vardict_value(doc, name)
+    doc.drawing_variable(name).map(str::to_string)
 }
 
 fn reflect_sketch_settings(doc: &mut Document) {
-    let sketch_type = vardict_value(doc, "SKPOLY")
+    let sketch_type = drawing_variable(doc, "SKPOLY")
         .and_then(|value| value.parse::<i16>().ok())
         .unwrap_or(doc.header.sketch_type)
         .clamp(0, 2);
-    let increment = vardict_value(doc, "SKETCHINC")
+    let increment = drawing_variable(doc, "SKETCHINC")
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(doc.header.sketch_increment);
-    let tolerance = vardict_value(doc, "SKTOLERANCE")
+    let tolerance = drawing_variable(doc, "SKTOLERANCE")
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
         .unwrap_or(doc.header.sketch_tolerance);
@@ -2628,40 +2810,9 @@ fn reflect_sketch_settings(doc: &mut Document) {
 /// Write a drawing variable, creating the variable dictionary and record when
 /// needed so new drawings preserve the value too.
 pub(crate) fn set_drawing_variable(doc: &mut Document, name: &str, value: &str) {
-    use codec::objects::{Dictionary, DictionaryVariable, ObjectType};
-    if let Some(h) = vardict_handle(doc, name) {
-        if let Some(ObjectType::DictionaryVariable(v)) = doc.objects.get_mut(&h) {
-            v.value = value.to_string();
-        }
-        return;
-    }
-
-    let root = crate::scene::annotative::root_named_dict_handle(doc);
-    let variable_dictionary = crate::scene::annotative::as_dict(doc, root)
-        .and_then(|dictionary| dictionary.get("AcDbVariableDictionary"))
-        .filter(|handle| matches!(doc.objects.get(handle), Some(ObjectType::Dictionary(_))))
-        .unwrap_or_else(|| {
-            let handle = doc.allocate_handle();
-            let mut dictionary = Dictionary::new();
-            dictionary.handle = handle;
-            dictionary.owner = root;
-            doc.objects
-                .insert(handle, ObjectType::Dictionary(dictionary));
-            if let Some(ObjectType::Dictionary(root_dictionary)) = doc.objects.get_mut(&root) {
-                root_dictionary.add_entry("AcDbVariableDictionary", handle);
-            }
-            handle
-        });
-
-    let handle = doc.allocate_handle();
-    let mut variable = DictionaryVariable::new(name, value);
-    variable.handle = handle;
-    variable.owner_handle = variable_dictionary;
-    doc.objects
-        .insert(handle, ObjectType::DictionaryVariable(variable));
-    if let Some(ObjectType::Dictionary(dictionary)) = doc.objects.get_mut(&variable_dictionary) {
-        dictionary.add_entry(name, handle);
-    }
+    // The codec follows the header's root pointer; repair a stale one first.
+    crate::scene::annotative::root_named_dict_handle(doc);
+    doc.set_drawing_variable(name, value);
 }
 
 pub(crate) fn set_sketch_settings(
@@ -2693,7 +2844,7 @@ pub(crate) fn set_sketch_settings(
 /// system variable (stored in the variable dictionary as a `DICTIONARYVAR`).
 /// `None` when the file recorded no current tab.
 pub fn saved_active_layout(doc: &Document) -> Option<String> {
-    vardict_value(doc, "CTAB").filter(|s| !s.is_empty())
+    drawing_variable(doc, "CTAB").filter(|s| !s.is_empty())
 }
 
 /// Record `name` as the active layout tab (`CTAB`) so the next save round-trips
@@ -2774,6 +2925,34 @@ fn sync_current_styles_on_save(doc: &mut Document) {
     let increment = doc.header.sketch_increment;
     let tolerance = doc.header.sketch_tolerance;
     set_sketch_settings(doc, sketch_type, increment, tolerance);
+    drop_loaded_text_style_font_xdata(doc);
+}
+
+/// A text style's TrueType family and flags live in its `ACAD` xdata record,
+/// which the writer builds from the style itself. A DXF read also keeps the
+/// record it loaded, so writing that copy too would save a stale second
+/// family, and after a switch to a stroke font, a family the style no longer
+/// has. Drop the loaded copy when it holds only the font (family + flags).
+fn drop_loaded_text_style_font_xdata(doc: &mut Document) {
+    use codec::xdata::XDataValue;
+    let handles: Vec<_> = doc.text_styles.iter().map(|style| style.handle).collect();
+    for handle in handles {
+        let Some(xdata) = doc.object_xdata.get_mut(&handle) else {
+            continue;
+        };
+        let font_only = xdata.get_record("ACAD").is_some_and(|record| {
+            matches!(
+                record.values.as_slice(),
+                [XDataValue::String(_)] | [XDataValue::String(_), XDataValue::Integer32(_)]
+            )
+        });
+        if font_only {
+            xdata.remove_record("ACAD");
+            if xdata.is_empty() {
+                doc.object_xdata.remove(&handle);
+            }
+        }
+    }
 }
 
 /// Recovery runs the codec's repair and reports what it did, and what it
@@ -3362,9 +3541,133 @@ mod prepare_save_tests {
         assert_eq!(live.base.definition_point, Vector3::ZERO);
     }
 
+    /// One definition with no body members, or with an ATTDEF in its body.
+    fn define(doc: &mut Document, name: &str, attribute_tag: Option<&str>) {
+        let mut record = codec::tables::BlockRecord::new(name);
+        record.handle = doc.allocate_handle();
+        doc.block_records.add(record).unwrap();
+        let owner = doc.block_records.get(name).unwrap().handle;
+        let mut marker = codec::entities::Block::new(name, Vector3::ZERO);
+        marker.common.handle = doc.allocate_handle();
+        marker.common.owner_handle = owner;
+        doc.add_entity(EntityType::Block(marker)).unwrap();
+        if let Some(tag) = attribute_tag {
+            let mut attdef =
+                codec::entities::AttributeDefinition::new(tag.into(), "Prompt".into(), "".into());
+            attdef.common.handle = doc.allocate_handle();
+            attdef.common.owner_handle = owner;
+            doc.add_entity(EntityType::AttributeDefinition(attdef))
+                .unwrap();
+        }
+        let mut end = codec::entities::BlockEnd::new();
+        end.common.handle = doc.allocate_handle();
+        end.common.owner_handle = owner;
+        doc.add_entity(EntityType::BlockEnd(end)).unwrap();
+    }
+
+    fn marker(prepared: &Document, name: &str) -> bool {
+        prepared
+            .block_records
+            .get(name)
+            .unwrap()
+            .flags
+            .has_attributes
+    }
+
+    // The marker a DXF file writes for a definition comes from the record, so
+    // preparation puts each record in line with its own body — in both
+    // directions — and leaves the live document as it found it.
+    #[test]
+    fn prepare_takes_the_attribute_marker_from_each_definition_body() {
+        let mut doc = Document::new();
+        crate::io::linetypes::populate_document(&mut doc);
+        define(&mut doc, "TAGGED", Some("TAG"));
+        define(&mut doc, "PLAIN", None);
+        doc.block_records.get_mut("TAGGED").unwrap().flags.has_attributes = false;
+        doc.block_records.get_mut("PLAIN").unwrap().flags.has_attributes = true;
+        let version = doc.version;
+        let prepared = prepare_document_for_save(doc.clone(), version);
+        assert!(
+            marker(&prepared, "TAGGED"),
+            "a body that declares an attribute marks the record"
+        );
+        assert!(
+            !marker(&prepared, "PLAIN"),
+            "a body without one leaves the record unmarked"
+        );
+        assert!(
+            doc.block_records.get("PLAIN").unwrap().flags.has_attributes,
+            "the live document keeps the marker it had"
+        );
+    }
+
+    // An external reference's body is not this drawing's to describe: the save
+    // copy strips what resolving it merged in, so the marker its own file said
+    // has to survive preparation rather than be read off an empty body.
+    #[test]
+    fn prepare_leaves_an_external_reference_marker_alone() {
+        let mut doc = Document::new();
+        crate::io::linetypes::populate_document(&mut doc);
+        let mut record = codec::tables::BlockRecord::new("XREFED");
+        record.handle = doc.allocate_handle();
+        record.flags.is_xref = true;
+        record.flags.has_attributes = true;
+        doc.block_records.add(record).unwrap();
+        let mut overlay = codec::tables::BlockRecord::new("OVERLAYED");
+        overlay.handle = doc.allocate_handle();
+        overlay.flags.is_xref_overlay = true;
+        overlay.flags.has_attributes = true;
+        doc.block_records.add(overlay).unwrap();
+        let version = doc.version;
+        let prepared = prepare_document_for_save(doc, version);
+        assert!(
+            marker(&prepared, "XREFED"),
+            "the reference keeps the marker its file declared"
+        );
+        assert!(
+            marker(&prepared, "OVERLAYED"),
+            "the overlay keeps the marker its file declared"
+        );
+    }
+
     // The whole point of the split: the inline fallback (`save_to_bytes`) and
     // the worker route (`prepare_document_for_save` → `ocs_save` on the
     // worker) must produce identical bytes for the same input.
+    /// S5: DXF R14 and older have no `$HYPERLINKBASE`; R2000 DXF keeps it.
+    #[test]
+    fn dxf_r14_loses_the_hyperlink_base_but_r2000_keeps_it() {
+        let info = codec::document::SummaryInfo {
+            hyperlink_base: "C:/docs".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            drawing_properties_lost_on_save(&info, "", codec::DxfVersion::AC1014, true),
+            1
+        );
+        assert_eq!(
+            drawing_properties_lost_on_save(&info, "", codec::DxfVersion::AC1015, true),
+            0
+        );
+    }
+
+    /// S5: DWG R2000 stores the header copy of the hyperlink base, so it is
+    /// lost only when that copy is empty; DWG R14 stores neither.
+    #[test]
+    fn dwg_r2000_keeps_the_hyperlink_base_when_the_header_holds_it() {
+        use codec::DxfVersion::{AC1014, AC1015};
+        let mut info = codec::document::SummaryInfo {
+            hyperlink_base: "C:/docs".into(),
+            ..Default::default()
+        };
+        assert_eq!(drawing_properties_lost_on_save(&info, "C:/docs", AC1015, false), 0);
+        assert_eq!(drawing_properties_lost_on_save(&info, "", AC1015, false), 1);
+        assert_eq!(drawing_properties_lost_on_save(&info, "C:/docs", AC1014, false), 1);
+        info.hyperlink_base.clear();
+        assert_eq!(drawing_properties_lost_on_save(&info, "D:/base", AC1015, false), 0);
+        assert_eq!(drawing_properties_lost_on_save(&info, "D:/base", AC1014, true), 1);
+        assert_eq!(drawing_properties_lost_on_save(&info, "", AC1014, true), 0);
+    }
+
     #[test]
     fn save_to_bytes_equals_prepare_then_shared_serialize() {
         let mut doc = Document::new();

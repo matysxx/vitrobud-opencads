@@ -20,20 +20,51 @@ pub fn tool() -> ToolDef {
     }
 }
 
-/// What the next TEXT starts from: the rotation last typed and the last
-/// line written, which Enter at the start point continues below.
-struct Session {
+/// What the next TEXT starts from: the rotation last typed and, for each
+/// drawing, the last line it wrote — which Enter at the start point continues
+/// below.
+pub(crate) struct Session {
     rotation: f64,
-    last: Option<Text>,
+    /// One line per drawing, kept with the drawing that wrote it, so a
+    /// remembered position cannot be read as another drawing's and each
+    /// drawing keeps its own.
+    last: Vec<(u64, Text)>,
 }
 
 static SESSION: std::sync::Mutex<Session> = std::sync::Mutex::new(Session {
     rotation: 0.0,
-    last: None,
+    last: Vec::new(),
 });
 
-fn session() -> std::sync::MutexGuard<'static, Session> {
+pub(crate) fn session() -> std::sync::MutexGuard<'static, Session> {
     SESSION.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Session {
+    /// The line this drawing wrote last, if it has written one.
+    pub(crate) fn last_in(&self, document: u64) -> Option<&Text> {
+        self.last
+            .iter()
+            .find(|(written_in, _)| *written_in == document)
+            .map(|(_, line)| line)
+    }
+
+    /// The line this drawing continues below, replacing its old one.
+    pub(crate) fn set_place(&mut self, document: u64, line: &Text) {
+        self.forget_place_of(document);
+        self.last.push((document, line.clone()));
+    }
+
+    /// Drop the line remembered for this drawing.
+    fn forget_place_of(&mut self, document: u64) {
+        self.last.retain(|(written_in, _)| *written_in != document);
+    }
+}
+
+/// A whole document replaced this drawing's content, so the line it would
+/// continue below belongs to the document before it.
+pub fn forget_place_of(document: u64) {
+    session().forget_place_of(document);
 }
 
 /// A value the way the prompts show a default (no trailing zeros).
@@ -62,6 +93,8 @@ enum Step {
     Start,
     Justification,
     Style,
+    /// Style's `?`: which styles to list.
+    StyleList,
     Height,
     Rotation,
     SecondPoint,
@@ -87,6 +120,9 @@ pub struct TextCommand {
     last_entity: Option<Text>,
     /// A justification was chosen: the point prompt names its point.
     justified: bool,
+    /// Which drawing this command runs in: the line Enter continues below is
+    /// that drawing's, not the last one written anywhere.
+    document: u64,
 }
 
 impl TextCommand {
@@ -94,6 +130,7 @@ impl TextCommand {
         defaults: TextCreationDefaults,
         styles: Vec<TextStyle>,
         annotation_multiplier: f64,
+        document: u64,
     ) -> Self {
         let current_height = defaults.height;
         let mut command = Self {
@@ -115,6 +152,7 @@ impl TextCommand {
             last_display_height: None,
             last_entity: None,
             justified: false,
+            document,
         };
         let style = command.style_name.clone();
         command.select_style(&style);
@@ -149,10 +187,19 @@ impl TextCommand {
     }
 
     /// TEXT's `?` at the style name: every style with its font and settings.
-    fn style_listing(&self) -> String {
+    fn style_listing(&self, pattern: &str) -> String {
         let mut out = vec![crate::tr!("text-cmd", "styles-title")];
-        let width = self.styles.iter().map(|s| s.name.chars().count() + 2).max().unwrap_or(0);
-        for style in &self.styles {
+        let listed: Vec<&TextStyle> = self
+            .styles
+            .iter()
+            .filter(|style| {
+                pattern
+                    .split(',')
+                    .any(|part| crate::io::xref_model::wildcard_match(&style.name, part.trim()))
+            })
+            .collect();
+        let width = listed.iter().map(|s| s.name.chars().count() + 2).max().unwrap_or(0);
+        for style in listed {
             let name = format!("\"{}\"", style.name);
             let font = if style.true_type_font.trim().is_empty() {
                 let file = style.font_file.trim();
@@ -361,6 +408,7 @@ impl CadCommand for TextCommand {
             }
             Step::Justification => crate::tr!("text-cmd", "justify"),
             Step::Style => crate::tr!("text-cmd", "style", default = self.style_name.clone()),
+            Step::StyleList => crate::tr!("text-cmd", "style-list"),
             Step::Height if self.annotative => {
                 crate::tf!("Specify paper text height <{}>:", length4(self.height)).into_owned()
             }
@@ -418,7 +466,7 @@ impl CadCommand for TextCommand {
     fn wants_text_input(&self) -> bool {
         matches!(
             self.step,
-            Step::Justification | Step::Style | Step::Height | Step::Rotation
+            Step::Justification | Step::Style | Step::StyleList | Step::Height | Step::Rotation
         )
     }
 
@@ -446,7 +494,8 @@ impl CadCommand for TextCommand {
             }
             Step::Style => {
                 if upper == "?" {
-                    return Some(CmdResult::ReportMeasurement(self.style_listing()));
+                    self.step = Step::StyleList;
+                    return Some(CmdResult::NeedPoint);
                 }
                 if !self.select_style(token) {
                     return Some(CmdResult::ReportError(crate::tr!(
@@ -457,8 +506,18 @@ impl CadCommand for TextCommand {
                 }
                 self.step = Step::Start;
             }
+            // The listing ends the Style option.
+            Step::StyleList => {
+                let pattern = if token.is_empty() { "*" } else { token };
+                self.step = Step::Start;
+                return Some(CmdResult::ReportMeasurement(self.style_listing(pattern)));
+            }
             Step::Height => {
-                let value = token.replace(',', ".").parse::<f64>().ok()?;
+                let Ok(value) = token.replace(',', ".").parse::<f64>() else {
+                    return Some(CmdResult::ReportError(
+                        crate::t!("Requires numeric distance or second point.").into_owned(),
+                    ));
+                };
                 if !value.is_finite() || value <= 1.0e-9 {
                     return Some(CmdResult::ReportError(crate::tr!("text-cmd", "positive")));
                 }
@@ -536,14 +595,14 @@ impl CadCommand for TextCommand {
                 self.second_point = Some(point);
                 self.after_second_point()
             }
-            Step::Justification | Step::Style => CmdResult::NeedPoint,
+            Step::Justification | Step::Style | Step::StyleList => CmdResult::NeedPoint,
         }
     }
 
     fn on_enter(&mut self) -> CmdResult {
         match self.step {
-            // Enter continues one line below the last text written.
-            Step::Start if !self.justified => match session().last.clone() {
+            // Enter continues one line below the last line this drawing wrote.
+            Step::Start if !self.justified => match session().last_in(self.document).cloned() {
                 Some(last) => {
                     self.last_entity = Some(last);
                     self.open_next_line()
@@ -551,6 +610,10 @@ impl CadCommand for TextCommand {
                 None => CmdResult::Cancel,
             },
             Step::Start => CmdResult::NeedPoint,
+            Step::StyleList => {
+                self.step = Step::Start;
+                CmdResult::ReportMeasurement(self.style_listing("*"))
+            }
             Step::Justification | Step::Style => {
                 self.step = Step::Start;
                 CmdResult::NeedPoint
@@ -570,7 +633,10 @@ impl CadCommand for TextCommand {
 
     fn on_editor_closed(&mut self, committed: bool) -> CmdResult {
         if committed {
-            session().last = self.last_entity.clone();
+            match self.last_entity.clone() {
+                Some(line) => session().set_place(self.document, &line),
+                None => session().forget_place_of(self.document),
+            }
             self.open_next_line()
         } else {
             CmdResult::Cancel
@@ -593,3 +659,81 @@ impl CadCommand for TextCommand {
 }
 
 inventory::submit!(crate::command::CommandRegistration { names: &["TEXT"] });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(value: &str) -> Text {
+        Text {
+            value: value.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn empty() -> Session {
+        Session {
+            rotation: 0.0,
+            last: Vec::new(),
+        }
+    }
+
+    /// Enter at the start point continues below the line this drawing wrote,
+    /// and never below a line another drawing wrote.
+    #[test]
+    fn a_line_is_continued_only_within_the_drawing_that_wrote_it() {
+        let first = u64::MAX - 9;
+        let second = u64::MAX - 8;
+        let mut s = empty();
+        assert!(
+            s.last_in(first).is_none(),
+            "a fresh drawing has nothing to continue below"
+        );
+        s.set_place(first, &line("MINE"));
+        assert_eq!(
+            s.last_in(first).map(|t| t.value.as_str()),
+            Some("MINE"),
+            "the drawing that wrote one continues below it"
+        );
+        assert!(
+            s.last_in(second).is_none(),
+            "a second drawing does not inherit it"
+        );
+        assert!(s.last_in(0).is_none(), "nor does an id no drawing ever had");
+        s.set_place(second, &line("OTHER"));
+        s.set_place(first, &line("NEW"));
+        assert_eq!(s.last.len(), 2, "one line per drawing, not one per writing");
+        assert_eq!(
+            s.last_in(first).map(|t| t.value.as_str()),
+            Some("NEW"),
+            "the newest line is the one its drawing continues below"
+        );
+        assert_eq!(
+            s.last_in(second).map(|t| t.value.as_str()),
+            Some("OTHER"),
+            "another drawing's line is left alone"
+        );
+    }
+
+    /// A drawing that gets a whole new document must not keep continuing
+    /// below a line from the document it replaced.
+    #[test]
+    fn replacing_the_document_clears_the_line_remembered_for_it() {
+        let first = u64::MAX - 9;
+        let second = u64::MAX - 8;
+        let mut s = empty();
+        s.set_place(first, &line("MINE"));
+        s.set_place(second, &line("OTHER"));
+        s.forget_place_of(second);
+        assert_eq!(
+            s.last_in(first).map(|t| t.value.as_str()),
+            Some("MINE"),
+            "another drawing's new document keeps this one's line"
+        );
+        s.forget_place_of(first);
+        assert!(
+            s.last_in(first).is_none(),
+            "this drawing's new document drops the line it no longer owns"
+        );
+    }
+}
